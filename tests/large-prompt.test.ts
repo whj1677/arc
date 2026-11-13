@@ -3,9 +3,18 @@ import assert from 'node:assert/strict';
 import {makePrompt} from '../src/main/providers';
 import {listFrozenFiles} from '../src/main/prompt-context';
 import {analysisErrorMessage} from '../src/ui/AnalysisError';
+import {overviewDiscoveryQuestion} from '../src/main/architecture-analysis';
 import type {Snapshot,Run,Annotation} from '../src/shared';
 
 const snapshot:Snapshot={source_snapshot_id:'snapshot-large',project_id:'project',captured_at:'',root_path:'',fingerprint:'fingerprint',commit:null,dirty:null,build_config:'',consistency:'verified',excluded:[],files:Array.from({length:10000},(_,i)=>({path:`project-${i%23}/module-${i}/nested-component-${i}/source-${i}.ts`,content_sha256:String(i).padStart(64,'0'),bytes:1234,line_count:100,encoding:'utf-8'}))};
+test('first overview asks for an evidenced architecture and catalog without requesting detailed function walks',async()=>{
+  const run={question:overviewDiscoveryQuestion,provider_id:'codex',binding:{run_id:'overview',source_snapshot_id:snapshot.source_snapshot_id}} as Run;
+  const prompt=await makePrompt(run,snapshot,'unused',[]);
+  assert.match(prompt,/architecture/);assert.match(prompt,/feature_catalog/);assert.match(prompt,/SHA-256/);
+  assert.doesNotMatch(prompt,/功能或场景详细分析必须同时提供关键函数调用链/);
+  const detailed=await makePrompt({...run,question:'分析一个功能的完整调用路径'},snapshot,'unused',[]);
+  assert.match(detailed,/功能或场景详细分析必须同时提供关键函数调用链/);
+});
 test('large project prompt remains small while every manifest entry can be discovered with its exact hash',async()=>{
   const run={question:'开始派单怎样运转',provider_id:'codex',binding:{run_id:'run',source_snapshot_id:snapshot.source_snapshot_id}} as Run;
   const annotations=Array.from({length:100},()=>({text:'历史线索'.repeat(20000),source_snapshot_id:'old',object_id:null})) as Annotation[];

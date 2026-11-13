@@ -8,8 +8,9 @@ const run={provider_id:'codex',status:'running',created_at:'2026-10-22T00:00:00Z
 const time=Date.parse(run.created_at)+60000;
 const retry={type:'error',message:'Reconnecting... 2/5 (request timed out)'};
 test('a CLI thread ID does not establish a visible desktop conversation',()=>{
-  assert.match(runChannel(run),/CLI 后台/);
-  assert.match(runChannel(run),/未验证 Codex 桌面对话同步/);
+  assert.match(runChannel(run),/Codex 在 ARC 内分析/);
+  assert.match(runChannel(run),/独立只读任务/);
+  assert.doesNotMatch(runChannel(run),/同一对话|续接|同步/);
   assert.match(runChannel({...run,origin:'mcp'}),/通过 MCP 接入/);
   assert.doesNotMatch(runChannel({...run,origin:'manual_import'}),/对话/);
 });

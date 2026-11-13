@@ -63,6 +63,16 @@ test('connection handshake retains its finite deadline',async t=>{
 });
 import {dshFinalMessage,parseProviderText} from '../src/main/dsh';
 import {normalizeTransport,schema,transportSchema} from '../src/main/validation';
+import Ajv2020 from 'ajv/dist/2020';
+test('Codex transport rejects contradictory unknown or unsupported execution contexts before generation',()=>{
+  const wire=transportSchema(),check=new Ajv2020({strict:false}).compile({$defs:wire.$defs,$ref:'#/$defs/execution_context'});
+  const context={kind:'unknown',identity:null,label:'执行上下文未查明',status:'unknown',claim_ids:[],evidence_ids:[]};
+  assert.equal(check(context),true);
+  assert.equal(check({...context,status:'source_supported',claim_ids:['component-responsibility']}),false);
+  assert.equal(check({...context,identity:'invented-thread'}),false);
+  assert.equal(check({...context,kind:'caller',status:'source_supported',claim_ids:['call-context']}),true);
+  assert.equal(check({...context,kind:'caller',status:'source_supported'}),false);
+});
 test('Codex transport schema keeps references pure without changing the canonical contract',()=>{
   const canonical=JSON.stringify(schema),wire=transportSchema();let count=0;
   function inspect(value:any){if(!value||typeof value!=='object')return;if(value.$ref){count++;assert.deepEqual(Object.keys(value),['$ref']);}if(value.enum){assert.ok(value.type);for(const item of value.enum)assert.equal(typeof item,value.type);}assert.ok(!Object.hasOwn(value,'const'));if(value.properties){assert.deepEqual(value.required,Object.keys(value.properties));assert.equal(value.additionalProperties,false);}Object.values(value).forEach(inspect);}

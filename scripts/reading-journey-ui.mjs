@@ -84,6 +84,7 @@ try{
     await page.getByRole('button',{name:'保存线索',exact:true}).click();
   }
   await page.getByRole('button',{name:'就这里提问',exact:true}).click();
+  await page.waitForFunction(()=>document.activeElement===document.querySelector('#reading-question-input'));
   const first=await send('这一步返回成功是否代表整个分析已经完成并保存？请直接说明，250字以内，给出2处源码依据。');
   assert.ok(first.context.annotations.some(a=>a.text===clue));
   await page.locator('.graph-node').nth(1).click();
@@ -122,14 +123,22 @@ try{
   await page.getByRole('button',{name:'解释这个文件夹',exact:true}).click();
   assert.equal(await page.locator('[aria-label="当前位置问答"]').getAttribute('data-target-kind'),'directory');
   await page.getByLabel('提问执行方式',{exact:true}).selectOption('mcp');
-  const directoryQuestion='src 目录在这个工程中负责什么？请结合冻结源码说明。';
-  let directoryItem=(await read()).questions.find(q=>q.project_id===other.project_id&&q.question===directoryQuestion);
-  if(!directoryItem){
-    await page.getByLabel('当前位置的问题',{exact:true}).fill(directoryQuestion);
-    await page.getByRole('button',{name:'保存问题，等待 Agent 领取',exact:true}).click();
-    await page.waitForFunction(async question=>(await window.arc.invoke('data')).questions.some(q=>q.question===question),directoryQuestion);
-    directoryItem=(await read()).questions.find(q=>q.project_id===other.project_id&&q.question===directoryQuestion);
-  }
+  const directoryQuestion='src 目录在这个工程中负责什么？\n请结合冻结源码说明。';
+  const directoryComposer=page.getByLabel('当前位置的问题',{exact:true});
+  const beforeKeyboard=await read(),beforeQuestionIds=new Set(beforeKeyboard.questions.map(q=>q.question_id)),beforeRunIds=new Set(beforeKeyboard.runs.map(r=>r.binding.run_id));
+  await directoryComposer.fill(directoryQuestion.split('\n')[0]);
+  await directoryComposer.press('End');await directoryComposer.press('Enter');await page.keyboard.insertText(directoryQuestion.split('\n')[1]);
+  assert.equal(await directoryComposer.inputValue(),directoryQuestion,'Enter must insert a newline instead of sending the question.');
+  assert.equal((await read()).questions.length,beforeQuestionIds.size,'A normal newline must not submit.');
+  await directoryComposer.evaluate(element=>element.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',ctrlKey:true,isComposing:true,bubbles:true,cancelable:true})));
+  assert.equal((await read()).questions.length,beforeQuestionIds.size,'Confirming IME input must not submit.');
+  await directoryComposer.press('Control+Enter');await directoryComposer.press('Control+Enter');
+  await page.waitForFunction(async count=>(await window.arc.invoke('data')).questions.length>count,beforeQuestionIds.size);
+  const afterKeyboard=await read(),submittedQuestions=afterKeyboard.questions.filter(q=>!beforeQuestionIds.has(q.question_id)),submittedRuns=afterKeyboard.runs.filter(r=>!beforeRunIds.has(r.binding.run_id));
+  assert.equal(submittedQuestions.length,1,'Repeated Ctrl+Enter must save only one question.');
+  assert.equal(submittedRuns.length,1,'Repeated Ctrl+Enter must create only one MCP task.');
+  let directoryItem=submittedQuestions[0];
+  assert.equal(directoryItem.question,directoryQuestion);
   const directoryCard=page.locator(`[data-question-id="${directoryItem.question_id}"]`);
   let directoryRun=(await read()).runs.find(r=>r.binding.run_id===directoryItem.run_id);
   if(directoryRun.status!=='waiting_agent'){
@@ -209,6 +218,13 @@ try{
   const sourceVisible=await usabilityCard.locator('[aria-label="冻结源码依据"]').evaluate(e=>{const panel=e.closest('.panel-scroll').getBoundingClientRect(),s=e.getBoundingClientRect();return s.top>=panel.top&&s.top<panel.bottom;});
   assert.ok(sourceVisible,'An inline citation must reveal its source without manual searching.');
   await page.screenshot({path:path.join(scratch,'reading-comfort.png')});
+  console.log('Checking source return from an older answer, including keyboard focus.');
+  const olderAnswer=page.locator(`[data-question-id="${fileQuestion.question_id}"]`),olderCitation=olderAnswer.locator('.answer-citation').first();
+  await olderCitation.click();await olderAnswer.locator('[aria-label="冻结源码依据"] pre').waitFor();
+  await olderAnswer.getByRole('button',{name:'← 返回这条回答',exact:true}).click();
+  await olderAnswer.locator('[aria-label="冻结源码依据"]').waitFor({state:'hidden'});
+  assert.equal(await olderCitation.evaluate(element=>document.activeElement===element),true,'Returning from source must restore the original citation focus.');
+  assert.ok(await olderAnswer.locator('.question-answer').evaluate(element=>{const panel=element.closest('.panel-scroll').getBoundingClientRect(),answer=element.getBoundingClientRect();return answer.top>=panel.top&&answer.top<panel.bottom;}),'Returning from source must show the corresponding older answer, not the latest answer.');
   await page.getByRole('navigation',{name:'问答定位',exact:true}).getByRole('button',{name:'继续提问',exact:true}).click();
   assert.equal(await page.getByLabel('当前位置的问题',{exact:true}).evaluate(e=>document.activeElement===e),true);
   console.log('Checking that an old MCP handoff does not block switching to direct Codex execution.');
@@ -228,5 +244,5 @@ try{
   await page.waitForFunction(async id=>(await window.arc.invoke('data')).runs.find(r=>r.binding.run_id===id)?.status==='cancelled',directRun.binding.run_id);
   await page.waitForFunction(async()=>{const profile=(await window.arc.invoke('data')).providers.find(p=>p.provider_id==='codex');return profile?.status==='available'&&Date.parse(profile.checked_at)>Date.parse('2026-01-01T00:00:00.000Z');});
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({passed:true,real_provider:'codex',starting_result:'source-reviewed import of real ARC implementation, not full graph generation acceptance',project:project.root_path,result_id:explanation.result_id,question_ids:[first.question_id,follow.question_id,fileQuestion.question_id,usability.question_id],mcp_question_id:directoryItem.question_id,checks:['real node answer with source','saved annotation in input','follow-up context','switch during execution preserves original owner','restart restores answers and position','project switch restores original question position','side-by-side layout','clickable frozen source','unexplained file asks real Codex using explicit latest snapshot','file answer leaves previous graph unchanged','unexplained directory registers MCP waiting without claiming execution','MCP cancellation and retry preserve original directory and source','submitted progress is visible','new answer does not interrupt earlier reading','latest answer and inline citation navigate within the panel'],screenshots:scratch},null,2));
+  console.log(JSON.stringify({passed:true,real_provider:'codex',starting_result:'source-reviewed import of real ARC implementation, not full graph generation acceptance',project:project.root_path,result_id:explanation.result_id,question_ids:[first.question_id,follow.question_id,fileQuestion.question_id,usability.question_id],mcp_question_id:directoryItem.question_id,checks:['real node answer with source','saved annotation in input','follow-up context','switch during execution preserves original owner','restart restores answers and position','project switch restores original question position','side-by-side layout','clickable frozen source','unexplained file asks real Codex using explicit latest snapshot','file answer leaves previous graph unchanged','unexplained directory registers MCP waiting without claiming execution','MCP cancellation and retry preserve original directory and source','Enter inserts newline and IME does not submit','repeated Ctrl+Enter creates one MCP task','submitted progress is visible','new answer does not interrupt earlier reading','latest answer and inline citation navigate within the panel','source return restores the older answer and citation focus'],screenshots:scratch},null,2));
 }catch(error){if(page)await page.screenshot({path:path.join(scratch,'failure.png')}).catch(()=>{});throw error;}finally{await app?.close();}

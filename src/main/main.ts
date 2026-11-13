@@ -35,7 +35,8 @@ app.whenReady().then(async()=>{
         case 'mcp_enable':value=await bridge.enable(args.project_id,args.register_codex===true);break;
         case 'mcp_disable':value=bridge.disable();break;
         case 'data':value=service.data();break;
-        case 'open_project':{const picked=await dialog.showOpenDialog(window!,{properties:['openDirectory'],title:'打开本地工程（只读分析）'});value=picked.canceled?null:await service.openProject(picked.filePaths[0]);break;}
+        case 'pick_project_path':
+        case 'open_project':{const picked=await dialog.showOpenDialog(window!,{properties:['openDirectory'],title:'选择要理解的本地工程'});value=picked.canceled?null:operation==='pick_project_path'?picked.filePaths[0]:await service.openProject(picked.filePaths[0]);break;}
         case 'open_project_path':value=await service.openProject(String(args.path));break;
         case 'demo':value=await service.loadDemo();break;
         case 'overview_create':value=service.overview(args.project_id);break;

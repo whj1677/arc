@@ -5,7 +5,7 @@ export type ActivityItem={id:string;at:string;kind:'message'|'tool'|'status'|'er
 export function runChannel(run:Run){
   if(run.origin==='manual_import')return '本地导入 · 未调用 Agent';
   if(run.origin==='mcp')return 'Agent 对话通过 MCP 接入 · 对话由 Agent 客户端管理';
-  if(run.provider_id==='codex')return 'Codex CLI 后台 · 在 Arc 查看过程；未验证 Codex 桌面对话同步';
+  if(run.provider_id==='codex')return 'Codex 在 ARC 内分析 · 独立只读任务，结果自动保存';
   if(run.native_ui==='dsh-web')return 'DSH 图形会话 · 同一对话分析，完成后自动写回 Arc';
   return `${run.provider_id==='dsh'?'DSH':'WorkBuddy'} 后台 · 在 Arc 查看过程`;
 }
@@ -61,7 +61,7 @@ export function activity(run:Run,events:any[],now:number) {
       add(key,e,'error',message);
     }
   }
-  const phases:Record<string,string>={queued:'准备连接 Agent',validating:'校验结果与源码依据',completed:'分析完成，说明已保存',failed:'分析失败',cancel_requested:'正在请求停止',cancelled:'任务已停止',unknown:'状态未知，需核查原会话',blocked_external:'连接条件缺失'};
+  const phases:Record<string,string>={queued:`准备连接 ${run.provider_id==='codex'?'Codex':'Agent'}`,validating:'校验结果与源码依据',completed:'分析完成，说明已保存',failed:'分析失败',cancel_requested:'正在请求停止',cancelled:'任务已停止',unknown:run.origin==='mcp'?'状态未知，需核查原会话':'任务状态未确认，请查看记录或重试',blocked_external:'连接条件缺失'};
   const phase=run.origin==='manual_import'&&run.status==='completed'?'手动导入已校验并保存 · 未调用 Agent':phases[run.status]||(reconnecting?'连接中断，Agent 正在重连':pending.size?'正在读取源码 / 执行工具':output?'已收到输出，等待校验':connected?'Agent 处理中，等待后续输出':'进程已启动，等待 Agent 会话');
   const active=activeStatuses.has(run.status),end=Date.parse(run.ended_at||'');
   return {phase,active,connected,output,reconnecting:active&&reconnecting,items:[...items.values()],files:[...files],pending:pending.size,

@@ -25,6 +25,7 @@
 .technical-detail small{display:block;margin-top:5px}
 
 /* Default flow is a map of actions; detail is revealed on demand. */
+.open-project-intro ol{display:flex;flex-wrap:wrap;gap:8px 28px;padding-left:20px;color:#88edd0}.open-project-intro p{margin:10px 0}.open-project-intro .muted{font-size:12px}
 .graph-node{height:96px;gap:8px;padding:10px 14px}.graph-node strong{font-family:inherit;font-size:17px;line-height:1.45}.node-meta>span:first-child{color:#88edd0;font-weight:600}.flow-caption{display:flex;justify-content:space-between;gap:12px;color:#ced8e6;font-size:13px;margin:4px 0 8px}.flow-relations{border-top:1px solid #35465c;margin-top:6px}.flow-relations>summary,.io-details>summary,.user-clue-editor>summary{font-size:13px}.next-steps{border-left:2px solid #88edd0;padding-left:12px;margin:18px 0}.next-steps h3{margin:0 0 8px;color:#88edd0}.next-steps button{display:grid;gap:4px;width:100%;text-align:left;background:#182330;margin:6px 0}.supported-detail{padding:0 10px;background:transparent;border-color:#52647b}.supported-detail>summary{font-size:12px}.io-details{border-top:1px solid #52647b;margin-top:18px}.analysis-error pre{max-height:180px;overflow:auto;font-size:12px}.analysis-error summary{font-size:12px;padding:4px 0}
 
 .run-activity.terminal:not(.expanded) .activity-heading>div:first-child{display:flex;gap:14px;align-items:center;flex-wrap:wrap}.run-activity.terminal:not(.expanded) .activity-heading small{margin:0}

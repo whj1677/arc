@@ -121,6 +121,17 @@ export async function validateEvidence(evidenceList:readonly SourceEvidence[],sn
 // on optional properties are removed before complete Arc validation.
 export function transportSchema(base:object=schema) {
   const copy=structuredClone(base) as any;
+  // Codex's schema subset has no if/then. Preserve this execution-context
+  // invariant with explicit alternatives instead of dropping it on transport.
+  const context=copy.$defs?.execution_context;
+  if(context){
+    const unknown=structuredClone(context),supported=structuredClone(context),other=structuredClone(context);
+    unknown.properties.kind.enum=['unknown'];unknown.properties.identity={type:'null'};unknown.properties.status.enum=['unknown'];
+    for(const variant of [supported,other])variant.properties.kind.enum=variant.properties.kind.enum.filter((kind:string)=>kind!=='unknown');
+    supported.properties.status.enum=['source_supported'];supported.properties.claim_ids.minItems=1;
+    other.properties.status.enum=other.properties.status.enum.filter((status:string)=>status!=='source_supported');
+    copy.$defs.execution_context={anyOf:[unknown,supported,other]};
+  }
   function visit(s:any) {
     if(!s||typeof s!=='object')return;
     delete s.allOf; delete s.uniqueItems; delete s.$comment; delete s.pattern;

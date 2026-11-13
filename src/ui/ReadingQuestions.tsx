@@ -16,9 +16,9 @@ export function ReadingQuestions({data,projectId,scenarioId,resultId,target,targ
   const [errors,setErrors]=useState<Record<string,string>>({}),[sending,setSending]=useState<Record<string,boolean>>({}),[inspecting,setInspecting]=useState<{questionId:string;evidence:SourceEvidence}|null>(null);
   const [replyTo,setReplyTo]=useState<Record<string,string>>({});
   const [resultScopes,setResultScopes]=useState<Record<string,string>>({});
-  const [revealQuestion,setRevealQuestion]=useState<{key:string;id:string}|null>(null);
+  const [revealQuestion,setRevealQuestion]=useState<{key:string;id:string;answer?:boolean}|null>(null);
   const submitting=useRef(new Set<string>()),composer=useRef<HTMLTextAreaElement>(null),activeContext=useRef('');
-  const root=useRef<HTMLElement>(null),jumps=useRef<HTMLElement>(null),source=useRef<HTMLDivElement>(null),questionElements=useRef(new Map<string,HTMLElement>());
+  const root=useRef<HTMLElement>(null),jumps=useRef<HTMLElement>(null),source=useRef<HTMLDivElement>(null),sourceTrigger=useRef<HTMLElement|null>(null),questionElements=useRef(new Map<string,HTMLElement>());
   const selectedTarget:ReadingTarget=wholeScope[baseKey]?{kind:'feature',id:featureId}:target;
   const label=wholeScope[baseKey]?featureLabel:targetLabel;
   const scopeKey=[projectId,scenarioId,resultId,selectedTarget.kind,selectedTarget.id].join('/');
@@ -41,12 +41,14 @@ export function ReadingQuestions({data,projectId,scenarioId,resultId,target,targ
     panel.scrollTo({top:Math.max(0,panel.scrollTop+element.getBoundingClientRect().top-panel.getBoundingClientRect().top-(jumps.current?.offsetHeight||0)-8),behavior:'auto'});
   }
   function revealAnswer(question:ReadingQuestion){const element=questionElements.current.get(question.question_id);reveal(element?.querySelector<HTMLElement>('.question-answer')||element);}
+  function openSource(questionId:string,evidence:SourceEvidence,trigger:HTMLElement){sourceTrigger.current=trigger;setInspecting({questionId,evidence});}
+  function returnToAnswer(question:ReadingQuestion){setInspecting(null);sourceTrigger.current?.focus({preventScroll:true});setRevealQuestion({key:contextKey,id:question.question_id,answer:true});}
   useEffect(()=>{setInspecting(null);setCorrection(false);setSourceMode('bound');},[contextKey]);
   useLayoutEffect(()=>{
     if(!revealQuestion)return;
     if(revealQuestion.key!==contextKey){setRevealQuestion(null);return;}
     const element=questionElements.current.get(revealQuestion.id);
-    if(element){reveal(element);setRevealQuestion(null);}
+    if(element){reveal(revealQuestion.answer?element.querySelector<HTMLElement>('.question-answer')||element:element);setRevealQuestion(null);}
   },[contextKey,revealQuestion,questions]);
   useLayoutEffect(()=>{if(inspecting)reveal(source.current);},[inspecting]);
   async function send(event:React.FormEvent){
@@ -68,12 +70,13 @@ export function ReadingQuestions({data,projectId,scenarioId,resultId,target,targ
     <div className="question-thread" aria-label="已保存问答">{questions.map(q=>{const run=data.runs.find(r=>r.binding.run_id===q.run_id),answer=q.answer;return <article className="reading-question" key={q.question_id} data-question-id={q.question_id} ref={element=>{if(element)questionElements.current.set(q.question_id,element);else questionElements.current.delete(q.question_id);}}>
       <h3>你问</h3><p className="question-text">{q.question}</p><small className="question-time">{new Date(q.created_at).toLocaleString('zh-CN')}</small>
       <details className="question-binding"><summary>{q.source_mode==='latest'?'按刷新后的源码回答':'基于冻结源码'} · {data.snapshots.find(s=>s.source_snapshot_id===q.source_snapshot_id)?.captured_at.slice(0,10)||'已保存'}</summary><p>快照：{q.source_snapshot_id}</p><p>原说明：{q.result_id||'尚无工程分析结果'}</p><p>问题版本：{q.question_revision_id}</p><p>本次回答只解释当前问题，不代表整张工程图已更新或验证通过。</p></details>
-      {answer?<><h3>解释</h3><p className="question-answer">{answerText(answer.answer,answer.evidence,e=>setInspecting({questionId:q.question_id,evidence:e}))}</p>{answer.evidence.length>0&&<section className="question-evidence"><h4>源码依据</h4>{answer.evidence.map(e=><button key={e.evidence_id} data-evidence-id={e.evidence_id} onClick={()=>setInspecting(inspecting?.questionId===q.question_id&&inspecting.evidence.evidence_id===e.evidence_id?null:{questionId:q.question_id,evidence:e})}><strong>[{e.evidence_id}] {e.path}:{e.line_start}–{e.line_end}</strong><small>{e.note}</small></button>)}</section>}{inspecting?.questionId===q.question_id&&<div ref={source}><SourceExcerpt evidence={inspecting.evidence}/></div>} {!!answer.uncertainties.length&&<section className="question-boundaries"><h4>未确认与边界</h4>{answer.uncertainties.map((item,index)=><p key={index}>{item}</p>)}</section>}<button className="quiet" onClick={()=>{setReplyTo(v=>({...v,[contextKey]:q.question_id}));setSourceMode('bound');composer.current?.focus();}}>继续追问 ↓</button></>:run?.status==='waiting_agent'?<section className="question-waiting" role="status"><strong>等待外部 Agent 领取</strong><p>问题与上下文已保存，尚未开始分析。在已接入 Arc MCP 的对话中，让 Agent 领取当前阅读问题。</p><small>Arc 不会主动唤醒外部对话。</small><div className="row"><button onClick={settings}>MCP 接入</button><button onClick={()=>void cancel(run)}>取消等待</button></div></section>:run?<QuestionProgress run={run} cancel={()=>void cancel(run)}/>:<p>问题已保存，等待任务状态。</p>}
+      {answer?<><h3>解释</h3><p className="question-answer">{answerText(answer.answer,answer.evidence,(e,trigger)=>openSource(q.question_id,e,trigger))}</p>{answer.evidence.length>0&&<section className="question-evidence"><h4>源码依据</h4>{answer.evidence.map(e=><button key={e.evidence_id} data-evidence-id={e.evidence_id} onClick={event=>inspecting?.questionId===q.question_id&&inspecting.evidence.evidence_id===e.evidence_id?returnToAnswer(q):openSource(q.question_id,e,event.currentTarget)}><strong>[{e.evidence_id}] {e.path}:{e.line_start}–{e.line_end}</strong><small>{e.note}</small></button>)}</section>}{inspecting?.questionId===q.question_id&&<div ref={source} className="question-source-view"><button className="question-source-back" onClick={()=>returnToAnswer(q)}>← 返回这条回答</button><SourceExcerpt evidence={inspecting.evidence}/></div>} {!!answer.uncertainties.length&&<section className="question-boundaries"><h4>未确认与边界</h4>{answer.uncertainties.map((item,index)=><p key={index}>{item}</p>)}</section>}<button className="quiet" onClick={()=>{setReplyTo(v=>({...v,[contextKey]:q.question_id}));setSourceMode('bound');composer.current?.focus();}}>继续追问 ↓</button></>:run?.status==='waiting_agent'?<section className="question-waiting" role="status"><strong>等待外部 Agent 领取</strong><p>问题与上下文已保存，尚未开始分析。在已接入 Arc MCP 的对话中，让 Agent 领取当前阅读问题。</p><small>Arc 不会主动唤醒外部对话。</small><div className="row"><button onClick={settings}>MCP 接入</button><button onClick={()=>void cancel(run)}>取消等待</button></div></section>:run?<QuestionProgress run={run} cancel={()=>void cancel(run)}/>:<p>问题已保存，等待任务状态。</p>}
       {run&&retryStatuses.includes(run.status)&&<button className="secondary full" disabled={sending[contextKey]||busy} onClick={()=>void retry(q)}>重试这个问题</button>}
     </article>;})}</div>
     <form className="question-composer" onSubmit={send}>
       {previous&&<p className="muted">接着问：{previous.question.slice(0,80)}{previous.question.length>80?'…':''}</p>}
-      <label htmlFor="reading-question-input">{previous?'继续提问':'向 Codex 提问'}<textarea id="reading-question-input" ref={composer} aria-label="当前位置的问题" placeholder={selectedTarget.kind==='file'||selectedTarget.kind==='directory'?'这个文件或目录负责什么？':'这一步具体做了什么？失败以后会发生什么？'} rows={4} maxLength={4000} value={draft} onChange={e=>setDrafts(d=>({...d,[contextKey]:e.target.value}))}/></label>
+      <label htmlFor="reading-question-input">{previous?'继续提问':'向 Codex 提问'}<textarea id="reading-question-input" ref={composer} aria-label="当前位置的问题" aria-describedby="reading-question-shortcut" placeholder={selectedTarget.kind==='file'||selectedTarget.kind==='directory'?'这个文件或目录负责什么？':'这一步具体做了什么？失败以后会发生什么？'} rows={4} maxLength={4000} value={draft} onChange={e=>setDrafts(d=>({...d,[contextKey]:e.target.value}))} onKeyDown={e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)&&!e.nativeEvent.isComposing&&e.nativeEvent.keyCode!==229){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/></label>
+      <small id="reading-question-shortcut" className="question-shortcut">Ctrl + Enter 发送 · Enter 换行</small>
       <div className="question-options"><label>执行方式<select aria-label="提问执行方式" value={mode} onChange={e=>setMode(e.target.value as 'codex'|'mcp')}><option value="codex">Codex · 在 ARC 内回答</option><option value="mcp">外部 Agent · MCP 待领取</option></select></label><label>回答来源<select aria-label="提问源码来源" value={sourceMode} onChange={e=>setSourceMode(e.target.value as 'bound'|'latest')}><option value="bound">沿用此处冻结快照</option><option value="latest">刷新并按最新代码回答</option></select></label></div>
       <p className="question-source-note">{sourceMode==='latest'?'发送时刷新工程快照；旧图保持原来源，新回答会单独标记来源变化。':`${previous?'继承上次回答的来源':'使用当前阅读来源'}${snapshot?' · '+new Date(snapshot.captured_at).toLocaleString('zh-CN'):''}。`}<span title={sourceId}>{sourceId||'尚未刷新'}</span></p>
       <label className="question-correction"><input type="checkbox" checked={correction} onChange={e=>setCorrection(e.target.checked)}/>这是纠错，同时保存为对象批注</label>
@@ -84,11 +87,11 @@ export function ReadingQuestions({data,projectId,scenarioId,resultId,target,targ
   </section>;
 }
 
-function answerText(text:string,evidence:SourceEvidence[],open:(evidence:SourceEvidence)=>void){
+function answerText(text:string,evidence:SourceEvidence[],open:(evidence:SourceEvidence,trigger:HTMLElement)=>void){
   const byId=new Map(evidence.map(e=>[e.evidence_id,e]));
   return text.split(/(\[[^\[\]\r\n]+\])/g).map((part,index)=>{
     const source=part.startsWith('[')&&part.endsWith(']')?byId.get(part.slice(1,-1)):undefined;
-    return source?<button key={index} className="answer-citation" data-evidence-id={source.evidence_id} aria-label={`查看依据 ${source.evidence_id}：${source.path} 第 ${source.line_start} 至 ${source.line_end} 行`} onClick={()=>open(source)}>{part}</button>:part;
+    return source?<button key={index} className="answer-citation" data-evidence-id={source.evidence_id} aria-label={`查看依据 ${source.evidence_id}：${source.path} 第 ${source.line_start} 至 ${source.line_end} 行`} onClick={event=>open(source,event.currentTarget)}>{part}</button>:part;
   });
 }
 

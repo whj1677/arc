@@ -10,10 +10,12 @@ import {runDshWeb,dshWebSessionUrl,closeDshWebHosts} from './dsh-web';
 import {discoveredFeature} from '../discovered-feature';
 import {buildReadingContext,readingTarget,promptContext} from './prompt-context';
 import {validateReadingAnswer} from './reading-question';
+import {overviewDiscoveryQuestion} from './architecture-analysis';
 export const terminal=new Set(['completed','failed','cancelled','blocked_external']);
 const oldOverviewQuestion='分析整个授权快照的工程全貌：主要职责与模块边界用 stage 节点，内部函数使用 parent_node_id 关联，目录/文件用途必须有依据。列出模块、外部依赖组件及使用位置；依赖使用 dependency，不能当作运行时调用。版本仅引用清单或锁文件。明确未分析范围、构建条件、缺失实现；不根据目录名猜职责。';
 const architectureOverviewQuestion='分析授权快照的系统架构，先说明系统由哪些实际组件组成、如何通信和存储数据。返回 architecture.node_ids 与 architecture.edge_ids，引用 nodes/edges 中的高层组件和连接；不预设一定有前端、后端或数据库。组件标签注明已证实的语言/技术，关系标签注明 HTTP/HTTPS、SQL、文件读写等有依据的协议或访问方式；未知写未知，不能把 SQLite 猜成 MySQL，也不能把库依赖当网络服务。内部模块用 parent_node_id 归属组件，支持点击组件再深入；模块目录用途、外部依赖、版本及每条关系均给出准确源码依据。架构关系不是调用时序，保留关键调用、输入输出与未分析范围。';
-export const overviewQuestion=architectureOverviewQuestion+' 首次分析采用轻量发现：查阅页面导航、入口、路由、说明等，列出当前能确认的全部业务功能，按业务区域放入 feature_catalog.groups；scope 写明已查范围和未覆盖部分。功能目录引用独立 kind=stage 节点，仅名称、一句话用途及源码依据，inputs/outputs 可为空；不要展开每个功能的内部调用、完整流程或所有异常。后续用户点击功能时再单独深入。不能只列出用户已手动创建的功能，不能把文件或技术模块冒充业务功能。';
+const previousOverviewQuestion=architectureOverviewQuestion+' 首次分析采用轻量发现：查阅页面导航、入口、路由、说明等，列出当前能确认的全部业务功能，按业务区域放入 feature_catalog.groups；scope 写明已查范围和未覆盖部分。功能目录引用独立 kind=stage 节点，仅名称、一句话用途及源码依据，inputs/outputs 可为空；不要展开每个功能的内部调用、完整流程或所有异常。后续用户点击功能时再单独深入。不能只列出用户已手动创建的功能，不能把文件或技术模块冒充业务功能。';
+export const overviewQuestion=overviewDiscoveryQuestion;
 const text=(value:unknown,max=20000)=>{if(typeof value!=='string'||!value.trim()||value.length>max)throw new Error(`请输入 1–${max} 个字符`);return value.trim();};
 export class ArcService {
   readonly store:Store;
@@ -51,7 +53,7 @@ export class ArcService {
       let scene=this.store.get<Scenario>('scenario',project.overview_scenario_id);
       // Upgrade only our untouched default when a new overview is explicitly requested.
       // Existing results retain their original question revision.
-      if((scene.question===oldOverviewQuestion||scene.question===architectureOverviewQuestion)){
+      if([oldOverviewQuestion,architectureOverviewQuestion,previousOverviewQuestion].includes(scene.question)){
         scene=this.reviseScenario(scene.scenario_id,overviewQuestion);
         if(scene.title==='工程全貌 · 模块、目录用途与依赖')scene.title='工程全貌 · 系统架构';
         this.store.put('scenario',scene.scenario_id,scene);this.changed();
