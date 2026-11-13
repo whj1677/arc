@@ -2,7 +2,37 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {PassThrough} from 'node:stream';
 import {EventEmitter} from 'node:events';
-import {AcpConnection,redact,CodexTurnErrors} from '../src/main/providers';
+import {AcpConnection,redact,CodexTurnErrors,codexChildEnvironment,runCodex,readingWatchdog} from '../src/main/providers';
+
+test('direct Codex execution cannot inherit a desktop tool pipe or the calling session identity',()=>{
+  const parent={PATH:'path',CODEX_HOME:'owned-codex-home',HTTPS_PROXY:'existing-proxy',CODEX_APP_TOOLS_PIPE_PATH:'host-pipe',CODEX_APP_RUNTIME_CLI_PATH:'host-cli',CODEX_THREAD_ID:'host-thread',CODEX_SESSION_ID:'host-session',CODEX_PERMISSION_PROFILE:'host-permissions',ELECTRON_RUN_AS_NODE:'1'};
+  const child=codexChildEnvironment(parent);
+  assert.deepEqual(child,{PATH:'path',CODEX_HOME:'owned-codex-home',HTTPS_PROXY:'existing-proxy'});
+  assert.equal(parent.CODEX_APP_TOOLS_PIPE_PATH,'host-pipe','the parent process and user settings remain unchanged');
+});
+
+test('a changed executable cannot reuse a previously accepted Codex profile',async()=>{
+  await assert.rejects(runCodex({profile:{path:process.execPath,version:'codex-cli 0.163.0-alpha.10.2'}} as any),/Codex 程序版本已变化.*尚未派发分析/);
+});
+
+test('a stuck reading question stops after five minutes while full analysis keeps its existing duration',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  const events:any[]=[];let stopped=0,error='';
+  const stop=async()=>{stopped++;};
+  const deadline=readingWatchdog({reading_question_id:'reading-timeout'},stop,message=>{error=message;},event=>events.push(event),()=>assert.fail('stopping should succeed'));
+  assert.equal(readingWatchdog({},stop,()=>assert.fail('full analysis must not time out'),()=>{},()=>assert.fail('full analysis must not stop')),undefined);
+  t.mock.timers.tick(5*60*1000-1);assert.equal(stopped,0);assert.equal(error,'');
+  t.mock.timers.tick(1);await Promise.resolve();assert.equal(stopped,1);assert.match(error,/5 分钟.*已收原文保留/);assert.equal(events[0].stage,'timeout');
+  clearTimeout(deadline);
+});
+
+test('a reading timeout reports a rejected stop instead of continuing to wait silently',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  const stopError=new Error('process could not be terminated'),failures:unknown[]=[],events:any[]=[];
+  readingWatchdog({reading_question_id:'reading-stop-failed'},async()=>{throw stopError;},()=>{},event=>events.push(event),error=>failures.push(error));
+  t.mock.timers.tick(5*60*1000);await Promise.resolve();
+  assert.deepEqual(failures,[stopError]);assert.equal(events[0].stage,'timeout');
+});
 
 test('long analysis waits beyond the former limit and accepts a later terminal reply',async t=>{
   t.mock.timers.enable({apis:['setTimeout']});

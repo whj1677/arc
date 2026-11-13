@@ -1,6 +1,6 @@
 import Ajv2020 from 'ajv/dist/2020';
 import schema from '../../contracts/analysis-result.schema.json';
-import type { AnalysisResult, Run, Snapshot } from '../shared';
+import type { AnalysisResult, Run, Snapshot, SourceEvidence } from '../shared';
 import { readSource, relativePath } from './snapshot';
 import {validateReadingGuide} from './reading-guide-validation';
 import {validateFunctionWalkthroughs} from './function-walkthrough-validation';
@@ -100,23 +100,27 @@ export async function validateResult(value: unknown, run: Run, snapshot: Snapsho
       })))errors.push(`传递映射缺少对应关系及输入输出的来源断言：${edge.edge_id}`);
     }
   }
-  const cache=new Map<string,any>();
-  for(const evidence of result.evidence) {
+  errors.push(...await validateEvidence(result.evidence,snapshot,storage));
+  return {structure:'passed',anchors:errors.length?'failed':'passed',semantic:'待核对：引用位置已检查，结论是否由该片段支持尚未人工确认',errors};
+}
+export async function validateEvidence(evidenceList:readonly SourceEvidence[],snapshot:Snapshot,storage:string) {
+  const errors:string[]=[],cache=new Map<string,any>();
+  for(const evidence of evidenceList) {
     try {
       relativePath(evidence.path);
       if(evidence.source_snapshot_id!==snapshot.source_snapshot_id)throw new Error('快照身份错误');
       let file=cache.get(evidence.path);if(!file){file=await readSource(storage,snapshot,evidence.path);cache.set(evidence.path,file);}
       if(file.content_sha256!==evidence.content_sha256)throw new Error('完整文件哈希错误');
-      if(evidence.line_end<evidence.line_start||evidence.line_end>file.line_count)throw new Error('行范围错误');
+      if(!Number.isInteger(evidence.line_start)||!Number.isInteger(evidence.line_end)||evidence.line_start<1||evidence.line_end<evidence.line_start||evidence.line_end>file.line_count)throw new Error('行范围错误');
     }catch(e){errors.push(`${evidence.evidence_id}: ${(e as Error).message}`);}
   }
-  return {structure:'passed',anchors:errors.length?'failed':'passed',semantic:'待核对：引用位置已检查，结论是否由该片段支持尚未人工确认',errors};
+  return errors;
 }
 // Codex's constrained output subset has no if/then and requires every property.
 // Optional contract properties become nullable in the transport view, then nulls
 // on optional properties are removed before complete Arc validation.
-export function transportSchema() {
-  const copy=structuredClone(schema) as any;
+export function transportSchema(base:object=schema) {
+  const copy=structuredClone(base) as any;
   function visit(s:any) {
     if(!s||typeof s!=='object')return;
     delete s.allOf; delete s.uniqueItems; delete s.$comment; delete s.pattern;

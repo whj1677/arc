@@ -6,3 +6,5 @@ release/
 .tools/
 
 .package-tmp/
+evidence/
+prototypes/

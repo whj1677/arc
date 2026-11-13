@@ -11,7 +11,28 @@ export interface Project { project_id: string; name: string; root_path: string; 
 export interface Feature { feature_id: string; project_id: string; name: string; archived: boolean; sort_order: number; discovery?: {result_id:string;node_id:string;source_snapshot_id:string} }
 export interface Scenario { scenario_id: string; feature_id: string; project_id: string; title: string; question: string; question_revision_id: string; archived: boolean; sort_order: number; kind?: 'feature_overview' }
 export interface Revision { question_revision_id: string; scenario_id: string; question: string; created_at: string }
-export interface Annotation { annotation_id: string; project_id: string; scenario_id: string; result_id: string | null; object_id: string | null; source_snapshot_id: string; text: string; created_at: string }
+export interface Annotation { annotation_id: string; project_id: string; scenario_id: string; result_id: string | null; object_id: string | null; source_snapshot_id: string; text: string; created_at: string; target?: ReadingTarget }
+export interface ReadingTarget { kind:'feature'|'node'|'edge'|'file'|'directory'|'step'|'role'|'handoff'|'call_step'; id:string }
+export interface ReadingContext {
+  project:{project_id:string;name:string}; feature:{feature_id:string;name:string};
+  scenario:{scenario_id:string;title:string;question:string;question_revision_id:string};
+  result_id:string|null; target:ReadingTarget; source_snapshot_id:string;
+  source:{captured_at:string;commit:string|null;fingerprint:string;mode:'bound'|'latest';previous_snapshot_id:string|null};
+  existing_explanation:unknown; evidence:SourceEvidence[]; annotations:Annotation[];
+  reply_to?:{question_id:string;result_id:string|null;question:string;answer:string|null;evidence:SourceEvidence[];uncertainties:string[];source_snapshot_id:string;historical:boolean}|null;
+  recent_questions:{question_id:string;question:string;answer:string|null;evidence:SourceEvidence[];source_snapshot_id:string}[];
+}
+export interface ReadingAnswer { schema_version:'reading-1'; question_id:string; binding:RunBinding; answer:string; evidence:SourceEvidence[]; uncertainties:string[] }
+export interface ReadingQuestion {
+  question_id:string; project_id:string;feature_id:string;scenario_id:string;question_revision_id:string;
+  result_id:string|null;target:ReadingTarget;source_snapshot_id:string;source_mode:'bound'|'latest';
+  question:string;created_at:string;run_id:string;run_ids:string[];context:ReadingContext;answer?:ReadingAnswer;
+  submission_key:string;previous_question_id?:string;
+}
+export interface ReadingAsk {
+  project_id:string;scenario_id?:string;result_id?:string|null;target:ReadingTarget;question:string;
+  source_mode?:'bound'|'latest';mode?:'codex'|'mcp';submission_key:string;correction?:boolean;previous_question_id?:string;
+}
 export interface Run {
   binding: RunBinding; provider_id: ProviderId; status: string; created_at: string; ended_at?: string;
   question: string; title: string; error?: string; external_id?: string; pid?: number;
@@ -19,8 +40,11 @@ export interface Run {
   validation?: { structure: string; anchors: string; errors: string[]; semantic: string };
   origin?: 'manual_import' | 'mcp';
   mcp_connection_id?: string;
+  mcp_request_key?:string;
   imported_binding?: RunBinding;
   native_ui?: 'dsh-web';
+  reading_question_id?:string;
+  reading_context?:ReadingContext;
 }
 export interface Explanation { result_id: string; scenario_id: string; created_at: string; source_status: string; result: AnalysisResult }
 export interface ProviderProfile { provider_id: ProviderId; requested_name: string; product: string; status: string; version?: string; path?: string; reason: string; transport: string; auth: string; capabilities: Record<string,string>; checked_at: string }
@@ -42,7 +66,7 @@ export interface ReadingState {
   feature_reading_version?: number;
 }
 export interface AnalysisRequest { project_id:string; scenario_id:string; source_snapshot_id:string; question_revision_id?:string; created_at?:string }
-export interface WorkspaceData { projects: Project[]; features: Feature[]; scenarios: Scenario[]; revisions: Revision[]; annotations: Annotation[]; runs: Run[]; explanations: Explanation[]; providers: ProviderProfile[]; snapshots: Snapshot[]; requested_analysis?:AnalysisRequest }
+export interface WorkspaceData { projects: Project[]; features: Feature[]; scenarios: Scenario[]; revisions: Revision[]; annotations: Annotation[]; runs: Run[]; explanations: Explanation[]; providers: ProviderProfile[]; snapshots: Snapshot[]; requested_analysis?:AnalysisRequest; questions?:ReadingQuestion[] }
 export interface ArcApi {
   invoke<T = any>(operation: string, args?: unknown): Promise<T>;
   onEvent(callback: (event: { type: string; [key: string]: any }) => void): () => void;
