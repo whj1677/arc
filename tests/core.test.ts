@@ -297,7 +297,7 @@ test('构建条件独立快照；同名私有符号不合并；批注保留旧�
 });
 test('提交幂等键只创建一个运行；关联重试是新运行而非伪恢复',async()=>{
   const {service,project}=await context(),p=await service.openProject(project),{scenario}=service.addFeature(p.project_id,'幂等');
-  service.store.put('provider','codex',{provider_id:'codex',status:'blocked_external',reason:'controlled missing authorization fixture'});
+  service.store.put('provider','codex',{provider_id:'codex',status:'blocked_external',reason:'controlled missing authorization fixture',checked_at:new Date().toISOString()});
   const a=await service.startRun(scenario.scenario_id,'codex','same-submission'),b=await service.startRun(scenario.scenario_id,'codex','same-submission');
   assert.equal(a.binding.run_id,b.binding.run_id);assert.equal(service.data().runs.length,1);
   const retry=await service.startRun(scenario.scenario_id,'codex','new-submission',a.binding.run_id);

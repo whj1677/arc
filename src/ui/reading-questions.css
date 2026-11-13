@@ -6,6 +6,9 @@
 .reading-question{min-width:0;padding:1rem 0;border-bottom:1px solid var(--question-border)}
 .reading-question h3{font-size:.85rem;margin:.5rem 0;color:inherit}.reading-question h4{font-size:.75rem;margin:.7rem 0}
 .question-text,.question-answer{white-space:pre-wrap;overflow-wrap:anywhere}.question-text{border-left:2px solid currentColor;padding-left:.7rem}
+.question-jumps{position:sticky;top:0;z-index:2;padding:.6rem 0;background:var(--panel,#192936);border-bottom:1px solid var(--question-border);display:grid;gap:.35rem}
+.question-jumps>strong{font-size:.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.question-jumps>small{font-size:.7rem;color:var(--question-muted)}.question-jumps>div{display:flex;gap:.4rem;flex-wrap:wrap}.question-jumps button{font-size:.75rem;padding:.3rem .55rem}
+.question-answer .answer-citation{display:inline;padding:0 .15rem;border:0;border-radius:.15rem;background:transparent;color:var(--accent,#8ce6cf);font:inherit;line-height:inherit;white-space:normal;overflow-wrap:anywhere;text-decoration:underline;text-underline-offset:.15em;cursor:pointer}
 .question-time{font-size:.7rem;color:var(--question-muted)}.question-binding{font-size:.72rem;color:var(--question-muted)}.question-binding p{font-size:.72rem!important;overflow-wrap:anywhere}
 .question-evidence button{width:100%;text-align:left;margin:.35rem 0;padding:.65rem;font-size:.75rem;white-space:normal}
 .question-evidence strong,.question-evidence small{display:block;overflow-wrap:anywhere}.question-evidence small{margin-top:.35rem;color:var(--question-muted)}

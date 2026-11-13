@@ -7,8 +7,9 @@ import {ArcService} from '../src/main/service';
 import {capture,sha} from '../src/main/snapshot';
 import {AcpConnection} from '../src/main/providers';
 import {annotationTarget} from '../src/ui/annotation';
-test('actual frozen-source MCP rejects traversal, absolute paths, unknown methods and junctions',async()=>{
+test('actual frozen-source MCP rejects traversal, absolute paths, unknown methods and junctions',async t=>{
   const root=path.resolve('.test-data','mcp-adversarial-'+Date.now()),source=path.join(root,'source'),storage=path.join(root,'data');
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
   await fs.mkdir(source,{recursive:true});await fs.writeFile(path.join(source,'a & $(echo owned).c'),'int harmless = 42;\n');
   await fs.writeFile(path.join(root,'outside.txt'),'MCP_OUTSIDE_CANARY');
   const snapshot=await capture(source,'adversarial',storage,'');
@@ -36,8 +37,9 @@ test('actual frozen-source MCP rejects traversal, absolute paths, unknown method
     await fs.writeFile('evidence/remaining/mcp-adversarial.json',JSON.stringify({at:new Date().toISOString(),actual_mcp_process:true,records,unknown_tool:unknown,source_unchanged:true},null,2));
   }finally{child.stdin.end();await new Promise(r=>child.once('close',r));}
 });
-test('annotations cannot attach to objects outside original result; changed IDs never match names',async()=>{
+test('annotations cannot attach to objects outside original result; changed IDs never match names',async t=>{
   const root=path.resolve('.test-data','annotation-guard-'+Date.now()),service=new ArcService(root,path.resolve('.'));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
   try{
     const p=await service.loadDemo(),data=service.data(),e=data.explanations[0],s=data.scenarios[0];
     assert.throws(()=>service.annotate(s.scenario_id,'invalid',e.result_id,'nonexistent'),/不属于/);

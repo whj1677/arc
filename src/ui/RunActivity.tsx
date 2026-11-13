@@ -15,7 +15,7 @@ export function RunActivity({run,events,detailed=false,open,stop,error}:{run:Run
     </div>
     {!manual&&<p className="muted" aria-label="本次分析通道">{runChannel(run)}</p>}
     {openError&&<p className="warning">{openError}</p>}
-    {a.active&&!manual&&run.origin!=='mcp'&&<p className="muted">Arc 不设分析总时限，可手动停止；连接故障仍会如实显示。</p>}
+    {a.active&&!manual&&run.origin!=='mcp'&&<p className="muted">{run.reading_question_id?'本次追问执行限时 5 分钟，可随时停止；超时后保留问题与诊断，支持重试。':'Arc 不设完整工程分析总时限，可手动停止；连接故障仍会如实显示。'}</p>}
     {a.active&&<p className={a.reconnecting||a.stalled?'warning':'muted'}>{a.reconnecting?'已收到连接失败 / 重连事件，不能视为正在正常分析。可等待连接恢复或停止本次任务。':a.stalled?`已 ${a.quiet} 未收到新事件，无法确认 Agent 当前是否仍在分析。可继续等待或停止。`:`最近活动距今 ${a.quiet} · 以下依据真实事件，不估算完成百分比。`}</p>}
     {error&&<p className="warning">过程记录暂时读取失败：{error}。正在重试，不能据此判断 Agent 是否已停止。</p>}
     {run.error&&<AnalysisError error={run.error}/>}

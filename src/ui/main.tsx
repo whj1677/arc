@@ -189,8 +189,8 @@ function App(){
   function showMcp(){closePopovers();setPaths(v=>({...v,codex_path:v.codex_path||data.providers.find(p=>p.provider_id==='codex')?.path||''}));setModal('settings');void api.invoke('settings').then(setSettings);void api.invoke('mcp_status').then(setMcp);}
   function askHere(){patch({detail_tab:'questions'});setShowDetail(true);}
   function showRun(){setReading(r=>({...r,detail_tab:'agent',scroll:{...r.scroll,[`detail-${r.view}-agent`]:{top:0,left:0}}}));setActivityFocus(n=>n+1);setShowDetail(featureReading||width<900);}
-  const analysisLabel=pending?'正在提交…':running?`${statuses[running.status]} · 查看任务`:waitingMcp?'查看待领取任务':catalogReading?(catalogExplanation?'更新工程全貌与目录':'发现工程功能'):reading.entrance==='overview'?(result?'重新分析工程':'开始工程分析'):scenario?.kind==='feature_overview'?(result?'重新分析功能':'开始功能分析'):scenario?(result?'重新分析场景':'开始场景分析'):'添加功能';
-  const beginAnalysis=()=>running||waitingMcp?showRun():catalogReading?void requestAnalysis(true):reading.entrance==='walk'&&!scenario?openModal('feature'):void requestAnalysis(reading.entrance==='overview');
+  const analysisLabel=pending?'正在提交…':running?`${statuses[running.status]} · 查看任务`:waitingMcp?(expandMode==='mcp'?'查看待领取任务':'改用 Codex 直接分析'):catalogReading?(catalogExplanation?'更新工程全貌与目录':'发现工程功能'):reading.entrance==='overview'?(result?'重新分析工程':'开始工程分析'):scenario?.kind==='feature_overview'?(result?'重新分析功能':'开始功能分析'):scenario?(result?'重新分析场景':'开始场景分析'):'添加功能';
+  const beginAnalysis=()=>running||(waitingMcp&&expandMode==='mcp')?showRun():catalogReading?void requestAnalysis(true):reading.entrance==='walk'&&!scenario?openModal('feature'):void requestAnalysis(reading.entrance==='overview');
   const analysisButton=<button className="primary analysis-start" disabled={pending||project?.fictional||!!indexes[projectId]} onClick={beginAnalysis}>{analysisLabel}</button>;
   function setEntrance(entrance:'overview'|'walk'){emptyEntrance.current=entrance;chooseScenario(entrance==='overview'?project?.overview_scenario_id||'':'',{entrance,view:entrance==='walk'?'capabilities':'system',mode:'normal',catalog_hidden:false});}
   async function openCapability(nodeId:string){

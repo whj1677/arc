@@ -3,20 +3,26 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {spawn} from 'node:child_process';
+import {spawn,execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import electronPath from 'electron';
 import {dump} from 'js-yaml';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const arg=name=>{const i=process.argv.indexOf(name);return i<0?undefined:process.argv[i+1];};
-const info=JSON.parse(await fs.readFile(path.join(root,'evidence/mcp-binding-20261022/distribution.json'),'utf8'));
-const executable=path.resolve(arg('--arc-executable')||info.executable);
+const packaged=arg('--arc-executable');
+const executable=path.resolve(packaged||electronPath);
 const directory=path.resolve(arg('--arc-data')||path.join(root,'evidence/pmreq-acceptance-20261022/acceptance-data'));
-const proxy=path.join(path.dirname(executable),'resources/app/dist/arc-mcp.cjs'),connection=path.join(directory,'mcp/connection.json');
+const proxy=packaged?path.join(path.dirname(executable),'resources/app/dist/arc-mcp.cjs'):path.join(root,'dist/arc-mcp.cjs'),connection=path.join(directory,'mcp/connection.json');
 const bin=path.join(root,'.tools/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js');
+if(!packaged){
+ console.log('正在构建当前 ARC 源码，保留已有阅读数据…');
+ await promisify(execFile)(process.execPath,['scripts/build.mjs'],{cwd:root,windowsHide:true,timeout:60000});
+}
 await Promise.all([fs.access(executable),fs.access(proxy),fs.access(bin)]);
 async function alive(){try{const c=JSON.parse(await fs.readFile(connection,'utf8'));const u=new URL(c.url);if(u.protocol!=='http:'||u.hostname!=='127.0.0.1'||u.pathname!=='/tool')return false;const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+c.token},body:JSON.stringify({name:'arc_current_project',args:{}}),signal:AbortSignal.timeout(1500)});return r.status===200||r.status===400;}catch{return false;}}
 if(!await alive()){
  const env={...process.env,ARC_DATA_DIR:directory};delete env.ELECTRON_RUN_AS_NODE;
- const arc=spawn(executable,[],{cwd:root,env,windowsHide:true,detached:true,stdio:'ignore'});arc.unref();
+ const arc=spawn(executable,packaged?[]:[root],{cwd:root,env,windowsHide:true,detached:true,stdio:'ignore'});arc.unref();
  for(let i=0;i<50&&!await alive();i++)await new Promise(r=>setTimeout(r,200));
  if(!await alive())throw Error('Arc 未启动成功，请先打开对应 Arc 数据目录后重试。');
 }

@@ -53,6 +53,8 @@ try{
   const reading={entrance:'walk',view:'flow',scenario_id:scenario.scenario_id,result_id:explanation.result_id,selected:explanation.result.nodes[0].node_id,file:'',evidence_id:'',source_snapshot_id:explanation.result.binding.source_snapshot_id,mode:'normal',left_width:220,right_width:420,catalog_hidden:false,pinned:false,detail_tab:'details',expanded:[scenario.feature_id],scroll:{},zoom:1,stage:'',compare_id:'',linked:true,presentation_version:3,architecture_version:1,feature_reading_version:1};
   service.reading(`${project.project_id}/${scenario.scenario_id}/desktop`,reading);
   service.store.put('reading','last-session',{project_id:project.project_id,scenario_id:scenario.scenario_id,entrance:'walk'});
+  const cachedCodex=service.store.maybe('provider','codex');
+  if(cachedCodex)service.store.put('provider','codex',{...cachedCodex,status:'blocked_external',checked_at:'2026-01-01T00:00:00.000Z',reason:'Stale profile for isolated UI regression'});
 }finally{await service.shutdown();service.store.close();}
 
 const env={...process.env,ARC_DATA_DIR:dataDir};delete env.ELECTRON_RUN_AS_NODE;
@@ -183,6 +185,48 @@ try{
   await assertDetailFits();
   assert.ok((await page.locator('[aria-label="冻结源码依据"]').innerText()).includes(fileQuestion.source_snapshot_id));
   await page.screenshot({path:path.join(scratch,'latest-file.png')});
+  console.log('Checking whether a fresh answer is easy to find without interrupting earlier reading.');
+  await page.getByLabel('提问源码来源',{exact:true}).selectOption('bound');
+  const usability=await send('如果 transaction 里的业务函数抛错，会留下半条写入吗？沿用刚才的冻结源码，150字以内并给出对应依据；没验证过的情况请说明。');
+  const usabilityCard=page.locator(`[data-question-id="${usability.question_id}"]`);
+  if(!usability.answer){
+    await page.waitForFunction(id=>{const activity=document.querySelector(`[data-question-id="${id}"] .run-activity`),panel=document.querySelector('.detail > .panel-scroll');if(!activity||!panel)return false;const a=activity.getBoundingClientRect(),p=panel.getBoundingClientRect();return a.top<p.bottom&&a.bottom>p.top;},usability.question_id);
+    assert.match(await usabilityCard.innerText(),/执行限时 5 分钟/);
+    await page.screenshot({path:path.join(scratch,'waiting.png')});
+  }
+  await page.getByRole('button',{name:'查看最新回答',exact:true}).click();
+  const readingTop=await page.locator('.detail > .panel-scroll').evaluate(e=>e.scrollTop);
+  await waitRun(read,usability.run_id);
+  await usabilityCard.locator('.question-answer').waitFor();
+  const afterAnswerTop=await page.locator('.detail > .panel-scroll').evaluate(e=>e.scrollTop);
+  assert.ok(Math.abs(afterAnswerTop-readingTop)<4,'A new answer must not interrupt reading an earlier answer.');
+  await page.getByRole('button',{name:'查看最新回答',exact:true}).click();
+  const answerVisible=await usabilityCard.locator('.question-answer').evaluate(e=>{const panel=e.closest('.panel-scroll').getBoundingClientRect(),a=e.getBoundingClientRect();return a.top>=panel.top&&a.top<panel.bottom;});
+  assert.ok(answerVisible,'Latest answer navigation must reveal the answer in the same panel.');
+  await usabilityCard.locator('.answer-citation').first().click();
+  await usabilityCard.locator('[aria-label="冻结源码依据"] pre').waitFor();
+  await assertDetailFits();
+  const sourceVisible=await usabilityCard.locator('[aria-label="冻结源码依据"]').evaluate(e=>{const panel=e.closest('.panel-scroll').getBoundingClientRect(),s=e.getBoundingClientRect();return s.top>=panel.top&&s.top<panel.bottom;});
+  assert.ok(sourceVisible,'An inline citation must reveal its source without manual searching.');
+  await page.screenshot({path:path.join(scratch,'reading-comfort.png')});
+  await page.getByRole('navigation',{name:'问答定位',exact:true}).getByRole('button',{name:'继续提问',exact:true}).click();
+  assert.equal(await page.getByLabel('当前位置的问题',{exact:true}).evaluate(e=>document.activeElement===e),true);
+  console.log('Checking that an old MCP handoff does not block switching to direct Codex execution.');
+  const overviewId=(await read()).projects.find(p=>p.project_id===project.project_id).overview_scenario_id;
+  await page.evaluate(scenario_id=>window.arc.invoke('analysis_prepare',{scenario_id}),overviewId);
+  await page.locator('.catalog-views').getByRole('button',{name:'系统协作',exact:true}).click();
+  await page.locator('.analysis-options > summary').click();
+  await page.getByLabel('分析运行方式',{exact:true}).selectOption('mcp');
+  await page.locator('.analysis-start').filter({hasText:'查看待领取任务'}).waitFor();
+  await page.getByLabel('分析运行方式',{exact:true}).selectOption('codex');
+  await page.locator('.analysis-start').filter({hasText:'改用 Codex 直接分析'}).waitFor();
+  const beforeRuns=new Set((await read()).runs.map(r=>r.binding.run_id));
+  await page.locator('.analysis-start').click();
+  const directRun=(await read()).runs.find(r=>r.binding.scenario_id===overviewId&&!beforeRuns.has(r.binding.run_id));
+  assert.ok(directRun);assert.equal(directRun.provider_id,'codex');assert.notEqual(directRun.origin,'mcp');
+  await page.locator('.detail').getByRole('button',{name:'停止本次分析',exact:true}).click();
+  await page.waitForFunction(async id=>(await window.arc.invoke('data')).runs.find(r=>r.binding.run_id===id)?.status==='cancelled',directRun.binding.run_id);
+  await page.waitForFunction(async()=>{const profile=(await window.arc.invoke('data')).providers.find(p=>p.provider_id==='codex');return profile?.status==='available'&&Date.parse(profile.checked_at)>Date.parse('2026-01-01T00:00:00.000Z');});
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({passed:true,real_provider:'codex',starting_result:'source-reviewed import of real ARC implementation, not full graph generation acceptance',project:project.root_path,result_id:explanation.result_id,question_ids:[first.question_id,follow.question_id,fileQuestion.question_id],mcp_question_id:directoryItem.question_id,checks:['real node answer with source','saved annotation in input','follow-up context','switch during execution preserves original owner','restart restores answers and position','project switch restores original question position','side-by-side layout','clickable frozen source','unexplained file asks real Codex using explicit latest snapshot','file answer leaves previous graph unchanged','unexplained directory registers MCP waiting without claiming execution','MCP cancellation and retry preserve original directory and source'],screenshots:scratch},null,2));
+  console.log(JSON.stringify({passed:true,real_provider:'codex',starting_result:'source-reviewed import of real ARC implementation, not full graph generation acceptance',project:project.root_path,result_id:explanation.result_id,question_ids:[first.question_id,follow.question_id,fileQuestion.question_id,usability.question_id],mcp_question_id:directoryItem.question_id,checks:['real node answer with source','saved annotation in input','follow-up context','switch during execution preserves original owner','restart restores answers and position','project switch restores original question position','side-by-side layout','clickable frozen source','unexplained file asks real Codex using explicit latest snapshot','file answer leaves previous graph unchanged','unexplained directory registers MCP waiting without claiming execution','MCP cancellation and retry preserve original directory and source','submitted progress is visible','new answer does not interrupt earlier reading','latest answer and inline citation navigate within the panel'],screenshots:scratch},null,2));
 }catch(error){if(page)await page.screenshot({path:path.join(scratch,'failure.png')}).catch(()=>{});throw error;}finally{await app?.close();}

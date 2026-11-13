@@ -30,11 +30,30 @@ test('cancelling during provider preparation prevents launch and rejects a late 
     return {code:0,raw:'late output must not be accepted',stderr:''};
   };
   const {service,project,scenario}=await setup(t,runner);
-  service.store.put('provider','codex',{provider_id:'codex',status:'available',version:'test-runner'});
+  service.store.put('provider','codex',{provider_id:'codex',status:'available',version:'test-runner',checked_at:new Date().toISOString()});
   const q=await service.askReading({project_id:project.project_id,scenario_id:scenario.scenario_id,target:{kind:'file',id:'src/main.ts'},question:'说明这个文件',mode:'codex',submission_key:'cancel-preparing-key'});
   await entered;await service.cancel(q.run_id);release();await Promise.all(service.executing.values());
   assert.equal(canStart,false);assert.equal(stopped,true);assert.equal(service.store.get('run',q.run_id).status,'cancelled');
   assert.equal(service.store.get('reading_question',q.question_id).answer,undefined);assert.equal(service.active.size,0);
+});
+
+test('an expired Codex profile is refreshed once without probing DSH or launching a model',async t=>{
+  let launched=0;
+  const {service,dir,project,scenario}=await setup(t,async()=>{launched++;throw Error('the unavailable executable must not launch');});
+  service.store.put('provider','codex',{provider_id:'codex',status:'blocked_external',reason:'outdated version rejection',checked_at:'2026-01-01T00:00:00.000Z'});
+  const dsh={provider_id:'dsh',status:'blocked_external',reason:'keep existing DSH probe',checked_at:'2026-01-01T00:00:00.000Z'};
+  service.store.put('provider','dsh',dsh);
+  service.store.put('settings','providers',{codex_path:path.join(dir,'missing-codex-executable.exe')});
+  let probes=0;const probe=service.probe.bind(service);
+  service.probe=async(config,only)=>{probes++;assert.equal(only,'codex');return probe(config,only);};
+  const input={project_id:project.project_id,scenario_id:scenario.scenario_id,target:{kind:'file' as const,id:'src/main.ts'},question:'解释文件',mode:'codex' as const};
+  const questions=await Promise.all(['refresh-first-key','refresh-second-key'].map(submission_key=>service.askReading({...input,submission_key})));
+  await Promise.all(service.executing.values());
+  assert.equal(probes,1,'simultaneous questions share the refresh');assert.equal(launched,0);
+  const current=service.store.get('provider','codex');assert.match(current.reason,/missing-codex-executable/);assert.notEqual(current.checked_at,'2026-01-01T00:00:00.000Z');
+  for(const q of questions)assert.match(service.store.get('run',q.run_id).error,/missing-codex-executable/);
+  assert.deepEqual(service.store.get('provider','dsh'),dsh);
+  await service.askReading({...input,submission_key:'refresh-cached-key'});await Promise.all(service.executing.values());assert.equal(probes,1,'a recent profile is reused');
 });
 async function savedResult(service:ArcService,project:any,scenario:any,snapshot:Snapshot) {
   const run:Run={binding:{project_id:project.project_id,feature_id:scenario.feature_id,scenario_id:scenario.scenario_id,question_revision_id:scenario.question_revision_id,source_snapshot_id:snapshot.source_snapshot_id,run_id:'original-run'},provider_id:'codex',status:'running',question:scenario.question,title:scenario.title,created_at:new Date().toISOString(),submission_key:'original-key',output_path:''};
@@ -110,7 +129,7 @@ test('unexplained files and directories can be asked directly; old and explicit 
 
 test('failed answers retain questions; retry and cancellation keep original ownership and validate source anchors',async t=>{
   const {service,project,scenario,snapshot}=await setup(t),result=await savedResult(service,project,scenario,snapshot);
-  service.store.put('provider','codex',{provider_id:'codex',status:'auth_required',reason:'测试：缺少授权'});
+  service.store.put('provider','codex',{provider_id:'codex',status:'auth_required',reason:'测试：缺少授权',checked_at:new Date().toISOString()});
   const q=await service.askReading({project_id:project.project_id,scenario_id:scenario.scenario_id,result_id:result.result_id,target:{kind:'node',id:'node'},question:'这里做了什么？',mode:'codex',submission_key:'blocked-question-key'});
   await Promise.all(service.executing.values());assert.equal(service.store.get('run',q.run_id).status,'blocked_external');
   const retry=service.retryReading(q.question_id,'mcp','retry-question-key');assert.notEqual(retry.run_id,q.run_id);assert.deepEqual(retry.context,q.context);

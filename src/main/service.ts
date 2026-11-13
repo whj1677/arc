@@ -22,6 +22,7 @@ export class ArcService {
   readonly executing=new Map<string,Promise<void>>();
   private closing=false;
   private asking=new Map<string,Promise<ReadingQuestion>>();
+  private checkingCodex?:Promise<ProviderProfile[]>;
   constructor(readonly directory:string,readonly resources:string,readonly emit:(e:any)=>void=()=>{},private readonly codexRunner:typeof runCodex=runCodex) {
     this.store=new Store(directory);
     for(const run of this.store.all<Run>('run'))if(!terminal.has(run.status)&&!['unknown','waiting_agent'].includes(run.status)){run.status='unknown';run.error='Arc 上次退出前未记录终态；不会自动重发。请核查原会话，或明确新建关联重试。';this.store.put('run',run.binding.run_id,run);}
@@ -183,9 +184,9 @@ export class ArcService {
     if(value!==undefined){if(JSON.stringify(value).length>100000)throw new Error('阅读状态过大');this.store.put('reading',key,value);return value;}
     return this.store.maybe('reading',key);
   }
-  async probe(config?:Record<string,string>) {
+  async probe(config?:Record<string,string>,only?:'codex') {
     if(config){for(const [key,value]of Object.entries(config))if(!['codex_path','dsh_path'].includes(key)||typeof value!=='string')throw new Error('不支持的连接配置');config={...this.store.maybe('settings','providers'),...config};this.store.put('settings','providers',config);}
-    const profiles=await probeProviders(config||this.store.maybe('settings','providers')||{});
+    const profiles=await probeProviders(config||this.store.maybe('settings','providers')||{},only);
     const dsh=profiles.find(p=>p.provider_id==='dsh');
     if(dsh?.path&&dsh.version)Object.assign(dsh,await probeDsh(this.directory,dsh.path,dsh.version));
     for(const p of profiles)this.store.put('provider',p.provider_id,p);this.changed();return profiles;
@@ -295,7 +296,12 @@ export class ArcService {
   private async execute(initial:Run) {
     const runId=initial.binding.run_id;
     let profile=this.store.maybe<ProviderProfile>('provider',initial.provider_id);
-    if(!profile){await this.probe();profile=this.store.get('provider',initial.provider_id);}
+    const profileAge=Date.now()-Date.parse(profile?.checked_at||'');
+    if(initial.provider_id==='codex'&&(!Number.isFinite(profileAge)||profileAge<0||profileAge>5*60*1000)){
+      this.event(runId,{type:'local.stage',stage:'checking_provider',message:'正在检测当前 Codex 程序与登录状态，更新过期的连接记录'});
+      this.checkingCodex??=this.probe(undefined,'codex').finally(()=>{this.checkingCodex=undefined;});
+      await this.checkingCodex;profile=this.store.get('provider','codex');
+    }else if(!profile){await this.probe();profile=this.store.get('provider',initial.provider_id);}
     const freshRun=this.store.get<Run>('run',runId);
     if(freshRun.status==='cancelled'||this.closing)return;
     if(!profile||profile.status!=='available'||!['codex','dsh'].includes(initial.provider_id)){

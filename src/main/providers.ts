@@ -30,7 +30,7 @@ export async function resolveDsh(configured?:string) {
   if(/\.[cm]?js$/i.test(file))return {command:await locate('node'),prefix:[file],path:file};
   return {command:file,prefix:[],path:file};
 }
-export async function probeProviders(config:Record<string,string>={}):Promise<ProviderProfile[]> {
+export async function probeProviders(config:Record<string,string>={},only?:'codex'):Promise<ProviderProfile[]> {
   const base={checked_at:now(),capabilities:{submit_task:'unknown',cancel_run:'unknown',restore:'unsupported',followup:'emulated: 新 run + 有来源上下文，不续接原会话',code_write:'unsupported'}};
   const result:ProviderProfile[]=[];
   try {
@@ -44,6 +44,7 @@ export async function probeProviders(config:Record<string,string>={}):Promise<Pr
     try { const r=await exec(file,['login','status'],{windowsHide:true,timeout:8000}); auth=redact((r.stdout+r.stderr).trim()); }catch{auth='需要在 Codex 客户端/CLI 登录';}
     result.push({...base,provider_id:'codex',requested_name:'codex',product:'OpenAI Codex',transport:'exec / JSONL',path:file,version,auth,status:auth.includes('Logged in')?'available':'auth_required',reason:'版本和登录探测不等于工程分析验收。使用本地快照；模型服务会接收所选源码。',capabilities:{...base.capabilities,submit_task:'native: exec',event_stream:'native: JSONL',cancel_run:'emulated: 本地进程树停止，等待退出',workspace_binding:'native: --cd 固定快照',structured_output:'native: --output-schema'}});
   }catch(e){result.push({...base,provider_id:'codex',requested_name:'codex',product:'OpenAI Codex',transport:'exec / JSONL',auth:'unknown',status:'blocked_external',reason:redact((e as Error).message)});}
+  if(only==='codex')return result;
   try {
     const dsh=await resolveDsh(config.dsh_path);
     const version=(await exec(dsh.command,[...dsh.prefix,'--version'],{windowsHide:true,timeout:8000})).stdout.trim();
