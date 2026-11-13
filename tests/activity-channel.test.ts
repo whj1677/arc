@@ -37,3 +37,9 @@ test('timeouts have a readable outcome without implying a saved result',()=>{
   assert.match(analysisErrorMessage('codex 未成功完成（exit=1）：超过 600 秒执行预算，正在终止本地任务'),/未得到可保存的完整结果/);
   assert.match(analysisErrorMessage('request timed out'),/本次分析未完成/);
 });
+test('independent overview review remains visibly unfinished and keeps both phase messages',()=>{
+  const events=[{type:'item.completed',item:{id:'0',type:'agent_message',text:'入口已查证'}},{type:'local.stage',stage:'overview_review',message:'开始核对关系'},
+    {type:'item.completed',phase:'overview_review',item:{id:'0',type:'agent_message',text:'正在核对 IPC'}}];
+  const value=activity(run,events,time);assert.match(value.phase,/2\/2.*尚未发布/);assert.equal(value.items.filter(item=>item.kind==='message').length,2);
+  assert.equal(activity({...run,status:'failed'},events,time).phase,'分析失败');
+});

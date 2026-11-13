@@ -16,16 +16,16 @@ export function duration(ms:number) {
 export function activity(run:Run,events:any[],now:number) {
   const items=new Map<string,ActivityItem>(),chunks=new Map<string,string>(),files=new Set<string>(),pending=new Set<string>();
   const toolDetails=new Map<string,{title?:string;path?:string}>();
-  let connected=!!run.external_id,output=false,reconnecting=false,lastTime=Date.parse(run.created_at);
+  let connected=!!run.external_id,output=false,reconnecting=false,reviewing=false,lastTime=Date.parse(run.created_at);
   const add=(id:string,e:any,kind:ActivityItem['kind'],text:string)=>items.set(id,{id,at:e.received_at||run.created_at,kind,text});
   for(const [i,e] of events.entries()){
     const stamp=Date.parse(e.received_at);if(Number.isFinite(stamp))lastTime=Math.max(lastTime,stamp);
     const key=String(e.sequence??i),item=e.item,u=e.update;
     if(['thread.started','session.started'].includes(e.type)){connected=true;add(key,e,'status','已建立真实 Agent 会话');}
-    if(e.type==='local.stage'){if(e.stage==='mcp_connected')connected=true;add(key,e,'status',e.message);}
+    if(e.type==='local.stage'){if(e.stage==='mcp_connected')connected=true;if(e.stage==='overview_review'){reviewing=true;output=false;}if(['overview_reviewed','validating'].includes(e.stage))reviewing=false;add(key,e,'status',e.message);}
     if(item?.type==='mcp_tool_call'){
       reconnecting=false;
-      const toolId=`tool:${item.id}`,file=item.arguments?.path;
+      const toolId=`tool:${e.phase||'analysis'}:${item.id}`,file=item.arguments?.path;
       const ended=e.type==='item.completed',failed=item.status==='failed'||!!item.error;
       if(ended)pending.delete(toolId);else pending.add(toolId);
       if(ended&&!failed&&item.tool==='arc_read_source'&&typeof file==='string')files.add(file);
@@ -35,8 +35,8 @@ export function activity(run:Run,events:any[],now:number) {
       reconnecting=false;
       const text=item.text.trim();
       if(/^\s*(?:```(?:json)?\s*)?\{[\s\S]*"schema_version"/.test(text)){
-        output=true;add(`message:${item.id}`,e,'status','已收到结构化结果，仍需 Arc 校验和保存');
-      }else add(`message:${item.id}`,e,'message',text);
+        output=true;add(`message:${e.phase||'analysis'}:${item.id}`,e,'status','已收到结构化结果，仍需 Arc 校验和保存');
+      }else add(`message:${e.phase||'analysis'}:${item.id}`,e,'message',text);
     }
     // Expose only public messages/tool updates; reasoning chunks are not a transcript.
     if(u?.sessionUpdate==='agent_message_chunk'&&u.content?.type==='text'){
@@ -62,7 +62,7 @@ export function activity(run:Run,events:any[],now:number) {
     }
   }
   const phases:Record<string,string>={queued:`准备连接 ${run.provider_id==='codex'?'Codex':'Agent'}`,validating:'校验结果与源码依据',completed:'分析完成，说明已保存',failed:'分析失败',cancel_requested:'正在请求停止',cancelled:'任务已停止',unknown:run.origin==='mcp'?'状态未知，需核查原会话':'任务状态未确认，请查看记录或重试',blocked_external:'连接条件缺失'};
-  const phase=run.origin==='manual_import'&&run.status==='completed'?'手动导入已校验并保存 · 未调用 Agent':phases[run.status]||(reconnecting?'连接中断，Agent 正在重连':pending.size?'正在读取源码 / 执行工具':output?'已收到输出，等待校验':connected?'Agent 处理中，等待后续输出':'进程已启动，等待 Agent 会话');
+  const phase=run.origin==='manual_import'&&run.status==='completed'?'手动导入已校验并保存 · 未调用 Agent':reviewing&&['running','validating'].includes(run.status)?'2/2 正在核对关系与源码，结果尚未发布':phases[run.status]||(reconnecting?'连接中断，Agent 正在重连':pending.size?'正在读取源码 / 执行工具':output?'已收到输出，等待校验':connected?'Agent 处理中，等待后续输出':'进程已启动，等待 Agent 会话');
   const active=activeStatuses.has(run.status),end=Date.parse(run.ended_at||'');
   return {phase,active,connected,output,reconnecting:active&&reconnecting,items:[...items.values()],files:[...files],pending:pending.size,
     elapsed:duration((active||!Number.isFinite(end)?now:end)-Date.parse(run.created_at)),

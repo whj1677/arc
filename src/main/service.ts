@@ -11,6 +11,8 @@ import {discoveredFeature} from '../discovered-feature';
 import {buildReadingContext,readingTarget,promptContext} from './prompt-context';
 import {validateReadingAnswer} from './reading-question';
 import {overviewDiscoveryQuestion} from './architecture-analysis';
+import {prepareOverview} from './overview-result';
+import {makeOverviewReviewPrompt,applyOverviewReview} from './overview-review';
 export const terminal=new Set(['completed','failed','cancelled','blocked_external']);
 const oldOverviewQuestion='分析整个授权快照的工程全貌：主要职责与模块边界用 stage 节点，内部函数使用 parent_node_id 关联，目录/文件用途必须有依据。列出模块、外部依赖组件及使用位置；依赖使用 dependency，不能当作运行时调用。版本仅引用清单或锁文件。明确未分析范围、构建条件、缺失实现；不根据目录名猜职责。';
 const architectureOverviewQuestion='分析授权快照的系统架构，先说明系统由哪些实际组件组成、如何通信和存储数据。返回 architecture.node_ids 与 architecture.edge_ids，引用 nodes/edges 中的高层组件和连接；不预设一定有前端、后端或数据库。组件标签注明已证实的语言/技术，关系标签注明 HTTP/HTTPS、SQL、文件读写等有依据的协议或访问方式；未知写未知，不能把 SQLite 猜成 MySQL，也不能把库依赖当网络服务。内部模块用 parent_node_id 归属组件，支持点击组件再深入；模块目录用途、外部依赖、版本及每条关系均给出准确源码依据。架构关系不是调用时序，保留关键调用、输入输出与未分析范围。';
@@ -273,6 +275,7 @@ export class ArcService {
     // Freeze synchronously before yielding; UI changes cannot change this envelope.
     const runId=id('run');
     const run:Run={binding:{project_id:project.project_id,feature_id:scenario.feature_id,scenario_id:scenarioId,question_revision_id:scenario.question_revision_id,source_snapshot_id:this.analysisSnapshot(scenario),run_id:runId},provider_id:providerId as Run['provider_id'],status:'queued',question:scenario.question,title:scenario.title,created_at:now(),submission_key:submissionKey,previous_run_id:previousRunId,output_path:path.join(this.directory,'runs',runId,'result.json')};
+    if(providerId==='codex'&&scenario.question===overviewQuestion)run.overview_format='overview-1';
     this.store.put('run',runId,run);this.changed();
     this.event(runId,{type:'local.stage',stage:'queued',message:'任务与源码快照已绑定，正在准备 Agent 连接'});
     const task=this.execute(run).catch(error=>this.fail(runId,error)).finally(()=>this.executing.delete(runId));
@@ -339,15 +342,50 @@ export class ArcService {
     if(result.code!==0||protocolError)throw new Error(`${initial.provider_id} 未成功完成（exit=${result.code}）：${protocolError||result.stderr.slice(-2500)}`);
     let value:unknown;
     try{const audit:string[]=[];value=normalizeTransport(parseProviderText(result.raw,initial.provider_id),audit);if(audit.length)this.event(runId,{type:'local.format_normalization',changes:audit});}catch{throw new Error('真实返回不是合法 JSON，原始文件已保留；未生成正式关系图。');}
-    await this.acceptResult(runId,value);
+    let semanticReview:string|undefined;
+    if(initial.overview_format){
+      // Keep the unreviewed compact response as raw material. No explanation
+      // is visible until source anchors and the independent review both pass.
+      run.status='validating';this.store.put('run',runId,run);this.changed();
+      const draft=await prepareOverview(value,initial,snapshot,this.directory);
+      const reviewPrompt=await makeOverviewReviewPrompt(draft,snapshot,this.directory);
+      if(this.closing||this.store.get<Run>('run',runId).status==='cancelled')return;
+      this.event(runId,{type:'local.stage',stage:'overview_review',message:'2/2 正在独立核对关系的方向、通信方式和源码依据；未通过的关系不会进入工程图。'});
+      const reviewRun={...initial,output_path:path.join(this.directory,'runs',runId,'review','result.json')};
+      const review=await this.codexRunner({run:reviewRun,snapshot,storage:this.directory,resources:this.resources,profile,prompt:reviewPrompt,phase:'overview_review',
+        event:event=>this.event(runId,{...event,phase:'overview_review'}),
+        shouldStart:()=>!this.closing&&this.store.get<Run>('run',runId).status==='validating',
+        started:active=>{
+          this.active.set(runId,active);const current=this.store.get<Run>('run',runId);
+          if(this.closing||current.status!=='validating'){
+            void active.cancel().catch(error=>{const latest=this.store.get<Run>('run',runId);latest.status='unknown';latest.error=`复核启动时收到停止请求，但未能确认进程退出：${redact((error as Error).message)}`;this.store.put('run',runId,latest);this.changed();});return;
+          }
+          current.status='running';current.pid=active.child.pid;this.store.put('run',runId,current);this.changed();
+        }
+      });
+      this.active.delete(runId);
+      const current=this.store.get<Run>('run',runId);
+      if(current.status==='cancelled')return;
+      if(current.status==='cancel_requested'){
+        current.status='cancelled';current.ended_at=now();current.error='已停止关系复核；未发布未复核的工程图。';this.store.put('run',runId,current);this.changed();return;
+      }
+      if(review.code!==0||review.protocol_error)throw Error(`关系复核未完成，未发布工程图：${review.protocol_error||review.stderr.slice(-2500)}`);
+      const checked=applyOverviewReview(parseProviderText(review.raw,'codex'),draft);
+      value=checked.result;
+      semanticReview=`独立 Agent 已按冻结源码复核摘要及 ${checked.checked} 条候选关系；${checked.excluded} 条未通过关系已列为缺口、未进入图。模型复核不等于运行验证或完整语义证明。`;
+      this.event(runId,{type:'local.stage',stage:'overview_reviewed',message:semanticReview});
+    }
+    await this.acceptResult(runId,value,semanticReview);
   }
-  async acceptResult(runId:string,value:unknown) {
+  async acceptResult(runId:string,value:unknown,semanticReview?:string) {
     const run=this.store.get<Run>('run',runId),snapshot=this.store.get<Snapshot>('snapshot',run.binding.source_snapshot_id);
+    if(run.overview_format&&!semanticReview)throw new Error('首轮工程图尚未完成独立关系复核，不能发布');
     if(['cancel_requested','cancelled','failed'].includes(run.status))throw new Error('终止后的迟到结果保留为原始材料，不发布为新说明');
     if(run.status==='completed')return run;
     run.status='validating';this.store.put('run',runId,run);
     this.event(runId,{type:'local.stage',stage:'validating',message:'完整结果已收到，正在校验结构、任务绑定和源码行号'});this.changed();
     const report=run.reading_question_id?await validateReadingAnswer(value,run,snapshot,this.directory):await validateResult(value,run,snapshot,this.directory);
+    if(semanticReview)report.semantic=semanticReview;
     if(['cancel_requested','cancelled','failed'].includes(this.store.get<Run>('run',runId).status))throw new Error('校验期间收到停止请求，迟到结果不发布');
     run.validation=report;
     if(report.errors.length){run.status='failed';run.error=`结果校验失败：${report.errors.slice(0,5).join('；')}`;run.ended_at=now();this.store.put('run',runId,run);this.changed();return run;}
@@ -371,6 +409,7 @@ export class ArcService {
   }
   async revalidate(runId:string){
     const run=this.store.get<Run>('run',runId);
+    if(run.overview_format)throw new Error('首轮分析需要完成源码校验和独立关系复核；请重新分析，不能将未复核的原始草稿直接发布。');
     if(run.status!=='failed'||this.active.has(runId))throw new Error('仅可重新校验已失败且已停止的原始返回');
     const raw=run.provider_id==='dsh'&&!run.native_ui?dshFinalMessage(this.store.events(runId)):await fs.readFile(run.output_path,'utf8');
     const audit:string[]=[],parsed=normalizeTransport(parseProviderText(raw,run.provider_id),audit);

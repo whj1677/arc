@@ -33,6 +33,16 @@ test('a reading timeout reports a rejected stop instead of continuing to wait si
   t.mock.timers.tick(5*60*1000);await Promise.resolve();
   assert.deepEqual(failures,[stopError]);assert.equal(events[0].stage,'timeout');
 });
+test('overview generation and relation review share the same five-minute deadline',async t=>{
+  t.mock.timers.enable({apis:['setTimeout','Date']});
+  const run={overview_format:'overview-1' as const,created_at:new Date().toISOString()};
+  let stopped=0;
+  const first=readingWatchdog(run,async()=>{stopped++;},()=>{},()=>{},()=>{});
+  t.mock.timers.tick(120000);clearTimeout(first);
+  const review=readingWatchdog(run,async()=>{stopped++;},()=>{},()=>{},()=>{});
+  t.mock.timers.tick(179999);assert.equal(stopped,0);
+  t.mock.timers.tick(1);await Promise.resolve();assert.equal(stopped,1);clearTimeout(review);
+});
 
 test('long analysis waits beyond the former limit and accepts a later terminal reply',async t=>{
   t.mock.timers.enable({apis:['setTimeout']});

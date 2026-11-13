@@ -59,12 +59,24 @@ try{
     await page.screenshot({path:path.join(scratch,'progress.png')});
   }
   data=await waitRun(run.binding.run_id);
+  run=data.runs.find(item=>item.binding.run_id===run.binding.run_id);
+  assert.equal(run.overview_format,'overview-1','Acceptance must use the compact, independently reviewed overview. Set ARC_VERIFY_FRESH_OVERVIEW=1 for an older saved result.');
   const request=JSON.parse(await fs.readFile(path.join(env.ARC_DATA_DIR,'runs',run.binding.run_id,'request.json'),'utf8'));
   assert.ok(request.args.includes('model_reasoning_effort="medium"'),'Built-in overview must use its scoped discovery depth.');
   const explanation=data.explanations.find(e=>e.result.binding.run_id===run.binding.run_id);assert.ok(explanation);
   assert.ok(explanation.result.architecture?.node_ids.length,'Whole project must have a source-backed architecture.');
   assert.ok(explanation.result.feature_catalog?.groups.some(g=>g.node_ids.length),'Whole project must have a feature catalog.');
   assert.ok(explanation.result.evidence.length);assert.equal(run.origin,undefined);
+  const elapsedSeconds=(Date.parse(run.ended_at)-Date.parse(run.created_at))/1000;
+  const raw=await fs.readFile(path.join(env.ARC_DATA_DIR,'runs',run.binding.run_id,'result.json'),'utf8');
+  const review=JSON.parse(await fs.readFile(path.join(env.ARC_DATA_DIR,'runs',run.binding.run_id,'review','result.json'),'utf8'));
+  assert.equal(review.schema_version,'overview-review-1');
+  assert.equal(review.run_id,run.binding.run_id);assert.equal(review.source_snapshot_id,run.binding.source_snapshot_id);
+  assert.ok(explanation.result.edges.every(edge=>!['sync_call','return'].includes(edge.kind)),'High-level overview must not invent synchronous call/return semantics.');
+  assert.ok(explanation.result.edges.every(edge=>review.relations.some(item=>item.edge_id===edge.edge_id&&item.verdict==='supported')),'Every displayed relation must pass the independent source review.');
+  assert.match(run.validation.semantic,/独立 Agent/);
+  if(newAnalysis)assert.ok(elapsedSeconds<240,`First analysis including review took ${elapsedSeconds}s; target below 240s versus the 371s baseline.`);
+  console.log(JSON.stringify({elapsedSeconds,rawBytes:Buffer.byteLength(raw),reviewedRelations:review.relations.length,excludedRelations:review.relations.filter(item=>item.verdict!=='supported').length,snapshot:run.binding.source_snapshot_id}));
   await page.getByRole('button',{name:'工程全貌',exact:true}).click();
   await page.locator('.architecture-node').first().waitFor();
   const nodeId=await page.locator('[data-component-id]').first().getAttribute('data-component-id');
@@ -85,9 +97,10 @@ try{
   await page.locator('[aria-label="冻结源码依据"] pre').waitFor();
   await page.getByRole('button',{name:'返回这条回答',exact:false}).click();
   await page.screenshot({path:path.join(scratch,'question.png')});
-  // Verify a real correction at an imprecise generated relationship. The
-  // original graph stays intact; the source-backed explanation belongs here.
-  const ipcEdge=explanation.result.edges.find(edge=>/IPC.*invoke/i.test(edge.label));assert.ok(ipcEdge);
+  // The first graph must already represent IPC without a false sync_call.
+  // The subsequent user clue exercises contextual follow-up, not graph repair.
+  const ipcEdge=explanation.result.edges.find(edge=>/IPC/i.test(edge.label)&&edge.kind==='execution_boundary');assert.ok(ipcEdge,'A source-backed IPC boundary must survive review.');
+  assert.ok(ipcEdge.evidence_ids.some(id=>explanation.result.evidence.some(e=>e.evidence_id===id&&/preload|main\.ts/.test(e.path))));
   await page.locator(`[data-edge-id="${ipcEdge.edge_id}"]`).focus();
   await page.locator(`[data-edge-id="${ipcEdge.edge_id}"]`).press('Enter');
   await page.getByRole('button',{name:'就这里提问',exact:true}).click();

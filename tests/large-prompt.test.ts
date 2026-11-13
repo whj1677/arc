@@ -12,6 +12,9 @@ test('first overview asks for an evidenced architecture and catalog without requ
   const prompt=await makePrompt(run,snapshot,'unused',[]);
   assert.match(prompt,/architecture/);assert.match(prompt,/feature_catalog/);assert.match(prompt,/SHA-256/);
   assert.doesNotMatch(prompt,/功能或场景详细分析必须同时提供关键函数调用链/);
+  const compact=await makePrompt({...run,overview_format:'overview-1'},snapshot,'unused',[]);
+  assert.match(compact,/overview-1/);assert.match(compact,/question_revision_id/);
+  assert.ok(compact.length<prompt.length);assert.doesNotMatch(compact,/输出完整 Arc JSON/);
   const detailed=await makePrompt({...run,question:'分析一个功能的完整调用路径'},snapshot,'unused',[]);
   assert.match(detailed,/功能或场景详细分析必须同时提供关键函数调用链/);
 });

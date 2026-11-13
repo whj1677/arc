@@ -45,6 +45,7 @@ export interface Run {
   native_ui?: 'dsh-web';
   reading_question_id?:string;
   reading_context?:ReadingContext;
+  overview_format?:'overview-1';
 }
 export interface Explanation { result_id: string; scenario_id: string; created_at: string; source_status: string; result: AnalysisResult }
 export interface ProviderProfile { provider_id: ProviderId; requested_name: string; product: string; status: string; version?: string; path?: string; reason: string; transport: string; auth: string; capabilities: Record<string,string>; checked_at: string }
