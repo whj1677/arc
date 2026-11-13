@@ -16,13 +16,18 @@ export function duration(ms:number) {
 export function activity(run:Run,events:any[],now:number) {
   const items=new Map<string,ActivityItem>(),chunks=new Map<string,string>(),files=new Set<string>(),pending=new Set<string>();
   const toolDetails=new Map<string,{title?:string;path?:string}>();
-  let connected=!!run.external_id,output=false,reconnecting=false,reviewing=false,lastTime=Date.parse(run.created_at);
+  let connected=!!run.external_id,output=false,reconnecting=false,overviewStage='',lastTime=Date.parse(run.created_at);
   const add=(id:string,e:any,kind:ActivityItem['kind'],text:string)=>items.set(id,{id,at:e.received_at||run.created_at,kind,text});
   for(const [i,e] of events.entries()){
     const stamp=Date.parse(e.received_at);if(Number.isFinite(stamp))lastTime=Math.max(lastTime,stamp);
     const key=String(e.sequence??i),item=e.item,u=e.update;
     if(['thread.started','session.started'].includes(e.type)){connected=true;add(key,e,'status','已建立真实 Agent 会话');}
-    if(e.type==='local.stage'){if(e.stage==='mcp_connected')connected=true;if(e.stage==='overview_review'){reviewing=true;output=false;}if(['overview_reviewed','validating'].includes(e.stage))reviewing=false;add(key,e,'status',e.message);}
+    if(e.type==='local.stage'){
+      if(e.stage==='mcp_connected')connected=true;
+      if(['overview_review','overview_research','overview_recheck','overview_reviewed'].includes(e.stage)){overviewStage=e.stage;if(e.stage!=='overview_reviewed')output=false;}
+      if(e.stage==='validating')overviewStage='';
+      add(key,e,'status',e.message);
+    }
     if(item?.type==='mcp_tool_call'){
       reconnecting=false;
       const toolId=`tool:${e.phase||'analysis'}:${item.id}`,file=item.arguments?.path;
@@ -54,7 +59,7 @@ export function activity(run:Run,events:any[],now:number) {
       if(u.status==='completed'&&typeof file==='string'&&/(?:^|__)arc_read_source$/.test(title))files.add(file);
       add(id,e,u.status==='failed'?'error':'tool',`${finished?(u.status==='failed'?'工具失败':'已完成'):'正在执行'} · ${title}${file?' · '+file:''}`);
     }
-    if(e.type==='turn.completed'||e.type==='provider.finished'){reconnecting=false;output=true;add(key,e,'status','Agent 已结束本轮输出，等待本地校验');}
+    if(e.type==='turn.completed'||e.type==='provider.finished'){reconnecting=false;output=true;add(key,e,'status',e.phase==='overview_research'?'已收到补查输出，仍需复核后保存':['overview_review','overview_recheck'].includes(e.phase)?'已收到关系复核输出，等待处理':'Agent 已结束本轮输出，等待本地校验');}
     if(e.type==='error'||e.type==='turn.failed'||item?.type==='error'){
       const message=e.message||e.error?.message||item?.message||'Agent 报告错误，最终状态以任务状态为准';
       if(/Reconnecting|waiting for network|request timed out|stream disconnected/i.test(message))reconnecting=true;
@@ -62,7 +67,9 @@ export function activity(run:Run,events:any[],now:number) {
     }
   }
   const phases:Record<string,string>={queued:`准备连接 ${run.provider_id==='codex'?'Codex':'Agent'}`,validating:'校验结果与源码依据',completed:'分析完成，说明已保存',failed:'分析失败',cancel_requested:'正在请求停止',cancelled:'任务已停止',unknown:run.origin==='mcp'?'状态未知，需核查原会话':'任务状态未确认，请查看记录或重试',blocked_external:'连接条件缺失'};
-  const phase=run.origin==='manual_import'&&run.status==='completed'?'手动导入已校验并保存 · 未调用 Agent':reviewing&&['running','validating'].includes(run.status)?'2/2 正在核对关系与源码，结果尚未发布':phases[run.status]||(reconnecting?'连接中断，Agent 正在重连':pending.size?'正在读取源码 / 执行工具':output?'已收到输出，等待校验':connected?'Agent 处理中，等待后续输出':'进程已启动，等待 Agent 会话');
+  const overviewPhases:Record<string,string>={overview_review:'正在核对首轮关系与源码，结果尚未发布',overview_research:'正在自动补查未确认的关系，原阅读位置保留',overview_recheck:'正在复核补查后的关系，结果尚未保存',overview_reviewed:'关系复核已结束，等待本地校验和保存'};
+  const processing=['running','validating'].includes(run.status);
+  const phase=run.origin==='manual_import'&&run.status==='completed'?'手动导入已校验并保存 · 未调用 Agent':processing&&reconnecting?'连接中断，Agent 正在重连':processing&&overviewStage?overviewPhases[overviewStage]:phases[run.status]||(reconnecting?'连接中断，Agent 正在重连':pending.size?'正在读取源码 / 执行工具':output?'已收到输出，等待校验':connected?'Agent 处理中，等待后续输出':'进程已启动，等待 Agent 会话');
   const active=activeStatuses.has(run.status),end=Date.parse(run.ended_at||'');
   return {phase,active,connected,output,reconnecting:active&&reconnecting,items:[...items.values()],files:[...files],pending:pending.size,
     elapsed:duration((active||!Number.isFinite(end)?now:end)-Date.parse(run.created_at)),

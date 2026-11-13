@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {ArcService} from '../src/main/service';
 import {prepareOverview} from '../src/main/overview-result';
-import {sha} from '../src/main/snapshot';
+import {applyOverviewReview} from '../src/main/overview-review';
+import {linesOf,readSource,sha} from '../src/main/snapshot';
 import type {runCodex} from '../src/main/providers';
 import type {Run,Snapshot} from '../src/shared';
 
@@ -27,12 +28,12 @@ const overview={
 
 function signal(){let resolve!:()=>void;const promise=new Promise<void>(done=>{resolve=done;});return {promise,resolve};}
 const active=(cancel:()=>Promise<void>=async()=>{})=>({child:{pid:123} as any,cancel});
-async function fixture(t:TestContext,runner:typeof runCodex){
+async function fixture(t:TestContext,runner:typeof runCodex,emit?:(event:any)=>void){
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'arc-overview-service-')),root=path.join(directory,'中文 空格工程');
   await fs.mkdir(root);
   await fs.writeFile(path.join(root,'入口.ts'),overview.evidence[0].quote+'\n');
   await fs.writeFile(path.join(root,'存储.ts'),overview.evidence[1].quote+'\n');
-  const service=new ArcService(path.join(directory,'data'),path.resolve('.'),undefined,runner);
+  const service=new ArcService(path.join(directory,'data'),path.resolve('.'),emit,runner);
   t.after(async()=>{
     await service.shutdown();service.store.close();
     assert.equal(path.dirname(directory),os.tmpdir());await fs.rm(directory,{recursive:true});
@@ -41,10 +42,10 @@ async function fixture(t:TestContext,runner:typeof runCodex){
   service.store.put('provider','codex',{provider_id:'codex',status:'available',version:'injected-test-runner',checked_at:new Date().toISOString()});
   return {service,project,scenario,snapshot:service.store.get<Snapshot>('snapshot',project.snapshot_id)};
 }
-async function generation(options:Parameters<typeof runCodex>[0]){
+async function generation(options:Parameters<typeof runCodex>[0],value=overview){
   assert.equal(options.shouldStart?.(),true);options.started(active());
   await fs.mkdir(path.dirname(options.run.output_path),{recursive:true});
-  const raw=JSON.stringify(overview);await fs.writeFile(options.run.output_path,raw);
+  const raw=JSON.stringify(value);await fs.writeFile(options.run.output_path,raw);
   return {code:0,raw,stderr:''};
 }
 async function reviewFor(options:Parameters<typeof runCodex>[0]){
@@ -119,4 +120,183 @@ test('failed or incomplete review cannot be bypassed through direct acceptance o
     assert.equal(service.active.size,0);assert.equal(calls,2,'blocked recovery must not dispatch another model task');
     assert.equal(await fs.readFile(run.output_path,'utf8'),JSON.stringify(overview));
   });
+});
+
+// The extra dependency stays accepted, so recheck must include only the
+// repaired edge. Deliberately incorrect persistence wording exercises repair.
+const researchOverview={...overview,relations:[
+  {...overview.relations[0],label:'持久化字符串',description:'提交入口把字符串持久化到数据库。'},
+  {id:'uses-store',kind:'dependency',source:'submit',target:'store',label:'依赖存储模块',description:'提交入口导入存储模块提供的 save 函数。',evidence_ids:['source-submit']},
+]};
+type RunnerOptions=Parameters<typeof runCodex>[0];
+function phaseInput(options:RunnerOptions){return JSON.parse(options.prompt.split(options.phase==='overview_research'?'待补查关系：':'待复核输入：')[1]);}
+async function phaseReply(options:RunnerOptions,value:unknown){
+  const raw=JSON.stringify(value);await fs.mkdir(path.dirname(options.run.output_path),{recursive:true});await fs.writeFile(options.run.output_path,raw);
+  return {code:0,raw,stderr:''};
+}
+function reviewReply(options:RunnerOptions,rejectSave=false){
+  const input=phaseInput(options);
+  return {schema_version:'overview-review-1',run_id:input.run_id,source_snapshot_id:input.source_snapshot_id,draft_sha256:input.draft_sha256,
+    summary:{verdict:'supported',reason:'摘要仅描述源码中的内存保存。'},
+    relations:input.relations.map((edge:any)=>({edge_id:edge.edge_id,verdict:rejectSave&&edge.edge_id==='save'?'contradicted':'supported',
+      reason:rejectSave&&edge.edge_id==='save'?'只见 records.push，原断言的数据库持久化缺乏依据。':'引用实现支持本条关系。',evidence_ids:edge.evidence_ids}))};
+}
+async function researchReply(options:RunnerOptions,outcome:'resolved'|'unresolved'='resolved'){
+  const input=phaseInput(options),evidence=[];
+  assert.deepEqual(input.relations.map((edge:any)=>edge.edge_id),['save']);
+  for(const [index,original] of overview.evidence.entries()){
+    const source=await readSource(options.storage,options.snapshot,original.path),lines=linesOf(source.text);
+    const receipt={source_snapshot_id:source.source_snapshot_id,path:source.path,content_sha256:source.content_sha256,total_lines:source.line_count,line_start:1,
+      lines:lines.map((text,index)=>({line:index+1,text}))};
+    // Official CLI event shape, injected locally; this is not real Agent evidence.
+    options.event({type:'item.completed',item:{id:'read-'+index,type:'mcp_tool_call',server:'arc_frozen_source',tool:'arc_read_source',
+      arguments:{path:source.path,line_start:1,line_count:source.line_count},status:'completed',error:null,
+      result:{content:[{type:'text',text:JSON.stringify(receipt)}],structured_content:null}}});
+    evidence.push({...original,id:`research-${sha(input.run_id).slice(0,12)}-${index}`});
+  }
+  const ids=evidence.map(item=>item.id);
+  return {schema_version:'overview-research-1',run_id:input.run_id,source_snapshot_id:input.source_snapshot_id,draft_sha256:input.draft_sha256,
+    relations:[{edge_id:'save',outcome,reason:outcome==='resolved'?'已重读入口.ts 的 submit 和存储.ts 的 save；将数据库持久化修订为内存记录写入。':'已查入口.ts 和存储.ts；源码仅有内存 records.push，未提供数据库持久化实现。',checked_evidence_ids:ids,
+      proposal:outcome==='resolved'?{kind:'data_publish',label:'保存到内存记录',description:'submit 调用 save，将字符串加入 records 数组。',source_node_id:'submit',target_node_id:'store',evidence_ids:ids}:null}],evidence};
+}
+
+test('automatic source research stays unpublished until only its repaired relation passes recheck',async t=>{
+  const entered=signal(),release=signal(),phases:{id:string;source:string;phase:string;output:string}[]=[];
+  const runner:typeof runCodex=async options=>{
+    phases.push({id:options.run.binding.run_id,source:options.snapshot.source_snapshot_id,phase:options.phase||'generation',output:options.run.output_path});
+    if(!options.phase)return generation(options,researchOverview);
+    if(options.phase==='overview_recheck'){
+      assert.deepEqual(phaseInput(options).relations.map((edge:any)=>edge.edge_id),['save']);
+      entered.resolve();await release.promise;
+    }
+    assert.equal(options.shouldStart?.(),true);options.started(active());
+    return phaseReply(options,options.phase==='overview_research'?await researchReply(options):reviewReply(options,options.phase==='overview_review'));
+  };
+  const {service,scenario,snapshot}=await fixture(t,runner),run=await service.startRun(scenario.scenario_id,'codex','automatic-research-success');
+  try{
+    await entered.promise;assert.equal(service.data().explanations.length,0,'the repaired candidate must not appear before independent recheck');
+    assert.equal(service.store.get<Run>('run',run.binding.run_id).status,'validating');
+    assert.deepEqual(phases.map(item=>item.phase),['generation','overview_review','overview_research','overview_recheck']);
+    assert.ok(phases.every(item=>item.id===run.binding.run_id&&item.source===snapshot.source_snapshot_id));
+    assert.equal(new Set(phases.map(item=>item.output)).size,4);
+  }finally{release.resolve();await Promise.all(service.executing.values());}
+  const saved=service.data().explanations[0],completed=service.store.get<Run>('run',run.binding.run_id);
+  assert.equal(completed.status,'completed');assert.equal(saved.result.gaps.length,0);assert.equal(saved.result.edges.length,2);
+  assert.equal(saved.result.edges.find(edge=>edge.edge_id==='save')!.label,'保存到内存记录');
+  assert.equal(saved.result.edges.find(edge=>edge.edge_id==='uses-store')!.label,'依赖存储模块');
+  assert.deepEqual(saved.result.binding,run.binding);assert.match(completed.validation!.semantic,/自动补查 1 条，其中 1 条/);
+  assert.equal(await fs.readFile(run.output_path,'utf8'),JSON.stringify(researchOverview));
+  assert.equal(service.data().runs.length,1);assert.equal(service.active.size,0);
+});
+
+test('empty, failed or cancelled research never becomes a source-not-found conclusion or a published graph',async t=>{
+  for(const failure of ['empty-result','runner-failure','cancel-preflight','cancel-local-validation'] as const)await t.test(failure,async t=>{
+    const entered=signal(),release=signal(),phases:string[]=[];let mayStart:boolean|undefined,stopped=false;
+    let observed:ArcService|undefined,researchReturned=false,localRequested=false,localCancellation:Promise<Run>|undefined;
+    const runner:typeof runCodex=async options=>{
+      phases.push(options.phase||'generation');
+      if(!options.phase)return generation(options,researchOverview);
+      if(options.phase==='overview_review'){options.started(active());return phaseReply(options,reviewReply(options,true));}
+      assert.equal(options.phase,'overview_research');assert.equal(options.shouldStart?.(),true);
+      if(failure==='cancel-preflight'){
+        entered.resolve();await release.promise;mayStart=options.shouldStart?.();
+        options.started(active(async()=>{stopped=true;}));
+        return phaseReply(options,await researchReply(options));
+      }
+      if(failure==='cancel-local-validation'){
+        options.started(active());const reply=await phaseReply(options,await researchReply(options));researchReturned=true;return reply;
+      }
+      options.started(active());return {code:failure==='runner-failure'?1:0,raw:'',stderr:failure==='runner-failure'?'source research unavailable':''};
+    };
+    const {service,scenario}=await fixture(t,runner,event=>{
+      if(failure!=='cancel-local-validation'||event.type!=='changed'||!observed||!researchReturned||localRequested)return;
+      const current=observed.data().runs[0];
+      if(current.status!=='validating'||observed.active.size)return;
+      // The subprocess has returned and its handle is gone; cancellation now
+      // comes through the same changed notification observed by the UI.
+      localRequested=true;localCancellation=observed.cancel(current.binding.run_id);
+    });
+    observed=service;const run=await service.startRun(scenario.scenario_id,'codex','research-'+failure);
+    if(failure==='cancel-preflight'){
+      try{await entered.promise;await service.cancel(run.binding.run_id);}
+      finally{release.resolve();await Promise.all(service.executing.values());}
+      assert.equal(mayStart,false);assert.equal(stopped,true);
+    }else await Promise.all(service.executing.values());
+    if(failure==='cancel-local-validation'){assert.equal(localRequested,true);assert.equal((await localCancellation)!.status,'cancelled');}
+    const terminal=service.store.get<Run>('run',run.binding.run_id);
+    assert.equal(terminal.status,failure.startsWith('cancel-')?'cancelled':'failed');
+    if(failure==='runner-failure')assert.match(terminal.error!,/未完成，不能据此断言源码不存在.*source research unavailable/);
+    if(failure==='empty-result')assert.ok(terminal.error,'empty output is an execution/format error');
+    assert.equal(service.data().explanations.length,0);assert.equal(service.active.size,0);
+    assert.deepEqual(phases,['generation','overview_review','overview_research']);
+  });
+});
+
+test('researching a saved gap creates a new result on its original snapshot and preserves the prior explanation',async t=>{
+  const phases:{id:string;phase:string;source:string}[]=[];let sourceOutcome:'resolved'|'unresolved'='unresolved';
+  const runner:typeof runCodex=async options=>{
+    phases.push({id:options.run.binding.run_id,phase:options.phase||'generation',source:options.snapshot.source_snapshot_id});
+    if(!options.phase)return generation(options,researchOverview);
+    assert.equal(options.shouldStart?.(),true);options.started(active());
+    return phaseReply(options,options.phase==='overview_research'?await researchReply(options,sourceOutcome):reviewReply(options,options.phase==='overview_review'));
+  };
+  const {service,scenario,project,snapshot}=await fixture(t,runner),first=await service.startRun(scenario.scenario_id,'codex','save-unresolved-gap');
+  await Promise.all(service.executing.values());
+  const original=service.data().explanations[0];assert.ok(original,'a completed investigation can retain an explicit unresolved gap');
+  assert.equal(original.result.gaps.length,1);assert.match(original.result.gaps[0].question,/已查入口.ts.*未提供数据库持久化实现/);
+  assert.equal(original.result.edges.some(edge=>edge.edge_id==='save'),false);
+  const originalResult=structuredClone(original.result),oldRun=structuredClone(service.store.get<Run>('run',first.binding.run_id));
+  const auditPaths=[first.output_path,path.join(path.dirname(first.output_path),'overview-draft.json'),path.join(path.dirname(first.output_path),'overview-review.json')];
+  const audits=await Promise.all(auditPaths.map(file=>fs.readFile(file,'utf8')));
+  await fs.appendFile(path.join(project.root_path,'存储.ts'),'// 本地源码已更新\n');
+  const refreshed=await service.refresh(project.project_id);assert.notEqual(refreshed.source_snapshot_id,snapshot.source_snapshot_id);
+  sourceOutcome='resolved';
+  const retry=await service.researchOverview(original.result_id,'research-saved-gap');
+  await Promise.all(service.executing.values());
+  const saved=service.data().explanations.find(item=>item.result.binding.run_id===retry.binding.run_id)!;
+  assert.equal(service.store.get<Run>('run',retry.binding.run_id).status,'completed');assert.ok(saved);
+  assert.notEqual(saved.result_id,original.result_id);assert.deepEqual(retry.binding,{...first.binding,run_id:retry.binding.run_id});
+  assert.equal(saved.source_status,'needs_review');assert.equal(saved.result.gaps.length,0);
+  assert.equal(saved.result.edges.find(edge=>edge.edge_id==='save')!.status,'source_supported');
+  assert.deepEqual(phases.filter(item=>item.id===retry.binding.run_id).map(item=>[item.phase,item.source]),[['overview_research',snapshot.source_snapshot_id],['overview_recheck',snapshot.source_snapshot_id]]);
+  assert.deepEqual(service.data().explanations.find(item=>item.result_id===original.result_id)!.result,originalResult);
+  assert.deepEqual(service.store.get<Run>('run',first.binding.run_id),oldRun);
+  assert.deepEqual(await Promise.all(auditPaths.map(file=>fs.readFile(file,'utf8'))),audits);
+  assert.equal(service.data().explanations.length,2);assert.equal(service.active.size,0);
+});
+
+test('legacy two-phase results retain their original review hash when a later stored runtime version is present',async t=>{
+  const phases:string[]=[];
+  const runner:typeof runCodex=async options=>{
+    assert.ok(options.phase==='overview_research'||options.phase==='overview_recheck','legacy recovery must not regenerate the overview');
+    phases.push(options.phase);assert.equal(options.shouldStart?.(),true);options.started(active());
+    return phaseReply(options,options.phase==='overview_research'?await researchReply(options):reviewReply(options));
+  };
+  const {service,scenario,project,snapshot}=await fixture(t,runner),created=new Date().toISOString();
+  const previous:Run={binding:{project_id:project.project_id,feature_id:scenario.feature_id,scenario_id:scenario.scenario_id,question_revision_id:scenario.question_revision_id,source_snapshot_id:snapshot.source_snapshot_id,run_id:'legacy-overview-run'},
+    provider_id:'codex',overview_format:'overview-1',status:'completed',runtime_version:'codex-cli legacy-test',question:scenario.question,title:scenario.title,
+    created_at:created,ended_at:created,submission_key:'legacy-overview-key',output_path:path.join(service.directory,'runs','legacy-overview-run','result.json')};
+  // The old pipeline created its draft from the initial envelope; only the
+  // persisted run acquired runtime_version after process startup.
+  const draft=await prepareOverview(researchOverview,{...previous,runtime_version:undefined},snapshot,service.directory);
+  const review={schema_version:'overview-review-1',run_id:previous.binding.run_id,source_snapshot_id:snapshot.source_snapshot_id,draft_sha256:sha(JSON.stringify(draft)),
+    summary:{verdict:'supported',reason:'摘要描述内存保存。'},relations:draft.edges.map(edge=>({edge_id:edge.edge_id,verdict:edge.edge_id==='save'?'contradicted':'supported',reason:'数据库持久化的断言缺乏依据，模块依赖有源码支持。',evidence_ids:edge.evidence_ids}))};
+  assert.notEqual(sha(JSON.stringify(await prepareOverview(researchOverview,previous,snapshot,service.directory))),review.draft_sha256,'rebuilding with the stored runtime version must reproduce the observed mismatch');
+  const original={result_id:draft.result_id,scenario_id:scenario.scenario_id,created_at:created,source_status:'current',result:applyOverviewReview(review,draft).result};
+  service.store.put('run',previous.binding.run_id,previous);service.store.put('explanation',original.result_id,original);
+  const directory=path.dirname(previous.output_path),reviewPath=path.join(directory,'review','result.json'),raw=JSON.stringify(researchOverview),reviewRaw=JSON.stringify(review);
+  await fs.mkdir(path.dirname(reviewPath),{recursive:true});await fs.writeFile(previous.output_path,raw);await fs.writeFile(reviewPath,reviewRaw);
+  const newerAuditFiles=['overview-draft.json','overview-review.json'].map(name=>path.join(directory,name));
+  for(const file of newerAuditFiles)await assert.rejects(fs.access(file),{code:'ENOENT'});
+  const resumed=await service.researchOverview(original.result_id,'legacy-research-key');await Promise.all(service.executing.values());
+  const completed=service.store.get<Run>('run',resumed.binding.run_id),saved=service.data().explanations.find(item=>item.result.binding.run_id===resumed.binding.run_id)!;
+  assert.equal(completed.status,'completed',completed.error);assert.ok(saved);assert.notEqual(saved.result_id,original.result_id);
+  assert.equal(saved.result.binding.source_snapshot_id,snapshot.source_snapshot_id);assert.equal(saved.result.gaps.length,0);
+  assert.deepEqual(phases,['overview_research','overview_recheck']);
+  assert.deepEqual(service.store.get<Run>('run',previous.binding.run_id),previous);
+  assert.deepEqual(service.data().explanations.find(item=>item.result_id===original.result_id),original);
+  assert.equal(await fs.readFile(previous.output_path,'utf8'),raw);assert.equal(await fs.readFile(reviewPath,'utf8'),reviewRaw);
+  assert.equal(JSON.parse(await fs.readFile(reviewPath,'utf8')).draft_sha256,sha(JSON.stringify(draft)));
+  for(const file of newerAuditFiles)await assert.rejects(fs.access(file),{code:'ENOENT'});
+  assert.equal(service.data().explanations.length,2);assert.equal(service.active.size,0);
 });

@@ -40,6 +40,19 @@ test('timeouts have a readable outcome without implying a saved result',()=>{
 test('independent overview review remains visibly unfinished and keeps both phase messages',()=>{
   const events=[{type:'item.completed',item:{id:'0',type:'agent_message',text:'入口已查证'}},{type:'local.stage',stage:'overview_review',message:'开始核对关系'},
     {type:'item.completed',phase:'overview_review',item:{id:'0',type:'agent_message',text:'正在核对 IPC'}}];
-  const value=activity(run,events,time);assert.match(value.phase,/2\/2.*尚未发布/);assert.equal(value.items.filter(item=>item.kind==='message').length,2);
+  const value=activity(run,events,time);assert.match(value.phase,/核对首轮关系.*尚未发布/);assert.equal(value.items.filter(item=>item.kind==='message').length,2);
   assert.equal(activity({...run,status:'failed'},events,time).phase,'分析失败');
+});
+test('automatic relation research and recheck display actual phases without claiming a saved result',()=>{
+  const events=[{type:'local.stage',stage:'overview_review',message:'初审发现两条关系缺少依据'},
+    {type:'local.stage',stage:'overview_research',message:'只补查被拒关系'},
+    {type:'item.completed',phase:'overview_research',item:{id:'0',type:'agent_message',text:'继续读取接收端'}}];
+  assert.match(activity(run,events,time).phase,/自动补查.*原阅读位置保留/);
+  assert.equal(activity(run,[...events,retry],time).phase,'连接中断，Agent 正在重连','a research phase must not hide a network failure');
+  events.push({type:'local.stage',stage:'overview_recheck',message:'复核修订后的关系'});
+  assert.match(activity(run,events,time).phase,/复核补查.*尚未保存/);
+  events.push({type:'local.stage',stage:'overview_reviewed',message:'最终复核已完成'});
+  assert.match(activity(run,events,time).phase,/等待本地校验和保存/);
+  assert.equal(activity({...run,status:'cancel_requested'},events,time).phase,'正在请求停止');
+  assert.equal(activity({...run,status:'completed'},events,time).phase,'分析完成，说明已保存');
 });

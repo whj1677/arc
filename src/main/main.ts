@@ -55,6 +55,7 @@ app.whenReady().then(async()=>{
         case 'reading_save':value=service.reading(args.key,args.value);break;
         case 'providers_probe':value=await service.probe(args.config);break;
         case 'run_start':value=await service.startRun(args.scenario_id,args.provider_id,args.submission_key,args.previous_run_id);break;
+        case 'overview_research':value=await service.researchOverview(args.result_id,args.submission_key);break;
         case 'reading_ask':value=await service.askReading(args);break;
         case 'reading_retry':value=service.retryReading(args.question_id,args.mode,args.submission_key);break;
         case 'run_cancel':value=await service.cancel(args.run_id);break;

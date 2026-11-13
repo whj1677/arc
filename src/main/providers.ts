@@ -13,6 +13,9 @@ import {promptContext} from './prompt-context';
 import {readingAnswerTransportSchema,readingPrompt} from './reading-question';
 import {overviewSchema,overviewPrompt} from './overview-result';
 import {overviewReviewSchema} from './overview-review';
+import {overviewResearchSchema} from './overview-research';
+export type OverviewPhase='overview_review'|'overview_research'|'overview_recheck';
+export const overviewPhaseDirectory={overview_review:'review',overview_research:'research',overview_recheck:'recheck'} as const;
 const exec = promisify(execFile);
 const supportedCodexVersions=['codex-cli 0.163.0-alpha.10.2','codex-cli 0.167.0-alpha.4.1'];
 export const redact = (text:string) => text.replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|wbjt_[A-Za-z0-9._-]+|Bearer\s+[A-Za-z0-9._-]+)/gi,'[REDACTED]').replace(/("(?:api[_-]?key|access_token|refresh_token|client_secret|authorization)"\s*:\s*")[^"]+/gi,'$1[REDACTED]');
@@ -127,16 +130,16 @@ architecture 只用于系统架构，不是函数调用图。首屏优先展示�
 export async function runCodex(options:{
   run:Run;snapshot:Snapshot;storage:string;resources:string;profile:ProviderProfile;prompt:string;
   event:(value:any)=>void;started:(active:ActiveProcess)=>void;shouldStart?:()=>boolean;
-  phase?:'overview_review';
+  phase?:OverviewPhase;
 }):Promise<{code:number|null;raw:string;stderr:string;protocol_error?:string}> {
   const {run,snapshot,storage,profile,prompt}=options;
   const env=codexChildEnvironment(process.env);
   const runtimeVersion=(await exec(profile.path!,['--version'],{env,windowsHide:true,timeout:8000})).stdout.trim();
   if(!supportedCodexVersions.includes(runtimeVersion)||runtimeVersion!==profile.version)throw new Error(`Codex 程序版本已变化（当前 ${runtimeVersion}，上次检测 ${profile.version||'未知'}）；请重新检测执行通道后重试，尚未派发分析。`);
-  const runDir=path.join(storage,'runs',run.binding.run_id,...(options.phase?['review']:[]));
+  const runDir=path.join(storage,'runs',run.binding.run_id,...(options.phase?[overviewPhaseDirectory[options.phase]]:[]));
   await fs.mkdir(runDir,{recursive:true});
   const schemaPath=path.join(runDir,'transport-schema.json');
-  await fs.writeFile(schemaPath,JSON.stringify(options.phase?transportSchema(overviewReviewSchema):run.overview_format?overviewSchema:run.reading_question_id?readingAnswerTransportSchema():transportSchema()));
+  await fs.writeFile(schemaPath,JSON.stringify(options.phase?transportSchema(options.phase==='overview_research'?overviewResearchSchema:overviewReviewSchema):run.overview_format?overviewSchema:run.reading_question_id?readingAnswerTransportSchema():transportSchema()));
   const workspace=path.join(storage,'snapshots',snapshot.source_snapshot_id);
   const contextPath=path.join(runDir,'source-context.json'),contextServer=path.join(runDir,'context-server.cjs');
   await fs.writeFile(contextPath,JSON.stringify({storage,snapshot}));
@@ -155,7 +158,7 @@ export async function runCodex(options:{
   // the user's model, global config and custom/detailed tasks stay unchanged.
   if(!run.reading_question_id&&run.question===overviewDiscoveryQuestion){
     args.push('-c','model_reasoning_effort="medium"');
-    if(!options.phase)options.event({type:'local.stage',stage:'overview_discovery',message:'1/2 查证入口与主要组件，生成精简架构和功能目录；随后自动核对关系。'});
+    if(!options.phase)options.event({type:'local.stage',stage:'overview_discovery',message:'正在查证入口与主要组件，生成精简架构和功能目录；随后自动复核，遇疑点继续补查。'});
   }
   for(const feature of ['js_repl','computer_use','view_image','browser_use_external','image_generation','imagegenext',
     'memory_tool','memories','external_agent_memory_import','connectors','collab','enable_fanout',
