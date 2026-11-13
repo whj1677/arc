@@ -1,0 +1,1490 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:arc:contracts:analysis-result:1.0",
+  "title": "Arc 分析结果合同 1.0",
+  "description": "Arc 自有初始结果合同，不是全产品数据模型；不要求供应商具有原生 JSON Schema 输出。",
+  "$comment": "结构校验与源码锚点校验分离。标准 JSON Schema 不验证跨对象 ID 存在性、ID 字段唯一性、证据哈希、行范围、快照归属或结论语义；这些必须由 Arc 另行验证。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "fictional": {
+      "type": "boolean"
+    },
+    "result_id": {
+      "$ref": "#/$defs/id"
+    },
+    "binding": {
+      "$ref": "#/$defs/binding"
+    },
+    "provider": {
+      "$ref": "#/$defs/provider"
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claim_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "text",
+        "claim_ids"
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "covered_scope": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "unresolved_scope": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "covered_scope",
+        "unresolved_scope"
+      ],
+      "description": "问题范围覆盖；与任务生命周期、源码新鲜度和证据强度分开。"
+    },
+    "feature_catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "轻量功能发现目录，不是详细流程。按业务分组，引用有来源依据的 stage 节点；节点只含功能名称和一句话用途，输入输出可为空。scope 说明查阅范围和覆盖边界，不得宣称未读工程全部覆盖。",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "node_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "label",
+              "node_ids"
+            ]
+          }
+        }
+      },
+      "required": [
+        "scope",
+        "groups"
+      ]
+    },
+    "architecture": {
+      "description": "可选系统架构视图；仅函数走读时省略。node_ids 只引用 kind 为 stage、resource 或 execution_boundary 的系统组件，禁止引用 function 或 decision；edge_ids 的两端必须都在 node_ids 中。不得按文件名猜测。node_ids 顺序仅用于布局，不表示执行顺序。关系标签注明有依据的通信协议、数据访问方式或明确未知。",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "edge_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "node_ids",
+        "edge_ids"
+      ]
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      }
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/claim"
+      },
+      "minItems": 1
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/gap"
+      }
+    },
+    "reading_guide": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "actor": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              },
+              "outcome": {
+                "type": "string",
+                "minLength": 1
+              },
+              "detail": {
+                "type": "string"
+              },
+              "node_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "evidence_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "actor",
+              "text",
+              "outcome",
+              "detail",
+              "node_ids",
+              "evidence_ids"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "duty": {
+                "type": "string",
+                "minLength": 1
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 0,
+                "uniqueItems": true
+              },
+              "evidence_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "duty",
+              "files",
+              "evidence_ids"
+            ]
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "handoffs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "from": {
+                "$ref": "#/$defs/id"
+              },
+              "to": {
+                "$ref": "#/$defs/id"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "send": {
+                "type": "string",
+                "minLength": 1
+              },
+              "receive": {
+                "type": "string",
+                "minLength": 1
+              },
+              "detail": {
+                "type": "string"
+              },
+              "evidence_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "id",
+              "from",
+              "to",
+              "label",
+              "kind",
+              "send",
+              "receive",
+              "detail",
+              "evidence_ids"
+            ]
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "detail": {
+                "type": "string"
+              },
+              "step_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "minItems": 0,
+                "uniqueItems": true
+              },
+              "evidence_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "path",
+              "title",
+              "description",
+              "detail",
+              "step_ids",
+              "evidence_ids"
+            ]
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "entry": {
+                "type": "string",
+                "minLength": 1
+              },
+              "intro": {
+                "type": "string",
+                "minLength": 1
+              },
+              "boundary": {
+                "type": "string"
+              },
+              "step_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "minItems": 0,
+                "uniqueItems": true
+              },
+              "lanes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "step_ids": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/id"
+                      },
+                      "minItems": 1,
+                      "uniqueItems": true
+                    },
+                    "link_labels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "label",
+                    "step_ids",
+                    "link_labels"
+                  ]
+                },
+                "minItems": 0,
+                "uniqueItems": true
+              },
+              "failure_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "minItems": 0,
+                "uniqueItems": true
+              },
+              "role_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "minItems": 0,
+                "uniqueItems": true
+              },
+              "handoff_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "minItems": 0,
+                "uniqueItems": true
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 0,
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "id",
+              "label",
+              "entry",
+              "intro",
+              "boundary",
+              "step_ids",
+              "lanes",
+              "failure_ids",
+              "role_ids",
+              "handoff_ids",
+              "files"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "steps",
+        "roles",
+        "handoffs",
+        "files",
+        "paths"
+      ],
+      "description": "当前功能的阅读说明。时间图、职责交接和文件用途共享本结果的节点与依据；只描述已分析行为，不产生新流程。多入口分别列 paths，共同步骤在 step_ids，用户操作分支在 lanes，失败停止步骤在 failure_ids。所有文件必须来自本结果引用。"
+    },
+    "function_walkthroughs": {
+      "description": "Explicit source-confirmed order for each function entry path; not inferred from graph layout, array order of edges, or runtime traces.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "trigger": {
+            "type": "string",
+            "minLength": 1
+          },
+          "entry_node_id": {
+            "$ref": "#/$defs/id"
+          },
+          "boundary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/id"
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 80,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "$ref": "#/$defs/id"
+                },
+                "kind": {
+                  "enum": [
+                    "entry",
+                    "call",
+                    "callback",
+                    "dispatch",
+                    "return",
+                    "work"
+                  ]
+                },
+                "from_node_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/id"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "to_node_id": {
+                  "$ref": "#/$defs/id"
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "input": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "output": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "condition": {
+                  "type": "string"
+                },
+                "evidence_ids": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "from_node_id",
+                "to_node_id",
+                "text",
+                "input",
+                "output",
+                "condition",
+                "evidence_ids"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "trigger",
+          "entry_node_id",
+          "boundary",
+          "evidence_ids",
+          "steps"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "fictional",
+    "result_id",
+    "binding",
+    "provider",
+    "summary",
+    "coverage",
+    "nodes",
+    "edges",
+    "claims",
+    "evidence",
+    "gaps"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "properties": {
+              "provider_id": {
+                "const": "demo"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "fictional": {
+            "const": true
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[a-z0-9][a-z0-9._:-]*$"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "$ref": "#/$defs/id"
+        },
+        "feature_id": {
+          "$ref": "#/$defs/id"
+        },
+        "scenario_id": {
+          "$ref": "#/$defs/id"
+        },
+        "question_revision_id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_snapshot_id": {
+          "$ref": "#/$defs/id"
+        },
+        "run_id": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "required": [
+        "project_id",
+        "feature_id",
+        "scenario_id",
+        "question_revision_id",
+        "source_snapshot_id",
+        "run_id"
+      ],
+      "description": "同一次运行的六项不可变绑定；不由当前页面状态推导。"
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider_id": {
+          "enum": [
+            "codex",
+            "dsh",
+            "workbuddy",
+            "demo"
+          ]
+        },
+        "connection_id": {
+          "$ref": "#/$defs/id"
+        },
+        "adapter_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runtime_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "external_provider_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "external_session_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "external_thread_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "external_task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "external_run_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "provider_id",
+        "connection_id",
+        "adapter_version"
+      ],
+      "description": "外部标识独立字段；不得替代 Arc 的六项绑定。"
+    },
+    "node_io": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "io_id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "availability": {
+          "enum": [
+            "specified",
+            "partial",
+            "unknown"
+          ]
+        },
+        "data_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "value_or_shape": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claim_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "io_id",
+        "name",
+        "availability",
+        "data_type",
+        "value_or_shape",
+        "description",
+        "claim_ids",
+        "evidence_ids"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "availability": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data_type": {
+                "type": "null"
+              },
+              "value_or_shape": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "availability": {
+                "const": "specified"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data_type": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ],
+      "description": "未知字段显式使用 unknown 与 null；已知类型不代表已知运行时实际值。"
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "stage",
+            "function",
+            "resource",
+            "decision",
+            "execution_boundary"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node_io"
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node_io"
+          }
+        },
+        "claim_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "execution_context": {
+          "$ref": "#/$defs/execution_context"
+        },
+        "parent_node_id": {
+          "$ref": "#/$defs/id",
+          "description": "聚合归属；不表达调用或时序。二次校验检查存在性、自指与循环。"
+        },
+        "source_scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "file",
+                "folder"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "description": "明确的整个文件/目录用途；必须是 resource 节点，路径在冻结快照内。局部引用不能冒充整个文件说明。"
+        },
+        "execution_episode_id": {
+          "$ref": "#/$defs/id",
+          "description": "来自工程运行记录的执行轮次，区别于 Arc run_id；未知时省略，下一次启动属于新的执行轮次。"
+        },
+        "function_details": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "symbol",
+            "signature",
+            "definition_evidence_id",
+            "parameter_io_ids",
+            "return_io_ids"
+          ],
+          "properties": {
+            "symbol": {
+              "type": "string",
+              "minLength": 1
+            },
+            "signature": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "definition_evidence_id": {
+              "$ref": "#/$defs/id"
+            },
+            "parameter_io_ids": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/id"
+              },
+              "uniqueItems": true
+            },
+            "return_io_ids": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/id"
+              },
+              "uniqueItems": true
+            }
+          }
+        }
+      },
+      "required": [
+        "node_id",
+        "kind",
+        "label",
+        "description",
+        "inputs",
+        "outputs",
+        "claim_ids",
+        "evidence_ids",
+        "execution_context"
+      ]
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "edge_id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "sync_call",
+            "return",
+            "queue_send",
+            "queue_receive",
+            "data_publish",
+            "data_read",
+            "dependency",
+            "control_flow",
+            "execution_boundary"
+          ]
+        },
+        "source_node_id": {
+          "$ref": "#/$defs/id"
+        },
+        "target_node_id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "source_supported",
+            "inferred",
+            "user_clue",
+            "unknown"
+          ]
+        },
+        "transfers": {
+          "type": "array",
+          "description": "可选的明确数据传递映射。不能仅因两端相邻或名称相似建立映射；条件关系可不含传递。source_output_id 必须来自源节点 outputs，target_input_id 必须来自目标节点 inputs。来源断言同时指向本关系及两个 I/O。",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "source_output_id": {
+                "$ref": "#/$defs/id"
+              },
+              "target_input_id": {
+                "$ref": "#/$defs/id"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "source_supported",
+                  "inferred",
+                  "user_clue",
+                  "unknown"
+                ]
+              },
+              "claim_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "uniqueItems": true
+              },
+              "evidence_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/id"
+                },
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "label",
+              "source_output_id",
+              "target_input_id",
+              "status",
+              "claim_ids",
+              "evidence_ids"
+            ]
+          }
+        },
+        "condition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claim_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "related_call_edge_id": {
+          "$ref": "#/$defs/id",
+          "description": "仅 return 使用，指向方向相反的 sync_call。二次校验检查引用类型和方向。"
+        },
+        "flow_role": {
+          "type": "string",
+          "enum": [
+            "main",
+            "alternative",
+            "exception"
+          ],
+          "description": "Explicit business reading role for control_flow only; main is a single ordered path, alternatives and exceptions stay at their origin."
+        }
+      },
+      "required": [
+        "edge_id",
+        "kind",
+        "source_node_id",
+        "target_node_id",
+        "label",
+        "status",
+        "claim_ids",
+        "evidence_ids"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "source_supported"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "claim_ids": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "related_call_edge_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "kind": {
+                "const": "return"
+              }
+            }
+          }
+        }
+      ],
+      "description": "source_supported 关系至少引用一个同状态且有证据的断言；引用对象状态由二次校验检查。"
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {
+          "$ref": "#/$defs/id"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "source_supported",
+            "inferred",
+            "user_clue",
+            "unknown"
+          ]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "targets": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "node_ids": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              },
+              "uniqueItems": true
+            },
+            "edge_ids": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              },
+              "uniqueItems": true
+            },
+            "io_ids": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              },
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "node_ids",
+            "edge_ids",
+            "io_ids"
+          ]
+        }
+      },
+      "required": [
+        "claim_id",
+        "statement",
+        "status",
+        "rationale",
+        "limitations",
+        "evidence_ids",
+        "targets"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "source_supported"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidence_ids": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ],
+      "description": "source_supported 仅表示陈述在当前范围具有源码依据，不表示全局语义已被证明。"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "evidence_id": {
+          "$ref": "#/$defs/id"
+        },
+        "source_snapshot_id": {
+          "$ref": "#/$defs/id"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\\\u0000]+$",
+          "description": "相对快照根的 POSIX 路径；还须校验规范化路径与软链接不越界。"
+        },
+        "line_start": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "line_end": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "整个文件原始字节的 SHA-256；不得预先转码或规范化换行。"
+        },
+        "symbol_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "enum": [
+            "definition",
+            "callsite",
+            "read",
+            "write",
+            "declaration",
+            "context"
+          ]
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "evidence_id",
+        "source_snapshot_id",
+        "path",
+        "line_start",
+        "line_end",
+        "content_sha256",
+        "role",
+        "note"
+      ],
+      "description": "line_end >= line_start、实际行数、快照归属与文件哈希必须由源码锚点校验完成。"
+    },
+    "gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gap_id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "missing_implementation",
+            "missing_entry",
+            "missing_trace",
+            "missing_contract",
+            "unsupported_language",
+            "out_of_scope",
+            "other"
+          ]
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1
+        },
+        "impact": {
+          "type": "string",
+          "minLength": 1
+        },
+        "suggested_action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "related_node_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "claim_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "gap_id",
+        "kind",
+        "question",
+        "impact",
+        "suggested_action",
+        "related_node_ids",
+        "claim_ids",
+        "evidence_ids"
+      ]
+    },
+    "execution_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "task",
+            "isr",
+            "callback",
+            "startup",
+            "caller",
+            "unknown"
+          ]
+        },
+        "identity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "source_supported",
+            "inferred",
+            "user_clue",
+            "unknown"
+          ]
+        },
+        "claim_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "kind",
+        "identity",
+        "label",
+        "status",
+        "claim_ids",
+        "evidence_ids"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "identity": {
+                "type": "null"
+              },
+              "status": {
+                "const": "unknown"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "source_supported"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "claim_ids": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ],
+      "description": "显式执行上下文。caller 可以表示分析层可见调用路径，不据此声称真实线程身份；推断必须标识 inferred。"
+    }
+  }
+}

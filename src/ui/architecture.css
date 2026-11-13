@@ -1,0 +1,35 @@
+.system-overview{width:100%;color:#e6efef;line-height:1.6;overflow-wrap:anywhere}
+.system-heading{display:flex;align-items:baseline;gap:8px 16px;justify-content:space-between;flex-wrap:wrap;margin:0 0 16px}.system-heading h2{font-size:1.1em}.system-heading p{font-size:.72em;color:#9db4c2;margin:0}
+.system-components{display:grid;gap:.8em;min-width:0}.system-component{min-width:0;border:1px solid #385864;border-radius:.6em;background:#152731;overflow:hidden;display:flex;flex-direction:column}
+.system-component:nth-child(2){border-color:#54756b}.system-component:nth-child(3){border-color:#686786}
+.system-component .architecture-node{display:flex;flex-direction:column;gap:.35em;width:100%;height:auto;flex:1;padding:.85em;text-align:left;border:0;border-radius:0;background:transparent;font:inherit;min-width:0;white-space:normal}
+.system-component .architecture-node strong{font-size:1em;line-height:1.45}.system-component .architecture-node small{font-size:.72em;color:#a4cec2}.system-component .architecture-node>span{font-size:.76em;color:#c3d1d9;line-height:1.7;margin-top:.3em}
+.system-component .architecture-node:hover{background:#203b42}.system-component .architecture-node[aria-pressed=true]{background:#23463e;box-shadow:inset 0 3px #8fe7cb}
+.system-inspect{background:transparent;border:0;border-top:1px solid #304b57;text-align:left;border-radius:0;font:inherit;font-size:.7em;color:#a0c8c2;padding:.5em 1.1em;min-height:28px;display:flex;justify-content:space-between}
+.system-exchanges{margin-top:1.1em;display:grid;gap:.55em}.system-exchanges h3{font-size:.85em;color:#b7d6d0;margin:0 0 .15em}
+.system-exchange{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.2em .7em;font:inherit;font-size:.78em;text-align:left;white-space:normal;padding:.65em .9em;border:1px solid #3c5361;border-radius:.5em;background:#162530;min-width:0}
+.exchange-endpoints{display:flex;align-items:center;gap:.6em;flex-wrap:wrap;color:#d0e1e5}.exchange-endpoints>span:nth-child(2){color:#8adac2}.system-exchange strong{font-size:.95em;font-weight:500;color:#a9dacc}.system-exchange small{grid-column:1/-1;font-size:.95em;color:#a2b9c6;line-height:1.7}
+.system-boundary{font-size:.65em;color:#90aab7;margin:1em 0 0}
+.system-detail h2{margin-top:6px}.system-detail .module-purpose{padding:12px 0 0;border:0}.system-detail .module-purpose h3{margin:0}.system-detail .module-purpose p{font-size:13px;margin:6px 0 12px}
+.system-detail .module-partners{display:grid;gap:8px}.module-partner{font:inherit;text-align:left;display:grid;gap:4px;padding:9px 12px;border:1px solid #3b525e;border-radius:6px;background:#15242e;white-space:normal;min-width:0}.module-partner small{font-size:11px;color:#92b7b3}.module-partner strong{font-size:13px;font-weight:500}.module-partner>span{font-size:12px;color:#b0c3ce}
+.system-edge-endpoints{display:grid;gap:5px;justify-items:stretch;text-align:center;margin:12px 0}.system-edge-endpoints button{font-size:13px;text-align:left;background:#19332f;border-color:#42665a}.system-edge-endpoints>span{color:#91c9b8}.module-transfers p{font-size:13px}
+.system-reader .canvas-tools{height:38px;padding:5px 22px}.system-reader .canvas-tools .eyebrow,.system-reader .canvas-tools .tag{display:none}.system-reader .canvas>.panel-scroll{padding:12px 24px 16px}.system-reader .zoom-surface{display:flex;flex-direction:column}.system-reader .overview-summary{order:2;margin:14px 0 0;border-top:1px solid #2e4051;padding-top:6px}.system-reader .detail>.pane-heading{min-height:38px;padding:7px 16px}.system-reader .detail-tabs button{min-height:32px;padding:5px}.system-reader .detail>.panel-scroll{padding:16px 20px}
+.catalog-management{padding:14px 4px 8px;margin-top:10px;border-top:1px solid #314756;display:flex;gap:6px;flex-wrap:wrap}.catalog-management .full{width:auto;margin:0;font-size:12px;padding:4px 6px}.reading-shell .catalog-views{border:0;padding:2px 4px;gap:7px}.reading-shell .catalog .feature-group{border:0;margin-bottom:8px}.reading-shell .feature-scenes{margin-left:10px;border-left:1px solid #3b525a;padding-left:5px}.reading-shell .feature-label{margin-bottom:3px}
+@media(max-width:899px){.system-reader .canvas>.panel-scroll{padding:12px 16px}.system-exchange{grid-template-columns:1fr}.system-exchange strong{grid-column:1}.system-heading{margin-bottom:12px}}
+
+.module-map .composition-intro{margin-bottom:1em}.module-map .composition-layout>.composition-root{display:none}.module-map .composition-roots{flex-basis:100%;gap:1em}.module-map .composition-board{padding:.5em 0}.module-map .composition-branch{gap:1.5em}.module-map .composition-topic-group{flex-basis:10em;min-width:min(100%,8em)}.module-map .composition-children{flex-basis:13em}.module-map .composition-navigation{margin:1em 0 .5em}.module-map .composition-boundary{display:none}
+
+/* Larger systems keep roles and exchanges in view together. Full wording stays in SystemDetail. */
+.system-overview-dense{display:grid;grid-template-columns:minmax(9em,.85fr) minmax(0,1.8fr);gap:.75em 1em;align-items:start}
+.system-overview-dense .system-heading,.system-overview-dense .system-boundary{grid-column:1/-1;margin:0}
+.system-overview-dense .system-components{display:flex;flex-direction:column;gap:.45em}
+.system-overview-dense .architecture-node{padding:.45em .8em;min-height:2.2em}
+.system-overview-dense .architecture-node strong{font-size:.85em}
+.system-overview-dense .architecture-node>span,.system-overview-dense .architecture-node>small,.system-overview-dense .system-inspect{display:none}
+.system-overview-dense .architecture-node>small{display:block;font-size:.7em;line-height:1.25;margin-top:.2em;color:#a6cdbf;overflow-wrap:anywhere}
+.system-overview-dense .system-exchanges{margin:0;gap:.4em}
+.system-overview-dense .system-exchange{grid-template-columns:1fr;padding:.45em .7em;font-size:.72em;gap:0}
+.system-overview-dense .system-exchange>small:not(.warning){display:none}
+.system-overview-dense .exchange-endpoints{gap:.35em;line-height:1.4}
+.system-overview-dense .system-exchange strong{color:#91e5cb}
+@media(max-width:899px){.system-overview-dense{grid-template-columns:1fr}.system-overview-dense .system-components{display:grid!important;grid-template-columns:repeat(auto-fit,minmax(10em,1fr))!important}}

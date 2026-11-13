@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0",
+  "fictional": true,
+  "binding": {
+    "project_id": "project-demo",
+    "feature_id": "feature-config",
+    "scenario_id": "scenario-config-ack",
+    "question_revision_id": "question-demo-a-q1",
+    "source_snapshot_id": "snapshot-demo-a",
+    "run_id": "run-demo-a-001"
+  },
+  "provider": {
+    "provider_id": "demo",
+    "connection_id": "connection-demo"
+  },
+  "task_kind": "analysis",
+  "title": "配置更新：ACK_OK 表示什么？",
+  "question": "请走读 A 版本配置请求。有效配置在队列已满时会回复什么？RAM 应用、快照投递、后续存储调用之间是什么关系？现有源码能否证明持久化成功？",
+  "acceptance_criteria": [
+    "画出同步调用、返回、队列生产与消费，并将未确定的执行边界单独标识。",
+    "关键节点包含结构化输入输出；未知业务效果明确为 unknown。",
+    "关键关系和结论引用真实文件、行范围与完整文件哈希。",
+    "明确队列满时仍可能 ACK_OK；不把缺失存储实现补成已成功落盘。"
+  ],
+  "instructions": [
+    "本请求与源码均为 fictional=true 的演示资料，不调用真实 Agent。",
+    "仅分析 source_snapshot_id=snapshot-demo-a；不得编辑源码、补入缺失函数或假设存在 B 修复。",
+    "source_supported 只说明当前快照有依据，不代表实际运行已经发生，也不代表全局语义成立。",
+    "遵守工程已有规则；不得绕过读取范围或已有权限策略。"
+  ],
+  "workspace": {
+    "workspace_id": "workspace-demo",
+    "root_path": "source-fixture",
+    "path_resolution": "request_directory",
+    "filesystem_kind": "local",
+    "allowed_read_paths": [
+      "include/",
+      "src/",
+      "README.md"
+    ],
+    "source_snapshot_manifest_path": "source-snapshot.json",
+    "access_mode": "read_only"
+  },
+  "policy": {
+    "respect_workspace_rules": true,
+    "command_transport": "argv_stdin",
+    "permission_policy": "ask_on_new_scope",
+    "network_access": "disabled",
+    "provider_data_scope": "none"
+  },
+  "limits": {
+    "max_runtime_seconds": 120,
+    "max_output_bytes": 262144
+  },
+  "output_contract": {
+    "schema_version": "1.0",
+    "schema_path": "../contracts/analysis-result.schema.json",
+    "format": "json"
+  }
+}

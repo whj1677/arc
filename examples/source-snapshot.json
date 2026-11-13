@@ -1,0 +1,168 @@
+{
+  "schema_version": "1.0",
+  "fictional": true,
+  "source_snapshot_id": "snapshot-demo-a",
+  "fixture_root": "source-fixture",
+  "description": "虚构 C 工程 A：RAM 生效后即回复 ACK_OK；队列失败不回滚；具体存储实现故意缺失。",
+  "files": [
+    {
+      "path": "README.md",
+      "content_sha256": "d02cd07902e562c7233a6f7faf2e7c3c4bfa199d332ec03e2e5566f30df9210a",
+      "line_count": 27,
+      "encoding": "utf-8",
+      "line_ending": "lf"
+    },
+    {
+      "path": "include/config.h",
+      "content_sha256": "746ed3e189e1b85ec18f7b1e10a9acf551c63344d672de2e2dbacf55e6e839ed",
+      "line_count": 41,
+      "encoding": "utf-8",
+      "line_ending": "lf"
+    },
+    {
+      "path": "src/config_apply.c",
+      "content_sha256": "fab255bd534567726f6b6cf393bf97ee7c8076ed3805c2b934002b34e3152fdb",
+      "line_count": 21,
+      "encoding": "utf-8",
+      "line_ending": "lf"
+    },
+    {
+      "path": "src/protocol.c",
+      "content_sha256": "d0ead84350550e80ee7c2e36bd790fbd90aaef0eca426969d851f40daa455ed7",
+      "line_count": 13,
+      "encoding": "utf-8",
+      "line_ending": "lf"
+    },
+    {
+      "path": "src/queue.c",
+      "content_sha256": "3cdc4f1116686d0a0b468beb38604a6e09430935b80d362825061679af51c2cf",
+      "line_count": 26,
+      "encoding": "utf-8",
+      "line_ending": "lf"
+    },
+    {
+      "path": "src/storage_task.c",
+      "content_sha256": "d97d4ef8565f1fd9ab988849898d271240f28c1fa1332962e7127644ce4f4e93",
+      "line_count": 14,
+      "encoding": "utf-8",
+      "line_ending": "lf"
+    }
+  ],
+  "omitted_symbols": [
+    {
+      "symbol_id": "c:config_write_record",
+      "name": "config_write_record",
+      "reason": "仅提供 include/config.h 中的声明，具体实现故意不包含在本快照中。"
+    }
+  ],
+  "symbols": [
+    {
+      "symbol_id": "c:config_apply",
+      "name": "config_apply",
+      "kind": "function",
+      "declarations": [
+        {
+          "path": "include/config.h",
+          "line_start": 28,
+          "line_end": 28
+        }
+      ],
+      "definitions": [
+        {
+          "path": "src/config_apply.c",
+          "line_start": 8,
+          "line_end": 21
+        }
+      ]
+    },
+    {
+      "symbol_id": "c:handle_config_request",
+      "name": "handle_config_request",
+      "kind": "function",
+      "declarations": [
+        {
+          "path": "include/config.h",
+          "line_start": 29,
+          "line_end": 29
+        }
+      ],
+      "definitions": [
+        {
+          "path": "src/protocol.c",
+          "line_start": 4,
+          "line_end": 13
+        }
+      ]
+    },
+    {
+      "symbol_id": "c:try_queue_config",
+      "name": "try_queue_config",
+      "kind": "function",
+      "declarations": [
+        {
+          "path": "include/config.h",
+          "line_start": 32,
+          "line_end": 32
+        }
+      ],
+      "definitions": [
+        {
+          "path": "src/queue.c",
+          "line_start": 8,
+          "line_end": 16
+        }
+      ]
+    },
+    {
+      "symbol_id": "c:queue_receive_config",
+      "name": "queue_receive_config",
+      "kind": "function",
+      "declarations": [
+        {
+          "path": "include/config.h",
+          "line_start": 33,
+          "line_end": 33
+        }
+      ],
+      "definitions": [
+        {
+          "path": "src/queue.c",
+          "line_start": 18,
+          "line_end": 26
+        }
+      ]
+    },
+    {
+      "symbol_id": "c:storage_task_step",
+      "name": "storage_task_step",
+      "kind": "function",
+      "declarations": [
+        {
+          "path": "include/config.h",
+          "line_start": 36,
+          "line_end": 36
+        }
+      ],
+      "definitions": [
+        {
+          "path": "src/storage_task.c",
+          "line_start": 4,
+          "line_end": 14
+        }
+      ]
+    },
+    {
+      "symbol_id": "c:config_write_record",
+      "name": "config_write_record",
+      "kind": "function",
+      "declarations": [
+        {
+          "path": "include/config.h",
+          "line_start": 39,
+          "line_end": 39
+        }
+      ],
+      "definitions": []
+    }
+  ]
+}

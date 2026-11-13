@@ -1,0 +1,1438 @@
+{
+  "schema_version": "1.0",
+  "fictional": true,
+  "result_id": "result-demo-a-001",
+  "binding": {
+    "project_id": "project-demo",
+    "feature_id": "feature-config",
+    "scenario_id": "scenario-config-ack",
+    "question_revision_id": "question-demo-a-q1",
+    "source_snapshot_id": "snapshot-demo-a",
+    "run_id": "run-demo-a-001"
+  },
+  "provider": {
+    "provider_id": "demo",
+    "connection_id": "connection-demo",
+    "adapter_version": "1.0.0-demo",
+    "runtime_version": "fixture-only",
+    "external_provider_id": "demo-provider-fixture",
+    "external_session_id": "demo-session-a",
+    "external_thread_id": "demo-thread-a",
+    "external_task_id": "demo-task-a",
+    "external_run_id": "demo-run-a"
+  },
+  "summary": {
+    "text": "A 版本先应用 RAM，再尝试投递快照。有效输入在队列已满时仍可返回 ACK_OK。后续消费与存储调用已找到，具体持久化实现及真实调度仍缺失。",
+    "claim_ids": [
+      "claim-ram-first",
+      "claim-ack",
+      "claim-storage-call",
+      "claim-storage-unknown",
+      "claim-schedule"
+    ]
+  },
+  "coverage": {
+    "covered_scope": [
+      "配置请求处理、有效性分支与 ACK 返回。",
+      "RAM 更新、快照构造、单槽投递成功及失败分支。",
+      "单槽消费、存储调用及可见输入输出。"
+    ],
+    "unresolved_scope": [
+      "config_write_record 的实际存储实现与完成/错误语义。",
+      "存储消费的真实调用入口、调度与并发安全。",
+      "ACK_OK 的产品协议承诺及重启后的恢复行为。"
+    ]
+  },
+  "nodes": [
+    {
+      "node_id": "node-handler",
+      "kind": "function",
+      "label": "handle_config_request",
+      "description": "配置请求入口；返回值由 RAM 应用状态决定。",
+      "inputs": [
+        {
+          "io_id": "io-request",
+          "name": "requested",
+          "availability": "specified",
+          "data_type": "const device_config *",
+          "value_or_shape": "指向请求配置；允许为空指针进入校验。",
+          "description": "interval_ms 与 enabled 的运行时实际值不在静态源码中。",
+          "claim_ids": [
+            "claim-call-apply"
+          ],
+          "evidence_ids": [
+            "ev-types",
+            "ev-handler-call"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "io_id": "io-ack",
+          "name": "ACK",
+          "availability": "specified",
+          "data_type": "config_ack",
+          "value_or_shape": "ram_applied ? ACK_OK : ACK_REJECTED",
+          "description": "这是确认枚举，不能扩展解释成持久化成功。",
+          "claim_ids": [
+            "claim-ack"
+          ],
+          "evidence_ids": [
+            "ev-types",
+            "ev-ack"
+          ]
+        }
+      ],
+      "claim_ids": [
+        "claim-call-apply",
+        "claim-ack"
+      ],
+      "evidence_ids": [
+        "ev-handler-call",
+        "ev-ack"
+      ],
+      "execution_context": {
+        "kind": "caller",
+        "identity": "analysis-caller-request",
+        "label": "本场景请求处理调用路径；实际线程未知",
+        "status": "inferred",
+        "claim_ids": [
+          "claim-boundary"
+        ],
+        "evidence_ids": [
+          "ev-handler-call",
+          "ev-apply"
+        ]
+      }
+    },
+    {
+      "node_id": "node-apply",
+      "kind": "function",
+      "label": "config_apply",
+      "description": "有效请求先修改 RAM，再尝试投递快照。",
+      "inputs": [
+        {
+          "io_id": "io-apply-request",
+          "name": "requested",
+          "availability": "specified",
+          "data_type": "const device_config *",
+          "value_or_shape": "requested != NULL 且 interval_ms != 0 时进入应用分支。",
+          "description": "输入校验只反映当前样例中实现的条件。",
+          "claim_ids": [
+            "claim-apply-return"
+          ],
+          "evidence_ids": [
+            "ev-apply",
+            "ev-types"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "io_id": "io-apply-result",
+          "name": "应用结果",
+          "availability": "specified",
+          "data_type": "config_apply_result",
+          "value_or_shape": "无效输入为 {false, false}；有效输入为 {true, queued}。",
+          "description": "ram_applied 与 queued 是两个独立字段。",
+          "claim_ids": [
+            "claim-apply-return"
+          ],
+          "evidence_ids": [
+            "ev-apply",
+            "ev-types"
+          ]
+        }
+      ],
+      "claim_ids": [
+        "claim-ram-first",
+        "claim-apply-return"
+      ],
+      "evidence_ids": [
+        "ev-apply"
+      ],
+      "execution_context": {
+        "kind": "caller",
+        "identity": "analysis-caller-request",
+        "label": "本场景请求处理调用路径；实际线程未知",
+        "status": "inferred",
+        "claim_ids": [
+          "claim-boundary"
+        ],
+        "evidence_ids": [
+          "ev-handler-call",
+          "ev-apply"
+        ]
+      }
+    },
+    {
+      "node_id": "node-ram",
+      "kind": "resource",
+      "label": "RAM 配置",
+      "description": "runtime_config 与 ram_revision 构成当前内存状态。",
+      "inputs": [
+        {
+          "io_id": "io-ram-input",
+          "name": "请求配置",
+          "availability": "specified",
+          "data_type": "device_config",
+          "value_or_shape": "复制 *requested。",
+          "description": "仅有效请求进入这一步。",
+          "claim_ids": [
+            "claim-ram-first"
+          ],
+          "evidence_ids": [
+            "ev-ram-write",
+            "ev-types"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "io_id": "io-ram-snapshot",
+          "name": "配置快照",
+          "availability": "specified",
+          "data_type": "config_snapshot",
+          "value_or_shape": "{ram_revision, runtime_config}",
+          "description": "快照来自已更新的 RAM；这一步未证明介质写入。",
+          "claim_ids": [
+            "claim-ram-first"
+          ],
+          "evidence_ids": [
+            "ev-ram-write",
+            "ev-types"
+          ]
+        }
+      ],
+      "claim_ids": [
+        "claim-ram-first"
+      ],
+      "evidence_ids": [
+        "ev-ram-write"
+      ],
+      "execution_context": {
+        "kind": "caller",
+        "identity": "analysis-caller-request",
+        "label": "本场景请求处理调用路径；实际线程未知",
+        "status": "inferred",
+        "claim_ids": [
+          "claim-boundary"
+        ],
+        "evidence_ids": [
+          "ev-handler-call",
+          "ev-apply"
+        ]
+      }
+    },
+    {
+      "node_id": "node-send",
+      "kind": "function",
+      "label": "try_queue_config",
+      "description": "向单槽队列复制一份配置快照；槽满时失败。",
+      "inputs": [
+        {
+          "io_id": "io-send-snapshot",
+          "name": "snapshot",
+          "availability": "specified",
+          "data_type": "config_snapshot",
+          "value_or_shape": "按值传入快照。",
+          "description": "不会把调用方栈地址保留到队列。",
+          "claim_ids": [
+            "claim-queue-send"
+          ],
+          "evidence_ids": [
+            "ev-send",
+            "ev-queue-write"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "io_id": "io-send-result",
+          "name": "queued",
+          "availability": "specified",
+          "data_type": "bool",
+          "value_or_shape": "槽满为 false，成功复制入槽后为 true。",
+          "description": "false 不会自动撤销调用方已经更新的 RAM。",
+          "claim_ids": [
+            "claim-queue-full"
+          ],
+          "evidence_ids": [
+            "ev-send",
+            "ev-apply-send"
+          ]
+        }
+      ],
+      "claim_ids": [
+        "claim-queue-send",
+        "claim-queue-full"
+      ],
+      "evidence_ids": [
+        "ev-send"
+      ],
+      "execution_context": {
+        "kind": "caller",
+        "identity": "analysis-caller-request",
+        "label": "本场景请求处理调用路径；实际线程未知",
+        "status": "inferred",
+        "claim_ids": [
+          "claim-boundary"
+        ],
+        "evidence_ids": [
+          "ev-handler-call",
+          "ev-apply"
+        ]
+      }
+    },
+    {
+      "node_id": "node-queue",
+      "kind": "resource",
+      "label": "单槽配置队列",
+      "description": "slot_full 与 pending_snapshot；此示例未实现并发同步。",
+      "inputs": [
+        {
+          "io_id": "io-queue-input",
+          "name": "待消费快照",
+          "availability": "specified",
+          "data_type": "config_snapshot",
+          "value_or_shape": "仅槽空时复制新快照。",
+          "description": "槽满分支不替换原快照。",
+          "claim_ids": [
+            "claim-queue-send"
+          ],
+          "evidence_ids": [
+            "ev-send",
+            "ev-queue-write"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "io_id": "io-queue-output",
+          "name": "已入槽快照",
+          "availability": "specified",
+          "data_type": "config_snapshot",
+          "value_or_shape": "上一次成功投递且尚未取出的快照。",
+          "description": "消费时复制到输出指针并清槽。",
+          "claim_ids": [
+            "claim-queue-receive"
+          ],
+          "evidence_ids": [
+            "ev-receive",
+            "ev-queue-read"
+          ]
+        }
+      ],
+      "claim_ids": [
+        "claim-queue-send",
+        "claim-queue-receive",
+        "claim-schedule"
+      ],
+      "evidence_ids": [
+        "ev-send",
+        "ev-receive",
+        "ev-fixture-limits"
+      ],
+      "execution_context": {
+        "kind": "unknown",
+        "identity": null,
+        "label": "执行上下文尚未确认；不能据图的布局推断线程",
+        "status": "unknown",
+        "claim_ids": [
+          "claim-schedule"
+        ],
+        "evidence_ids": [
+          "ev-fixture-limits"
+        ]
+      }
+    },
+    {
+      "node_id": "node-ack-decision",
+      "kind": "decision",
+      "label": "ram_applied 是否为 true",
+      "description": "这里只判断 RAM 生效；queued 不参与 ACK 分支选择。",
+      "inputs": [
+        {
+          "io_id": "io-decision-input",
+          "name": "ram_applied",
+          "availability": "specified",
+          "data_type": "bool",
+          "value_or_shape": "来自 config_apply_result.ram_applied。",
+          "description": "排队结果不属于本条件。",
+          "claim_ids": [
+            "claim-ack"
+          ],
+          "evidence_ids": [
+            "ev-ack"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "io_id": "io-decision-output",
+          "name": "确认分支",
+          "availability": "specified",
+          "data_type": "config_ack",
+          "value_or_shape": "true 走 ACK_OK，false 走 ACK_REJECTED。",
+          "description": "分支是源码逻辑，不是一次实际设备运行记录。",
+          "claim_ids": [
+            "claim-ack"
+          ],
+          "evidence_ids": [
+            "ev-ack"
+          ]
+        }
+      ],
+      "claim_ids": [
+        "claim-ack"
+      ],
+      "evidence_ids": [
+        "ev-ack"
+      ],
+      "execution_context": {
+        "kind": "caller",
+        "identity": "analysis-caller-request",
+        "label": "本场景请求处理调用路径；实际线程未知",
+        "status": "inferred",
+        "claim_ids": [
+          "claim-boundary"
+        ],
+        "evidence_ids": [
+          "ev-handler-call",
+          "ev-apply"
+        ]
+      },
+      "parent_node_id": "node-handler"
+    },
+    {
+      "node_id": "node-ack-ok",
+      "kind": "stage",
+      "label": "返回 ACK_OK",
+      "description": "有效请求即使遇到队列满，也可到达此阶段。",
+      "inputs": [],
+      "outputs": [
+        {
+          "io_id": "io-ack-ok-value",
+          "name": "确认值",
+          "availability": "specified",
+          "data_type": "config_ack",
+          "value_or_shape": "ACK_OK",
+          "description": "只能按当前代码解释其范围。",
+          "claim_ids": [
+            "claim-ack"
+          ],
+          "evidence_ids": [
+            "ev-ack",
+            "ev-apply-send",
+            "ev-send"
+          ]
+        }
+      ],
+      "claim_ids": [
+        "claim-ack"
+      ],
+      "evidence_ids": [
+        "ev-ack"
+      ],
+      "execution_context": {
+        "kind": "caller",
+        "identity": "analysis-caller-request",
+        "label": "本场景请求处理调用路径；实际线程未知",
+        "status": "inferred",
+        "claim_ids": [
+          "claim-boundary"
+        ],
+        "evidence_ids": [
+          "ev-handler-call",
+          "ev-apply"
+        ]
+      },
+      "parent_node_id": "node-handler"
+    },
+    {
+      "node_id": "node-boundary",
+      "kind": "execution_boundary",
+      "label": "后续消费执行边界",
+      "description": "用于区分生产与消费逻辑；调度入口和真实执行时间尚未提供。",
+      "inputs": [
+        {
+          "io_id": "io-trigger-unknown",
+          "name": "调用触发条件",
+          "availability": "unknown",
+          "data_type": null,
+          "value_or_shape": null,
+          "description": "没有主循环、调度器或任务创建代码可用于确认入口。",
+          "claim_ids": [
+            "claim-schedule"
+          ],
+          "evidence_ids": [
+            "ev-fixture-limits"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "io_id": "io-time-unknown",
+          "name": "消费开始时间",
+          "availability": "unknown",
+          "data_type": null,
+          "value_or_shape": null,
+          "description": "不绘制虚构的固定全局时间间隔或线程先后。",
+          "claim_ids": [
+            "claim-schedule"
+          ],
+          "evidence_ids": [
+            "ev-fixture-limits"
+          ]
+        }
+      ],
+      "claim_ids": [
+        "claim-boundary",
+        "claim-schedule"
+      ],
+      "evidence_ids": [
+        "ev-fixture-limits",
+        "ev-storage"
+      ],
+      "execution_context": {
+        "kind": "unknown",
+        "identity": null,
+        "label": "执行上下文尚未确认；不能据图的布局推断线程",
+        "status": "unknown",
+        "claim_ids": [
+          "claim-schedule"
+        ],
+        "evidence_ids": [
+          "ev-fixture-limits"
+        ]
+      }
+    },
+    {
+      "node_id": "node-receive",
+      "kind": "function",
+      "label": "queue_receive_config",
+      "description": "从非空单槽复制快照到调用方，并清除占用状态。",
+      "inputs": [
+        {
+          "io_id": "io-receive-target",
+          "name": "snapshot",
+          "availability": "specified",
+          "data_type": "config_snapshot *",
+          "value_or_shape": "调用方输出指针。",
+          "description": "空指针或空队列使函数返回 false。",
+          "claim_ids": [
+            "claim-queue-receive"
+          ],
+          "evidence_ids": [
+            "ev-receive"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "io_id": "io-receive-snapshot",
+          "name": "消费快照",
+          "availability": "specified",
+          "data_type": "config_snapshot",
+          "value_or_shape": "成功时复制 pending_snapshot。",
+          "description": "失败分支不提供新快照。",
+          "claim_ids": [
+            "claim-queue-receive"
+          ],
+          "evidence_ids": [
+            "ev-queue-read"
+          ]
+        },
+        {
+          "io_id": "io-receive-result",
+          "name": "received",
+          "availability": "specified",
+          "data_type": "bool",
+          "value_or_shape": "成功复制并清槽后 true，否则 false。",
+          "description": "这是取消息结果。",
+          "claim_ids": [
+            "claim-queue-receive"
+          ],
+          "evidence_ids": [
+            "ev-receive"
+          ]
+        }
+      ],
+      "claim_ids": [
+        "claim-queue-receive"
+      ],
+      "evidence_ids": [
+        "ev-receive"
+      ],
+      "execution_context": {
+        "kind": "caller",
+        "identity": "analysis-caller-storage",
+        "label": "本场景存储消费调用路径；实际线程未知",
+        "status": "inferred",
+        "claim_ids": [
+          "claim-boundary"
+        ],
+        "evidence_ids": [
+          "ev-storage"
+        ]
+      }
+    },
+    {
+      "node_id": "node-storage",
+      "kind": "function",
+      "label": "storage_task_step",
+      "description": "一次消费尝试：先取快照，成功后发起存储调用。",
+      "inputs": [],
+      "outputs": [
+        {
+          "io_id": "io-storage-step-result",
+          "name": "本轮处理结果",
+          "availability": "specified",
+          "data_type": "bool",
+          "value_or_shape": "取不到快照为 false；存储调用返回后为 true。",
+          "description": "true 不能解释成介质持久化已经成功。",
+          "claim_ids": [
+            "claim-storage-call"
+          ],
+          "evidence_ids": [
+            "ev-storage",
+            "ev-storage-call"
+          ]
+        }
+      ],
+      "claim_ids": [
+        "claim-storage-call",
+        "claim-schedule"
+      ],
+      "evidence_ids": [
+        "ev-storage"
+      ],
+      "execution_context": {
+        "kind": "caller",
+        "identity": "analysis-caller-storage",
+        "label": "本场景存储消费调用路径；实际线程未知",
+        "status": "inferred",
+        "claim_ids": [
+          "claim-boundary"
+        ],
+        "evidence_ids": [
+          "ev-storage"
+        ]
+      }
+    },
+    {
+      "node_id": "node-write",
+      "kind": "function",
+      "label": "config_write_record",
+      "description": "仅有声明与调用点；具体存储实现不在 A 快照中。",
+      "inputs": [
+        {
+          "io_id": "io-write-snapshot",
+          "name": "snapshot",
+          "availability": "specified",
+          "data_type": "const config_snapshot *",
+          "value_or_shape": "指向本轮消费到的配置快照。",
+          "description": "参数与 void 签名可见，函数内部行为未知。",
+          "claim_ids": [
+            "claim-storage-call"
+          ],
+          "evidence_ids": [
+            "ev-storage-declaration",
+            "ev-storage-call"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "io_id": "io-persistence-unknown",
+          "name": "持久化业务效果",
+          "availability": "unknown",
+          "data_type": null,
+          "value_or_shape": null,
+          "description": "这是业务效果，不是 C 返回值；介质、完成条件、错误路径和重启行为未知。",
+          "claim_ids": [
+            "claim-storage-unknown"
+          ],
+          "evidence_ids": [
+            "ev-storage-declaration",
+            "ev-storage-call"
+          ]
+        }
+      ],
+      "claim_ids": [
+        "claim-storage-unknown"
+      ],
+      "evidence_ids": [
+        "ev-storage-declaration",
+        "ev-storage-call"
+      ],
+      "execution_context": {
+        "kind": "caller",
+        "identity": "analysis-caller-storage",
+        "label": "本场景存储消费调用路径；实际线程未知",
+        "status": "inferred",
+        "claim_ids": [
+          "claim-boundary"
+        ],
+        "evidence_ids": [
+          "ev-storage"
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "edge-call-apply",
+      "kind": "sync_call",
+      "source_node_id": "node-handler",
+      "target_node_id": "node-apply",
+      "label": "调用并等待返回",
+      "status": "source_supported",
+      "claim_ids": [
+        "claim-call-apply"
+      ],
+      "evidence_ids": [
+        "ev-handler-call"
+      ]
+    },
+    {
+      "edge_id": "edge-write-ram",
+      "kind": "data_publish",
+      "source_node_id": "node-apply",
+      "target_node_id": "node-ram",
+      "label": "更新内存配置和版本",
+      "status": "source_supported",
+      "claim_ids": [
+        "claim-ram-first"
+      ],
+      "evidence_ids": [
+        "ev-ram-write"
+      ],
+      "condition": "输入有效"
+    },
+    {
+      "edge_id": "edge-call-send",
+      "kind": "sync_call",
+      "source_node_id": "node-apply",
+      "target_node_id": "node-send",
+      "label": "尝试投递快照",
+      "status": "source_supported",
+      "claim_ids": [
+        "claim-apply-return"
+      ],
+      "evidence_ids": [
+        "ev-apply-send"
+      ],
+      "condition": "RAM 已更新"
+    },
+    {
+      "edge_id": "edge-queue-send",
+      "kind": "queue_send",
+      "source_node_id": "node-send",
+      "target_node_id": "node-queue",
+      "label": "按值复制到单槽",
+      "status": "source_supported",
+      "claim_ids": [
+        "claim-queue-send"
+      ],
+      "evidence_ids": [
+        "ev-queue-write"
+      ],
+      "condition": "slot_full == false"
+    },
+    {
+      "edge_id": "edge-send-return",
+      "kind": "return",
+      "source_node_id": "node-send",
+      "target_node_id": "node-apply",
+      "label": "返回投递结果",
+      "status": "source_supported",
+      "claim_ids": [
+        "claim-queue-full"
+      ],
+      "evidence_ids": [
+        "ev-send"
+      ],
+      "condition": "槽满时为 false",
+      "related_call_edge_id": "edge-call-send"
+    },
+    {
+      "edge_id": "edge-apply-return",
+      "kind": "return",
+      "source_node_id": "node-apply",
+      "target_node_id": "node-handler",
+      "label": "返回 ram_applied 与 queued",
+      "status": "source_supported",
+      "claim_ids": [
+        "claim-apply-return"
+      ],
+      "evidence_ids": [
+        "ev-apply"
+      ],
+      "related_call_edge_id": "edge-call-apply"
+    },
+    {
+      "edge_id": "edge-ack-check",
+      "kind": "control_flow",
+      "source_node_id": "node-handler",
+      "target_node_id": "node-ack-decision",
+      "label": "检查 ram_applied",
+      "status": "source_supported",
+      "claim_ids": [
+        "claim-ack"
+      ],
+      "evidence_ids": [
+        "ev-ack"
+      ]
+    },
+    {
+      "edge_id": "edge-ack-ok",
+      "kind": "control_flow",
+      "source_node_id": "node-ack-decision",
+      "target_node_id": "node-ack-ok",
+      "label": "选择 ACK_OK",
+      "status": "source_supported",
+      "claim_ids": [
+        "claim-ack"
+      ],
+      "evidence_ids": [
+        "ev-ack"
+      ],
+      "condition": "ram_applied == true；queued 可为 false"
+    },
+    {
+      "edge_id": "edge-call-receive",
+      "kind": "sync_call",
+      "source_node_id": "node-storage",
+      "target_node_id": "node-receive",
+      "label": "尝试消费快照",
+      "status": "source_supported",
+      "claim_ids": [
+        "claim-storage-call"
+      ],
+      "evidence_ids": [
+        "ev-storage-receive"
+      ]
+    },
+    {
+      "edge_id": "edge-queue-receive",
+      "kind": "queue_receive",
+      "source_node_id": "node-queue",
+      "target_node_id": "node-receive",
+      "label": "复制已有快照并清槽",
+      "status": "source_supported",
+      "claim_ids": [
+        "claim-queue-receive"
+      ],
+      "evidence_ids": [
+        "ev-queue-read"
+      ],
+      "condition": "队列非空且输出指针有效"
+    },
+    {
+      "edge_id": "edge-receive-return",
+      "kind": "return",
+      "source_node_id": "node-receive",
+      "target_node_id": "node-storage",
+      "label": "返回是否取到快照",
+      "status": "source_supported",
+      "claim_ids": [
+        "claim-queue-receive"
+      ],
+      "evidence_ids": [
+        "ev-receive"
+      ],
+      "related_call_edge_id": "edge-call-receive"
+    },
+    {
+      "edge_id": "edge-call-write",
+      "kind": "sync_call",
+      "source_node_id": "node-storage",
+      "target_node_id": "node-write",
+      "label": "发起存储调用",
+      "status": "source_supported",
+      "claim_ids": [
+        "claim-storage-call"
+      ],
+      "evidence_ids": [
+        "ev-storage-call"
+      ],
+      "condition": "成功取到快照"
+    },
+    {
+      "edge_id": "edge-boundary",
+      "kind": "execution_boundary",
+      "source_node_id": "node-queue",
+      "target_node_id": "node-boundary",
+      "label": "将消费逻辑划为后续执行区段",
+      "status": "inferred",
+      "claim_ids": [
+        "claim-boundary"
+      ],
+      "evidence_ids": [
+        "ev-fixture-limits",
+        "ev-storage"
+      ],
+      "condition": "只表示分析分区，不表示已发现 RTOS 线程或固定时序"
+    },
+    {
+      "edge_id": "edge-storage-entry",
+      "kind": "execution_boundary",
+      "source_node_id": "node-boundary",
+      "target_node_id": "node-storage",
+      "label": "实际调用入口待补充",
+      "status": "unknown",
+      "claim_ids": [
+        "claim-schedule"
+      ],
+      "evidence_ids": [
+        "ev-fixture-limits"
+      ],
+      "condition": "何时、由谁调用未知"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "claim-call-apply",
+      "statement": "请求处理函数同步调用 config_apply(requested)。",
+      "status": "source_supported",
+      "rationale": "调用表达式和返回值接收都在请求处理函数中直接可见。",
+      "limitations": [
+        "未提供请求从串口、网络或其他入口进入本函数的实现。"
+      ],
+      "evidence_ids": [
+        "ev-handler-call"
+      ],
+      "targets": {
+        "node_ids": [
+          "node-handler",
+          "node-apply"
+        ],
+        "edge_ids": [
+          "edge-call-apply"
+        ],
+        "io_ids": [
+          "io-request"
+        ]
+      }
+    },
+    {
+      "claim_id": "claim-ram-first",
+      "statement": "有效请求先写 RAM、递增版本并构造快照，然后才尝试入队。",
+      "status": "source_supported",
+      "rationale": "完整函数中的语句顺序可核对 RAM 写入在 try_queue_config 之前。",
+      "limitations": [
+        "仅描述此函数的同步控制流；不说明全局并发安全或介质状态。"
+      ],
+      "evidence_ids": [
+        "ev-apply",
+        "ev-ram-write",
+        "ev-apply-send"
+      ],
+      "targets": {
+        "node_ids": [
+          "node-apply",
+          "node-ram"
+        ],
+        "edge_ids": [
+          "edge-write-ram"
+        ],
+        "io_ids": [
+          "io-ram-input",
+          "io-ram-snapshot"
+        ]
+      }
+    },
+    {
+      "claim_id": "claim-queue-full",
+      "statement": "单槽已满时 try_queue_config 返回 false；调用方仍返回 ram_applied=true。",
+      "status": "source_supported",
+      "rationale": "入队函数槽满分支与调用方返回结构共同提供依据。",
+      "limitations": [
+        "条件是输入有效；样例队列没有并发同步，未进行设备运行观测。"
+      ],
+      "evidence_ids": [
+        "ev-send",
+        "ev-apply-send"
+      ],
+      "targets": {
+        "node_ids": [
+          "node-send",
+          "node-apply"
+        ],
+        "edge_ids": [
+          "edge-send-return"
+        ],
+        "io_ids": [
+          "io-send-result"
+        ]
+      }
+    },
+    {
+      "claim_id": "claim-queue-send",
+      "statement": "槽空时，入队函数按值复制快照到 pending_snapshot 并设置 slot_full。",
+      "status": "source_supported",
+      "rationale": "赋值和占用标志更新在入队函数中可见。",
+      "limitations": [
+        "仅描述单槽演示实现，不代表真实 RTOS 队列协议。"
+      ],
+      "evidence_ids": [
+        "ev-send",
+        "ev-queue-write"
+      ],
+      "targets": {
+        "node_ids": [
+          "node-send",
+          "node-queue"
+        ],
+        "edge_ids": [
+          "edge-queue-send"
+        ],
+        "io_ids": [
+          "io-send-snapshot",
+          "io-queue-input"
+        ]
+      }
+    },
+    {
+      "claim_id": "claim-apply-return",
+      "statement": "无效输入返回 {false,false}；有效输入调用投递函数并返回 {true,queued}。",
+      "status": "source_supported",
+      "rationale": "两处返回表达式及投递调用均在完整 config_apply 定义中。",
+      "limitations": [
+        "有效只对应当前代码的空指针与 interval_ms 检查，不扩展为完整业务校验。"
+      ],
+      "evidence_ids": [
+        "ev-apply",
+        "ev-types"
+      ],
+      "targets": {
+        "node_ids": [
+          "node-apply",
+          "node-handler"
+        ],
+        "edge_ids": [
+          "edge-call-send",
+          "edge-apply-return"
+        ],
+        "io_ids": [
+          "io-apply-request",
+          "io-apply-result"
+        ]
+      }
+    },
+    {
+      "claim_id": "claim-ack",
+      "statement": "在有效配置且队列已满的路径中，ram_applied 为 true、queued 为 false，处理函数仍返回 ACK_OK。",
+      "status": "source_supported",
+      "rationale": "config_apply 保留 RAM 成功字段；处理函数条件只读取 ram_applied。",
+      "limitations": [
+        "ACK_OK 在此快照中不能被解释成入队成功或持久化成功。",
+        "这是条件路径的源码结论，不声称真实设备已执行过这条路径。"
+      ],
+      "evidence_ids": [
+        "ev-ack",
+        "ev-apply-send",
+        "ev-send"
+      ],
+      "targets": {
+        "node_ids": [
+          "node-handler",
+          "node-ack-decision",
+          "node-ack-ok"
+        ],
+        "edge_ids": [
+          "edge-ack-check",
+          "edge-ack-ok"
+        ],
+        "io_ids": [
+          "io-ack",
+          "io-decision-input",
+          "io-decision-output",
+          "io-ack-ok-value"
+        ]
+      }
+    },
+    {
+      "claim_id": "claim-queue-receive",
+      "statement": "队列非空且输出指针有效时，消费函数复制快照、清槽并返回 true，否则返回 false。",
+      "status": "source_supported",
+      "rationale": "消费函数给出完整条件与数据复制语句。",
+      "limitations": [
+        "生产与消费的真实调度、竞争条件及线程安全未提供。"
+      ],
+      "evidence_ids": [
+        "ev-receive",
+        "ev-queue-read"
+      ],
+      "targets": {
+        "node_ids": [
+          "node-queue",
+          "node-receive"
+        ],
+        "edge_ids": [
+          "edge-queue-receive",
+          "edge-receive-return"
+        ],
+        "io_ids": [
+          "io-queue-output",
+          "io-receive-target",
+          "io-receive-snapshot",
+          "io-receive-result"
+        ]
+      }
+    },
+    {
+      "claim_id": "claim-storage-call",
+      "statement": "storage_task_step 取到快照后调用 config_write_record；只有调用正常返回后才返回 true。",
+      "status": "source_supported",
+      "rationale": "消费条件、调用点和返回语句在同一函数内。",
+      "limitations": [
+        "仅证明当前源码有调用路径；true 不构成实际持久化成功回执。"
+      ],
+      "evidence_ids": [
+        "ev-storage",
+        "ev-storage-call",
+        "ev-storage-declaration"
+      ],
+      "targets": {
+        "node_ids": [
+          "node-storage",
+          "node-write"
+        ],
+        "edge_ids": [
+          "edge-call-receive",
+          "edge-call-write"
+        ],
+        "io_ids": [
+          "io-storage-step-result",
+          "io-write-snapshot"
+        ]
+      }
+    },
+    {
+      "claim_id": "claim-storage-unknown",
+      "statement": "当前快照不能确定具体存储介质、写入完成条件、错误处理或重启后的恢复行为。",
+      "status": "unknown",
+      "rationale": "config_write_record 只有声明和调用点；manifest 明确省略其实现。",
+      "limitations": [
+        "不得把声明或调用方代码当作被调用函数实现，也不得用假补丁补齐证据。"
+      ],
+      "evidence_ids": [
+        "ev-storage-declaration",
+        "ev-storage-call",
+        "ev-fixture-limits"
+      ],
+      "targets": {
+        "node_ids": [
+          "node-write"
+        ],
+        "edge_ids": [],
+        "io_ids": [
+          "io-persistence-unknown"
+        ]
+      }
+    },
+    {
+      "claim_id": "claim-boundary",
+      "statement": "本图按可见同步调用，将请求处理与后续存储消费划为两个分析区段；真实线程身份与调度尚未确认。",
+      "status": "inferred",
+      "rationale": "依据请求处理调用链、单槽资源和独立消费函数组织方式形成可视化分组。",
+      "limitations": [
+        "这是分析层分组，不声称已确认两个真实线程、固定调度间隔或全局顺序。",
+        "该分组只说明本场景中的访问路径，不排除共享资源存在其他访问者；未提供实际执行轮次。"
+      ],
+      "evidence_ids": [
+        "ev-handler-call",
+        "ev-apply",
+        "ev-storage",
+        "ev-fixture-limits"
+      ],
+      "targets": {
+        "node_ids": [
+          "node-handler",
+          "node-apply",
+          "node-ram",
+          "node-send",
+          "node-queue",
+          "node-ack-decision",
+          "node-ack-ok",
+          "node-boundary",
+          "node-receive",
+          "node-storage",
+          "node-write"
+        ],
+        "edge_ids": [
+          "edge-boundary"
+        ],
+        "io_ids": []
+      }
+    },
+    {
+      "claim_id": "claim-schedule",
+      "statement": "storage_task_step 的实际调用入口、调度时间以及并发同步条件未知。",
+      "status": "unknown",
+      "rationale": "快照没有主入口或调度实现；README 明确限制了单槽演示的适用范围。",
+      "limitations": [
+        "函数名中的 task 不足以证明存在 RTOS 任务。"
+      ],
+      "evidence_ids": [
+        "ev-storage",
+        "ev-fixture-limits"
+      ],
+      "targets": {
+        "node_ids": [
+          "node-boundary",
+          "node-storage",
+          "node-queue"
+        ],
+        "edge_ids": [
+          "edge-storage-entry"
+        ],
+        "io_ids": [
+          "io-trigger-unknown",
+          "io-time-unknown"
+        ]
+      }
+    },
+    {
+      "claim_id": "claim-question",
+      "statement": "样例问题关注 ACK_OK 能否代表持久化成功。",
+      "status": "user_clue",
+      "rationale": "来自 fictional=true 的 run-request.json，是分析目标而不是代码事实。",
+      "limitations": [
+        "用户线索不能提升为源码依据。"
+      ],
+      "evidence_ids": [],
+      "targets": {
+        "node_ids": [
+          "node-handler",
+          "node-write"
+        ],
+        "edge_ids": [],
+        "io_ids": []
+      }
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "ev-types",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "include/config.h",
+      "line_start": 8,
+      "line_end": 26,
+      "content_sha256": "746ed3e189e1b85ec18f7b1e10a9acf551c63344d672de2e2dbacf55e6e839ed",
+      "role": "declaration",
+      "note": "配置、快照、应用结果和 ACK 的声明。"
+    },
+    {
+      "evidence_id": "ev-handler-call",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "src/protocol.c",
+      "line_start": 4,
+      "line_end": 6,
+      "content_sha256": "d0ead84350550e80ee7c2e36bd790fbd90aaef0eca426969d851f40daa455ed7",
+      "role": "callsite",
+      "note": "请求处理函数调用 config_apply。",
+      "symbol_id": "c:handle_config_request"
+    },
+    {
+      "evidence_id": "ev-ack",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "src/protocol.c",
+      "line_start": 8,
+      "line_end": 12,
+      "content_sha256": "d0ead84350550e80ee7c2e36bd790fbd90aaef0eca426969d851f40daa455ed7",
+      "role": "context",
+      "note": "仅根据 result.ram_applied 选择 ACK，未检查 result.queued。",
+      "symbol_id": "c:handle_config_request"
+    },
+    {
+      "evidence_id": "ev-apply",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "src/config_apply.c",
+      "line_start": 8,
+      "line_end": 21,
+      "content_sha256": "fab255bd534567726f6b6cf393bf97ee7c8076ed3805c2b934002b34e3152fdb",
+      "role": "definition",
+      "note": "完整应用函数，包含无效输入、RAM 更新、投递与返回。",
+      "symbol_id": "c:config_apply"
+    },
+    {
+      "evidence_id": "ev-ram-write",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "src/config_apply.c",
+      "line_start": 14,
+      "line_end": 16,
+      "content_sha256": "fab255bd534567726f6b6cf393bf97ee7c8076ed3805c2b934002b34e3152fdb",
+      "role": "write",
+      "note": "先写 RAM 并递增版本，再构造值快照。",
+      "symbol_id": "c:config_apply"
+    },
+    {
+      "evidence_id": "ev-apply-send",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "src/config_apply.c",
+      "line_start": 19,
+      "line_end": 20,
+      "content_sha256": "fab255bd534567726f6b6cf393bf97ee7c8076ed3805c2b934002b34e3152fdb",
+      "role": "callsite",
+      "note": "调用 try_queue_config，并返回 {true, queued}。",
+      "symbol_id": "c:config_apply"
+    },
+    {
+      "evidence_id": "ev-send",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "src/queue.c",
+      "line_start": 8,
+      "line_end": 16,
+      "content_sha256": "3cdc4f1116686d0a0b468beb38604a6e09430935b80d362825061679af51c2cf",
+      "role": "definition",
+      "note": "单槽投递函数，包含槽满失败路径。",
+      "symbol_id": "c:try_queue_config"
+    },
+    {
+      "evidence_id": "ev-queue-write",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "src/queue.c",
+      "line_start": 13,
+      "line_end": 15,
+      "content_sha256": "3cdc4f1116686d0a0b468beb38604a6e09430935b80d362825061679af51c2cf",
+      "role": "write",
+      "note": "按值复制快照到单槽并设置占用状态。",
+      "symbol_id": "c:try_queue_config"
+    },
+    {
+      "evidence_id": "ev-receive",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "src/queue.c",
+      "line_start": 18,
+      "line_end": 26,
+      "content_sha256": "3cdc4f1116686d0a0b468beb38604a6e09430935b80d362825061679af51c2cf",
+      "role": "definition",
+      "note": "队列非空且输出指针有效时取出快照并清槽。",
+      "symbol_id": "c:queue_receive_config"
+    },
+    {
+      "evidence_id": "ev-queue-read",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "src/queue.c",
+      "line_start": 23,
+      "line_end": 25,
+      "content_sha256": "3cdc4f1116686d0a0b468beb38604a6e09430935b80d362825061679af51c2cf",
+      "role": "read",
+      "note": "复制 pending_snapshot 到调用方输出，再清空占用状态。",
+      "symbol_id": "c:queue_receive_config"
+    },
+    {
+      "evidence_id": "ev-storage",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "src/storage_task.c",
+      "line_start": 4,
+      "line_end": 14,
+      "content_sha256": "d97d4ef8565f1fd9ab988849898d271240f28c1fa1332962e7127644ce4f4e93",
+      "role": "definition",
+      "note": "一次消费尝试；取到消息后调用存储函数。",
+      "symbol_id": "c:storage_task_step"
+    },
+    {
+      "evidence_id": "ev-storage-receive",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "src/storage_task.c",
+      "line_start": 7,
+      "line_end": 8,
+      "content_sha256": "d97d4ef8565f1fd9ab988849898d271240f28c1fa1332962e7127644ce4f4e93",
+      "role": "callsite",
+      "note": "存储步骤调用 queue_receive_config，失败则返回 false。",
+      "symbol_id": "c:storage_task_step"
+    },
+    {
+      "evidence_id": "ev-storage-call",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "src/storage_task.c",
+      "line_start": 11,
+      "line_end": 13,
+      "content_sha256": "d97d4ef8565f1fd9ab988849898d271240f28c1fa1332962e7127644ce4f4e93",
+      "role": "callsite",
+      "note": "调用 config_write_record 后返回 true；该 true 不是介质写入成功回执。",
+      "symbol_id": "c:storage_task_step"
+    },
+    {
+      "evidence_id": "ev-storage-declaration",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "include/config.h",
+      "line_start": 38,
+      "line_end": 39,
+      "content_sha256": "746ed3e189e1b85ec18f7b1e10a9acf551c63344d672de2e2dbacf55e6e839ed",
+      "role": "declaration",
+      "note": "只提供 config_write_record 的 void 声明，不能当作实现证据。",
+      "symbol_id": "c:config_write_record"
+    },
+    {
+      "evidence_id": "ev-fixture-limits",
+      "source_snapshot_id": "snapshot-demo-a",
+      "path": "README.md",
+      "line_start": 13,
+      "line_end": 16,
+      "content_sha256": "d02cd07902e562c7233a6f7faf2e7c3c4bfa199d332ec03e2e5566f30df9210a",
+      "role": "context",
+      "note": "样例不含 RTOS 同步、实际调度和具体存储实现。"
+    }
+  ],
+  "gaps": [
+    {
+      "gap_id": "gap-storage-implementation",
+      "kind": "missing_implementation",
+      "question": "config_write_record 在何时、向何处写入？如何报告失败与完成？",
+      "impact": "不能判断持久化成功，也不能确定 ACK 的业务承诺是否满足。",
+      "suggested_action": "补充该函数实现、存储驱动契约及必要的失败测试证据后创建新分析版本。",
+      "related_node_ids": [
+        "node-write"
+      ],
+      "claim_ids": [
+        "claim-storage-unknown"
+      ],
+      "evidence_ids": [
+        "ev-storage-declaration",
+        "ev-storage-call"
+      ]
+    },
+    {
+      "gap_id": "gap-scheduling",
+      "kind": "missing_entry",
+      "question": "谁调用 storage_task_step，使用何种同步与调度？",
+      "impact": "不能确认真实任务边界、延迟、全局时序或线程安全。",
+      "suggested_action": "补充应用入口、任务注册或主循环代码；必要时增加实际运行追踪。",
+      "related_node_ids": [
+        "node-boundary",
+        "node-storage",
+        "node-queue"
+      ],
+      "claim_ids": [
+        "claim-schedule"
+      ],
+      "evidence_ids": [
+        "ev-fixture-limits",
+        "ev-storage"
+      ]
+    },
+    {
+      "gap_id": "gap-ack-contract",
+      "kind": "missing_contract",
+      "question": "业务协议希望 ACK_OK 承诺 RAM 生效、成功排队还是持久化完成？",
+      "impact": "现有代码行为可以走读，但尚不能直接裁定它是否违反真实产品协议。",
+      "suggested_action": "由用户确认 ACK 业务语义；若需要修改，另建有明确授权的实现任务。",
+      "related_node_ids": [
+        "node-handler",
+        "node-ack-ok"
+      ],
+      "claim_ids": [
+        "claim-ack",
+        "claim-question"
+      ],
+      "evidence_ids": [
+        "ev-ack"
+      ]
+    }
+  ]
+}

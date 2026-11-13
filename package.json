@@ -1,0 +1,36 @@
+{
+  "name": "arc-desktop",
+  "productName": "Arc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "本地工程理解工作台",
+  "main": "dist/main.cjs",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "start": "npm run build && electron .",
+    "test": "tsx --test tests/*.test.ts",
+    "package": "npm run build && node scripts/package.mjs"
+  },
+  "dependencies": {
+    "ajv": "8.17.1",
+    "js-yaml": "5.5.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "@types/js-yaml": "4.0.9",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "electron": "44.9.1",
+    "esbuild": "0.28.2",
+    "playwright": "^1.56.0",
+    "tsx": "^4.20.0",
+    "typescript": "7.0.2",
+    "undici": "8.12.3",
+    "vite": "8.3.4"
+  }
+}
