@@ -173,6 +173,7 @@ export function developmentPrompt(task:EngineeringTask,context:EngineeringContex
 本次沙箱可写文件（相对于工程根目录）：${JSON.stringify(writeScope)}。修改这些现有文件时可用原位写入。需要其他文件时报告具体路径，等待用户在 ARC 重新授权。
 使用 arc_run_scoped_command 执行读取、原位编辑和验证。每条命令等待返回后再执行下一条。验证的 command 原样复制该工具的 command 参数。Windows 命令使用 PowerShell。
 修改前只读查证相关入口、调用者和测试，主动识别本任务影响的关键源码，如业务规则、权限、数据写入、公共接口和关键控制路径。用工程相对路径和函数名定位。修改前用一条公开进度说明准备修改的关键位置和原因；完成后在 decisions 保存实际采用的关键改法、源码位置和可核对的依据。无关文件不列入范围；发现必须扩大范围时在 unresolved 记录具体路径和原因。
+原功能阅读关联（如有）：${JSON.stringify(task.reading??null)}。选中节点或步骤只是理解入口；根据真实源码判断分析与修改范围，不机械限制为该节点下游，也不因此扩大写入授权。
 用户目标：${task.goal}
 同一任务的后续说明（按时间顺序，结合原目标执行最新补充）：${JSON.stringify(task.requests||[])}
 已有进展：${task.summary||'尚无'}；尚待解决：${JSON.stringify(task.unresolved||[])}

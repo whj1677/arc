@@ -114,6 +114,7 @@ export async function makePrompt(run:Run,snapshot:Snapshot,storage:string,annota
 ${run.question===overviewDiscoveryQuestion?'本轮是首屏发现，不应用功能详细走读要求，不生成函数调用链或逐功能阅读指南。':functionAnalysisInstructions}
 ${architectureAnalysisInstructions}
 execution_context 是执行路径/线程上下文，不等于组件职责已查证。kind=unknown 时 identity=null、status=unknown；组件职责的来源断言仍可保留在节点 claim_ids 中。source_supported 的执行上下文必须引用对应断言；不能为标注职责已知而捏造运行时任务身份。
+${run.development_task_id?`这是开发结束后的同功能复核。任务目标和旧说明仅是待核对的历史意图，不是当前实现。必须沿本次快照的真实源码重新核对功能入口、关键条件、每个相关状态或数据的写入点与后续读取点、超时或失败路径和恢复条件；不能只读 diff，也不能只展示局部正确分支。检查通用入口、校验前处理或其他回调中是否存在使局部修复失效的写入；发现矛盾或证据缺口就写入 claims.limitations / gaps，不宣布规则保持不变。不同中断、周期任务、回调和队列入口保持独立，不串成同步调用链。`:''}
 工程问题：${run.question}
 请求的不可变绑定：${JSON.stringify(run.binding)}
 provider 必须为 ${JSON.stringify({provider_id:run.provider_id,connection_id:`local-${run.provider_id}`,adapter_version:'0.1.0'})}。fictional=false，schema_version="1.0"，result_id 自行生成一个唯一字符串。

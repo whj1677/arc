@@ -45,8 +45,10 @@ app.whenReady().then(async()=>{
         case 'engineering_log':value=await service.engineering.readLog(args.task_id,args.path);break;
         case 'engineering_diff':value=await service.engineering.taskDiff(args.task_id,args.path);break;
         case 'development_start':value=await service.development.start(args);break;
+        case 'development_begin_kimi':{const workspace=await service.engineering.resolve({project_id:args.project_id});await bridge.enable(args.project_id,false);value=await bridge.call('arc_begin_development',{...args,workspace_path:workspace.root_path},{name:'Kimi Work',configured_provider:'kimi'});break;}
         case 'development_cancel':value=await service.development.cancel(args.task_id);break;
         case 'development_events':value=service.development.events(args.task_id);break;
+        case 'walkthrough_retry':void service.refreshTaskWalkthrough(args.task_id,args.submission_key);value=service.engineering.task(args.task_id);break;
         case 'engineering_connect':{
           const workspace=await service.engineering.connect(args.project_id),legacy=await scanAecLegacy(workspace.root_path);
           // Preserve old managed rules as source history before replacing them.

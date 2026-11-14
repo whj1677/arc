@@ -5,7 +5,7 @@
  * TypeScript 只提供静态类型；运行时仍须校验 JSON、跨对象引用和源码锚点。
  */
 
-export type ProviderId = 'codex' | 'dsh' | 'workbuddy' | 'demo';
+export type ProviderId = 'codex' | 'dsh' | 'workbuddy' | 'kimi' | 'demo';
 export type Id = string;
 export type Sha256 = string;
 

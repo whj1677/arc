@@ -2,13 +2,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import type {Project,Snapshot,Explanation} from '../shared';
+import type {Project,Snapshot,Explanation,Feature,Scenario} from '../shared';
 import {engineeringSectionCategories,type SaveEngineeringEntry,type EngineeringSectionCategory} from '../engineering';
-import type {CodeState,WorkspaceBinding,ContextEntry,ContextSource,EngineeringContext,EngineeringAnalysis,ContextRequest,EngineeringTask,CreateEngineeringTask,UpdateEngineeringTask,FinishEngineeringTask,DevelopmentAttempt,VerificationEvidence} from '../engineering';
+import type {CodeState,WorkspaceBinding,ContextEntry,ContextSource,EngineeringContext,EngineeringAnalysis,ContextRequest,EngineeringTask,CreateEngineeringTask,UpdateEngineeringTask,FinishEngineeringTask,DevelopmentAttempt,VerificationEvidence,TaskReadingBinding,WalkthroughUpdate} from '../engineering';
 import {Store,id,now} from './store';
 import {capture,freshness,readSource,sha,relativePath,safeFile,workspaceFiles,workspaceGitDirectory} from './snapshot';
 import {exportEngineeringProject,restoreEngineeringProject} from './engineering-transfer';
 import {scanAecLegacy,type AecScan,type AecLegacyDocument} from './aec-migration';
+import {readingTarget} from './prompt-context';
 
 const exec=promisify(execFile), workspaceKind='engineering_workspace', contextKind='engineering_context', taskKind='engineering_task', attemptKind='development_attempt';
 const requireText=(v:unknown,max=20000)=>{if(typeof v!=='string'||!v.trim()||v.length>max)throw Error(`请输入 1–${max} 个字符`);return v.trim();};
@@ -32,6 +33,7 @@ export function engineeringDocumentCategory(file:string):EngineeringSectionCateg
 export class EngineeringService {
   private readonly capturing=new Map<string,Promise<CodeState>>();
   private readonly scanning=new Map<string,Promise<void>>();
+  onTaskFinished:(task:EngineeringTask)=>void=()=>{};
   constructor(readonly store:Store,readonly changed:()=>void=()=>{}) {
     for(const attempt of store.all<DevelopmentAttempt>(attemptKind))if(['starting','running'].includes(attempt.status)) {
       if(attempt.origin==='agent'){attempt.connection_status='unknown';attempt.error='ARC 已重启，外部 Agent 会话可能仍在开发；等待回填确认，不自动重发。';store.put(attemptKind,attempt.attempt_id,attempt);continue;}
@@ -259,14 +261,30 @@ export class EngineeringService {
   history(kind:'task'|'context',objectId:string){return this.store.versions(kind==='task'?taskKind:contextKind,objectId);}
   private receiptKey(operation:string,objectId:string,key:string){return sha(`${operation}\0${objectId}\0${requireText(key,300)}`);}
   private saveTask(task:EngineeringTask){task.version++;task.updated_at=now();task.saved='saved';this.store.putVersion(taskKind,task.task_id,task.version,task);}
+  private validateReading(projectId:string,input?:TaskReadingBinding):TaskReadingBinding|undefined {
+    if(!input)return undefined;
+    const feature=this.store.get<Feature>('feature',input.feature_id),scenario=this.store.get<Scenario>('scenario',input.scenario_id),explanation=this.store.get<Explanation>('explanation',input.result_id),snapshot=this.store.get<Snapshot>('snapshot',input.source_snapshot_id);
+    if(feature.project_id!==projectId||scenario.project_id!==projectId||scenario.feature_id!==feature.feature_id||explanation.scenario_id!==scenario.scenario_id)throw Error('功能、场景与任务归属不一致');
+    if(explanation.result.binding.feature_id!==feature.feature_id||explanation.result.binding.scenario_id!==scenario.scenario_id||explanation.result.binding.source_snapshot_id!==snapshot.source_snapshot_id||snapshot.project_id!==projectId)throw Error('走读结果与冻结来源归属不一致');
+    readingTarget(explanation.result,input.target,snapshot,feature);
+    return {feature_id:feature.feature_id,scenario_id:scenario.scenario_id,result_id:explanation.result_id,source_snapshot_id:snapshot.source_snapshot_id,target:{kind:input.target.kind,id:input.target.id}};
+  }
   async createTask(input:CreateEngineeringTask):Promise<EngineeringTask> {
-    const workspace=await this.resolve(input);
-    if(input.task_id){const prior=this.task(input.task_id);if(prior.workspace_id!==workspace.workspace_id)throw Error('任务属于另一个工作区');await this.captureState(workspace.project_id,workspace.root_path);const task=this.task(input.task_id);const key=this.receiptKey('continue',task.task_id,input.submission_key);if(this.store.maybe('engineering_receipt',key))return task;const text=requireText(input.goal);this.store.transaction(()=>{task.requests??=[];task.requests.push({text,submission_key:input.submission_key,created_at:now()});this.saveTask(task);this.store.put('engineering_receipt',key,task);});this.changed();return task;}
+    const workspace=await this.resolve(input),reading=this.validateReading(workspace.project_id,input.reading);
+    if(input.task_id){
+      const prior=this.task(input.task_id);if(prior.workspace_id!==workspace.workspace_id)throw Error('任务属于另一个工作区');
+      if(reading&&prior.reading&&(reading.feature_id!==prior.reading.feature_id||reading.scenario_id!==prior.reading.scenario_id))throw Error('已有任务不能改绑到另一个功能或场景');
+      await this.captureState(workspace.project_id,workspace.root_path);const task=this.task(input.task_id),key=this.receiptKey('continue',task.task_id,input.submission_key);if(this.store.maybe('engineering_receipt',key))return task;
+      const text=requireText(input.goal);this.store.transaction(()=>{task.requests??=[];task.requests.push({text,submission_key:input.submission_key,created_at:now()});if(!task.reading&&reading)task.reading=reading;this.saveTask(task);this.store.put('engineering_receipt',key,task);});this.changed();return task;
+    }
     const key=this.receiptKey('create',workspace.workspace_id,input.submission_key),existing=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(existing)return this.task(existing.task_id);
     const context=await this.context({project_id:workspace.project_id});
     return this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return this.task(retry.task_id);
-      const task:EngineeringTask={task_id:id('task'),project_id:workspace.project_id,workspace_id:workspace.workspace_id,workspace_path:workspace.root_path,version:0,submission_key:input.submission_key,goal:requireText(input.goal),scope:(input.scope??[]).map(relativePath),status:'pending',baseline:context.code_state,context_version:context.version,summary:'',decisions:[],unresolved:[],changes:[],verification:[],verification_status:'not_run',attempt_ids:[],requests:[],created_at:now(),updated_at:now(),saved:'saved'};
+      const task:EngineeringTask={task_id:id('task'),project_id:workspace.project_id,workspace_id:workspace.workspace_id,workspace_path:workspace.root_path,...(reading?{reading}:{}),version:0,submission_key:input.submission_key,goal:requireText(input.goal),scope:(input.scope??[]).map(relativePath),status:'pending',baseline:context.code_state,context_version:context.version,summary:'',decisions:[],unresolved:[],changes:[],verification:[],verification_status:'not_run',attempt_ids:[],requests:[],created_at:now(),updated_at:now(),saved:'saved'};
       this.saveTask(task);this.store.put('engineering_receipt',key,task);this.changed();return task;});
+  }
+  saveWalkthrough(taskId:string,update:WalkthroughUpdate,expectedUpdateId?:string):EngineeringTask {
+    return this.store.transaction(()=>{const task=this.task(taskId);if(!task.reading)throw Error('任务没有关联的功能走读');if(expectedUpdateId!==undefined&&task.walkthrough?.update_id!==expectedUpdateId)return task;task.walkthrough=update;this.saveTask(task);this.changed();return task;});
   }
   updateTask(input:UpdateEngineeringTask):EngineeringTask {
     const key=this.receiptKey('update',input.task_id,input.submission_key),prior=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(prior)return prior;
@@ -319,10 +337,17 @@ export class EngineeringService {
       // Keep known task changes across attempts, but exclude files only changed between attempts.
       .filter(p=>!attemptFiles||previousChanges.has(p)||attemptFiles.get(p)!==afterFiles.get(p))
       .map(p=>({path:p,before_sha256:beforeFiles.get(p)??null,after_sha256:afterFiles.get(p)??null,ownership:comparison.dirty.includes(p)||task.rebind_preexisting_files?.some(f=>f.path===p)?'preexisting_overlap' as const:'task_change' as const,...(assets.has(p)?{text_diff_unavailable:true}:{})}));
-    return this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);if(input.decisions)current.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
+    const saved=this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);if(input.decisions)current.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
       if(ownershipUnknown)current.unresolved=[...new Set([...current.unresolved,'无法确认提交完成时与采集时的代码状态一致。报告已保存，差异归属待核查。'])];
       for(const evidence of input.verification??[]){this.checkEvidence(current,evidence);if(!current.verification.some(e=>e.evidence_id===evidence.evidence_id))current.verification.push(evidence);}
+      if(current.reading&&(input.status==='completed'||current.changes.length>0)){
+        const previous=current.walkthrough,result=previous?.result_id?this.store.maybe<Explanation>('explanation',previous.result_id):null,unchanged=attemptFiles?[...new Set([...attemptFiles.keys(),...afterFiles.keys()])].every(file=>attemptFiles.get(file)===afterFiles.get(file)):current.changes.length===0;
+        const reusable=unchanged&&current.end_state&&result&&this.store.get<Snapshot>('snapshot',result.result.binding.source_snapshot_id).fingerprint===current.end_state.fingerprint;
+        if(reusable)current.walkthrough={...previous!,status:'completed',result_id:result.result_id,source_snapshot_id:result.result.binding.source_snapshot_id,error:undefined,updated_at:now()};
+        else current.walkthrough={status:current.end_state?'pending':'failed',previous_result_id:previous?.result_id??current.reading.result_id,source_snapshot_id:current.end_state?.snapshot_id,...(current.end_state?{}:{error:'没有可确认的开发结束代码状态；旧走读保留。'}),updated_at:now()};
+      }
       current.verification_status=this.verificationStatus(current,end??current.baseline);this.saveTask(current);this.markAffected(current.project_id,changes.map(c=>c.path));this.store.put('engineering_receipt',key,current);this.changed();return current;});
+    if(saved.walkthrough?.status==='pending'&&saved.end_state)this.onTaskFinished(saved);return saved;
   }
   private markAffected(projectId:string,files:string[]) {
     if(!files.length)return;let changed=false;
@@ -337,7 +362,7 @@ export class EngineeringService {
     return this.store.transaction(()=>{const task=this.task(taskId);
       const workspace=this.store.get<WorkspaceBinding>(workspaceKind,task.workspace_id);if(workspace.status!=='bound'||!samePath(workspace.root_path,task.workspace_path))throw Error('任务工作区未绑定或已改变');
       this.checkWorkspaceAvailable(workspace);
-      const attempt:DevelopmentAttempt={...input,attempt_id:id('attempt'),task_id:taskId,project_id:task.project_id,workspace_id:task.workspace_id,workspace_path:task.workspace_path,status:'starting',started_at:now(),baseline:this.store.maybe<CodeState>('engineering_state',task.workspace_id)??task.baseline,context_version:this.store.get<any>('engineering_context_state',task.project_id).version};if(task.changes_status==='needs_review')task.diff_baseline=attempt.baseline;task.attempt_ids.push(attempt.attempt_id);task.status='running';this.saveTask(task);this.store.put(attemptKind,attempt.attempt_id,attempt);this.changed();return attempt;});
+      const attempt:DevelopmentAttempt={...input,attempt_id:id('attempt'),task_id:taskId,project_id:task.project_id,workspace_id:task.workspace_id,workspace_path:task.workspace_path,status:'starting',started_at:now(),baseline:this.store.maybe<CodeState>('engineering_state',task.workspace_id)??task.baseline,context_version:this.store.get<any>('engineering_context_state',task.project_id).version};if(task.changes_status==='needs_review')task.diff_baseline=attempt.baseline;if(task.reading)task.walkthrough={status:'pending',previous_result_id:task.walkthrough?.result_id??task.reading.result_id,result_id:task.walkthrough?.result_id,source_snapshot_id:task.walkthrough?.source_snapshot_id,updated_at:now()};task.attempt_ids.push(attempt.attempt_id);task.status='running';this.saveTask(task);this.store.put(attemptKind,attempt.attempt_id,attempt);this.changed();return attempt;});
   }
   updateAttempt(attemptId:string,patch:Partial<DevelopmentAttempt>) {
     const attempt=this.store.get<DevelopmentAttempt>(attemptKind,attemptId);for(const key of ['attempt_id','task_id','project_id','workspace_id','workspace_path'] as const)if(patch[key]!==undefined&&patch[key]!==attempt[key])throw Error('执行归属不可修改');

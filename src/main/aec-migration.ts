@@ -10,6 +10,7 @@ export const ARC_ENGINEERING_RULES = `本工程通过 ARC 保存工程上下文�
 - 开发前调用 arc_begin_development（workspace_path、goal、稳定 submission_key）；已有 task_id 时续接原任务，冻结正确工作区和开始基线。
 - 使用 Agent 原有能力实施最小充分改动和必要验证；保留已有用户改动。按实际影响记录接口、迁移或重要决定，不强制新建 FIX/REQ 文件包或空章节。
 - 结束调用 arc_finish_development（task_id、expected_version、稳定 submission_key、真实 status、summary、verification、unresolved）；中途用 arc_update_development，恢复用 arc_development_task。
+- 只收到 task_id 的续接请求，先用 arc_development_task 读取完整 goal、requests、decisions、summary、unresolved、reading 和 walkthrough，再读取当前上下文并核对当前源码；不得用 recent_tasks 摘要代替，不把历史决定或完成声明当作当前源码事实。
 - 验证记录包含实际 command、cwd、exit_code、outcome 和对应 code_state；区分 observed 与 self_reported、未运行与通过，失败和未完成项不得省略。
 - saved=pending_sync 只表示待同步，不能声称已保存到 ARC；保留任务 ID 并在恢复连接后续接。历史文档不是已验证的当前事实，冲突和过期来源标记待复核。
 - 用户自有规则、安全、发布和审批要求继续有效；不因 ARC 接入扩大权限。`;

@@ -47,6 +47,8 @@ export interface Run {
   reading_context?:ReadingContext;
   overview_format?:'overview-1';
   overview_from_result_id?:string;
+  development_task_id?:string;
+  refresh_from_result_id?:string;
 }
 export interface Explanation { result_id: string; scenario_id: string; created_at: string; source_status: string; result: AnalysisResult }
 export interface ProviderProfile { provider_id: ProviderId; requested_name: string; product: string; status: string; version?: string; path?: string; reason: string; transport: string; auth: string; capabilities: Record<string,string>; checked_at: string }
@@ -69,7 +71,7 @@ export interface ReadingState {
   feature_reading_version?: number;
 }
 export interface AnalysisRequest { project_id:string; scenario_id:string; source_snapshot_id:string; question_revision_id?:string; created_at?:string }
-export interface WorkspaceData { projects: Project[]; features: Feature[]; scenarios: Scenario[]; revisions: Revision[]; annotations: Annotation[]; runs: Run[]; explanations: Explanation[]; providers: ProviderProfile[]; snapshots: Snapshot[]; requested_analysis?:AnalysisRequest; questions?:ReadingQuestion[] }
+export interface WorkspaceData { projects: Project[]; features: Feature[]; scenarios: Scenario[]; revisions: Revision[]; annotations: Annotation[]; runs: Run[]; explanations: Explanation[]; providers: ProviderProfile[]; snapshots: Snapshot[]; requested_analysis?:AnalysisRequest; questions?:ReadingQuestion[]; development_tasks?:import('./engineering').EngineeringTask[] }
 export interface ArcApi {
   invoke<T = any>(operation: string, args?: unknown): Promise<T>;
   onEvent(callback: (event: { type: string; [key: string]: any }) => void): () => void;

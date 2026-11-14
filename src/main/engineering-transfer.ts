@@ -61,9 +61,9 @@ export async function restoreEngineeringProject(store:Store,filePath:string) {
     if(row.kind==='project'&&row.id!==bundle.project_id)throw Error('导出包含多个工程身份');
     if(identityFields[row.kind]&&v[identityFields[row.kind]]!==row.id)throw Error('记录标识与内容不一致');
     if(v.scenario_id&&!owns('scenario',v.scenario_id)||v.feature_id&&!owns('feature',v.feature_id)||v.task_id&&row.kind==='development_attempt'&&!owns('engineering_task',v.task_id))throw Error('记录关联对象缺失');
-    if(row.kind==='run'&&(!v.binding||v.binding.run_id!==row.id||!owns('snapshot',v.binding.source_snapshot_id)||!owns('scenario',v.binding.scenario_id)))throw Error('分析执行归属或快照缺失');
+    if(row.kind==='run'&&(!v.binding||v.binding.run_id!==row.id||!owns('snapshot',v.binding.source_snapshot_id)||!owns('scenario',v.binding.scenario_id)||v.development_task_id&&!owns('engineering_task',v.development_task_id)))throw Error('分析执行归属或快照缺失');
     if(row.kind==='reading_question'&&(!owns('snapshot',v.source_snapshot_id)||v.run_id&&!owns('run',v.run_id)||!Array.isArray(v.run_ids)||v.run_ids.some((key:string)=>!owns('run',key))))throw Error('阅读问答执行或快照缺失');
-    if(row.kind==='engineering_task'&&(v.task_id!==row.id||!Array.isArray(v.verification)||!Array.isArray(v.attempt_ids)||!ownedIds.has(v.workspace_id)))throw Error('任务归属或数据格式无效');
+    if(row.kind==='engineering_task'&&(v.task_id!==row.id||!Array.isArray(v.verification)||!Array.isArray(v.attempt_ids)||!ownedIds.has(v.workspace_id)||v.reading&&(!owns('feature',v.reading.feature_id)||!owns('scenario',v.reading.scenario_id)||!owns('explanation',v.reading.result_id)||!owns('snapshot',v.reading.source_snapshot_id))||v.walkthrough?.run_id&&!owns('run',v.walkthrough.run_id)||v.walkthrough?.result_id&&!owns('explanation',v.walkthrough.result_id)))throw Error('任务归属、功能关联或数据格式无效');
     if(row.kind==='engineering_context'&&(v.entry_id!==row.id||!Array.isArray(v.sources)))throw Error('上下文格式无效');
   }
   const snapshotRows=bundle.objects.filter(r=>r.kind==='snapshot');
@@ -83,7 +83,7 @@ export async function restoreEngineeringProject(store:Store,filePath:string) {
   const snapshotIds=new Set(snapshotRows.map(r=>r.id));
   for(const row of [...bundle.objects,...bundle.versions]){
     const v=row.value;if(row.kind==='engineering_context')for(const source of v.sources)if(!snapshotIds.has(source.snapshot_id))throw Error('上下文来源快照缺失');
-    if(row.kind==='engineering_task')for(const state of [v.baseline,v.end_state,v.diff_baseline,v.rebind_source_snapshot_id?{snapshot_id:v.rebind_source_snapshot_id}:null,...v.verification.map((e:any)=>e.code_state)].filter(Boolean))if(!snapshotIds.has(state.snapshot_id))throw Error('任务代码状态快照缺失');
+    if(row.kind==='engineering_task')for(const state of [v.baseline,v.end_state,v.diff_baseline,v.reading?{snapshot_id:v.reading.source_snapshot_id}:null,v.walkthrough?.source_snapshot_id?{snapshot_id:v.walkthrough.source_snapshot_id}:null,v.rebind_source_snapshot_id?{snapshot_id:v.rebind_source_snapshot_id}:null,...v.verification.map((e:any)=>e.code_state)].filter(Boolean))if(!snapshotIds.has(state.snapshot_id))throw Error('任务代码状态或走读来源快照缺失');
     if(row.kind==='development_attempt'&&v.log_path&&!fileNames.has(v.log_path)||row.kind==='engineering_task'&&v.verification.some((e:any)=>e.log_path&&!fileNames.has(e.log_path)))throw Error('导出缺少被引用日志');
   }
   for(const row of bundle.versions)if(!objectKeys.has(`${row.kind}\0${row.id}`)||!Number.isSafeInteger(row.version)||row.version<1||row.value.version!==row.version)throw Error('历史版本关联无效');

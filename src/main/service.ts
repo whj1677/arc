@@ -32,14 +32,20 @@ export class ArcService {
   private closing=false;
   private asking=new Map<string,Promise<ReadingQuestion>>();
   private checkingCodex?:Promise<ProviderProfile[]>;
+  private readonly refreshingTasks=new Map<string,Promise<void>>();
   constructor(readonly directory:string,readonly resources:string,readonly emit:(e:any)=>void=()=>{},private readonly codexRunner:typeof runCodex=runCodex) {
     this.store=new Store(directory);
     this.engineering=new EngineeringService(this.store,()=>this.changed());
+    this.engineering.onTaskFinished=task=>{void this.refreshTaskWalkthrough(task.task_id);};
     this.development=new DevelopmentService(this.engineering,this.store,resources,event=>this.emit(event));
     for(const run of this.store.all<Run>('run'))if(!terminal.has(run.status)&&!['unknown','waiting_agent'].includes(run.status)){run.status='unknown';run.error='Arc 上次退出前未记录终态；不会自动重发。请核查原会话，或明确新建关联重试。';this.store.put('run',run.binding.run_id,run);}
+    for(const task of this.store.all<import('../engineering').EngineeringTask>('engineering_task'))if(task.walkthrough?.status==='running'){
+      const update=task.walkthrough,run=update.run_id?this.store.maybe<Run>('run',update.run_id):null,explanation=run&&this.store.all<Explanation>('explanation').find(e=>e.result.binding.run_id===run.binding.run_id);
+      this.engineering.saveWalkthrough(task.task_id,run?.status==='completed'&&explanation?{...update,status:'completed',result_id:explanation.result_id,updated_at:now()}:{...update,status:'failed',error:'ARC 重启前走读更新未保存终态；旧说明和开发成果保留，可重试。',updated_at:now()},update.update_id);
+    }
   }
   data():WorkspaceData {
-    return {projects:this.store.all('project'),features:this.store.all('feature'),scenarios:this.store.all('scenario'),revisions:this.store.all('revision'),annotations:this.store.all('annotation'),runs:this.store.all('run'),explanations:this.store.all('explanation'),providers:this.store.all('provider'),snapshots:this.store.all('snapshot'),questions:this.store.all('reading_question'),requested_analysis:this.store.maybe('setting','mcp-requested-analysis')??undefined};
+    return {projects:this.store.all('project'),features:this.store.all('feature'),scenarios:this.store.all('scenario'),revisions:this.store.all('revision'),annotations:this.store.all('annotation'),runs:this.store.all('run'),explanations:this.store.all('explanation'),providers:this.store.all('provider'),snapshots:this.store.all('snapshot'),questions:this.store.all('reading_question'),development_tasks:this.engineering.tasks(),requested_analysis:this.store.maybe('setting','mcp-requested-analysis')??undefined};
   }
   changed(){this.emit({type:'changed'});}
   async openProject(rootPath:string,fictional=false,buildConfig='') {
@@ -269,26 +275,55 @@ export class ArcService {
     const previous=this.store.all<Explanation>('explanation').filter(e=>e.scenario_id===run.binding.scenario_id).at(-1);
     return promptContext(snapshot,annotations,previous?{result_id:previous.result_id,binding:previous.result.binding,summary:previous.result.summary}:undefined);
   }
-  async startRun(scenarioId:string,providerId:string,submissionKey:string,previousRunId?:string) {
+  async startRun(scenarioId:string,providerId:string,submissionKey:string,previousRunId?:string,options:{sourceSnapshotId?:string;developmentTaskId?:string;refreshFromResultId?:string}={}) {
     if(this.closing)throw new Error('Arc 正在退出，未派发新任务');
     if(!['codex','dsh','workbuddy'].includes(providerId))throw new Error('请选择真实 Provider；演示单独装载');
     if(!/^[\w-]{8,100}$/.test(submissionKey))throw new Error('提交幂等键无效');
     const existing=this.store.all<Run>('run').find(r=>r.submission_key===submissionKey);
-    if(existing){if(existing.binding.scenario_id!==scenarioId||existing.provider_id!==providerId)throw new Error('幂等键归属冲突');return existing;}
+    if(existing){if(existing.binding.scenario_id!==scenarioId||existing.provider_id!==providerId||existing.development_task_id!==options.developmentTaskId)throw new Error('幂等键归属冲突');return existing;}
     const scenario=this.store.get<Scenario>('scenario',scenarioId),project=this.store.get<Project>('project',scenario.project_id);
     if(project.fictional)throw new Error('演示工程不调用真实 Provider；请打开实际工程或测试源码目录');
     const busy=this.store.all<Run>('run').find(r=>!r.reading_question_id&&r.binding.scenario_id===scenarioId&&r.provider_id===providerId&&!terminal.has(r.status)&&r.status!=='unknown');
     if(busy)throw new Error('该场景同一 Provider 已有进行中的运行；请先等待或停止');
     if(previousRunId){const previous=this.store.get<Run>('run',previousRunId);if(previous.binding.scenario_id!==scenarioId)throw new Error('前次运行不属于此场景');}
+    const sourceSnapshotId=options.sourceSnapshotId??this.analysisSnapshot(scenario),source=this.store.get<Snapshot>('snapshot',sourceSnapshotId);
+    if(source.project_id!==project.project_id)throw Error('复核来源不属于当前工程');
+    if(options.developmentTaskId){const task=this.engineering.task(options.developmentTaskId);if(task.project_id!==project.project_id||task.reading?.scenario_id!==scenarioId)throw Error('开发任务与功能走读归属不一致');}
     // Freeze synchronously before yielding; UI changes cannot change this envelope.
     const runId=id('run');
-    const run:Run={binding:{project_id:project.project_id,feature_id:scenario.feature_id,scenario_id:scenarioId,question_revision_id:scenario.question_revision_id,source_snapshot_id:this.analysisSnapshot(scenario),run_id:runId},provider_id:providerId as Run['provider_id'],status:'queued',question:scenario.question,title:scenario.title,created_at:now(),submission_key:submissionKey,previous_run_id:previousRunId,output_path:path.join(this.directory,'runs',runId,'result.json')};
+    const run:Run={binding:{project_id:project.project_id,feature_id:scenario.feature_id,scenario_id:scenarioId,question_revision_id:scenario.question_revision_id,source_snapshot_id:sourceSnapshotId,run_id:runId},provider_id:providerId as Run['provider_id'],status:'queued',question:scenario.question,title:options.developmentTaskId?`${scenario.title} · 开发后复核`:scenario.title,created_at:now(),submission_key:submissionKey,previous_run_id:previousRunId,output_path:path.join(this.directory,'runs',runId,'result.json'),...(options.developmentTaskId?{development_task_id:options.developmentTaskId,refresh_from_result_id:options.refreshFromResultId}:{})};
     if(providerId==='codex'&&scenario.question===overviewQuestion)run.overview_format='overview-1';
     this.store.put('run',runId,run);this.changed();
-    this.event(runId,{type:'local.stage',stage:'queued',message:'任务与源码快照已绑定，正在准备 Agent 连接'});
+    this.event(runId,{type:'local.stage',stage:'queued',message:options.developmentTaskId?'开发结果已保存；正在按新代码重新核对同一功能，旧说明保留':'任务与源码快照已绑定，正在准备 Agent 连接'});
     const task=this.execute(run).catch(error=>this.fail(runId,error)).finally(()=>this.executing.delete(runId));
     this.executing.set(runId,task);
     return run;
+  }
+  refreshTaskWalkthrough(taskId:string,submissionKey?:string):Promise<void> {
+    const active=this.refreshingTasks.get(taskId);if(active)return active;
+    const task=this.engineering.task(taskId);if(!task.reading||!task.end_state||!['completed','failed','blocked','cancelled'].includes(task.status))return Promise.resolve();
+    const updateId=id('walkthrough'),previous=task.walkthrough??{status:'pending' as const,previous_result_id:task.reading.result_id,updated_at:now()};
+    this.engineering.saveWalkthrough(taskId,{...previous,status:'pending',update_id:updateId,error:undefined,updated_at:now()});
+    const pending=this.updateTaskWalkthrough(taskId,updateId,submissionKey??`walkthrough-${updateId}`).finally(()=>this.refreshingTasks.delete(taskId));this.refreshingTasks.set(taskId,pending);return pending;
+  }
+  private async updateTaskWalkthrough(taskId:string,updateId:string,submissionKey:string) {
+    let runId:string|undefined;
+    try{
+      const initial=this.engineering.task(taskId),reading=initial.reading!;
+      const snapshot=await this.refresh(initial.project_id),current=this.engineering.task(taskId);
+      if(current.walkthrough?.update_id!==updateId||!['completed','failed','blocked','cancelled'].includes(current.status))return;
+      const attempt=current.attempt_ids.at(-1)?this.store.get<import('../engineering').DevelopmentAttempt>('development_attempt',current.attempt_ids.at(-1)!):undefined;
+      if(attempt?.origin==='agent'&&attempt.provider_id==='kimi'){
+        this.engineering.saveWalkthrough(taskId,{...current.walkthrough!,status:'pending',source_snapshot_id:snapshot.source_snapshot_id,updated_at:now()},updateId);
+        this.prepareAnalysis(reading.scenario_id);return;
+      }
+      const run=await this.startRun(reading.scenario_id,'codex',submissionKey,undefined,{sourceSnapshotId:snapshot.source_snapshot_id,developmentTaskId:taskId,refreshFromResultId:current.walkthrough!.previous_result_id});runId=run.binding.run_id;
+      this.engineering.saveWalkthrough(taskId,{...current.walkthrough!,status:'running',run_id:runId,source_snapshot_id:snapshot.source_snapshot_id,updated_at:now()},updateId);
+      const executing=this.executing.get(runId);if(executing)await executing;
+      const finalRun=this.store.get<Run>('run',runId),explanation=this.store.all<Explanation>('explanation').find(e=>e.result.binding.run_id===runId),latest=this.engineering.task(taskId);
+      if(finalRun.status==='completed'&&explanation)this.engineering.saveWalkthrough(taskId,{...latest.walkthrough!,status:'completed',result_id:explanation.result_id,source_snapshot_id:explanation.result.binding.source_snapshot_id,error:undefined,updated_at:now()},updateId);
+      else this.engineering.saveWalkthrough(taskId,{...latest.walkthrough!,status:'failed',error:finalRun.error||`走读更新未完成（${finalRun.status}）；旧说明和开发成果保留。`,updated_at:now()},updateId);
+    }catch(error){const latest=this.engineering.task(taskId);if(latest.walkthrough?.update_id===updateId)this.engineering.saveWalkthrough(taskId,{...latest.walkthrough,status:'failed',...(runId?{run_id:runId}:{}),error:redact((error as Error).message||String(error)),updated_at:now()},updateId);}
   }
   private fail(runId:string,error:unknown) {
     this.active.delete(runId);
@@ -556,6 +591,7 @@ export class ArcService {
       void stopTree(active.child).catch(()=>{});
     }},12000);
     await pending;clearTimeout(timer);
+    await Promise.allSettled([...this.refreshingTasks.values()]);
     await closeDshWebHosts();
     while(this.indexing.size)await new Promise(resolve=>setTimeout(resolve,20));
   }

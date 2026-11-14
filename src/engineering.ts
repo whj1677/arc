@@ -1,4 +1,4 @@
-import type { ProviderId } from './shared';
+import type { ProviderId,ReadingTarget } from './shared';
 import type {AnalysisNode,AnalysisEdge,AnalysisClaim,SourceEvidence,RunBinding} from '../contracts/agent-adapter';
 
 export interface WorkspaceAsset {path:string;sha256:string}
@@ -65,8 +65,18 @@ export interface VerificationEvidence {
   created_at:string; log_path?:string; note?:string;
   code_state_verified?:boolean;
 }
+export interface TaskReadingBinding {
+  feature_id:string; scenario_id:string; result_id:string; source_snapshot_id:string;
+  target:ReadingTarget;
+}
+export interface WalkthroughUpdate {
+  status:'pending'|'running'|'completed'|'failed';
+  previous_result_id:string; source_snapshot_id?:string; run_id?:string; result_id?:string;
+  update_id?:string; error?:string; updated_at:string;
+}
 export interface EngineeringTask {
   task_id:string; project_id:string; workspace_id:string; workspace_path:string;
+  reading?:TaskReadingBinding; walkthrough?:WalkthroughUpdate;
   version:number; submission_key:string; goal:string; scope:string[];
   status:'pending'|'running'|'blocked'|'completed'|'failed'|'cancelled'|'interrupted';
   baseline:CodeState; end_state?:CodeState; diff_baseline?:CodeState; context_version:number;
@@ -91,7 +101,7 @@ export interface DevelopmentAttempt {
 }
 export interface ContextRequest {project_id?:string; workspace_path?:string; refresh?:boolean;query?:string;entry_id?:string;result_id?:string;category?:ContextEntry['category'];offset?:number;limit?:number}
 export interface CreateEngineeringTask extends ContextRequest {
-  goal:string; submission_key:string; task_id?:string; scope?:string[];
+  goal:string; submission_key:string; task_id?:string; scope?:string[]; reading?:TaskReadingBinding;
 }
 export interface UpdateEngineeringTask {
   task_id:string; expected_version:number; submission_key:string; summary?:string;
