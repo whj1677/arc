@@ -16,9 +16,15 @@ export interface LegacyImport {
   import_key:string; revision_key:string; source_kind:'context'|'task'|'rule'|'evidence';
   sources:ContextSource[]; imported_at:string;
 }
+export const engineeringSectionCategories=['plan','architecture','design','verification_plan'] as const;
+export type EngineeringSectionCategory=typeof engineeringSectionCategories[number];
+export interface SaveEngineeringEntry {
+  project_id?:string;workspace_path?:string;entry_id?:string;expected_version:number;submission_key:string;
+  category:EngineeringSectionCategory;key:string;text:string;status?:'current'|'needs_review';sources?:ContextSource[];
+}
 export interface ContextEntry {
   entry_id:string; project_id:string; version:number; key:string;
-  category:'purpose'|'module'|'interface'|'build'|'rule'|'decision'|'issue'|'technology';
+  category:'purpose'|'module'|'interface'|'build'|'rule'|'decision'|'issue'|'technology'|EngineeringSectionCategory;
   origin:'source'|'document'|'user'|'agent'; text:string;
   status:'current'|'needs_review'|'superseded'; sources:ContextSource[];
   code_fingerprint:string; updated_at:string; supersedes?:string; conflict?:string;
@@ -75,7 +81,7 @@ export interface DevelopmentAttempt {
   baseline?:CodeState; context_version?:number;
   connection_status?:'connected'|'unknown';
 }
-export interface ContextRequest {project_id?:string; workspace_path?:string; refresh?:boolean;query?:string;entry_id?:string;result_id?:string;offset?:number;limit?:number}
+export interface ContextRequest {project_id?:string; workspace_path?:string; refresh?:boolean;query?:string;entry_id?:string;result_id?:string;category?:ContextEntry['category'];offset?:number;limit?:number}
 export interface CreateEngineeringTask extends ContextRequest {
   goal:string; submission_key:string; task_id?:string; scope?:string[];
 }

@@ -34,3 +34,42 @@ test('exact function references separate returns from side effects and resolve o
   const r={...fixture([n],[]),evidence:[{evidence_id:'other',path:'wrong.py'},{evidence_id:'definition',path:'right.py'}]} as unknown as AnalysisResult;
   const info=functionInfo(r,r.nodes[0]);assert.equal(info.definition?.path,'right.py');assert.deepEqual(info.parameters?.map(io=>io.io_id),['x']);assert.deepEqual(info.returns?.map(io=>io.io_id),['return']);assert.deepEqual(info.otherOutputs.map(io=>io.io_id),['write']);
 });
+
+import {functionCallMap} from '../src/ui/function-call-map';
+import {functionFocus} from '../src/ui/function-chain';
+
+test('file lanes use explicit definitions, keep unknown files apart and distinguish declaration from implementation',()=>{
+  const definition=(id:string,path:string,role='definition')=>({evidence_id:id,path,role});
+  const located=(id:string,ref:string)=>({...node(id),function_details:{symbol:id,definition_evidence_id:ref}});
+  const r={...fixture([located('a','a-def'),located('b','b-def'),located('c','c-decl'),node('unknown-1'),node('unknown-2')],[{...edge('ab','a','b'),evidence_ids:['call','a-def']},{...edge('bc','b','c'),evidence_ids:['c-decl']}]),evidence:[definition('a-def','a.ts'),definition('b-def','a.ts'),definition('c-decl','c.d.ts','declaration'),definition('call','a.ts','callsite')]} as unknown as AnalysisResult;
+  const map=functionCallMap(r,'','c');
+  assert.equal(map.fileGroups.length,4);assert.deepEqual(map.fileGroups[0].nodes.map(n=>n.node_id),['a','b']);
+  assert.equal(map.links[0].fileRelation,'same-file');assert.equal(map.links[1].fileRelation,'cross-file');
+  assert.deepEqual(map.links[0].callsites.map(e=>e.evidence_id),['call']);assert.equal(map.links[1].callsites.length,0);
+  assert.equal(map.links[1].calleeDefinition,undefined);assert.equal(map.links[1].calleeDeclaration?.evidence_id,'c-decl');
+  assert.equal(map.entry,undefined);assert.deepEqual(map.focus.entryPath,[]);
+  for(let i=0;i<map.fileGroups.length;i++){
+    const group=map.fileGroups[i];
+    if(i)assert.ok(group.bounds.y>map.fileGroups[i-1].bounds.y+map.fileGroups[i-1].bounds.h);
+    for(const n of group.nodes){const box=map.boxes.get(n.node_id)!;assert.ok(box.y>=group.bounds.y&&box.y+box.h<=group.bounds.y+group.bounds.h);}
+  }
+});
+
+test('focus traversal terminates for recursive diamonds and does not imply a unique route',()=>{
+  const nodes=['a','b','c','d','other'].map(id=>node(id));
+  const links=[['a','b'],['a','c'],['b','d'],['c','d'],['d','a'],['d','d']].map(([from,to])=>({from,to}));
+  const focus=functionFocus(nodes,links,'a','d');
+  assert.deepEqual(focus.entryPath,['a','b','d']);assert.equal(focus.pathKind,'representative');
+  assert.deepEqual(new Set(focus.upstream),new Set(['a','b','c']));assert.deepEqual(new Set(focus.downstream),new Set(['a','b','c']));
+  assert.equal(functionFocus(nodes,links,'other','d').reachable,false);
+});
+
+test('selected walkthrough confines links to its entry and preserves per-step callsite identity',()=>{
+  const r={...fixture(['a','b','other'].map(id=>node(id)),[{...edge('ab','a','b'),evidence_ids:['wrong-call']},edge('other-b','other','b')]),evidence:[{evidence_id:'right-call',role:'callsite',path:'a.ts'},{evidence_id:'wrong-call',role:'callsite',path:'a.ts'}],function_walkthroughs:[{id:'one',entry_node_id:'a',steps:[{id:'first',kind:'call',from_node_id:'a',to_node_id:'b',evidence_ids:['right-call']}]},{id:'two',entry_node_id:'other',steps:[{id:'second',kind:'call',from_node_id:'other',to_node_id:'b',evidence_ids:[]}]}]} as unknown as AnalysisResult;
+  const map=functionCallMap(r,'one','b');assert.deepEqual(map.nodes.map(n=>n.node_id),['a','b']);assert.deepEqual(map.focus.entryPath,['a','b']);
+  assert.deepEqual(map.links[0].callsites.map(e=>e.evidence_id),['right-call']);assert.deepEqual(functionCallMap(r,'missing').nodes,[]);
+  assert.deepEqual(functionCallMap(r,'one',map.links[0].id).focus.entryPath,['a','b']);
+  assert.deepEqual(functionCallMap(r,'one','ab').focus.entryPath,['a','b']);
+  assert.deepEqual(functionCallMap(r,'one').focus.entryPath,['a']);
+  const legacy=functionCallMap({...r,function_walkthroughs:undefined},'old','b');assert.equal(legacy.nodes.length,3);assert.equal(legacy.entry,undefined);
+});

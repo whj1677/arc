@@ -3,6 +3,7 @@ import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import type {Project,Snapshot,Explanation} from '../shared';
+import {engineeringSectionCategories,type SaveEngineeringEntry,type EngineeringSectionCategory} from '../engineering';
 import type {CodeState,WorkspaceBinding,ContextEntry,ContextSource,EngineeringContext,EngineeringAnalysis,ContextRequest,EngineeringTask,CreateEngineeringTask,UpdateEngineeringTask,FinishEngineeringTask,DevelopmentAttempt,VerificationEvidence} from '../engineering';
 import {Store,id,now} from './store';
 import {capture,freshness,readSource,sha,relativePath,safeFile} from './snapshot';
@@ -13,6 +14,15 @@ const exec=promisify(execFile), workspaceKind='engineering_workspace', contextKi
 const requireText=(v:unknown,max=20000)=>{if(typeof v!=='string'||!v.trim()||v.length>max)throw Error(`请输入 1–${max} 个字符`);return v.trim();};
 const samePath=(a:string,b:string)=>process.platform==='win32'?path.resolve(a).toLowerCase()===path.resolve(b).toLowerCase():path.resolve(a)===path.resolve(b);
 async function git(root:string,args:string[]) {return (await exec('git',['-C',root,...args],{windowsHide:true,timeout:10000,maxBuffer:16*1024*1024})).stdout.trim();}
+// Explicit document names only; README/purpose is not a completed plan.
+export function engineeringDocumentCategory(file:string):EngineeringSectionCategory|undefined {
+  const name=path.posix.basename(file).replace(/\.(?:md|txt|json)$/i,'').toLowerCase().replace(/[_ ]/g,'-');
+  if(/^(?:verification-plan|test-plan|acceptance-plan|验证计划|测试计划|验收计划)$/.test(name))return 'verification_plan';
+  if(/^(?:architecture|system-architecture|架构|系统架构)$/.test(name))return 'architecture';
+  if(/^(?:design|detailed-design|technical-design|设计|详细设计|技术设计)$/.test(name))return 'design';
+  if(/^(?:plan|implementation-plan|development-plan|proposal|方案|实施方案|开发计划)$/.test(name))return 'plan';
+  return undefined;
+}
 export class EngineeringService {
   private readonly capturing=new Map<string,Promise<CodeState>>();
   private readonly scanning=new Map<string,Promise<void>>();
@@ -74,11 +84,11 @@ export class EngineeringService {
     }
     const contextState=this.store.get<{version:number}>('engineering_context_state',projectId);
     if(input.offset!==undefined&&(!Number.isSafeInteger(input.offset)||input.offset<0)||input.limit!==undefined&&(!Number.isSafeInteger(input.limit)||input.limit<1))throw Error('上下文分页参数无效');
-    const entries=this.store.all<ContextEntry>(contextKind).filter(e=>e.project_id===projectId&&e.status!=='superseded'&&(!input.entry_id||e.entry_id===input.entry_id)&&(!input.query||`${e.key}\n${e.text}`.toLowerCase().includes(input.query.toLowerCase())));
-    const categories:ContextEntry['category'][]=['purpose','rule','build','technology','module','interface','decision','issue'];
+    const entries=this.store.all<ContextEntry>(contextKind).filter(e=>e.project_id===projectId&&e.status!=='superseded'&&(!input.category||e.category===input.category)&&(!input.entry_id||e.entry_id===input.entry_id)&&(!input.query||`${e.key}\n${e.text}`.toLowerCase().includes(input.query.toLowerCase())));
+    const categories:ContextEntry['category'][]=[...engineeringSectionCategories,'purpose','rule','build','technology','module','interface','decision','issue'];
     const groups=categories.map(category=>entries.filter(e=>e.category===category).sort((a,b)=>Number(b.origin==='user')-Number(a.origin==='user')||Number(b.status==='current')-Number(a.status==='current')||a.key.localeCompare(b.key)));
     const ordered:ContextEntry[]=[];for(let i=0;i<Math.max(...groups.map(group=>group.length));i++)for(const group of groups)if(group[i])ordered.push(group[i]);
-    const offset=input.entry_id?0:input.offset??0,limit=input.entry_id?1:Math.min(input.limit??24,40),maxText=input.entry_id?12000:1500;
+    const offset=input.entry_id?0:input.offset??0,limit=input.entry_id?1:Math.min(input.limit??24,40),maxText=input.entry_id?60000:1500;
     const page=ordered.slice(offset,offset+limit).map(e=>({...e,text:e.text.slice(0,maxText),truncated:e.text.length>maxText}));
     const analysis=input.result_id?this.readAnalysis(input.result_id,workspace,state,input):undefined;
     return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.all<Explanation>('explanation').filter(e=>e.result.binding.project_id===projectId).slice(-10).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),recent_tasks:this.tasks({project_id:projectId}).slice(0,5).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
@@ -110,13 +120,14 @@ export class EngineeringService {
     const add=(key:string,category:ContextEntry['category'],origin:ContextEntry['origin'],text:string,file:string,start=1,end?:number,status:ContextEntry['status']='current')=>{const f=snapshot.files.find(f=>f.path===file)!;found.add(key);proposals.push({project_id:projectId,key,category,origin,text,status,sources:[{path:file,snapshot_id:state.snapshot_id,content_sha256:f.content_sha256,line_start:start,line_end:Math.max(start,end??Math.min(f.line_count,80))}],code_fingerprint:state.fingerprint});};
     for(const file of snapshot.files) {
       const name=path.posix.basename(file.path);
-      if(/^(README(?:\.[^/]+)?|AGENTS\.md|CLAUDE\.md)$/i.test(name)||/(?:^|\/)(?:ai-context|ai_context|ai_engineering|engineering-context|requirements|changes|modules|interfaces)\//i.test(file.path)&&file.path.endsWith('.md')) {
+      const section=engineeringDocumentCategory(file.path);
+      if(section||/^(README(?:\.[^/]+)?|AGENTS\.md|CLAUDE\.md)$/i.test(name)||/(?:^|\/)(?:ai-context|ai_context|ai_engineering|engineering-context|requirements|changes|modules|interfaces)\//i.test(file.path)&&file.path.endsWith('.md')) {
         if(file.path.includes('REQ-0000-template'))continue;
         if(previous.some(e=>e.legacy_import?.sources.some(s=>s.path===file.path)&&e.legacy_import.source_kind!=='rule'))continue;
         const text=(await readSource(this.store.directory,snapshot,file.path)).text;
         const legacy=/(?:ai.context|ai_engineering|engineering.context|requirements|changes|modules|interfaces)/i.test(file.path);
-        const category=/^(AGENTS|CLAUDE)\.md$/i.test(name)?'rule':legacy?'decision':'purpose';
-        const retained=text.slice(0,60000);add(`document:${file.path}`,category,'document',retained,file.path,1,Math.min(file.line_count,retained.split(/\r?\n/).length),legacy?'needs_review':'current');
+        const category=section??(/^(AGENTS|CLAUDE)\.md$/i.test(name)?'rule':legacy?'decision':'purpose');
+        const retained=text.slice(0,60000);add(`document:${file.path}`,category,'document',retained,file.path,1,Math.min(file.line_count,retained.split(/\r?\n/).length),legacy||section?'needs_review':'current');
       }
       if(name==='package.json') {
         try {const packageText=(await readSource(this.store.directory,snapshot,file.path)).text,pkg=JSON.parse(packageText);
@@ -143,10 +154,10 @@ export class EngineeringService {
       let changes=0;
       for(const proposal of proposals) {
         const old=previous.find(e=>e.key===proposal.key&&e.origin!=='user');
-        if(old&&old.text===proposal.text&&old.status===proposal.status&&old.conflict===proposal.conflict&&old.sources.every(s=>snapshot.files.some(f=>f.path===s.path&&f.content_sha256===s.content_sha256)))continue;
+        if(old&&old.category===proposal.category&&old.text===proposal.text&&old.status===proposal.status&&old.conflict===proposal.conflict&&old.sources.every(s=>snapshot.files.some(f=>f.path===s.path&&f.content_sha256===s.content_sha256)))continue;
         const item:ContextEntry={...proposal,entry_id:old?.entry_id??id('context'),version:(old?.version??0)+1,updated_at:now()};this.store.putVersion(contextKind,item.entry_id,item.version,item);changes++;
       }
-      for(const old of previous)if(old.origin!=='user'&&!old.legacy_import&&!found.has(old.key)&&old.status!=='superseded'){old.status='superseded';old.version++;old.updated_at=now();this.store.putVersion(contextKind,old.entry_id,old.version,old);changes++;}
+      for(const old of previous)if(old.origin!=='user'&&old.origin!=='agent'&&!old.legacy_import&&!found.has(old.key)&&old.status!=='superseded'){old.status='superseded';old.version++;old.updated_at=now();this.store.putVersion(contextKind,old.entry_id,old.version,old);changes++;}
       const prior=this.store.maybe<{version:number}>('engineering_context_state',projectId);this.store.put('engineering_context_state',projectId,{fingerprint:state.fingerprint,version:(prior?.version??0)+(changes||!prior?1:0)});
     });this.changed();
   }
@@ -155,6 +166,36 @@ export class EngineeringService {
     const entry=this.store.get<ContextEntry>(contextKind,input.entry_id);if(entry.version!==input.expected_version)throw Error('VERSION_CONFLICT：上下文已更新，请重新读取');
     const revision:ContextEntry={...entry,entry_id:entry.origin==='user'?entry.entry_id:id('context'),key:entry.origin==='user'?entry.key:`user:${entry.entry_id}`,version:entry.origin==='user'?entry.version+1:1,origin:'user',text:requireText(input.text),status:'current',supersedes:entry.origin==='user'?entry.supersedes:entry.entry_id,conflict:'用户修订与原来源并列保留；重新扫描不会覆盖此说明。',updated_at:now()};
     this.store.transaction(()=>{this.store.putVersion(contextKind,revision.entry_id,revision.version,revision);this.store.put('engineering_receipt',key,revision);const state=this.store.get<any>('engineering_context_state',entry.project_id);state.version++;this.store.put('engineering_context_state',entry.project_id,state);});this.changed();return revision;
+  }
+  async saveEntry(input:SaveEngineeringEntry,origin:'user'|'agent',maySave:()=>boolean=()=>true):Promise<ContextEntry> {
+    const workspace=await this.resolve(input),context=await this.context({project_id:workspace.project_id});
+    if(!engineeringSectionCategories.includes(input.category)||!['user','agent'].includes(origin))throw Error('工程栏目或来源无效');
+    if(!Number.isSafeInteger(input.expected_version)||input.expected_version<0)throw Error('条目版本无效');
+    if(input.status!==undefined&&!['current','needs_review'].includes(input.status))throw Error('条目状态无效');
+    const text=requireText(input.text,60000),entryKey=requireText(input.key,300),submission=requireText(input.submission_key,300);
+    const receiptKey=this.receiptKey('entry',workspace.project_id,submission),digest=sha(JSON.stringify({...input,origin}));
+    return this.store.transaction(()=>{
+      if(!maySave())throw Error('执行已停止，拒绝迟到工程条目');
+      const receipt=this.store.maybe<{digest:string;entry:ContextEntry}>('engineering_receipt',receiptKey);
+      if(receipt){if(receipt.digest!==digest)throw Error('提交标识已用于其他条目内容');return receipt.entry;}
+      const binding=this.store.get<WorkspaceBinding>(workspaceKind,workspace.workspace_id);
+      if(binding.status!=='bound'||!samePath(binding.root_path,workspace.root_path))throw Error('工作区已改变，请重新读取');
+      const old=input.entry_id?this.store.get<ContextEntry>(contextKind,input.entry_id):undefined;
+      if(old&&old.project_id!==workspace.project_id)throw Error('条目不属于当前工作区');
+      if((old?.version??0)!==input.expected_version)throw Error('VERSION_CONFLICT：条目已更新，请重新读取');
+      const sources=input.sources??old?.sources??[];
+      if(!Array.isArray(sources)||sources.length>40)throw Error('来源列表无效');
+      let sourcesCurrent=true;
+      for(const source of sources){const snapshot=this.store.get<Snapshot>('snapshot',source.snapshot_id),file=snapshot.files.find(f=>f.path===source.path);if(snapshot.project_id!==workspace.project_id||!file||file.content_sha256!==source.content_sha256||!Number.isSafeInteger(source.line_start)||!Number.isSafeInteger(source.line_end)||source.line_start<1||source.line_end<source.line_start||source.line_end>file.line_count)throw Error('来源快照、文件或行号不匹配');if(snapshot.fingerprint!==context.code_state.fingerprint)sourcesCurrent=false;}
+      const fork=!!old&&['source','document'].includes(old.origin);
+      const key=entryKey.startsWith('entry:')?entryKey:`entry:${entryKey}`;
+      if(this.store.all<ContextEntry>(contextKind).some(e=>e.project_id===workspace.project_id&&e.category===input.category&&e.key===key&&e.status!=='superseded'&&e.entry_id!==old?.entry_id))throw Error('VERSION_CONFLICT：同名条目已存在，请读取后编辑');
+      const entry:ContextEntry={entry_id:old&&!fork?old.entry_id:id('context'),project_id:workspace.project_id,version:old&&!fork?old.version+1:1,key,category:input.category,origin,text,status:origin==='user'&&sources.length&&sourcesCurrent?(input.status??'needs_review'):'needs_review',sources,code_fingerprint:context.code_state.fingerprint,updated_at:now(),...(fork?{supersedes:old!.entry_id}:old?.supersedes?{supersedes:old.supersedes}:{}),...(fork?{conflict:'修订与原文并列保留；原文来源及历史未覆盖。'}:{})};
+      this.store.putVersion(contextKind,entry.entry_id,entry.version,entry);
+      this.store.put('engineering_receipt',receiptKey,{project_id:workspace.project_id,digest,entry});
+      const state=this.store.get<{version:number}>('engineering_context_state',workspace.project_id);state.version++;this.store.put('engineering_context_state',workspace.project_id,state);
+      this.changed();return entry;
+    });
   }
   async importAec(projectId:string,providedScan?:AecScan) {
     const workspace=await this.resolve({project_id:projectId}),scan=providedScan??await scanAecLegacy(workspace.root_path);
@@ -166,8 +207,8 @@ export class EngineeringService {
     let imported=0,reused=0;const taskIds:string[]=[];
     this.store.transaction(()=>{
       const existing=this.store.all<ContextEntry>(contextKind).filter(e=>e.project_id===projectId),existingTasks=this.tasks({project_id:projectId});
-      for(const doc of documents){const old=existing.find(e=>e.legacy_import?.import_key===doc.importKey&&e.origin!=='user');if(old?.legacy_import?.revision_key===doc.revisionKey){reused++;continue;}
-        const entry:ContextEntry={entry_id:old?.entry_id??id('context'),project_id:projectId,key:doc.importKey,version:(old?.version??0)+1,category:doc.kind==='rule'?'rule':doc.kind==='evidence'?'issue':doc.kind==='task'?'decision':/\/interfaces\//.test(doc.path)?'interface':/\/modules\//.test(doc.path)?'module':'purpose',origin:'document',text:doc.content.slice(0,60000),status:'needs_review',sources:[doc.source],code_fingerprint:state.fingerprint,updated_at:now(),conflict:'AEC 历史导入，仅供溯源；未确认与当前源码一致，不作为当前有效规则或真实执行证明。',legacy_import:{import_key:doc.importKey,revision_key:doc.revisionKey,source_kind:doc.kind,sources:[doc.source],imported_at:now()}};
+      for(const doc of documents){const old=existing.find(e=>e.legacy_import?.import_key===doc.importKey&&e.origin!=='user');if(old?.legacy_import?.revision_key===doc.revisionKey&&(!engineeringDocumentCategory(doc.path)||old.category===engineeringDocumentCategory(doc.path))){reused++;continue;}
+        const entry:ContextEntry={entry_id:old?.entry_id??id('context'),project_id:projectId,key:doc.importKey,version:(old?.version??0)+1,category:doc.kind==='rule'?'rule':engineeringDocumentCategory(doc.path)??(doc.kind==='evidence'?'issue':doc.kind==='task'?'decision':/\/interfaces\//.test(doc.path)?'interface':/\/modules\//.test(doc.path)?'module':'purpose'),origin:'document',text:doc.content.slice(0,60000),status:'needs_review',sources:[doc.source],code_fingerprint:state.fingerprint,updated_at:now(),conflict:'AEC 历史导入，仅供溯源；未确认与当前源码一致，不作为当前有效规则或真实执行证明。',legacy_import:{import_key:doc.importKey,revision_key:doc.revisionKey,source_kind:doc.kind,sources:[doc.source],imported_at:now()}};
         this.store.putVersion(contextKind,entry.entry_id,entry.version,entry);imported++;
         // Replace the automatically discovered view, while retaining its prior
         // versions and user corrections. There is one imported authority view.

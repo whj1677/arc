@@ -88,11 +88,23 @@ export class DevelopmentService {
         code_state_verified:observed?.stateVerified??false,
         note:observed?`${report.note}；代码状态采集于命令完成回执后，工作目录为绑定执行目录。${observed.stateVerified?'':'采集期间出现后续命令或修改，验证对应代码状态不确定。'}`:`${report.note}；未匹配实际命令回执，此项为 Agent 自述，不能作为独立验证通过。`});
     }
+    const entryFailures:string[]=[];
+    for(const [index,entry]of (result.result.context_entries??[]).entries()){
+      if(this.isStopped(attemptId))throw Error('执行已停止，拒绝迟到工程条目');
+      try{
+        await this.engineering.saveEntry({...entry,entry_id:entry.entry_id||undefined,project_id:task.project_id,workspace_path:task.workspace_path,submission_key:`${attemptId}:entry:${index}`,status:'needs_review'},'agent',()=>!this.isStopped(attemptId));
+      }catch(error){
+        if(this.isStopped(attemptId))throw error;
+        const message=`工程条目 ${index+1}（${entry.category}）未保存：${redact((error as Error).message||String(error))}`;
+        entryFailures.push(message);this.event(attemptId,{type:'local.stage',stage:'context_entry_failed',message});
+      }
+    }
+    if(this.isStopped(attemptId))throw Error('执行已停止，拒绝迟到开发结果');
     const current=this.engineering.task(taskId);
-    const saved=await this.engineering.finishTask({task_id:taskId,attempt_id:attemptId,expected_version:current.version,submission_key:`${attemptId}:finish`,status:result.result.status,summary:result.result.summary,decisions:result.result.decisions,unresolved:result.result.unresolved,verification});
+    const saved=await this.engineering.finishTask({task_id:taskId,attempt_id:attemptId,expected_version:current.version,submission_key:`${attemptId}:finish`,status:result.result.status,summary:result.result.summary,decisions:result.result.decisions,unresolved:[...result.result.unresolved,...entryFailures],verification});
     this.engineering.updateAttempt(attemptId,{status:saved.status==='completed'?'completed':'failed',session_id:result.session_id,
       ...(result.model?{model:`运行回执：${result.model}`}:{})});
-    this.event(attemptId,{type:'local.stage',message:`开发结果已自动保存到原任务，验证状态：${saved.verification_status}。`});
+    this.event(attemptId,{type:'local.stage',message:`开发结果已自动保存到原任务，验证状态：${saved.verification_status}。${entryFailures.length?`另有 ${entryFailures.length} 项工程条目未保存，详见未解决事项。`:''}`});
   }
   private isStopped(attemptId:string){return this.closing||this.cancelled.has(attemptId)||['cancelled','interrupted'].includes(this.store.get<DevelopmentAttempt>('development_attempt',attemptId).status);}
   private async fail(attempt:DevelopmentAttempt,error:unknown){

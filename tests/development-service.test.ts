@@ -34,7 +34,8 @@ test('development orchestration captures real differences, observed exit evidenc
   const runner:typeof runDevelopmentCodex=async options=>{
     optionsSeen=options;await fs.writeFile(path.join(f.source,'main.ts'),'export const value=2;\n');
     await options.commandCompleted!({id:'test-command',command:'node --test',cwd:f.source,cwd_source:'task_workspace',exit_code:0,output:'1 passed',completed_at:new Date().toISOString()});
-    return completed(options.task.task_id,[{command:'node --test',outcome:'passed',note:'simulated provider receipt; real file capture'}]);
+    const output=completed(options.task.task_id,[{command:'node --test',outcome:'passed',note:'simulated provider receipt; real file capture'}]);
+    return {...output,result:{...output.result,context_entries:[{entry_id:'',expected_version:0,category:'design',key:'Addition boundary',text:'Retain current API; only change the value.'}]}};
   };
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,configuration);
   try{
@@ -44,6 +45,7 @@ test('development orchestration captures real differences, observed exit evidenc
     assert.equal(saved.status,'completed');assert.deepEqual(saved.changes.map(item=>item.path),['main.ts']);assert.equal(await fs.readFile(path.join(f.source,'user-note.txt'),'utf8'),'keep user text');
     assert.equal(saved.verification_status,'passed');assert.equal(saved.verification[0].origin,'observed');assert.equal(saved.verification[0].exit_code,0);assert.match(attempt.model,/配置.*test-configured-model/);
     assert.equal(optionsSeen.task.workspace_path,f.source);assert.equal((await development.start({project_id:f.project.project_id,goal:'change value',submission_key:'first'})).task_id,task.task_id);
+    const design=(await f.service.engineering.context({project_id:f.project.project_id,category:'design'})).entries;assert.equal(design.length,1);assert.equal(design[0].origin,'agent');assert.equal(design[0].status,'needs_review');assert.equal(design[0].text,'Retain current API; only change the value.');
     assert.match(await fs.readFile(path.join(f.service.directory,saved.verification[0].log_path!),'utf8'),/1 passed/);
   }finally{await development.shutdown();await f.close();}
 });
@@ -96,4 +98,30 @@ test('branch movement during configuration blocks launch without silently rebind
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,config);
   try{const task=await development.start({project_id:f.project.project_id,goal:'branch conflict',submission_key:'branch'});await Promise.all([...development.executing.values()]);const saved=f.service.engineering.task(task.task_id);assert.equal(calls,0);assert.equal(saved.status,'blocked');assert.match(saved.unresolved.join('\n'),/WORKSPACE_CONFLICT/);}
   finally{await development.shutdown();await f.close();}
+});
+
+test('concurrent user entry edits preserve completed code results, real verification and logs on writeback conflict',async()=>{
+  const f=await fixture();await f.service.engineering.connect(f.project.project_id);
+  const initial=await f.service.engineering.saveEntry({project_id:f.project.project_id,category:'design',key:'Shared design',text:'Original proposal',expected_version:0,submission_key:'initial-design'},'user');
+  const runner:typeof runDevelopmentCodex=async options=>{
+    await fs.writeFile(path.join(f.source,'main.ts'),'export const value=2;\n');
+    const script="require('node:assert/strict').match(require('node:fs').readFileSync('main.ts','utf8'),/value=2/);console.log('value check passed')";
+    const run=await exec(process.execPath,['-e',script],{cwd:f.source,windowsHide:true});
+    const command=`node -e "${script}"`;
+    await options.commandCompleted!({id:'real-check',command,cwd:f.source,cwd_source:'task_workspace',exit_code:0,output:run.stdout,completed_at:new Date().toISOString()});
+    await f.service.engineering.saveEntry({project_id:f.project.project_id,entry_id:initial.entry_id,category:'design',key:initial.key,text:'User revised the design during execution',expected_version:initial.version,submission_key:'concurrent-user-edit'},'user');
+    const output=completed(options.task.task_id,[{command,outcome:'passed',note:'Actual local assertion; provider orchestration simulated'}]);
+    return {...output,result:{...output.result,summary:'Changed value and verified it',decisions:['Preserve existing interface'],context_entries:[{entry_id:initial.entry_id,expected_version:initial.version,category:'design',key:initial.key,text:'Stale Agent replacement'}]}};
+  };
+  const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,configuration);
+  try{
+    const task=await development.start({project_id:f.project.project_id,goal:'change value',submission_key:'entry-conflict'});await Promise.all([...development.executing.values()]);
+    const saved=f.service.engineering.task(task.task_id);
+    assert.equal(saved.status,'completed');assert.equal(saved.summary,'Changed value and verified it');assert.deepEqual(saved.decisions,['Preserve existing interface']);
+    assert.deepEqual(saved.changes.map(c=>c.path),['main.ts']);assert.equal(saved.verification_status,'passed');assert.equal(saved.verification[0].origin,'observed');assert.equal(saved.verification[0].exit_code,0);
+    assert.match(saved.unresolved.join('\n'),/工程条目 1（design）未保存：VERSION_CONFLICT/);
+    assert.match(await fs.readFile(path.join(f.service.directory,saved.verification[0].log_path!),'utf8'),/value check passed/);
+    const current=(await f.service.engineering.context({project_id:f.project.project_id,entry_id:initial.entry_id})).entries[0];assert.equal(current.version,2);assert.equal(current.text,'User revised the design during execution');assert.equal(current.origin,'user');
+    assert.match(JSON.stringify(f.service.store.events(saved.attempt_ids[0])),/context_entry_failed/);
+  }finally{await development.shutdown();await f.close();}
 });

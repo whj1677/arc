@@ -2,11 +2,12 @@ import React,{useCallback,useEffect,useRef,useState} from 'react';
 import type {Project,SourceEvidence} from '../shared';
 import type {ContextEntry,ContextSource,EngineeringContext,EngineeringTask,DevelopmentAttempt} from '../engineering';
 import {SourceExcerpt} from './SourceExcerpt';
+import {EngineeringSections,type EngineeringSection} from './EngineeringSections';
 import './engineering.css';
 
 const api=window.arc;
 const stateNames:Record<string,string>={pending:'待执行',starting:'准备执行',running:'执行中',blocked:'需要处理',completed:'执行结束',failed:'执行失败',cancelled:'已取消',interrupted:'上次执行中断',passed:'通过',partial:'部分完成',not_run:'未执行',stale:'代码已变化，需重新验证'};
-const categoryNames:Record<ContextEntry['category'],string>={purpose:'工程用途',build:'构建与验证',rule:'工程规则',technology:'技术与环境',module:'模块',interface:'接口',decision:'决定',issue:'待确认'};
+const categoryNames:Record<ContextEntry['category'],string>={purpose:'工程用途',build:'构建与验证',rule:'工程规则',technology:'技术与环境',module:'模块',interface:'接口',decision:'决定',issue:'待确认',plan:'方案',architecture:'架构',design:'设计',verification_plan:'验证计划'};
 const originNames={source:'源码 / 配置',document:'文档声明',user:'用户补充',agent:'Agent 归纳'};
 const when=(value:string)=>new Date(value).toLocaleString();
 function toEvidence(source:ContextSource):SourceEvidence{return {evidence_id:`context:${source.path}:${source.line_start}`,source_snapshot_id:source.snapshot_id,path:source.path,line_start:source.line_start,line_end:source.line_end,content_sha256:source.content_sha256,role:'context',note:'工程上下文引用的冻结来源'};}
@@ -30,7 +31,7 @@ function ContextFacts({context,reload}:{context:EngineeringContext;reload:()=>Pr
       const entries=context.entries.filter(e=>e.category===category&&e.status!=='superseded');
       return entries.length>0&&<section key={category}><h3>{label}</h3>{entries.map(entry=><article key={entry.entry_id} className="engineering-fact"><p>{entry.text}</p><small>{originNames[entry.origin]}{entry.legacy_import?' · AEC 历史导入':''}{entry.status==='needs_review'?' · 待复核':''}{entry.conflict?' · 来源冲突':''}</small>{entry.conflict&&<p className="warning">{entry.conflict}</p>}<button className="quiet" onClick={()=>{setSelected(entry);setCorrection('');setError('');void api.invoke<EngineeringContext>('engineering_context',{project_id:context.project_id,entry_id:entry.entry_id}).then(detail=>setSelected(detail.entries[0]||entry)).catch(e=>setError(e.message));}}>来源与补充</button></article>)}</section>;
     })}</div>
-    {selected&&<section ref={sourcePanel} className="engineering-source" aria-label="上下文来源与补充"><div className="row between"><h3>{categoryNames[selected.category]} · 来源与补充</h3><button onClick={()=>setSelected(null)}>关闭来源</button></div><p>{selected.text}</p>{selected.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}{!selected.sources.length&&<p>这条内容来自用户补充；尚无源码支持时不会冒充源码事实。</p>}<form onSubmit={revise}><label>补充或纠正这条上下文<textarea aria-label="上下文补充" value={correction} onChange={e=>setCorrection(e.target.value)} required/></label><button className="primary" disabled={saving||!correction.trim()}>{saving?'保存中…':'保存用户补充'}</button><small>保留原来源及历史，后续 Agent 可读取；需要结合源码核实。</small></form>{error&&<p role="alert" className="warning">{error}</p>}</section>}
+    {selected&&<section ref={sourcePanel} className="engineering-source" aria-label="上下文来源与补充"><div className="row between"><h3>{categoryNames[selected.category]} · 来源与补充</h3><button onClick={()=>setSelected(null)}>关闭来源</button></div><p>{selected.text}</p>{selected.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}{!selected.sources.length&&<p>这条内容来自{originNames[selected.origin]}；尚无源码支持时不会冒充源码事实。</p>}<form onSubmit={revise}><label>补充或纠正这条上下文<textarea aria-label="上下文补充" value={correction} onChange={e=>setCorrection(e.target.value)} required/></label><button className="primary" disabled={saving||!correction.trim()}>{saving?'保存中…':'保存用户补充'}</button><small>保留原来源及历史，后续 Agent 可读取；需要结合源码核实。</small></form>{error&&<p role="alert" className="warning">{error}</p>}</section>}
   </>;
 }
 
@@ -45,9 +46,10 @@ export function EngineeringOverview({project,hasAnalysis,develop}:{project:Proje
   </details>;
 }
 
-export function EngineeringWorkspace({project,back,onRestored}:{project:Project;back:()=>void;onRestored:(projectId:string)=>void}){
+export function EngineeringWorkspace({project,back,onArchitecture,onRestored}:{project:Project;back:()=>void;onArchitecture:()=>void;onRestored:(projectId:string)=>void}){
   const {context,error:contextError,reload:reloadContext,more}=useContext(project.project_id);
   const [tasks,setTasks]=useState<EngineeringTask[]>([]),[selectedId,setSelectedId]=useState(''),[query,setQuery]=useState(''),[filter,setFilter]=useState('');
+  const [section,setSection]=useState<EngineeringSection>('plan');
   const [goal,setGoal]=useState(''),[continuation,setContinuation]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
   const [attempts,setAttempts]=useState<DevelopmentAttempt[]>([]),[events,setEvents]=useState<any[]>([]),[history,setHistory]=useState<EngineeringTask[]>([]),[historical,setHistorical]=useState<EngineeringTask|null>(null);
   const [log,setLog]=useState(''),[showContext,setShowContext]=useState(false),[rebindPath,setRebindPath]=useState('');
@@ -56,8 +58,9 @@ export function EngineeringWorkspace({project,back,onRestored}:{project:Project;
   const current=tasks.find(t=>t.task_id===selectedId),task=historical||current;
   const latestAttempt=attempts.at(-1),inProgress=!!current&&(current.status==='running'||!!latestAttempt&&['starting','running'].includes(latestAttempt.status)),alive=useRef(true);
   const reload=useCallback(async()=>{const values=await api.invoke<EngineeringTask[]>('engineering_tasks',{project_id:project.project_id});if(alive.current){setTasks(values);setSelectedId(id=>id&&values.some(t=>t.task_id===id)?id:values[0]?.task_id||'');}return values;},[project.project_id]);
-  useEffect(()=>{let current=true;void api.invoke('reading_get',{key:'engineering-selection/'+project.project_id}).then(value=>{if(current&&value?.task_id)setSelectedId(value.task_id);}).catch(e=>setError(e.message));return()=>{current=false;};},[project.project_id]);
-  const selectTask=(taskId:string)=>{setSelectedId(taskId);setHistorical(null);setContinuation(false);setDiff(null);void api.invoke('reading_save',{key:'engineering-selection/'+project.project_id,value:{task_id:taskId,project_id:project.project_id}}).catch(e=>setError(e.message));};
+  useEffect(()=>{let current=true;void api.invoke('reading_get',{key:'engineering-selection/'+project.project_id}).then(value=>{if(!current)return;if(value?.task_id)setSelectedId(value.task_id);if(['plan','architecture','design','tasks','verification_plan'].includes(value?.section))setSection(value.section);else if(value?.task_id)setSection('tasks');}).catch(e=>setError(e.message));return()=>{current=false;};},[project.project_id]);
+  const selectTask=(taskId:string)=>{setSection('tasks');setSelectedId(taskId);setHistorical(null);setContinuation(false);setDiff(null);void api.invoke('reading_save',{key:'engineering-selection/'+project.project_id,value:{task_id:taskId,project_id:project.project_id,section:'tasks'}}).catch(e=>setError(e.message));};
+  const selectSection=(value:EngineeringSection)=>{setSection(value);void api.invoke('reading_save',{key:'engineering-selection/'+project.project_id,value:{task_id:selectedId,project_id:project.project_id,section:value}}).catch(e=>setError(e.message));};
   async function readPending(){setPendingWrites(await api.invoke('engineering_pending'));}
   useEffect(()=>{void readPending().catch(e=>setError(e.message));},[]);
   useEffect(()=>{alive.current=true;void reload().catch(e=>setError(e.message));const off=api.onEvent(e=>{if(e.type==='changed'||e.type==='engineering_changed')void reload().catch(e=>setError(e.message));});return()=>{alive.current=false;off();};},[reload]);
@@ -71,7 +74,8 @@ export function EngineeringWorkspace({project,back,onRestored}:{project:Project;
     {(error||contextError)&&<p className="warning engineering-message" role="alert">{error||contextError}</p>}{notice&&<p className="engineering-message" role="status">{notice}</p>}
     {context?.workspace.status==='unbound'&&<p className="warning engineering-message">历史记录已恢复，但源码工作区尚未绑定。请在“接入与恢复”中选择实际目录；恢复记录不等于恢复工程代码。</p>}
     {showContext&&context&&<section className="engineering-context-panel"><div className="row between"><h3>共享上下文 · 版本 {context.version}</h3><button disabled={busy} onClick={()=>void action(()=>reloadContext(true))}>检查来源变化</button></div><ContextFacts context={context} reload={reloadContext}/>{context.next_offset!=null&&<button onClick={()=>void more()}>查看更多上下文</button>}</section>}
-    <div className="engineering-columns"><aside className="engineering-list">
+    <EngineeringSections projectId={project.project_id} section={section} onSection={selectSection} tasks={tasks} onTask={selectTask} onArchitecture={onArchitecture} onDevelop={value=>{setGoal(value);setContinuation(false);selectSection('tasks');requestAnimationFrame(()=>document.getElementById('development-goal')?.focus());}}/>
+    <div className="engineering-columns" style={{display:section==='tasks'?undefined:'none'}}><aside className="engineering-list">
       <form onSubmit={start} className="development-form"><h3>{continuation?'继续当前任务':'在这个工程中开发'}</h3><label htmlFor="development-goal">{continuation?'补充要求或修复目标':'希望完成什么修改'}</label><textarea id="development-goal" aria-label="开发任务" placeholder="例如：修复数量为零时仍显示成功的问题，并运行相关测试。" value={goal} onChange={e=>setGoal(e.target.value)} required onKeyDown={e=>{if(e.ctrlKey&&e.key==='Enter'&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/><small>会修改此工程并进行必要验证；只需解释代码时请使用阅读页“提问”。</small><p className="path">{project.root_path}</p><div className="row"><button className="primary" disabled={busy||inProgress||project.fictional||context?.workspace.status!=='bound'||!goal.trim()}>{busy?'保存中…':continuation?'继续开发':'开始开发'}</button>{continuation&&<button type="button" onClick={()=>{setContinuation(false);setGoal('');}}>改为新任务</button>}</div></form>
       <label>查找记录<input aria-label="搜索工程记录" placeholder="目标、文件、决定或未完成项" value={query} onChange={e=>setQuery(e.target.value)}/></label><select aria-label="工程记录状态" value={filter} onChange={e=>setFilter(e.target.value)}><option value="">所有状态</option>{['running','completed','failed','blocked','cancelled','interrupted'].map(state=><option key={state} value={state}>{stateNames[state]}</option>)}</select>
       <div className="engineering-task-list">{visible.map(item=><button key={item.task_id} className={`engineering-task-row ${selectedId===item.task_id?'selected':''}`} aria-pressed={selectedId===item.task_id} onClick={()=>selectTask(item.task_id)}><strong>{item.goal}</strong><span>{stateNames[item.status]} · 验证{stateNames[item.verification_status]}</span><small>{when(item.updated_at)} · v{item.version}</small></button>)}{!visible.length&&<p className="muted">暂无符合条件的记录。描述目标后，过程和结果会自动保存到这里。</p>}</div>

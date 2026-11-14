@@ -32,3 +32,33 @@ export function functionInfo(result:AnalysisResult,node:AnalysisResult['nodes'][
     returns:details?.return_io_ids==null?null:node.outputs.filter(io=>details.return_io_ids!.includes(io.io_id)),
     otherOutputs:details?.return_io_ids==null?node.outputs:node.outputs.filter(io=>!details.return_io_ids!.includes(io.io_id))};
 }
+
+// Only an explicit function reference establishes a file or a definition.
+// Declarations remain navigable but never stand in for an implementation.
+export function functionSource(result:AnalysisResult,node:AnalysisResult['nodes'][number]){
+  const reference=node.function_details?result.evidence.find(e=>e.evidence_id===node.function_details!.definition_evidence_id):undefined;
+  const definition=reference?.role==='definition'?reference:undefined;
+  const declaration=reference?.role==='declaration'?reference:undefined;
+  return {definition,declaration,path:definition?.path||declaration?.path||null};
+}
+
+// A representative shortest route through recorded relations, not a runtime trace.
+// Visited sets bound both traversal and recursion; other possible routes remain valid.
+export function functionFocus(nodes:readonly {node_id:string}[],links:readonly {from:string;to:string}[],entry:string|undefined,selected:string){
+  const ids=new Set(nodes.map(n=>n.node_id));
+  const valid=links.filter(l=>ids.has(l.from)&&ids.has(l.to));
+  function reachable(start:string,reverse=false){
+    const seen=new Set<string>(),queue=ids.has(start)?[start]:[];
+    for(let i=0;i<queue.length;i++){
+      const current=queue[i];if(seen.has(current))continue;seen.add(current);
+      for(const link of valid)if((reverse?link.to:link.from)===current&&!seen.has(reverse?link.from:link.to))queue.push(reverse?link.from:link.to);
+    }
+    seen.delete(start);return [...seen];
+  }
+  const previous=new Map<string,string|null>();
+  const queue=entry&&ids.has(entry)?[entry]:[];if(queue.length)previous.set(queue[0],null);
+  for(let i=0;i<queue.length&&!previous.has(selected);i++)for(const l of valid)if(l.from===queue[i]&&!previous.has(l.to)){previous.set(l.to,l.from);queue.push(l.to);}
+  const entryPath:string[]=[];
+  if(previous.has(selected)){let cursor:string|null=selected;while(cursor!==null){entryPath.unshift(cursor);cursor=previous.get(cursor)??null;}}
+  return {selected,entryPath,upstream:reachable(selected,true),downstream:reachable(selected),reachable:entryPath.length>0,pathKind:entryPath.length?'representative' as const:'unknown' as const};
+}

@@ -16,12 +16,14 @@ import {ownedArcRegistration,writeConnection,adoptConnection} from './mcp-regist
 import {listFrozenFiles} from './prompt-context';
 import {readingAnswerSchema,readingInstructions} from './reading-question';
 import {flushDevelopmentWrites,pendingDevelopmentWrites} from './development-outbox';
+import {engineeringSectionCategories} from '../engineering';
 const exec=promisify(execFile);
 const property={type:'string'};
 const tool=(name:string,description:string,properties:any={},required:string[]=[],read=true)=>({name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},annotations:{readOnlyHint:read,destructiveHint:false,idempotentHint:read,openWorldHint:false}});
 const developmentFields={task_id:property,expected_version:{type:'integer',minimum:0},submission_key:property,summary:property,decisions:{type:'array',items:property},unresolved:{type:'array',items:property},verification:{type:'array',items:{type:'object'}},attempt_id:property};
 export const bridgeTools=[
-  tool('arc_engineering_context','读取当前实际工作区的共享工程事实、规则、来源和近期任务；开发前自动读取，普通只读解释不创建开发任务。默认精简概况；query/offset/limit按需查找，entry_id取得条目详情；result_id读取analysis_refs对应的既有工程分析、节点关系和源码依据，保留冻结来源及待复核状态。必须传当前实际工作区，禁止操作另一个授权工程。',{project_id:property,workspace_path:property,refresh:{type:'boolean'},query:property,entry_id:property,result_id:property,offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:40}},['workspace_path']),
+  tool('arc_save_engineering_entry','保存当前授权工作区的方案、架构、设计或验证计划文字；不代表开发或验证完成，不强制填写全部栏目。新建 expected_version=0，编辑先读取条目版本；保留稳定 submission_key 防重。来源固定 agent，无来源为待复核。',{project_id:property,workspace_path:property,entry_id:property,expected_version:{type:'integer',minimum:0},submission_key:property,category:{type:'string',enum:engineeringSectionCategories},key:property,text:property,status:{type:'string',enum:['current','needs_review']},sources:{type:'array',items:{type:'object'}}},['workspace_path','expected_version','submission_key','category','key','text'],false),
+  tool('arc_engineering_context','读取当前实际工作区的共享工程事实、规则、来源和近期任务；开发前自动读取，普通只读解释不创建开发任务。默认精简概况；query/offset/limit按需查找，entry_id取得条目详情；result_id读取analysis_refs对应的既有工程分析、节点关系和源码依据，保留冻结来源及待复核状态。必须传当前实际工作区，禁止操作另一个授权工程。',{project_id:property,workspace_path:property,refresh:{type:'boolean'},query:property,entry_id:property,result_id:property,category:property,offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:40}},['workspace_path']),
   tool('arc_begin_development','为用户明确要求的真实开发创建或续接轻量任务。先读取工程上下文；用稳定 submission_key 防重，task_id 续接原任务。不执行代码，不授予额外权限。',{project_id:property,workspace_path:property,goal:property,submission_key:property,task_id:property,scope:{type:'array',items:property},model:property},['workspace_path','goal','submission_key'],false),
   tool('arc_development_task','恢复开发任务的当前版本、记录、验证及执行信息。',{task_id:property},['task_id']),
   tool('arc_update_development','保存公开开发进展、必要决定与验证记录。expected_version 为当前 task.version；验证必须真实报告，MCP 证据标为宿主自报。断连时本机保存待同步，不能声称已写回 ARC。',developmentFields,['task_id','expected_version','submission_key'],false),
@@ -108,9 +110,13 @@ export class ArcMcpBridge {
     if(this.closed)throw Error('Arc 正在关闭，请重新打开后建立新任务');
     if(!bridgeTools.some(t=>t.name===name))throw Error('未知 Arc 工具');
     if(name==='arc_sync_development')return this.flushPending();
+    if(name==='arc_save_engineering_entry'){
+      const workspace=await this.service.engineering.resolve({project_id:args.project_id,workspace_path:string(args.workspace_path,4000)});this.authorizeDevelopment(workspace.project_id);
+      return this.service.engineering.saveEntry({...args,project_id:workspace.project_id,workspace_path:workspace.root_path},'agent',()=>{this.authorizeDevelopment(workspace.project_id);return !this.closed;});
+    }
     if(name==='arc_engineering_context'||name==='arc_begin_development'){
       const workspace=await this.service.engineering.resolve({project_id:args.project_id,workspace_path:string(args.workspace_path,4000)});this.authorizeDevelopment(workspace.project_id);
-      const context=await this.service.engineering.context({project_id:workspace.project_id,workspace_path:workspace.root_path,refresh:args.refresh,query:args.query,entry_id:args.entry_id,result_id:args.result_id,offset:args.offset,limit:args.limit});
+      const context=await this.service.engineering.context({project_id:workspace.project_id,workspace_path:workspace.root_path,refresh:args.refresh,query:args.query,entry_id:args.entry_id,result_id:args.result_id,category:args.category,offset:args.offset,limit:args.limit});
       if(name==='arc_engineering_context')return context;
       const provider=client?.configured_provider||'codex';if(!['codex','dsh','workbuddy'].includes(provider))throw Error('MCP 宿主配置无效');
       const beginKey=`${workspace.workspace_id}:${string(args.submission_key,200)}`;

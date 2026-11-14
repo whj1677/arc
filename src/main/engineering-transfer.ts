@@ -15,7 +15,7 @@ export async function exportEngineeringProject(store:Store,projectId:string,file
   const rows=(store.db.prepare('SELECT kind,id,json FROM objects').all() as any[]).map(r=>({kind:r.kind,id:r.id,value:JSON.parse(r.json)}));
   const owned=new Set<string>([projectId]);let objects:Row[]=[];
   const sceneIds=new Set(rows.filter(r=>r.kind==='scenario'&&r.value?.project_id===projectId).map(r=>r.id));
-  const ownsReading=(row:Row)=>row.id.startsWith(`${projectId}/`)||['project-session','feature-expand-mode','analysis-provider'].some(prefix=>row.id===`${prefix}/${projectId}`)||sceneIds.has(row.id);
+  const ownsReading=(row:Row)=>row.id.startsWith(`${projectId}/`)||['project-session','feature-expand-mode','analysis-provider','engineering-section-drafts','engineering-selection'].some(prefix=>row.id===`${prefix}/${projectId}`)||sceneIds.has(row.id);
   // Reading-state rows use scenario ids as their key. Other entities have an
   // explicit project/scenario/binding relationship; never export global settings.
   for(let pass=0;pass<4;pass++)for(const row of rows)if(kinds.has(row.kind)&&!objects.includes(row)) {

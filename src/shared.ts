@@ -64,6 +64,7 @@ export interface ReadingState {
   architecture_version?: number;
   reading_path?: string;
   function_path?: string;
+  function_mode?: 'calls'|'time';
   reading_focus?: string;
   feature_reading_version?: number;
 }

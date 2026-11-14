@@ -127,7 +127,13 @@ test('export restores reading data, context, task history and logs into an unbou
     f.store.put('run','reading-run',{binding,status:'completed',output_path:'',provider_id:'codex'});f.store.event('reading-run','event',1,{text:'saved reading activity'});
     const question={question_id:'question',project_id:'p',scenario_id:'scene',feature_id:'feature',question_revision_id:'revision',source_snapshot_id:code.snapshot_id,run_id:'reading-run',run_ids:['reading-run'],question:'What does this do?',answer:{answer:'Frozen answer retained',binding,evidence:[],uncertainties:['historical source']}};f.store.put('reading_question','question',question);
     f.store.put('reading','p/scene/wide',{scenario_id:'scene',selected:'retained node',scroll:{detail:{top:42,left:7}}});f.store.put('reading','project-session/p',{scenario_id:'scene',entrance:'walk'});f.store.put('reading','last-session',{project_id:'p'});f.store.put('reading','other-p/else/wide',{selected:'must not export'});
+    const drafts={project_id:'p',drafts:{design:{key:'Unsaved design',text:'Keep the user draft'},verification_plan:{key:'Verification draft',text:'Run the actual boundary checks'}}};
+    const selection={project_id:'p',task_id:task.task_id,section:'verification_plan'};
+    f.store.put('reading','engineering-section-drafts/p',drafts);f.store.put('reading','engineering-selection/p',selection);
+    for(const prefix of ['engineering-section-drafts','engineering-selection'])f.store.put('reading',`${prefix}/other-p`,{text:'private unrelated project draft'});
     const output=path.join(f.directory,'archive.json');await f.service.exportProject('p',output);restored=new Store(path.join(f.directory,'restored'));restored.put('reading','last-session',{project_id:'other-project'});const service=new EngineeringService(restored);await service.restoreProject(output);
+    assert.deepEqual(restored.get('reading','engineering-section-drafts/p'),drafts);assert.deepEqual(restored.get('reading','engineering-selection/p'),selection);assert.equal(service.task(selection.task_id).task_id,task.task_id);
+    const exported=JSON.parse(await fs.readFile(output,'utf8'));for(const prefix of ['engineering-section-drafts','engineering-selection']){assert.equal(restored.maybe('reading',`${prefix}/other-p`),null);assert.ok(!exported.objects.some((row:any)=>row.kind==='reading'&&row.id===`${prefix}/other-p`));}
     assert.equal(restored.get<any>('annotation','annotation').text,'keep annotation');assert.equal(restored.get<any>('revision','revision').question,'keep question');assert.equal(restored.get<any>('reading','scene').selected,'keep selection');assert.equal(restored.get<any>('engineering_mcp_begin','workspace:key').task_id,task.task_id);assert.equal(service.history('task',task.task_id).length,2);assert.equal((await service.readLog(task.task_id,logPath)).text,'actual local test output');assert.equal((await service.context({project_id:'p'})).workspace.status,'unbound');await assert.rejects(service.createTask({project_id:'p',goal:'no implicit binding',submission_key:'c'}),/重新绑定/);
     assert.deepEqual(restored.get('reading_question','question'),question);assert.deepEqual(restored.events('reading-run'),[{text:'saved reading activity'}]);assert.equal(restored.get<any>('reading','p/scene/wide').scroll.detail.top,42);assert.equal(restored.get<any>('reading','project-session/p').entrance,'walk');assert.equal(restored.get<any>('reading','last-session').project_id,'other-project');assert.equal(restored.maybe('reading','other-p/else/wide'),null);
     const versionBeforeRebind=service.task(task.task_id).version;await assert.rejects(service.rebindWorkspace('p',f.directory),/数据目录/);assert.equal((await service.context({project_id:'p'})).workspace.status,'unbound');assert.equal(service.task(task.task_id).version,versionBeforeRebind);
@@ -142,4 +148,49 @@ test('export restores reading data, context, task history and logs into an unbou
       assert.equal(empty.all('project').length,0);
     }finally{empty.close();}
   }finally{restored?.close();await f.cleanup();}
+});
+
+test('engineering sections preserve drafts across sessions, optimistic edits and export/restore',async()=>{
+  const f=await fixture();let restored:Store|undefined;try{
+    const input={project_id:'p',category:'plan' as const,key:'Small change',text:'只修改加法；验证边界输入。',expected_version:0,submission_key:'plan-new'};
+    const entry=await f.service.saveEntry(input,'user');assert.equal(entry.origin,'user');assert.equal(entry.status,'needs_review');assert.deepEqual(entry.sources,[]);
+    assert.deepEqual(await f.service.saveEntry(input,'user'),entry);
+    await assert.rejects(f.service.saveEntry({...input,text:'different'},'user'),/提交标识/);
+    const edited=await f.service.saveEntry({...input,entry_id:entry.entry_id,expected_version:entry.version,submission_key:'plan-edit',text:'保留现有输入；测试加法。'},'agent');
+    assert.equal(edited.version,2);assert.equal(edited.origin,'agent');
+    await assert.rejects(f.service.saveEntry({...input,entry_id:entry.entry_id,expected_version:1,submission_key:'stale'},'user'),/VERSION_CONFLICT/);
+    const next=new EngineeringService(f.store);await next.context({project_id:'p',refresh:true});
+    const page=await next.context({project_id:'p',category:'plan'});assert.deepEqual(page.entries.map(e=>e.entry_id),[entry.entry_id]);assert.equal(page.entries[0].text,edited.text);
+    const output=path.join(f.directory,'sections.json');await next.exportProject('p',output);restored=new Store(path.join(f.directory,'sections-restored'));const recovered=new EngineeringService(restored);await recovered.restoreProject(output);
+    assert.deepEqual((await recovered.context({project_id:'p',category:'plan'})).entries[0],{...edited,truncated:false});assert.equal(recovered.history('context',entry.entry_id).length,2);
+    await assert.rejects(recovered.saveEntry(input,'user'),/重新绑定/);
+  }finally{restored?.close();await f.cleanup();}
+});
+
+test('explicit documents classify into sections without inventing content and source anchors are verified',async()=>{
+  const f=await fixture();try{
+    await fs.mkdir(path.join(f.root,'docs/requirements/REQ-1'),{recursive:true});
+    await fs.writeFile(path.join(f.root,'docs/requirements/REQ-1/design.md'),'# Detailed design\nKeep the current addition interface.');
+    await fs.writeFile(path.join(f.root,'docs/requirements/REQ-1/verification-plan.md'),'# Verification plan\nCheck negative input.');
+    await f.service.importAec('p');
+    const design=(await f.service.context({project_id:'p',category:'design'})).entries;assert.equal(design.length,1);assert.equal(design[0].origin,'document');assert.equal(design[0].status,'needs_review');
+    assert.equal((await f.service.context({project_id:'p',category:'verification_plan'})).entries.length,1);assert.equal((await f.service.context({project_id:'p',category:'architecture'})).entries.length,0);
+    const source=design[0].sources[0],input={project_id:'p',category:'architecture' as const,key:'Architecture note',text:'Proposal',expected_version:0,submission_key:'source-invalid',sources:[{...source,content_sha256:'wrong'}]};
+    await assert.rejects(f.service.saveEntry(input,'agent'),/来源快照/);
+    const saved=await f.service.saveEntry({...input,submission_key:'source-valid',sources:[source],status:'current'},'agent');assert.deepEqual(saved.sources,[source]);assert.equal(saved.status,'needs_review');
+    await fs.appendFile(path.join(f.root,'sum.js'),'// source changed after the cited snapshot\n');
+    const historical=await f.service.saveEntry({...input,key:'Historical proposal',submission_key:'source-historical',sources:[source],status:'current'},'user');assert.deepEqual(historical.sources,[source]);assert.equal(historical.status,'needs_review');
+    f.store.put('engineering_context','foreign-entry',{...saved,entry_id:'foreign-entry',project_id:'foreign'});
+    await assert.rejects(f.service.saveEntry({...input,sources:[],entry_id:'foreign-entry',expected_version:1,submission_key:'foreign'},'agent'),/不属于/);
+  }finally{await f.cleanup();}
+});
+
+test('MCP section writes require an authorized actual workspace and always retain Agent provenance',async()=>{
+  const f=await fixture(),arc=new ArcService(f.store.directory,path.resolve('.')),bridge=new ArcMcpBridge(arc,path.resolve('.'));try{
+    const input={workspace_path:f.root,category:'design',key:'Boundary',text:'Design proposal only',expected_version:0,submission_key:'mcp-section'};
+    await assert.rejects(bridge.call('arc_save_engineering_entry',input),/授权/);
+    arc.store.put('setting','mcp-development-access',['p']);
+    const saved=await bridge.call('arc_save_engineering_entry',{...input,origin:'user',status:'current'});assert.equal(saved.origin,'agent');assert.equal(saved.status,'needs_review');
+    const read=await bridge.call('arc_engineering_context',{workspace_path:f.root,category:'design'});assert.equal(read.entries.length,1);assert.equal(read.entries[0].entry_id,saved.entry_id);
+  }finally{await bridge.close();await arc.shutdown();arc.store.close();await f.cleanup();}
 });

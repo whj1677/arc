@@ -41,6 +41,7 @@ app.whenReady().then(async()=>{
         case 'engineering_task':value=service.engineering.task(args.task_id);break;
         case 'engineering_history':value=service.engineering.history(args.kind,args.id);break;
         case 'engineering_revise':value=service.engineering.reviseContext(args);break;
+        case 'engineering_save_entry':value=await service.engineering.saveEntry(args,'user');break;
         case 'engineering_log':value=await service.engineering.readLog(args.task_id,args.path);break;
         case 'engineering_diff':value=await service.engineering.taskDiff(args.task_id,args.path);break;
         case 'development_start':value=await service.development.start(args);break;

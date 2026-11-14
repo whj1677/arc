@@ -15,7 +15,7 @@ export function readingQuestionTarget(result:AnalysisResult|undefined,reading:Re
     if(item)return {target:{kind:kind as 'step'|'role'|'handoff',id:key},label:'title'in item?item.title:item.label};
   }
   const node=result?.nodes.find(n=>n.node_id===selection||(['step','role'].includes(kind)&&n.node_id===key));
-  if(node)return {target:{kind:'node',id:node.node_id},label:node.label};
+  if(node)return {target:{kind:'node',id:node.node_id},label:node.kind==='function'?node.function_details?.symbol||node.label:node.label};
   const edge=result?.edges.find(e=>e.edge_id===selection||(kind==='handoff'&&e.edge_id===key));
   if(edge)return {target:{kind:'edge',id:edge.edge_id},label:edge.label};
   const functionStep=result?selectedCallStep(result,selection):undefined;

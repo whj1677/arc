@@ -1,19 +1,88 @@
-import React,{useId} from 'react';
-import type {AnalysisResult} from '../shared';
+import React,{useEffect,useId,useRef} from 'react';
+import type {AnalysisResult,SourceEvidence} from '../shared';
 import {functionCallMap,recursiveCallRoute} from './function-call-map';
 import {functionInfo} from './function-chain';
 import {Diagram,shortLabel} from './ReadingDiagrams';
 
-export function FunctionCallMap({result,pathId,selected,select,search,zoom}:{result:AnalysisResult;pathId:string;selected:string;select:(id:string)=>void;search:string;zoom:number}){
-  const m=functionCallMap(result,pathId),marker='function-map-'+useId().replace(/:/g,''),query=search.toLowerCase();
+type Props={
+  result:AnalysisResult;
+  pathId:string;
+  selected:string;
+  select:(id:string)=>void;
+  search:string;
+  zoom:number;
+  evidence:(evidence:SourceEvidence)=>void;
+};
+
+export function FunctionCallMap({result,pathId,selected,select,search,zoom,evidence}:Props){
+  const m=functionCallMap(result,pathId,selected);
+  const root=useRef<HTMLDivElement>(null);
+  useEffect(()=>{const frame=root.current?.querySelector<HTMLElement>('.reading-diagram-frame'),node=root.current?.querySelector<SVGElement>(`[data-function-node="${CSS.escape(m.focus.selected)}"]`);if(!frame||!node)return;const box=node.getBoundingClientRect(),viewport=frame.getBoundingClientRect();frame.scrollTo({top:frame.scrollTop+box.top-viewport.top-48,left:frame.scrollLeft+box.left-viewport.left-(frame.clientWidth-box.width)/2,behavior:'auto'});},[result.result_id,pathId,selected]);
+  const marker='function-map-'+useId().replace(/:/g,'');
+  const query=search.trim().toLowerCase();
+  const selectedLink=m.links.find(link=>link.id===selected||link.edgeIds.includes(selected));
+  const selectedNode=m.nodes.some(node=>node.node_id===m.focus.selected);
+  const nodeName=(id:string)=>{const node=m.nodes.find(item=>item.node_id===id);return node?functionInfo(result,node).details?.symbol||node.label:id;};
+  const fileName=(path:string|null|undefined)=>path?.split('/').at(-1)||'文件待确认';
+  const entryPath=m.focus.entryPath;
+  const entryNodes=new Set(entryPath);
+  const entryLinks=new Set(entryPath.slice(1).map((id,index)=>`${entryPath[index]}→${id}`));
+  const related=new Set([selected,...m.focus.upstream,...m.focus.downstream,...entryPath]);
+  const selectedSources=selectedLink?[...new Map([
+    selectedLink.callerDefinition,selectedLink.callerDeclaration,selectedLink.calleeDefinition,selectedLink.calleeDeclaration,...selectedLink.callsites
+  ].filter((item):item is SourceEvidence=>!!item).map(item=>[item.evidence_id,item] as const)).values()]:[];
   if(!m.nodes.length)return <p className="fr-empty">这版分析尚未提供函数入口与调用依据。</p>;
-  return <><div className="diagram-caption"><strong>从入口沿箭头走 →</strong><span>连线标传入内容 · 点函数看职责与输入输出</span></div><Diagram key={result.result_id+pathId} width={m.width} height={m.height} zoom={zoom} label="函数调用链与传入参数"><defs><marker id={marker} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" fill="context-stroke"/></marker></defs>
+  return <div className="function-call-map" ref={root}><div className="diagram-caption"><strong>从入口沿箭头走 →</strong><span>按文件阅读 · 选中连线查看传入内容、调用点与定义依据</span></div>
+    {selectedNode&&<nav className="function-map-focus" aria-label="当前函数的调用位置">
+      <div className="function-map-focus-heading">
+        <strong>{m.focus.reachable?'入口至此的一条代表最短路径':'当前函数的已记录关系'}</strong>
+        <small>{m.focus.reachable?'可能还有其他路径；这不是运行轨迹。':'尚未确认从当前入口到此函数的路径，不据此推断不存在调用。'}</small>
+      </div>
+      {entryPath.length>0?<div className="function-map-breadcrumb" aria-label="入口路径跳转">
+        {entryPath.map((id,index)=><React.Fragment key={id}>{index>0&&<span aria-hidden="true">→</span>}<button className={m.focus.selected===id?'selected':''} aria-current={m.focus.selected===id?'step':undefined} onClick={()=>select(id)}>{nodeName(id)}</button></React.Fragment>)}
+      </div>:<p className="muted">可点选下列已记录的上下游函数继续核对。</p>}
+      <details><summary>上下游函数 · {m.focus.upstream.length} 个上游 / {m.focus.downstream.length} 个下游（含间接调用）</summary><div className="function-map-neighbours">
+        <div><strong>全部上游（含间接调用）</strong>{m.focus.upstream.length?m.focus.upstream.map(id=><button key={id} onClick={()=>select(id)}>{nodeName(id)}</button>):<small>未记录上游</small>}</div>
+        <div><strong>全部下游（含间接调用）</strong>{m.focus.downstream.length?m.focus.downstream.map(id=><button key={id} onClick={()=>select(id)}>{nodeName(id)}</button>):<small>未记录下游</small>}</div>
+      </div></details>
+    </nav>}
+    <Diagram key={result.result_id+pathId} width={m.width} height={m.height} zoom={zoom} label="按文件分组的函数调用链"><defs><marker id={marker} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" fill="context-stroke"/></marker></defs>
+      {m.fileGroups.map(group=><g key={group.id} className="function-map-file-group">
+        <rect className="function-map-file-band" x={group.bounds.x} y={group.bounds.y} width={group.bounds.w} height={group.bounds.h} rx="15"/>
+        <foreignObject x={group.bounds.x+14} y={group.bounds.y+8} width={group.bounds.w-28} height="36">
+          <div className="function-map-file-heading" title={group.path||'定义与声明文件均待确认'}>
+            <strong>{fileName(group.path)}</strong><span>{group.path||'定义与声明文件均待确认'}</span><small>{group.nodes.length} 个函数</small>
+          </div>
+        </foreignObject>
+      </g>)}
     {m.links.map((link,i)=>{const a=m.boxes.get(link.from),b=m.boxes.get(link.to);if(!a||!b)return null;const self=link.from===link.to,forward=b.x>a.x,sx=a.x+a.w,sy=a.y+a.h/2,tx=forward?b.x:b.x+b.w,ty=b.y+b.h/2;
-      const recursive=self?recursiveCallRoute(a):null;
-      const d=recursive?recursive.d:forward?`M${sx} ${sy} C${(sx+tx)/2} ${sy} ${(sx+tx)/2} ${ty} ${tx-4} ${ty}`:`M${sx} ${sy} C${sx+55+i*12} ${sy} ${tx+55+i*12} ${ty} ${tx+4} ${ty}`;
-      const lx=recursive?recursive.labelX:forward?(sx+tx)/2-66:sx+8,ly=recursive?recursive.labelY:(sy+ty)/2-40;
-      return <g key={link.id} className={`function-map-link ${link.kind} ${selected===link.id?'selected':''}`} data-function-call={link.id} role="button" tabIndex={0} aria-label={link.label+'，传入：'+link.input} onClick={()=>select(link.id)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();select(link.id);}}}><title>{link.label+'\n传入：'+link.input+(link.condition?'\n条件：'+link.condition:'')}</title><path className="diagram-hit" d={d}/><path className="diagram-link" d={d} markerEnd={`url(#${marker})`}/><foreignObject x={lx} y={ly} width="132" height="82"><div className="function-map-args"><small>{link.kind==='call'?'传入':link.kind==='callback'?'回调内传入':'异步派发'}{link.condition?' · 条件':''}</small><span>{shortLabel(link.input,34)}</span></div></foreignObject></g>;
+      const recursive=self?recursiveCallRoute(a):null,siblings=m.links.filter(item=>item.from===link.from&&item.to===link.to),offset=(siblings.findIndex(item=>item.id===link.id)-(siblings.length-1)/2)*76;
+      const d=recursive?recursive.d:forward?`M${sx} ${sy} C${(sx+tx)/2} ${sy+offset} ${(sx+tx)/2} ${ty+offset} ${tx-4} ${ty}`:`M${sx} ${sy} C${sx+55+i*12} ${sy} ${tx+55+i*12} ${ty} ${tx+4} ${ty}`;
+      const expanded=selected===link.id||link.edgeIds.includes(selected),targetFile=m.nodeSources.get(link.to)?.path;
+      const relation=link.fileRelation==='same-file'?'同文件':link.fileRelation==='cross-file'?'跨文件':'文件待确认';
+      const lx=recursive?recursive.labelX-10:forward?(sx+tx)/2-76:sx+8,ly=(recursive?recursive.labelY:(sy+ty)/2-30+(forward?offset*.75:0))-(expanded?12:0);
+      return <g key={link.id} className={`function-map-link ${link.kind} ${link.status} ${link.fileRelation} ${expanded?'selected':''} ${entryLinks.has(`${link.from}→${link.to}`)?'on-entry-path':''}`} data-function-call={link.id} role="button" tabIndex={0} aria-label={`${link.label}，${relation}，传入：${link.input}`} onClick={()=>select(link.id)} onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();select(link.id);}}}><title>{link.label+'\n'+relation+'\n传入：'+link.input+(link.condition?'\n条件：'+link.condition:'')}</title><path className="diagram-hit" d={d}/><path className="diagram-link" d={d} markerEnd={`url(#${marker})`}/><foreignObject x={lx} y={ly} width="152" height={expanded?70:44}><div className="function-map-args"><small>{relation} · {link.kind==='call'?'调用':link.kind==='callback'?'回调':'异步'}{link.condition?' · 有条件':''}</small><span>{expanded?shortLabel(link.input,32):shortLabel(link.fileRelation==='cross-file'?fileName(targetFile)+' → '+nodeName(link.to):nodeName(link.to)+(siblings.length>1?' · '+(siblings.findIndex(item=>item.id===link.id)+1)+'/'+siblings.length:''),24)}</span></div></foreignObject></g>;
     })}
-    {m.nodes.map(n=>{const b=m.boxes.get(n.node_id)!,info=functionInfo(result,n),symbol=info.details?.symbol||n.label;return <foreignObject key={n.node_id} data-function-node={n.node_id} data-zoom-anchor x={b.x} y={b.y} width={b.w} height={b.h}><button className={`function-map-node ${selected===n.node_id?'selected':''} ${query&&![symbol,n.description,info.definition?.path].join(' ').toLowerCase().includes(query)?'diagram-dim':''}`} onClick={()=>select(n.node_id)} title={symbol+'\n'+n.description}><small>{m.entry===n.node_id?'● 入口函数':symbol.includes('.')?symbol.split('.').slice(0,-1).join('.'):'函数'}</small><strong>{symbol.split('.').at(-1)}</strong><span>{shortLabel(n.description,19)}</span><small>{info.definition?info.definition.path.split('/').at(-1)+':'+info.definition.line_start+'–'+info.definition.line_end:'定义位置待确认'}</small></button></foreignObject>;})}
-  </Diagram>{!m.entry&&<p className="muted">这版仅记录了调用关系，工程入口尚未确认。</p>}</>;
+    {m.nodes.map(node=>{const b=m.boxes.get(node.node_id)!,info=functionInfo(result,node),source=m.nodeSources.get(node.node_id),symbol=info.details?.symbol||node.label;
+      return <foreignObject key={node.node_id} data-function-node={node.node_id} data-zoom-anchor x={b.x} y={b.y} width={b.w} height={b.h}><button aria-pressed={selected===node.node_id} className={`function-map-node ${selected===node.node_id?'selected':''} ${entryNodes.has(node.node_id)?'on-entry-path':''} ${related.has(node.node_id)?'focus-related':''} ${query&&![symbol,node.description,source?.path].join(' ').toLowerCase().includes(query)?'diagram-dim':''}`} onClick={()=>select(node.node_id)} title={symbol+'\n'+node.description}><small>{m.entry===node.node_id?'● 入口函数':symbol.includes('.')?symbol.split('.').slice(0,-1).join('.'):'函数'}</small><strong>{symbol.split('.').at(-1)}</strong><span>{shortLabel(node.description,19)}</span><small>{source?.definition?fileName(source.definition.path)+':'+source.definition.line_start+'–'+source.definition.line_end:source?.declaration?'声明 · '+fileName(source.declaration.path)+':'+source.declaration.line_start+'–'+source.declaration.line_end:'定义与声明位置待确认'}</small></button></foreignObject>;
+    })}
+    </Diagram>{!m.entry&&<p className="muted">这版仅记录了调用关系，工程入口尚未确认。</p>}
+    {selectedLink&&<section className="function-map-selection" aria-label="所选调用关系">
+      <div>
+        <span className="eyebrow">{selectedLink.fileRelation==='same-file'?'同文件关系':selectedLink.fileRelation==='cross-file'?'跨文件关系':'文件关系待确认'}</span>
+        <h3>{selectedLink.label}</h3>
+        <p><strong>传入：</strong>{selectedLink.input}</p>
+        {selectedLink.condition&&<p className="function-condition">{selectedLink.condition}</p>}
+        <small>选中关系已在右侧保留原说明与原位提问上下文。</small>
+      </div>
+      <div className="function-map-selection-sources">
+        {selectedSources.length?selectedSources.map(item=><button key={item.evidence_id} className="function-definition" onClick={()=>evidence(item)}>
+          <strong>{item.role==='callsite'?'已确认调用点':item.role==='definition'?'定义':item.role==='declaration'?'声明':'来源'} · {fileName(item.path)}</strong>
+          <small>{item.path}:{item.line_start}–{item.line_end}</small>
+          {item.note&&<span>{item.note}</span>}
+          <b>打开来源依据 →</b>
+        </button>):<p className="muted">尚未关联定义、声明或已确认调用点。</p>}
+      </div>
+    </section>}
+  </div>;
 }

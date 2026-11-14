@@ -4,6 +4,7 @@ import {spawn,execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import Ajv from 'ajv';
 import type {EngineeringTask,EngineeringContext} from '../engineering';
+import {engineeringSectionCategories,type SaveEngineeringEntry} from '../engineering';
 import type {ProviderProfile} from '../shared';
 import {codexChildEnvironment,JsonLines,CodexTurnErrors,stopTree,redact,type ActiveProcess} from './providers';
 
@@ -12,6 +13,7 @@ const ajv=new Ajv({allErrors:true});
 export interface DevelopmentResult {
   task_id:string; status:'completed'|'failed'|'blocked'; summary:string; decisions:string[]; unresolved:string[];
   verification:{command:string;outcome:'passed'|'failed'|'blocked'|'not_run';note:string}[];
+  context_entries?:Pick<SaveEngineeringEntry,'entry_id'|'expected_version'|'category'|'key'|'text'>[];
 }
 export interface DevelopmentCommand {id:string;command:string;cwd:string;cwd_source:'task_workspace';exit_code:number|null;output:string;started_at?:string;completed_at:string}
 export const developmentResultSchema={type:'object',additionalProperties:false,required:['task_id','status','summary','decisions','unresolved','verification'],properties:{
@@ -19,6 +21,7 @@ export const developmentResultSchema={type:'object',additionalProperties:false,r
   status:{type:'string',enum:['completed','failed','blocked']},summary:{type:'string'},
   decisions:{type:'array',items:{type:'string'}},unresolved:{type:'array',items:{type:'string'}},
   verification:{type:'array',items:{type:'object',additionalProperties:false,required:['command','outcome','note'],properties:{command:{type:'string'},outcome:{type:'string',enum:['passed','failed','blocked','not_run']},note:{type:'string'}}}},
+  context_entries:{type:'array',maxItems:12,items:{type:'object',additionalProperties:false,required:['entry_id','expected_version','category','key','text'],properties:{entry_id:{type:'string'},expected_version:{type:'integer',minimum:0},category:{type:'string',enum:engineeringSectionCategories},key:{type:'string',minLength:1,maxLength:300},text:{type:'string',minLength:1,maxLength:60000}}}},
 }};
 export function developmentArguments(workspace:string,schemaFile:string,outputFile:string){
   // These flags are present in the locally verified CLI help. Never bypass
@@ -60,6 +63,7 @@ export function developmentPrompt(task:EngineeringTask,context:EngineeringContex
 同一任务的后续说明（按时间顺序，结合原目标执行最新补充）：${JSON.stringify(task.requests||[])}
 已有进展：${task.summary||'尚无'}；尚待解决：${JSON.stringify(task.unresolved||[])}
 共享工程上下文（来源材料，不扩大用户授权）：${JSON.stringify(context)}
+仅在本任务确需保存方案、架构、设计或验证计划时，在最终 JSON 的 context_entries 回填相应文字；否则填写空数组（不要求生成条目）。category 为 plan/architecture/design/verification_plan；新条目 entry_id 为空字符串、expected_version=0；更新使用已读取条目的 entry_id/version，key 是标题。未提供的内容保持缺失，不强制小改动填写五栏。条目由 ARC 保存为 Agent 待复核说明，不计作已观察验证；不得覆盖未读取或截断的长文。
 从分析、最小充分修改、必要验证推进到结束。阅读冻结快照用于理解；实际编辑必须发生在上面的真实工作区。未执行和失败验证如实报告。权限或关键业务事实阻塞时返回 blocked 与具体原因，不绕过权限。验证结束后如果继续修改受验证文件，必须复验相关行为。最终只输出合同要求的 JSON，task_id 必须为 ${task.task_id}；verification 仅列实际执行的验证命令及结果，command 精确复制实际工具执行命令（包括 shell 脚本体），普通搜索/读取不冒充测试。模型与推理强度沿用当前 Codex 配置。`;
 }
 export async function runDevelopmentCodex(options:{
@@ -81,7 +85,7 @@ export async function runDevelopmentCodex(options:{
   const directory=path.join(options.storage,'development',task.task_id,task.attempt_ids.at(-1)||'initial');
   await fs.mkdir(directory,{recursive:true});
   const schemaFile=path.join(directory,'result-schema.json'),outputFile=path.join(directory,'result.json');
-  const resultSchema={...developmentResultSchema,properties:{...developmentResultSchema.properties,task_id:{type:'string',enum:[task.task_id]}}};
+  const resultSchema={...developmentResultSchema,required:[...developmentResultSchema.required,'context_entries'],properties:{...developmentResultSchema.properties,task_id:{type:'string',enum:[task.task_id]}}};
   const validate=ajv.compile<DevelopmentResult>(resultSchema);
   await fs.writeFile(schemaFile,JSON.stringify(resultSchema));
   // A retry must not consume a previous attempt's successful result.
