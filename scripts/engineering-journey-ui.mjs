@@ -52,7 +52,7 @@ try{
   await overview.locator('summary').evaluate(summary=>{summary.parentElement.open=true;});
   await page.getByRole('button',{name:'描述开发任务',exact:true}).click();
   await page.waitForFunction(()=>document.activeElement?.id==='development-goal');
-  const goal='修复订单 total 忽略 quantity 的问题：每项金额应为 price × quantity，quantity 为 0 时该项贡献 0。保留 notes.txt 的已有修改和其他功能，修改前运行 npm test 复现失败，修改后再次运行 npm test 验证。';
+  const goal='修复订单 total 忽略 quantity 的问题：每项金额应为 price × quantity，quantity 为 0 时该项贡献 0。保留 notes.txt 的已有修改和其他功能。修改前记录 notes.txt 的 SHA256，并运行 npm test 复现失败。修改后依次执行并分别等待两项验证结束：运行 npm test；运行一条 PowerShell Git 检查，执行 git diff --check（失败时保留退出码）、git diff -- src/cart.mjs notes.txt、git status --short，并将 notes.txt 的 SHA256 与开始前记录的单引号哈希字面量比较，不同则抛错。请在验证结果中保留两项实际执行的完整命令及退出结果。';
   let tasks=await page.evaluate(id=>window.arc.invoke('engineering_tasks',{project_id:id}),project.project_id);
   let task=tasks.find(item=>item.goal===goal);
   const newDevelopment=!task;
@@ -74,8 +74,7 @@ try{
   }else{
   assert.equal(task.status,'completed',JSON.stringify({summary:task.summary,unresolved:task.unresolved}));
   assert.equal(task.workspace_path,workspace);assert.equal(task.project_id,project.project_id);
-  assert.ok(task.changes.some(change=>change.path==='src/cart.mjs'));
-  assert.ok(!task.changes.some(change=>change.path==='notes.txt'));
+  assert.deepEqual(task.changes.map(change=>change.path),['src/cart.mjs']);
   assert.match(await fs.readFile(path.join(workspace,'notes.txt'),'utf8'),/Uncommitted user note/);
   const observedTests=task.verification.filter(evidence=>evidence.origin==='observed'&&/npm(?:\.cmd)? test/.test(evidence.command));
   assert.deepEqual(observedTests.map(evidence=>evidence.exit_code),[1,0]);
@@ -86,14 +85,33 @@ try{
     const log=await fs.readFile(path.join(dataDirectory,evidence.log_path),'utf8');
     assert.match(log,evidence.exit_code===0?/# fail 0/:/# fail [1-9]/);
   }
-  assert.ok(['passed','partial'].includes(task.verification_status),task.verification_status);
+  const gitCheck=task.verification.find(evidence=>/git diff --check/.test(evidence.command)&&/Get-FileHash/.test(evidence.command));
+  assert.ok(gitCheck,'Missing Git diff and notes integrity check');
+  assert.equal(gitCheck.origin,'observed');
+  assert.equal(gitCheck.exit_code,0);
+  assert.equal(gitCheck.code_state_verified,true);
+  assert.equal(gitCheck.code_state.workspace_fingerprint,task.end_state.workspace_fingerprint);
+  const {attempts}=await page.evaluate(id=>window.arc.invoke('development_events',{task_id:id}),task.task_id);
+  const diagnostic=JSON.parse(await fs.readFile(path.join(dataDirectory,attempts.at(-1).log_path),'utf8'));
+  const gitReceipt=diagnostic.commands.find(command=>command.command===gitCheck.command&&command.exit_code===0);
+  assert.ok(gitReceipt,'Git log must use the original CLI receipt');
+  const gitLog=await fs.readFile(path.join(dataDirectory,gitCheck.log_path),'utf8');
+  assert.equal(gitLog,gitReceipt.command+'\n'+gitReceipt.output);
+  assert.equal(task.verification_status,'passed');
   if(fresh)assert.equal(await fs.access(path.join(workspace,'docs','requirements')).then(()=>true,()=>false),false);
   const verified=await exec(process.execPath,['--test','tests/order.test.mjs'],{cwd:workspace,windowsHide:true});assert.match(verified.stdout,/# fail 0/);
   await selectProject(project.project_id);await navigate('工程与开发');await selectTasks();await page.locator('.engineering-task-row').filter({hasText:goal}).click();
+  const summary=()=>page.locator('.engineering-task-detail').getByText(/验证：通过 · 已保存/);
+  await summary().waitFor();
+  await page.locator('.engineering-verification').filter({hasText:'git diff --check'}).getByRole('button',{name:'查看验证日志',exact:true}).click();
+  const shownLog=page.locator('.engineering-log pre');
+  await shownLog.waitFor();
+  assert.equal((await shownLog.textContent()).replace(/\r\n/g,'\n'),gitLog.replace(/\r\n/g,'\n'));
+  await page.getByRole('button',{name:'关闭日志',exact:true}).click();
   await page.getByRole('button',{name:'查看修改前后',exact:true}).first().click();await page.locator('.engineering-diff pre').first().waitFor();
   await page.screenshot({path:path.join(scratch,'development-result.png')});
   await page.locator('footer').getByText('阅读位置已保存',{exact:false}).waitFor();await app.close();await launch();
-  await page.locator('.engineering-task-detail').waitFor();assert.ok((await page.evaluate(id=>window.arc.invoke('engineering_tasks',{project_id:id}),project.project_id)).some(item=>item.task_id===task.task_id&&item.status==='completed'));
+  await summary().waitFor();assert.ok((await page.evaluate(id=>window.arc.invoke('engineering_tasks',{project_id:id}),project.project_id)).some(item=>item.task_id===task.task_id&&item.status==='completed'&&item.verification_status==='passed'));
   assert.equal(errors.length,0,errors.join('\n'));
   console.log(JSON.stringify({arcEntryPassed:true,fresh,newDevelopment,projectId:project.project_id,workspace,taskId:task.task_id,verificationStatus:task.verification_status,firstContextSeconds,developmentSeconds:(Date.parse(task.updated_at)-Date.parse(task.created_at))/1000,processDocuments:0,checks:['source-backed first context and existing architecture view','real workspace edit and observed validation before and after','automatic task completion','project switch preserves ownership','unrelated user change preserved','frozen before/after opens','restart restores development record']},null,2));
   }

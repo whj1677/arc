@@ -23,9 +23,17 @@ async function fixture(){
   return {directory,source,service,project,close:async()=>{await service.shutdown();service.store.close();await fs.rm(directory,{recursive:true,force:true});}};
 }
 const completed=(taskId:string,verification:any[]=[])=>({code:0,raw:'{}',stderr:'',commands:[],session_id:'simulated-session',result:{task_id:taskId,status:'completed' as const,summary:'Test change',decisions:[],unresolved:[],verification}});
+const gitCheck="git diff --check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; git diff -- src/cart.mjs notes.txt; git status --short; if ((Get-FileHash -Algorithm SHA256 notes.txt).Hash -ne 'C4DBF5060D43AB26067554E2B9AEFB6A01E0E61EB676040B7E7CB7ACD0BEE5E3') { throw 'notes.txt changed during this task' }";
+const gitReceipt=String.raw`"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command 'git diff --check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; git diff -- src/cart.mjs notes.txt; git status --short; if ((Get-FileHash -Algorithm SHA256 notes.txt).Hash -ne '"'C4DBF5060D43AB26067554E2B9AEFB6A01E0E61EB676040B7E7CB7ACD0BEE5E3') { throw 'notes.txt changed during this task' }"`;
 
 test('command matcher unwraps exact shell body without turning unrelated output into test evidence',()=>{
   assert.equal(commandBody('powershell.exe -NoProfile -Command "npm test"'),'npm test');
+  assert.equal(commandBody(gitReceipt),gitCheck);
+  assert.equal(commandBody(String.raw`pwsh.exe -Command "git diff --check; git diff -- 'C:\\project\\cart.mjs'; Write-Output \"done\""`),String.raw`git diff --check; git diff -- 'C:\project\cart.mjs'; Write-Output "done"`);
+  assert.notEqual(commandBody(gitReceipt),gitCheck.replace('-ne','-eq'));
+  assert.notEqual(commandBody(gitReceipt),gitCheck.replace("'notes.txt changed during this task'",'"notes.txt changed during this task"'));
+  assert.notEqual(commandBody(gitCheck),gitCheck.replace(/'/g,''));
+  assert.notEqual(commandBody('my-pwsh.exe -Command "npm test"'),'npm test');
   assert.notEqual(commandBody('echo npm test'),'npm test');
   assert.notEqual(commandBody('npm test; echo failed'),'npm test');
 });
@@ -36,7 +44,8 @@ test('development orchestration captures real differences, observed exit evidenc
     await options.commandCompleted!({id:'test-before',command:'node --test',cwd:f.source,cwd_source:'task_workspace',exit_code:1,output:'assertion failed',completed_at:new Date().toISOString()});
     await fs.writeFile(path.join(f.source,'main.ts'),'export const value=2;\n');
     await options.commandCompleted!({id:'test-command',command:'node --test',cwd:f.source,cwd_source:'task_workspace',exit_code:0,output:'1 passed',completed_at:new Date().toISOString()});
-    const output=completed(options.task.task_id,[{command:'node --test',outcome:'passed',note:'simulated pass'}]);
+    await options.commandCompleted!({id:'git-check',command:gitReceipt,cwd:f.source,cwd_source:'task_workspace',exit_code:0,output:'Git receipt output',completed_at:new Date().toISOString()});
+    const output=completed(options.task.task_id,[{command:'node --test',outcome:'passed',note:'simulated pass'},{command:gitCheck,outcome:'passed',note:'Git check'}]);
     return {...output,result:{...output.result,context_entries:[{entry_id:'',expected_version:0,category:'design',key:'Addition boundary',text:'Retain current API; only change the value.'}]}};
   };
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,configuration);
@@ -46,12 +55,13 @@ test('development orchestration captures real differences, observed exit evidenc
     const saved=f.service.engineering.task(task.task_id),attempt=f.service.store.get<any>('development_attempt',saved.attempt_ids[0]);
     assert.equal(saved.status,'completed');assert.deepEqual(saved.changes.map(item=>item.path),['main.ts']);assert.equal(await fs.readFile(path.join(f.source,'user-note.txt'),'utf8'),'keep user text');
     assert.equal(saved.verification_status,'passed');
-    assert.deepEqual(saved.verification.map(e=>[e.origin,e.outcome,e.exit_code]),[['observed','failed',1],['observed','passed',0]]);
+    assert.deepEqual(saved.verification.map(e=>[e.origin,e.outcome,e.exit_code]),[['observed','failed',1],['observed','passed',0],['observed','passed',0]]);
     assert.match(attempt.model,/配置.*test-configured-model/);
     assert.equal(optionsSeen.task.workspace_path,f.source);assert.equal((await development.start({project_id:f.project.project_id,goal:'change value',submission_key:'first'})).task_id,task.task_id);
     const design=(await f.service.engineering.context({project_id:f.project.project_id,category:'design'})).entries;assert.equal(design.length,1);assert.equal(design[0].origin,'agent');assert.equal(design[0].status,'needs_review');assert.equal(design[0].text,'Retain current API; only change the value.');
     assert.match(await fs.readFile(path.join(f.service.directory,saved.verification[0].log_path!),'utf8'),/assertion failed/);
     assert.match(await fs.readFile(path.join(f.service.directory,saved.verification[1].log_path!),'utf8'),/1 passed/);
+    assert.equal(await fs.readFile(path.join(f.service.directory,saved.verification[2].log_path!),'utf8'),gitReceipt+'\nGit receipt output');
   }finally{await development.shutdown();await f.close();}
 });
 test('modification after validation leaves evidence stale instead of passing the new code',async()=>{

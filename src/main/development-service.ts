@@ -14,8 +14,16 @@ type CommandRecord={command:DevelopmentCommand;state:CodeState;log:string;stateV
 // an unrelated command (for example `echo npm test`).
 export function commandBody(value:string){
   let body=value.trim();
-  const wrapped=body.match(/^(?:"[^"]*(?:powershell|pwsh|bash|sh)(?:\.exe)?"|\S*(?:powershell|pwsh|bash|sh)(?:\.exe)?)\s+(?:-[A-Za-z]+\s+)*?(?:-Command|-c)\s+([\s\S]+)$/i);
-  if(wrapped){body=wrapped[1].trim();if((body.startsWith("'")&&body.endsWith("'"))||(body.startsWith('"')&&body.endsWith('"')))body=body.slice(1,-1);}
+  const wrapped=body.match(/^(?:"(?:[^"]*[\\/])?(?:powershell|pwsh|bash|sh)(?:\.exe)?"|(?:\S*[\\/])?(?:powershell|pwsh|bash|sh)(?:\.exe)?)\s+(?:-[A-Za-z]+\s+)*?(?:-Command|-c)\s+([\s\S]+)$/i);
+  if(wrapped){
+    body=wrapped[1].trim();
+    // Codex prints the shell argument as adjacent shlex-quoted fragments.
+    // Decode the outer argument only. Quotes inside the script are significant.
+    if(/^(?:'[^']*'|"(?:[^"\\]|\\[\s\S])*")+$/.test(body)){
+      const fragments=body.matchAll(/'([^']*)'|"((?:[^"\\]|\\[\s\S])*)"/g);
+      body=Array.from(fragments,([,single,double])=>single??double.replace(/\\(["\\$\x60]|\r?\n)/g,(_,escaped)=>escaped.endsWith('\n')?'':escaped)).join('');
+    }
+  }
   return body.replace(/\r\n/g,'\n').trim();
 }
 
