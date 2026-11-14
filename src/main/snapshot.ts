@@ -76,13 +76,31 @@ export async function workspaceFiles(root:string, snapshot?:Snapshot) {
   return {fingerprint:sha(JSON.stringify([...files].sort(([a],[b])=>a<b?-1:a>b?1:0))),assets};
 }
 
+export async function workspaceGitDirectory(root:string):Promise<string|null> {
+  try {
+    const {stdout}=await exec('git',['-C',root,'rev-parse','--git-common-dir'],{windowsHide:true,timeout:10000});
+    return path.resolve(root,stdout.trim());
+  } catch(error) {
+    const failure=error as NodeJS.ErrnoException&{stderr?:string};
+    if(failure.stderr?.includes('not a git repository'))return null;
+    if(failure.code!=='ENOENT')throw error;
+    for(let directory=root;;directory=path.dirname(directory)){
+      try{await fs.lstat(path.join(directory,'.git'));}
+      catch(error){
+        if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;
+        if(directory===path.dirname(directory))return null;
+        continue;
+      }
+      throw Error('检测到 Git 工作区，但当前 ARC 启动环境的 PATH 找不到 Git。请让 Git 可从终端执行，再重新启动 ARC。');
+    }
+  }
+}
+
 export async function bindWorkspaceCompletion(workspacePath:string):Promise<CompletionBinding> {
   const workspace_path=await fs.realpath(workspacePath);
   async function checkout(){
     const git=async (...args:string[])=>(await exec('git',['-C',workspace_path,...args],{windowsHide:true,timeout:10000})).stdout.trim();
-    let git_common_dir:string|null=null;
-    try{git_common_dir=path.resolve(workspace_path,await git('rev-parse','--git-common-dir'));}
-    catch(error){if(!String((error as {stderr?:string}).stderr).includes('not a git repository'))throw error;}
+    const git_common_dir=await workspaceGitDirectory(workspace_path);
     const head=git_common_dir?await git('rev-parse','HEAD').catch(()=>null):null;
     const branch=git_common_dir?await git('symbolic-ref','--short','-q','HEAD').catch(()=>null):null;
     return {git_common_dir,head,branch};

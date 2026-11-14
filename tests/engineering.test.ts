@@ -1,11 +1,12 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {DatabaseSync} from 'node:sqlite';
 import {Store} from '../src/main/store';
-import {capture,readSource} from '../src/main/snapshot';
+import {capture,readSource,workspaceGitDirectory} from '../src/main/snapshot';
 import {EngineeringService} from '../src/main/engineering-service';
 import {scanAecLegacy} from '../src/main/aec-migration';
 import type {VerificationEvidence} from '../src/engineering';
@@ -24,6 +25,20 @@ async function fixture(git=false) {
   const service=new EngineeringService(store);await service.connect('p');
   return {directory,root,store,service,cleanup:async()=>{store.close();await fs.rm(directory,{recursive:true,force:true});}};
 }
+test('a desktop launch without Git on PATH cannot identify an existing Git workspace as non-Git',async()=>{
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'arc-git-path-'));
+  const repo=path.join(directory,'repo'),plain=path.join(directory,'plain');
+  await fs.mkdir(path.join(repo,'.git'),{recursive:true});await fs.mkdir(plain);
+  const savedPath=process.env.PATH;
+  try{
+    process.env.PATH=plain;
+    await assert.rejects(workspaceGitDirectory(repo),/PATH 找不到 Git/);
+    assert.equal(await workspaceGitDirectory(plain),null);
+  }finally{
+    if(savedPath===undefined)delete process.env.PATH;else process.env.PATH=savedPath;
+    await fs.rm(directory,{recursive:true,force:true});
+  }
+});
 test('engineering v1 upgrade preserves existing reading objects and persists version history',async()=>{
   const temp=path.resolve('.test-data');await fs.mkdir(temp,{recursive:true});const dir=await fs.mkdtemp(path.join(temp,'upgrade-'));const db=new DatabaseSync(path.join(dir,'arc.sqlite'));db.exec(`CREATE TABLE objects(kind TEXT NOT NULL,id TEXT NOT NULL,json TEXT NOT NULL,PRIMARY KEY(kind,id));CREATE TABLE events(run_id TEXT NOT NULL,event_id TEXT NOT NULL,sequence INTEGER NOT NULL,json TEXT NOT NULL,PRIMARY KEY(run_id,event_id));PRAGMA user_version=1;`);db.prepare('INSERT INTO objects VALUES(?,?,?)').run('annotation','a',JSON.stringify({text:'保留批注'}));db.close();
   const store=new Store(dir);try{assert.equal(store.get<any>('annotation','a').text,'保留批注');assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version,2);store.transaction(()=>store.putVersion('engineering_task','t',1,{version:1}));assert.equal(store.versions('engineering_task','t').length,1);}finally{store.close();await fs.rm(dir,{recursive:true,force:true});}
@@ -53,6 +68,12 @@ test('task capture distinguishes preexisting dirty overlaps, idempotency, confli
     const continued=await f.service.createTask({task_id:task.task_id,project_id:'p',goal:'also handle decimals',submission_key:'continue'});assert.equal(continued.goal,'fix sum');assert.equal(continued.requests?.[0].text,'also handle decimals');assert.equal(f.service.history('task',task.task_id).length,3);
     assert.equal((await f.service.createTask({task_id:task.task_id,project_id:'p',goal:'also handle decimals',submission_key:'continue'})).requests?.length,1);
     assert.equal(await fs.readFile(path.join(f.root,'other.js'),'utf8'),'export const unrelated = false;\n');
+    await fs.writeFile(path.join(f.root,'other.js'),'export const unrelated = null;\n');
+    await f.service.createTask({task_id:task.task_id,project_id:'p',goal:'resume after outside edit',submission_key:'resume'});
+    const attempt=f.service.startAttempt(task.task_id,{provider_id:'codex',model:'test',origin:'agent'});
+    await fs.writeFile(path.join(f.root,'validation.js'),'export const validation = true;\n');
+    const resumed=await f.service.finishTask({task_id:task.task_id,attempt_id:attempt.attempt_id,expected_version:f.service.task(task.task_id).version,submission_key:'resumed-finish',status:'completed'});
+    assert.deepEqual(resumed.changes.map(c=>c.path).sort(),['sum.js','validation.js']);
   }finally{await f.cleanup();}
 });
 test('context reads are bounded and details/search/page requests keep the same shared version',async()=>{

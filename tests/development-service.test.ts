@@ -32,9 +32,11 @@ test('command matcher unwraps exact shell body without turning unrelated output 
 test('development orchestration captures real differences, observed exit evidence and inherited configuration',async()=>{
   const f=await fixture();let optionsSeen:any;
   const runner:typeof runDevelopmentCodex=async options=>{
-    optionsSeen=options;await fs.writeFile(path.join(f.source,'main.ts'),'export const value=2;\n');
+    optionsSeen=options;
+    await options.commandCompleted!({id:'test-before',command:'node --test',cwd:f.source,cwd_source:'task_workspace',exit_code:1,output:'assertion failed',completed_at:new Date().toISOString()});
+    await fs.writeFile(path.join(f.source,'main.ts'),'export const value=2;\n');
     await options.commandCompleted!({id:'test-command',command:'node --test',cwd:f.source,cwd_source:'task_workspace',exit_code:0,output:'1 passed',completed_at:new Date().toISOString()});
-    const output=completed(options.task.task_id,[{command:'node --test',outcome:'passed',note:'simulated provider receipt; real file capture'}]);
+    const output=completed(options.task.task_id,[{command:'node --test',outcome:'passed',note:'simulated pass'}]);
     return {...output,result:{...output.result,context_entries:[{entry_id:'',expected_version:0,category:'design',key:'Addition boundary',text:'Retain current API; only change the value.'}]}};
   };
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,configuration);
@@ -43,10 +45,13 @@ test('development orchestration captures real differences, observed exit evidenc
     const task=await development.start({project_id:f.project.project_id,goal:'change value',submission_key:'first'});await Promise.all([...development.executing.values()]);
     const saved=f.service.engineering.task(task.task_id),attempt=f.service.store.get<any>('development_attempt',saved.attempt_ids[0]);
     assert.equal(saved.status,'completed');assert.deepEqual(saved.changes.map(item=>item.path),['main.ts']);assert.equal(await fs.readFile(path.join(f.source,'user-note.txt'),'utf8'),'keep user text');
-    assert.equal(saved.verification_status,'passed');assert.equal(saved.verification[0].origin,'observed');assert.equal(saved.verification[0].exit_code,0);assert.match(attempt.model,/配置.*test-configured-model/);
+    assert.equal(saved.verification_status,'passed');
+    assert.deepEqual(saved.verification.map(e=>[e.origin,e.outcome,e.exit_code]),[['observed','failed',1],['observed','passed',0]]);
+    assert.match(attempt.model,/配置.*test-configured-model/);
     assert.equal(optionsSeen.task.workspace_path,f.source);assert.equal((await development.start({project_id:f.project.project_id,goal:'change value',submission_key:'first'})).task_id,task.task_id);
     const design=(await f.service.engineering.context({project_id:f.project.project_id,category:'design'})).entries;assert.equal(design.length,1);assert.equal(design[0].origin,'agent');assert.equal(design[0].status,'needs_review');assert.equal(design[0].text,'Retain current API; only change the value.');
-    assert.match(await fs.readFile(path.join(f.service.directory,saved.verification[0].log_path!),'utf8'),/1 passed/);
+    assert.match(await fs.readFile(path.join(f.service.directory,saved.verification[0].log_path!),'utf8'),/assertion failed/);
+    assert.match(await fs.readFile(path.join(f.service.directory,saved.verification[1].log_path!),'utf8'),/1 passed/);
   }finally{await development.shutdown();await f.close();}
 });
 test('modification after validation leaves evidence stale instead of passing the new code',async()=>{

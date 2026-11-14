@@ -8,6 +8,8 @@ import {readCodexConfiguration} from './codex-configuration';
 import {probeProviders,redact,type ActiveProcess} from './providers';
 import {id,now,Store} from './store';
 
+type CommandRecord={command:DevelopmentCommand;state:CodeState;log:string;stateVerified:boolean};
+
 // Only strip a known shell wrapper; never match a test name as a substring of
 // an unrelated command (for example `echo npm test`).
 export function commandBody(value:string){
@@ -56,7 +58,7 @@ export class DevelopmentService {
     const task=this.engineering.task(taskId),context=await this.engineering.context({project_id:task.project_id});
     const baseline=attempt.baseline??task.baseline;
     if(context.workspace.workspace_id!==task.workspace_id||context.workspace.root_path!==task.workspace_path||!sameVerificationState(context.code_state,baseline))throw Error('WORKSPACE_CONFLICT：启动前工作区或代码基线已改变，未派发开发。');
-    const records=new Map<string,{command:DevelopmentCommand;state:CodeState;log:string;stateVerified:boolean}>();let captureQueue=Promise.resolve(),possibleWrite=0;
+    const records:CommandRecord[]=[];let captureQueue=Promise.resolve(),possibleWrite=0;
     const result=await this.runner({task,context,profile,storage:this.store.directory,
       event:event=>{if(event.item?.type==='file_change'||event.type==='item.started'&&event.item?.type==='command_execution')possibleWrite++;this.event(attemptId,event);},
       shouldStart:()=>!this.isStopped(attemptId),
@@ -68,7 +70,7 @@ export class DevelopmentService {
           const log=`development/${taskId}/${attemptId}/${id('command')}.log`;
           await fs.mkdir(path.dirname(path.join(this.store.directory,log)),{recursive:true});
           await fs.writeFile(path.join(this.store.directory,log),`${command.command}\n${command.output}`);
-          records.set(command.id,{command,state,log,stateVerified:atReceipt===possibleWrite});
+          records.push({command,state,log,stateVerified:atReceipt===possibleWrite});
         });return captureQueue;
       },
     });
@@ -80,15 +82,30 @@ export class DevelopmentService {
     if(latestAttempt.status==='interrupted')throw Error('停止状态未确认，拒绝迟到开发结果');
     if(result.code!==0||result.protocol_error||!result.result)throw Error(`Codex 开发未正常结束：${result.protocol_error||result.stderr||`exit ${result.code}`}`);
     const end=await this.engineering.captureState(task.project_id,task.workspace_path),verification:VerificationEvidence[]=[];
+    const commandOutcome=(command:DevelopmentCommand)=>command.exit_code===0?'passed':command.exit_code===null?'blocked':'failed';
+    const observedCommands=new Set<string>();
     for(const report of result.result.verification){
-      const observed=[...records.values()].filter(record=>commandBody(record.command.command)===commandBody(report.command)).at(-1);
-      verification.push({evidence_id:id('verification'),command:observed?.command.command??report.command,cwd:task.workspace_path,
-        outcome:observed?(observed.command.exit_code===0?'passed':observed.command.exit_code===null?'blocked':'failed'):report.outcome,
-        exit_code:observed?.command.exit_code??(report.outcome==='passed'?0:null),origin:observed?'observed':'self_reported',
-        code_state:observed?.state??end,created_at:observed?.command.completed_at??now(),log_path:observed?.log,
-        code_state_verified:observed?.stateVerified??false,
-        note:observed?`${report.note}；代码状态采集于命令完成回执后，工作目录为绑定执行目录。${observed.stateVerified?'':'采集期间出现后续命令或修改，验证对应代码状态不确定。'}`:`${report.note}；未匹配实际命令回执，此项为 Agent 自述，不能作为独立验证通过。`});
+      const key=commandBody(report.command);
+      if(observedCommands.has(key))continue;
+      const matches=records.filter(record=>commandBody(record.command.command)===key);
+      if(!matches.length){
+        verification.push({evidence_id:id('verification'),command:report.command,cwd:task.workspace_path,
+          outcome:report.outcome,exit_code:report.outcome==='passed'?0:null,origin:'self_reported',
+          code_state:end,created_at:now(),code_state_verified:false,
+          note:`${report.note}；未匹配实际命令回执，此项为 Agent 自述，不能作为独立验证通过。`});
+        continue;
+      }
+      for(const record of matches){
+        const outcome=commandOutcome(record.command);
+        const note=result.result.verification.findLast(item=>commandBody(item.command)===key&&item.outcome===outcome)?.note;
+        verification.push({evidence_id:id('verification'),command:record.command.command,cwd:task.workspace_path,
+          outcome,exit_code:record.command.exit_code,origin:'observed',
+          code_state:record.state,created_at:record.command.completed_at,log_path:record.log,code_state_verified:record.stateVerified,
+          note:`${note?note+'；':''}代码状态采集于命令完成回执后，工作目录为绑定执行目录。${record.stateVerified?'':'采集期间出现后续命令或修改，验证对应代码状态不确定。'}`});
+      }
+      observedCommands.add(key);
     }
+    verification.sort((a,b)=>a.created_at.localeCompare(b.created_at));
     const entryFailures:string[]=[];
     for(const [index,entry]of (result.result.context_entries??[]).entries()){
       if(this.isStopped(attemptId))throw Error('执行已停止，拒绝迟到工程条目');

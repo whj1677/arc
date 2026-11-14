@@ -11,6 +11,7 @@ if(!await fs.access(workspace).then(()=>true,()=>false))await fs.cp(path.join(ro
 const env={...process.env,CODEX_HOME:path.join(scratch,'isolated-codex')};delete env.ELECTRON_RUN_AS_NODE;await fs.mkdir(env.CODEX_HOME,{recursive:true});
 let app,page;const errors=[];
 async function launch(directory){app=await electron.launch({args:[root],env:{...env,ARC_DATA_DIR:directory},timeout:30000});page=await app.firstWindow();page.setDefaultTimeout(20000);page.on('pageerror',e=>errors.push(e.message));await page.locator('header').first().waitFor();}
+const navigation=()=>page.getByRole('complementary',{name:'ARC 工程工作台导航'});
 async function invoke(name,args){return page.evaluate(([name,args])=>window.arc.invoke(name,args),[name,args]);}
 async function menu(){const summary=page.getByText('接入与恢复',{exact:true});if(!await summary.evaluate(e=>e.parentElement.open))await summary.click();}
 async function closedMenu(){const summary=page.getByText('接入与恢复',{exact:true});if(await summary.evaluate(e=>e.parentElement.open))await summary.click();}
@@ -18,10 +19,11 @@ async function tool(directory,name,args){const connection=JSON.parse(await fs.re
 try{
   await launch(dataDirectory);
   let data=await invoke('data');let project=data.projects.find(p=>p.root_path===workspace);
-  if(!project){await page.getByRole('button',{name:'打开工程',exact:true}).click();await page.getByLabel('本地工程绝对路径',{exact:true}).fill(workspace);await page.getByRole('button',{name:'仅打开',exact:true}).click();await page.locator('dialog').waitFor({state:'hidden'});data=await invoke('data');project=data.projects.find(p=>p.root_path===workspace);}
-  await page.getByLabel('当前工程',{exact:true}).selectOption(project.project_id);
-  await page.getByRole('button',{name:'开发与记录',exact:true}).click();
+  if(!project){await navigation().getByRole('button',{name:'打开工程',exact:true}).click();await page.getByLabel('本地工程绝对路径',{exact:true}).fill(workspace);await page.getByRole('button',{name:'仅打开',exact:true}).click();await page.locator('dialog').waitFor({state:'hidden'});data=await invoke('data');project=data.projects.find(p=>p.root_path===workspace);}
+  await navigation().getByLabel('当前工程',{exact:true}).selectOption(project.project_id);
+  await navigation().getByRole('button',{name:'工程与开发',exact:true}).click();
   await page.locator('.engineering-workspace').waitFor();
+  await page.getByRole('navigation',{name:'工程栏目'}).getByRole('button',{name:/^任务/}).click();
   const tasksBefore=await invoke('engineering_tasks',{project_id:project.project_id});
   if(tasksBefore.length){await page.locator('.engineering-task-row').first().click();await page.getByRole('button',{name:'版本历史',exact:true}).click();await page.getByLabel('工程任务版本',{exact:true}).waitFor();assert.ok(await page.getByLabel('工程任务版本',{exact:true}).locator('option').count()>1);const diagnostic=page.getByRole('button',{name:'查看执行诊断',exact:true});if(await diagnostic.count()){await diagnostic.last().click();await page.locator('.engineering-log pre').waitFor();assert.ok((await page.locator('.engineering-log pre').textContent()).length);await page.getByRole('button',{name:'关闭日志',exact:true}).click();}}
   await page.getByRole('button',{name:'工程上下文',exact:true}).click();

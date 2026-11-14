@@ -6,7 +6,7 @@ import type {Project,Snapshot,Explanation} from '../shared';
 import {engineeringSectionCategories,type SaveEngineeringEntry,type EngineeringSectionCategory} from '../engineering';
 import type {CodeState,WorkspaceBinding,ContextEntry,ContextSource,EngineeringContext,EngineeringAnalysis,ContextRequest,EngineeringTask,CreateEngineeringTask,UpdateEngineeringTask,FinishEngineeringTask,DevelopmentAttempt,VerificationEvidence} from '../engineering';
 import {Store,id,now} from './store';
-import {capture,freshness,readSource,sha,relativePath,safeFile,workspaceFiles} from './snapshot';
+import {capture,freshness,readSource,sha,relativePath,safeFile,workspaceFiles,workspaceGitDirectory} from './snapshot';
 import {exportEngineeringProject,restoreEngineeringProject} from './engineering-transfer';
 import {scanAecLegacy,type AecScan,type AecLegacyDocument} from './aec-migration';
 
@@ -45,7 +45,7 @@ export class EngineeringService {
     const prior=this.store.all<WorkspaceBinding>(workspaceKind).find(w=>w.project_id===projectId);
     if(prior)return prior;
     const root=await fs.realpath(project.root_path);
-    let common:string|null=null;try{common=path.resolve(root,await git(root,['rev-parse','--git-common-dir']));}catch{/* Non-Git engineering projects are supported. */}
+    const common=await workspaceGitDirectory(root);
     const workspace:WorkspaceBinding={workspace_id:id('workspace'),project_id:projectId,root_path:root,status:'bound',git_common_dir:common,created_at:now()};
     this.store.put(workspaceKind,workspace.workspace_id,workspace);
     await this.context({project_id:projectId});return workspace;
@@ -67,11 +67,12 @@ export class EngineeringService {
   private async captureStateActual(projectId:string,workspacePath?:string):Promise<CodeState> {
     const workspace=await this.resolve({project_id:projectId,workspace_path:workspacePath});
     const project=this.store.get<Project>('project',projectId);
-    let head:string|null=null,branch:string|null=null,common:string|null=null,dirty:string[]=[];
-    try {common=path.resolve(workspace.root_path,await git(workspace.root_path,['rev-parse','--git-common-dir']));branch=await git(workspace.root_path,['symbolic-ref','--short','-q','HEAD']).catch(()=>null);head=await git(workspace.root_path,['rev-parse','HEAD']).catch(()=>null);
+    const common=await workspaceGitDirectory(workspace.root_path);
+    let head:string|null=null,branch:string|null=null,dirty:string[]=[];
+    if(common){branch=await git(workspace.root_path,['symbolic-ref','--short','-q','HEAD']).catch(()=>null);head=await git(workspace.root_path,['rev-parse','HEAD']).catch(()=>null);
       const modified=await git(workspace.root_path,['diff','--name-only','-z','HEAD']).catch(()=>git(workspace.root_path,['diff','--name-only','-z','--cached']));
       const untracked=await git(workspace.root_path,['ls-files','--others','--exclude-standard','-z']);dirty=[...new Set([...modified.split('\0'),...untracked.split('\0')].filter(Boolean))];
-    }catch(error){if(common)throw error;}
+    }
     const cached=this.store.maybe<CodeState>('engineering_state',workspace.workspace_id);
     let snapshot=cached?this.store.get<Snapshot>('snapshot',cached.snapshot_id):this.store.get<Snapshot>('snapshot',project.snapshot_id);
     if(!samePath(snapshot.root_path,workspace.root_path)||(await freshness(snapshot)).length){snapshot=await capture(workspace.root_path,projectId,this.store.directory,project.build_config);this.store.put('snapshot',snapshot.source_snapshot_id,snapshot);}
@@ -310,9 +311,13 @@ export class EngineeringService {
     const comparisonSnapshot=comparison===task.baseline?before:this.store.get<Snapshot>('snapshot',comparison.snapshot_id);
     const assetBaseline=comparison.assets??attempt?.baseline?.assets??[];
     const beforeFiles=stateFiles(comparisonSnapshot,{assets:assetBaseline}),afterFiles=stateFiles(after,end??undefined);
+    const attemptFiles=attempt?.baseline&&stateFiles(this.store.get<Snapshot>('snapshot',attempt.baseline.snapshot_id),attempt.baseline);
+    const previousChanges=new Set(task.changes.map(change=>change.path));
     const assets=new Set([...assetBaseline,...(end?.assets??[])].map(asset=>asset.path));
     const changes=ownershipUnknown?[]:[...new Set([...beforeFiles.keys(),...afterFiles.keys()])]
       .filter(p=>beforeFiles.get(p)!==afterFiles.get(p))
+      // Keep known task changes across attempts, but exclude files only changed between attempts.
+      .filter(p=>!attemptFiles||previousChanges.has(p)||attemptFiles.get(p)!==afterFiles.get(p))
       .map(p=>({path:p,before_sha256:beforeFiles.get(p)??null,after_sha256:afterFiles.get(p)??null,ownership:comparison.dirty.includes(p)||task.rebind_preexisting_files?.some(f=>f.path===p)?'preexisting_overlap' as const:'task_change' as const,...(assets.has(p)?{text_diff_unavailable:true}:{})}));
     return this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);if(input.decisions)current.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
       if(ownershipUnknown)current.unresolved=[...new Set([...current.unresolved,'无法确认提交完成时与采集时的代码状态一致。报告已保存，差异归属待核查。'])];
@@ -349,7 +354,7 @@ export class EngineeringService {
     await this.capturing.get(projectId);await this.scanning.get(projectId);
     const project=this.store.get<Project>('project',projectId),snapshot=await capture(root,projectId,this.store.directory,project.build_config);
     const identity=await workspaceFiles(root,snapshot);
-    let common:string|null=null;try{common=path.resolve(root,await git(root,['rev-parse','--git-common-dir']));}catch{/* Non-Git is supported. */}
+    const common=await workspaceGitDirectory(root);
     this.store.transaction(()=>{workspace.root_path=root;workspace.status='bound';workspace.git_common_dir=common;workspace.rebound_at=now();this.store.put(workspaceKind,workspace.workspace_id,workspace);project.root_path=root;project.snapshot_id=snapshot.source_snapshot_id;this.store.put('snapshot',snapshot.source_snapshot_id,snapshot);this.store.put('project',projectId,project);this.store.db.prepare('DELETE FROM objects WHERE kind=? AND id=?').run('engineering_state',workspace.workspace_id);
       for(const task of this.tasks({project_id:projectId})){const beforeState=task.end_state??task.baseline,before=this.store.get<Snapshot>('snapshot',beforeState.snapshot_id),beforeFiles=stateFiles(before,beforeState),afterFiles=stateFiles(snapshot,{assets:identity.assets}),preexisting=new Map((task.rebind_preexisting_files??[]).map(f=>[f.path,f.sha256]));for(const file of new Set([...beforeFiles.keys(),...afterFiles.keys()]))if(beforeFiles.get(file)!==afterFiles.get(file))preexisting.set(file,afterFiles.get(file)??null);task.rebind_preexisting_files=[...preexisting].map(([path,sha256])=>({path,sha256}));task.rebind_source_snapshot_id=snapshot.source_snapshot_id;task.workspace_path=root;this.saveTask(task);}
       for(const explanation of this.store.all<Explanation>('explanation'))if(explanation.result.binding.project_id===projectId){explanation.source_status=this.store.get<Snapshot>('snapshot',explanation.result.binding.source_snapshot_id).fingerprint===snapshot.fingerprint?'current':'needs_review';this.store.put('explanation',explanation.result_id,explanation);}
