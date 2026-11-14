@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import {ArcMcpBridge} from './mcp-bridge';
 import { ArcService } from './service';
 import { redact } from './providers';
+import {scanAecLegacy,applyAecRuleMigration,installArcAgentRules} from './aec-migration';
 let window:BrowserWindow|null=null, service:ArcService, bridge:ArcMcpBridge, quitting=false;
 if(process.env.ARC_DATA_DIR)app.setPath('userData',path.resolve(process.env.ARC_DATA_DIR));
 app.setName('Arc');
@@ -35,6 +36,31 @@ app.whenReady().then(async()=>{
         case 'mcp_enable':value=await bridge.enable(args.project_id,args.register_codex===true);break;
         case 'mcp_disable':value=bridge.disable();break;
         case 'data':value=service.data();break;
+        case 'engineering_context':await service.engineering.connect(args.project_id);value=await service.engineering.context(args);break;
+        case 'engineering_tasks':value=service.engineering.tasks(args);break;
+        case 'engineering_task':value=service.engineering.task(args.task_id);break;
+        case 'engineering_history':value=service.engineering.history(args.kind,args.id);break;
+        case 'engineering_revise':value=service.engineering.reviseContext(args);break;
+        case 'engineering_log':value=await service.engineering.readLog(args.task_id,args.path);break;
+        case 'engineering_diff':value=await service.engineering.taskDiff(args.task_id,args.path);break;
+        case 'development_start':value=await service.development.start(args);break;
+        case 'development_cancel':value=await service.development.cancel(args.task_id);break;
+        case 'development_events':value=service.development.events(args.task_id);break;
+        case 'engineering_connect':{
+          const workspace=await service.engineering.connect(args.project_id),legacy=await scanAecLegacy(workspace.root_path);
+          // Preserve old managed rules as source history before replacing them.
+          const imported=await service.engineering.importAec(args.project_id,legacy);
+          const changed=await applyAecRuleMigration(workspace.root_path,legacy.rules);
+          const installed=await installArcAgentRules(workspace.root_path,{connectionFile:bridge.connectionFile});
+          const connection=await bridge.enable(args.project_id,true);
+          await service.engineering.context({project_id:args.project_id,refresh:true});
+          value={connection,changed_paths:changed,installed,imported,pending:await bridge.pendingWrites(),warnings:legacy.warnings};break;
+        }
+        case 'engineering_pending':value=await bridge.pendingWrites();break;
+        case 'engineering_sync':value=await bridge.flushPending();break;
+        case 'engineering_export':{const dest=await dialog.showSaveDialog(window!,{title:'导出工程记录、历史与引用证据',defaultPath:'Arc-工程记录.json',filters:[{name:'Arc 工程记录',extensions:['json']}]});if(dest.filePath)value=await service.engineering.exportProject(args.project_id,dest.filePath);break;}
+        case 'engineering_restore':{const picked=await dialog.showOpenDialog(window!,{title:'恢复 ARC 工程记录',properties:['openFile'],filters:[{name:'Arc 工程记录',extensions:['json']}]});if(!picked.canceled)value=await service.engineering.restoreProject(picked.filePaths[0]);break;}
+        case 'engineering_rebind':value=await service.engineering.rebindWorkspace(args.project_id,args.root_path);break;
         case 'pick_project_path':
         case 'open_project':{const picked=await dialog.showOpenDialog(window!,{properties:['openDirectory'],title:'选择要理解的本地工程'});value=picked.canceled?null:operation==='pick_project_path'?picked.filePaths[0]:await service.openProject(picked.filePaths[0]);break;}
         case 'open_project_path':value=await service.openProject(String(args.path));break;

@@ -1,0 +1,9 @@
+{
+  "name": "arc-order-example",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "一个可直接运行的订单金额与回执模块，用于 ARC 开发整合验收。",
+  "exports": "./src/index.mjs",
+  "scripts": {"test": "node --test tests/*.test.mjs"}
+}

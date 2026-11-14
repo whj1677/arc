@@ -11,12 +11,17 @@ export class Store {
     fs.mkdirSync(directory, { recursive: true });
     this.db = new DatabaseSync(path.join(directory, 'arc.sqlite'));
     const version = (this.db.prepare('PRAGMA user_version').get() as any).user_version;
-    if (version > 1) { this.db.close(); throw new Error(`数据库版本 ${version} 高于本程序支持的 1，已保留原数据。`); }
+    if (version > 2) { this.db.close(); throw new Error(`数据库版本 ${version} 高于本程序支持的 2，已保留原数据。`); }
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
-    this.db.exec(`CREATE TABLE IF NOT EXISTS objects(kind TEXT NOT NULL,id TEXT NOT NULL,json TEXT NOT NULL CHECK(json_valid(json)),PRIMARY KEY(kind,id));
+    // The upgrade only adds version history. SQLite rolls back a failed migration;
+    // existing reading objects and committed WAL content are never rebuilt.
+    this.db.exec('BEGIN IMMEDIATE');
+    try { this.db.exec(`CREATE TABLE IF NOT EXISTS objects(kind TEXT NOT NULL,id TEXT NOT NULL,json TEXT NOT NULL CHECK(json_valid(json)),PRIMARY KEY(kind,id));
       CREATE TABLE IF NOT EXISTS events(run_id TEXT NOT NULL,event_id TEXT NOT NULL,sequence INTEGER NOT NULL,json TEXT NOT NULL,PRIMARY KEY(run_id,event_id));
       CREATE INDEX IF NOT EXISTS events_order ON events(run_id,sequence);
-      PRAGMA user_version=1;`);
+      CREATE TABLE IF NOT EXISTS engineering_versions(kind TEXT NOT NULL,id TEXT NOT NULL,version INTEGER NOT NULL,json TEXT NOT NULL CHECK(json_valid(json)),PRIMARY KEY(kind,id,version));
+      PRAGMA user_version=2;`); this.db.exec('COMMIT'); }
+    catch(error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
   }
   all<T = any>(kind: string): T[] { return this.db.prepare('SELECT json FROM objects WHERE kind=? ORDER BY rowid').all(kind).map((r: any) => JSON.parse(r.json)); }
   get<T = any>(kind: string, key: string): T {
@@ -26,6 +31,8 @@ export class Store {
   }
   maybe<T = any>(kind: string, key: string): T | null { try { return this.get(kind, key); } catch { return null; } }
   put(kind: string, key: string, value: unknown) { this.db.prepare('INSERT INTO objects VALUES (?,?,?) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json').run(kind, key, JSON.stringify(value)); }
+  putVersion(kind:string,key:string,version:number,value:unknown) { this.db.prepare('INSERT INTO engineering_versions VALUES(?,?,?,?)').run(kind,key,version,JSON.stringify(value)); this.put(kind,key,value); }
+  versions<T = any>(kind:string,key:string):T[] { return this.db.prepare('SELECT json FROM engineering_versions WHERE kind=? AND id=? ORDER BY version').all(kind,key).map((r:any)=>JSON.parse(r.json)); }
   transaction<T>(fn: () => T): T { this.db.exec('BEGIN IMMEDIATE'); try { const result = fn(); this.db.exec('COMMIT'); return result; } catch (e) { this.db.exec('ROLLBACK'); throw e; } }
   event(runId: string, eventId: string, sequence: number, value: unknown) {
     return this.db.prepare('INSERT OR IGNORE INTO events VALUES(?,?,?,?)').run(runId, eventId, sequence, JSON.stringify(value)).changes > 0;

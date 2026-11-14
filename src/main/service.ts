@@ -14,6 +14,8 @@ import {overviewDiscoveryQuestion} from './architecture-analysis';
 import {prepareOverview} from './overview-result';
 import {makeOverviewReviewPrompt,applyOverviewReview,parseOverviewReview,type OverviewReview} from './overview-review';
 import {makeOverviewResearchPrompt,applyOverviewResearch} from './overview-research';
+import {EngineeringService} from './engineering-service';
+import {DevelopmentService} from './development-service';
 export const terminal=new Set(['completed','failed','cancelled','blocked_external']);
 const oldOverviewQuestion='分析整个授权快照的工程全貌：主要职责与模块边界用 stage 节点，内部函数使用 parent_node_id 关联，目录/文件用途必须有依据。列出模块、外部依赖组件及使用位置；依赖使用 dependency，不能当作运行时调用。版本仅引用清单或锁文件。明确未分析范围、构建条件、缺失实现；不根据目录名猜职责。';
 const architectureOverviewQuestion='分析授权快照的系统架构，先说明系统由哪些实际组件组成、如何通信和存储数据。返回 architecture.node_ids 与 architecture.edge_ids，引用 nodes/edges 中的高层组件和连接；不预设一定有前端、后端或数据库。组件标签注明已证实的语言/技术，关系标签注明 HTTP/HTTPS、SQL、文件读写等有依据的协议或访问方式；未知写未知，不能把 SQLite 猜成 MySQL，也不能把库依赖当网络服务。内部模块用 parent_node_id 归属组件，支持点击组件再深入；模块目录用途、外部依赖、版本及每条关系均给出准确源码依据。架构关系不是调用时序，保留关键调用、输入输出与未分析范围。';
@@ -22,6 +24,8 @@ export const overviewQuestion=overviewDiscoveryQuestion;
 const text=(value:unknown,max=20000)=>{if(typeof value!=='string'||!value.trim()||value.length>max)throw new Error(`请输入 1–${max} 个字符`);return value.trim();};
 export class ArcService {
   readonly store:Store;
+  readonly engineering:EngineeringService;
+  readonly development:DevelopmentService;
   readonly active=new Map<string,ActiveProcess>();
   readonly indexing=new Map<string,AbortController>();
   readonly executing=new Map<string,Promise<void>>();
@@ -30,6 +34,8 @@ export class ArcService {
   private checkingCodex?:Promise<ProviderProfile[]>;
   constructor(readonly directory:string,readonly resources:string,readonly emit:(e:any)=>void=()=>{},private readonly codexRunner:typeof runCodex=runCodex) {
     this.store=new Store(directory);
+    this.engineering=new EngineeringService(this.store,()=>this.changed());
+    this.development=new DevelopmentService(this.engineering,this.store,resources,event=>this.emit(event));
     for(const run of this.store.all<Run>('run'))if(!terminal.has(run.status)&&!['unknown','waiting_agent'].includes(run.status)){run.status='unknown';run.error='Arc 上次退出前未记录终态；不会自动重发。请核查原会话，或明确新建关联重试。';this.store.put('run',run.binding.run_id,run);}
   }
   data():WorkspaceData {
@@ -39,13 +45,14 @@ export class ArcService {
   async openProject(rootPath:string,fictional=false,buildConfig='') {
     const real=await fs.realpath(rootPath);
     const exists=this.store.all<Project>('project').find(p=>p.root_path.toLowerCase()===real.toLowerCase()&&p.fictional===fictional);
-    if(exists){await this.checkFreshness(exists.project_id);return exists;}
+    if(exists){await this.checkFreshness(exists.project_id);if(!fictional)await this.engineering.connect(exists.project_id);return exists;}
     const projectId=id('project'),controller=new AbortController();this.indexing.set(projectId,controller);
     this.emit({type:'indexing',project_id:projectId,project_name:path.basename(real),root_path:real,count:0});
     try {
       const snapshot=await capture(real,projectId,this.directory,buildConfig,controller.signal,n=>this.emit({type:'indexing',project_id:projectId,project_name:path.basename(real),root_path:real,count:n}));
       const project:Project={project_id:projectId,name:path.basename(real),root_path:real,snapshot_id:snapshot.source_snapshot_id,fictional,build_config:buildConfig,created_at:now()};
       this.store.transaction(()=>{this.store.put('project',projectId,project);this.store.put('snapshot',snapshot.source_snapshot_id,snapshot);});
+      if(!fictional)await this.engineering.connect(projectId);
       this.changed();return project;
     }finally{this.indexing.delete(projectId);this.emit({type:'index_done',project_id:projectId});}
   }
@@ -539,6 +546,7 @@ export class ArcService {
   }
   async shutdown(){
     this.closing=true;
+    await this.development.shutdown();
     for(const controller of this.indexing.values())controller.abort();
     await Promise.allSettled([...this.executing.keys()].map(k=>this.cancel(k)));
     // Wait for real terminal events before the SQLite connection is closed.
