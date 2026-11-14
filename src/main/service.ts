@@ -356,6 +356,7 @@ export class ArcService {
       else{run.status='cancelled';run.ended_at=now();run.error='已确认本地进程退出或 ACP 取消终态；保留此前事件及原始部分。';}
       this.store.put('run',runId,run);this.changed();return;
     }
+    if(run.status==='unknown')throw Object.assign(Error('分析停止状态未确认，迟到结果不发布'),{remoteUnknown:true});
     const protocolError='protocol_error'in result?result.protocol_error:undefined;
     if(result.code!==0||protocolError)throw new Error(`${initial.provider_id} 未成功完成（exit=${result.code}）：${protocolError||result.stderr.slice(-2500)}`);
     let value:unknown;

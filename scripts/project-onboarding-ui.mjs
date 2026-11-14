@@ -6,9 +6,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const root=path.resolve('.'),scratch=path.resolve('../.test-data/project-onboarding');
+const freshProject=process.env.ARC_VERIFY_NEW_PROJECT==='1';
+const root=path.resolve('.'),scratch=path.resolve(freshProject?'../.test-data/first-analysis-current':'../.test-data/project-onboarding');
 await fs.mkdir(scratch,{recursive:true});
 const env={...process.env,ARC_DATA_DIR:path.join(scratch,'data')};delete env.ELECTRON_RUN_AS_NODE;
+if(freshProject)assert.equal(await fs.access(path.join(env.ARC_DATA_DIR,'arc.sqlite')).then(()=>true,()=>false),false,'Fresh-project acceptance requires an empty first-analysis data directory; it never reuses saved results.');
 let app,page;const errors=[];
 const read=()=>page.evaluate(()=>window.arc.invoke('data'));
 async function launch(){
@@ -20,16 +22,19 @@ async function openProject(button,directory=root){
   await page.getByRole('button',{name:'打开工程',exact:true}).click();
   await page.getByLabel('本地工程绝对路径',{exact:true}).fill(directory);
   await page.screenshot({path:path.join(scratch,'open.png')});
+  const submittedAt=Date.now();
   if(button==='打开并分析')await page.getByLabel('本地工程绝对路径',{exact:true}).press('Enter');
   else await page.getByRole('button',{name:button,exact:true}).click();
   await page.locator('dialog').waitFor({state:'hidden',timeout:60000});
   await page.locator('.workspace').waitFor();
+  return submittedAt;
 }
-async function waitRun(runId,timeout=900000){
+async function waitRun(runId,timeout=900000,onPoll=async()=>{}){
   const start=Date.now();let logged=0;
   while(Date.now()-start<timeout){
     const data=await read(),run=data.runs.find(r=>r.binding.run_id===runId);
     assert.ok(run);
+    await onPoll(run,data);
     if(['completed','failed','cancelled','unknown','blocked_external'].includes(run.status)){
       assert.equal(run.status,'completed',run.error||run.status);return data;
     }
@@ -38,6 +43,83 @@ async function waitRun(runId,timeout=900000){
   }
   await page.evaluate(id=>window.arc.invoke('run_cancel',{run_id:id}),runId);
   throw Error(`Real onboarding acceptance exceeded ${timeout/60000} minutes; task stopped and diagnostics retained.`);
+}
+async function firstAnalysisJourney(){
+  const empty=await read();
+  assert.equal(empty.projects.length,0);assert.equal(empty.runs.length,0);assert.equal(empty.explanations.length,0);
+  const submittedAt=await openProject('打开并分析');
+  await page.waitForFunction(async()=>(await window.arc.invoke('data')).runs.length===1);
+  let data=await read(),run=data.runs[0];
+  assert.equal(run.provider_id,'codex');assert.equal(run.origin,undefined);assert.equal(run.overview_from_result_id,undefined);
+  assert.equal(run.overview_format,'overview-1');
+  const runId=run.binding.run_id,observedStages=new Set();
+  data=await waitRun(runId,310000,async(current,progress)=>{
+    if(current.status!=='completed')assert.equal(progress.explanations.length,0,'Candidates must remain unpublished during generation, research and recheck.');
+    const events=await page.evaluate(id=>window.arc.invoke('run_events',{run_id:id}),runId);
+    const stage=events.filter(e=>e.type==='local.stage').at(-1)?.stage;
+    if(stage&&!observedStages.has(stage)){
+      observedStages.add(stage);console.log(`First analysis stage: ${stage}, ${((Date.now()-submittedAt)/1000).toFixed(1)}s since open`);
+      if(['overview_discovery','overview_review','overview_research','overview_recheck'].includes(stage)){
+        await page.screenshot({path:path.join(scratch,`${stage}.png`)});
+      }
+    }
+  });
+  run=data.runs.find(r=>r.binding.run_id===runId);
+  assert.equal(data.runs.length,1,'Opening must automatically finish all phases inside the original task.');
+  assert.equal(data.explanations.length,1,'Only the fully checked first result may be published.');
+  const explanation=data.explanations[0],result=explanation.result;
+  assert.equal(result.binding.run_id,runId);assert.equal(result.binding.source_snapshot_id,run.binding.source_snapshot_id);
+  const directory=path.join(env.ARC_DATA_DIR,'runs',runId);
+  const json=async file=>JSON.parse(await fs.readFile(path.join(directory,file),'utf8'));
+  const initial=await json('review/result.json'),final=await json('overview-review.json');
+  const rejected=initial.relations.filter(r=>r.verdict!=='supported');
+  const events=await page.evaluate(id=>window.arc.invoke('run_events',{run_id:id}),runId);
+  const stages=['overview_review','overview_research','overview_recheck','overview_reviewed'].map(stage=>({stage,at:events.find(e=>e.type==='local.stage'&&e.stage===stage)?.received_at}));
+  const elapsedSeconds=(Date.parse(run.ended_at)-Date.parse(run.created_at))/1000;
+  const totalSeconds=(Date.parse(run.ended_at)-submittedAt)/1000;
+  console.log(JSON.stringify({run:runId,result:explanation.result_id,snapshot:run.binding.source_snapshot_id,totalSeconds,elapsedSeconds,rejected:rejected.map(r=>({edge:r.edge_id,reason:r.reason})),stages},null,2));
+  assert.ok(rejected.length,'This fresh real run found no relation doubts: first analysis passed, but the automatic research branch was not exercised. Do not claim that branch passed.');
+  const research=await json('research/result.json'),recheck=await json('recheck/result.json');
+  for(const reply of [initial,research,recheck,final]){
+    assert.equal(reply.run_id,runId);assert.equal(reply.source_snapshot_id,run.binding.source_snapshot_id);
+  }
+  assert.deepEqual(research.relations.map(r=>r.edge_id).sort(),rejected.map(r=>r.edge_id).sort());
+  const resolved=research.relations.filter(r=>r.outcome==='resolved');
+  assert.ok(resolved.length,'At least one genuinely doubtful relation must be investigated and independently rechecked.');
+  assert.deepEqual(recheck.relations.map(r=>r.edge_id).sort(),resolved.map(r=>r.edge_id).sort());
+  const reads=events.filter(e=>e.phase==='overview_research'&&e.type==='item.completed'&&e.item?.type==='mcp_tool_call'&&e.item.server==='arc_frozen_source'&&e.item.tool==='arc_read_source'&&e.item.status==='completed'&&!e.item.error&&!e.item.result?.isError);
+  assert.ok(reads.length,'Automatic investigation must actually read frozen source, not reuse a saved explanation.');
+  assert.ok(stages.every(s=>s.at));
+  assert.ok(result.edges.every(e=>final.relations.some(r=>r.edge_id===e.edge_id&&r.verdict==='supported')));
+  assert.ok(result.architecture?.node_ids.length&&result.feature_catalog?.groups.length);
+  assert.ok(totalSeconds<240,`Opening through automatic research, recheck and saving took ${totalSeconds}s; target is below 240s.`);
+  const recovered=recheck.relations.filter(r=>r.verdict==='supported').map(r=>r.edge_id);
+  assert.ok(recovered.length,'A newly checked relation must actually reach the displayed result.');
+  assert.ok(recovered.every(id=>result.edges.some(e=>e.edge_id===id)));
+  const edge=result.edges.find(e=>e.edge_id===recovered[0]);
+  const citation=result.evidence.find(e=>edge.evidence_ids.includes(e.evidence_id));
+  assert.ok(research.evidence.some(e=>e.id===citation.evidence_id),'The displayed citation must be newly read during automatic research.');
+  // No clicks, retries, research button or external conversation between opening and completion.
+  await page.locator('.architecture-node').first().waitFor();
+  const relation=page.locator(`[data-edge-id="${recovered[0]}"]`);
+  await relation.focus();await relation.press('Enter');
+  await page.locator('.supporting-evidence summary').click();await page.locator('.supporting-evidence .evidence-button').first().click();
+  const source=page.getByLabel('所选来源依据',{exact:true});await source.locator('pre').waitFor();
+  const sourceText=await source.innerText();
+  for(const text of [citation.path,citation.source_snapshot_id,citation.content_sha256,`第 ${citation.line_start}–${citation.line_end} 行`])assert.ok(sourceText.includes(text),`Citation must show ${text}`);
+  const frozen=await fs.readFile(path.join(env.ARC_DATA_DIR,'snapshots',citation.source_snapshot_id,citation.path),'utf8');
+  const highlighted=await source.locator('pre .highlight').evaluateAll(lines=>lines.map(line=>[...line.childNodes].filter(node=>node.nodeType===Node.TEXT_NODE).map(node=>node.textContent).join('')).join(''));
+  assert.equal(highlighted,frozen.split(/\r\n|\n|\r/).slice(citation.line_start-1,citation.line_end).map(line=>line+'\n').join(''));
+  await page.screenshot({path:path.join(scratch,'result.png')});
+  await page.locator('footer').getByText('阅读位置已保存',{exact:false}).waitFor();
+  await app.close();await launch();
+  await page.locator(`[data-edge-id="${recovered[0]}"]`).waitFor();
+  const restored=await read();assert.equal(restored.runs.length,1);assert.equal(restored.explanations[0].result_id,explanation.result_id);
+  assert.deepEqual(restored.explanations[0].result.edges.find(e=>e.edge_id===edge.edge_id),edge);
+  assert.deepEqual(restored.explanations[0].result.evidence.find(e=>e.evidence_id===citation.evidence_id),citation);
+  assert.equal(errors.length,0,errors.join('\n'));
+  const times=[Date.parse(run.created_at),...stages.map(s=>Date.parse(s.at)),Date.parse(run.ended_at)];
+  console.log(JSON.stringify({passed:true,newProject:true,newAnalysis:true,run:runId,result:explanation.result_id,snapshot:run.binding.source_snapshot_id,totalSeconds,elapsedSeconds,phaseSeconds:Object.fromEntries(['generation','initialReview','research','recheck','save'].map((name,i)=>[name,(times[i+1]-times[i])/1000])),actualResearchReads:reads.length,researchedRelations:rejected.length,recoveredRelations:recovered.length,remainingRelations:final.relations.filter(r=>r.verdict!=='supported').length,checks:['empty data, open complete current repository','one direct Codex task automatically investigates and rechecks genuine doubts','no intermediate user action or external Agent','only source-checked relations displayed','new relation evidence opens','restart restores first result without another task']},null,2));
 }
 async function researchJourney(){
   await openProject('仅打开');
@@ -97,7 +179,8 @@ async function researchJourney(){
 }
 try{
   await launch();
-  if(process.env.ARC_VERIFY_RESEARCH==='1')await researchJourney();
+  if(freshProject)await firstAnalysisJourney();
+  else if(process.env.ARC_VERIFY_RESEARCH==='1')await researchJourney();
   else{
 
   const initialRuns=new Set((await read()).runs.map(run=>run.binding.run_id));

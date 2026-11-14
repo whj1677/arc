@@ -97,6 +97,25 @@ test('cancelling during review preparation rejects its late startup and never pu
   assert.equal(service.data().runs.length,1);assert.equal(service.data().explanations.length,0);
 });
 
+test('late generation success cannot revive a run whose stop could not be confirmed',async t=>{
+  const entered=signal(),release=signal();let calls=0;
+  const runner:typeof runCodex=async options=>{
+    calls++;assert.equal(options.phase,undefined,'an unconfirmed stop must not dispatch review or research');
+    assert.equal(options.shouldStart?.(),true);options.started(active(async()=>{throw Error('cannot confirm process stop');}));
+    entered.resolve();await release.promise;
+    return phaseReply(options,overview);
+  };
+  const {service,scenario}=await fixture(t,runner),run=await service.startRun(scenario.scenario_id,'codex','generation-stop-unknown');
+  try{
+    await entered.promise;await service.cancel(run.binding.run_id);
+    assert.equal(service.store.get<Run>('run',run.binding.run_id).status,'unknown');
+  }finally{release.resolve();await Promise.all(service.executing.values());}
+  const stopped=service.store.get<Run>('run',run.binding.run_id);
+  assert.equal(stopped.status,'unknown');assert.match(stopped.error!,/停止状态未确认，迟到结果不发布/);
+  assert.equal(calls,1);assert.equal(service.active.size,0);assert.equal(service.data().explanations.length,0);
+  assert.equal(await fs.readFile(run.output_path,'utf8'),JSON.stringify(overview),'late raw output remains available for diagnosis');
+});
+
 test('failed or incomplete review cannot be bypassed through direct acceptance or raw revalidation',async t=>{
   for(const failure of ['runner-failure','missing-relation'] as const)await t.test(failure,async t=>{
     let calls=0;
