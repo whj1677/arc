@@ -83,7 +83,7 @@ export async function restoreEngineeringProject(store:Store,filePath:string) {
   const snapshotIds=new Set(snapshotRows.map(r=>r.id));
   for(const row of [...bundle.objects,...bundle.versions]){
     const v=row.value;if(row.kind==='engineering_context')for(const source of v.sources)if(!snapshotIds.has(source.snapshot_id))throw Error('上下文来源快照缺失');
-    if(row.kind==='engineering_task')for(const state of [v.baseline,v.end_state,v.rebind_source_snapshot_id?{snapshot_id:v.rebind_source_snapshot_id}:null,...v.verification.map((e:any)=>e.code_state)].filter(Boolean))if(!snapshotIds.has(state.snapshot_id))throw Error('任务代码状态快照缺失');
+    if(row.kind==='engineering_task')for(const state of [v.baseline,v.end_state,v.diff_baseline,v.rebind_source_snapshot_id?{snapshot_id:v.rebind_source_snapshot_id}:null,...v.verification.map((e:any)=>e.code_state)].filter(Boolean))if(!snapshotIds.has(state.snapshot_id))throw Error('任务代码状态快照缺失');
     if(row.kind==='development_attempt'&&v.log_path&&!fileNames.has(v.log_path)||row.kind==='engineering_task'&&v.verification.some((e:any)=>e.log_path&&!fileNames.has(e.log_path)))throw Error('导出缺少被引用日志');
   }
   for(const row of bundle.versions)if(!objectKeys.has(`${row.kind}\0${row.id}`)||!Number.isSafeInteger(row.version)||row.version<1||row.value.version!==row.version)throw Error('历史版本关联无效');

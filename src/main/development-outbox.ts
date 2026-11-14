@@ -2,21 +2,48 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {redact} from './providers';
+import type {CompletionBinding} from '../engineering';
+import {bindWorkspaceCompletion,safeFile} from './snapshot';
 
 export const deferredDevelopmentTools=['arc_update_development','arc_finish_development'];
-export interface PendingDevelopmentWrite {name:string;args:any;client:any;created_at:string;error?:string}
+type DevelopmentWrite={name:string;args:any;client:any;completion_binding?:CompletionBinding|null};
+export interface PendingDevelopmentWrite extends DevelopmentWrite {created_at:string;error?:string}
 const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
 export function outboxDirectory(connectionFile:string){return path.join(path.dirname(connectionFile),'development-outbox');}
-export async function queueDevelopmentWrite(connectionFile:string,request:Omit<PendingDevelopmentWrite,'created_at'>){
+function completionFile(connectionFile:string,taskId:string){
+  return path.join(path.dirname(connectionFile),'development-workspaces',digest(taskId)+'.json');
+}
+export async function rememberDevelopmentWorkspace(connectionFile:string,taskId:string,root:string){
+  const file=completionFile(connectionFile,taskId);
+  await fs.mkdir(path.dirname(file),{recursive:true});
+  const temporary=file+'.'+randomUUID()+'.tmp';
+  try{await fs.writeFile(temporary,JSON.stringify(root),{flag:'wx'});await fs.rename(temporary,file);}
+  finally{await fs.rm(temporary,{force:true});}
+}
+async function completionBinding(connectionFile:string,taskId:string){
+  const file=completionFile(connectionFile,taskId),directory=path.dirname(connectionFile);
+  try{
+    const workspace=JSON.parse(await fs.readFile(await safeFile(directory,path.relative(directory,file).split(path.sep).join('/')),'utf8'));
+    return typeof workspace==='string'&&path.isAbsolute(workspace)?await bindWorkspaceCompletion(workspace):null;
+  }catch{return null;}
+}
+export async function queueDevelopmentWrite(connectionFile:string,request:DevelopmentWrite){
   if(!deferredDevelopmentTools.includes(request.name)||typeof request.args?.task_id!=='string'||typeof request.args?.submission_key!=='string'||!Number.isInteger(request.args.expected_version))throw Error('开发回填缺少任务、版本或幂等提交标识，无法保存待同步记录');
   const directory=outboxDirectory(connectionFile);await fs.mkdir(directory,{recursive:true});
   const file=path.join(directory,digest(request.args.task_id+'\n'+request.args.submission_key)+'.json');
-  const clean=JSON.parse(redact(JSON.stringify(request)));
-  try{const previous=JSON.parse(await fs.readFile(file,'utf8'));if(JSON.stringify({name:previous.name,args:previous.args})!==JSON.stringify({name:clean.name,args:clean.args}))throw Error('相同提交标识对应不同待同步内容');return file;}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
-  const temporary=file+'.'+randomUUID()+'.tmp';
-  await fs.writeFile(temporary,JSON.stringify({...clean,created_at:new Date().toISOString()}),{flag:'wx'});
-  try{await fs.link(temporary,file);}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;const previous=JSON.parse(await fs.readFile(file,'utf8'));if(JSON.stringify({name:previous.name,args:previous.args})!==JSON.stringify({name:clean.name,args:clean.args}))throw Error('相同提交标识对应不同待同步内容');}
-  finally{await fs.rm(temporary,{force:true});}return file;
+  const clean=JSON.parse(redact(JSON.stringify(request))) as DevelopmentWrite;
+  const readExisting=async()=>{
+    const previous=JSON.parse(await fs.readFile(file,'utf8')) as PendingDevelopmentWrite;
+    if(previous.name!==clean.name||JSON.stringify(previous.args)!==JSON.stringify(clean.args))throw Error('相同提交标识对应不同待同步内容');
+    return previous;
+  };
+  try{return {file,value:await readExisting()};}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+  if(request.name==='arc_finish_development')clean.completion_binding=await completionBinding(connectionFile,request.args.task_id);
+  const value:PendingDevelopmentWrite={...clean,created_at:new Date().toISOString()},temporary=file+'.'+randomUUID()+'.tmp';
+  await fs.writeFile(temporary,JSON.stringify(value),{flag:'wx'});
+  try{await fs.link(temporary,file);return {file,value};}
+  catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;return {file,value:await readExisting()};}
+  finally{await fs.rm(temporary,{force:true});}
 }
 export async function pendingDevelopmentWrites(connectionFile:string){
   const directory=outboxDirectory(connectionFile);let names:string[];
@@ -35,7 +62,7 @@ export async function flushDevelopmentWrites(connectionFile:string,send:(request
 }
 
 export class ArcConnectionUnavailable extends Error {}
-export async function sendArcTool(connectionFile:string,request:{name:string;args:any;client:any}){
+export async function sendArcTool(connectionFile:string,request:DevelopmentWrite){
   let connection:any;
   try{connection=JSON.parse(await fs.readFile(connectionFile,'utf8'));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')throw new ArcConnectionUnavailable('ARC 未运行；连接文件暂不可用');throw error;}
   const url=new URL(connection.url);
@@ -46,11 +73,11 @@ export async function sendArcTool(connectionFile:string,request:{name:string;arg
   if(!response.ok||result.error)throw Error(result.error||'Arc 请求失败');
   return result.value;
 }
-export async function callArcWithOutbox(connectionFile:string,request:{name:string;args:any;client:any}){
+export async function callArcWithOutbox(connectionFile:string,request:DevelopmentWrite){
   if(!deferredDevelopmentTools.includes(request.name))return sendArcTool(connectionFile,request);
   // Persist before sending: a lost response can be replayed with exactly the
   // same submission key after process or app restart.
-  const file=await queueDevelopmentWrite(connectionFile,request);
-  try{const value=await sendArcTool(connectionFile,request);await fs.rm(file,{force:true});return value;}
+  const {file,value:queued}=await queueDevelopmentWrite(connectionFile,request);
+  try{const value=await sendArcTool(connectionFile,queued);await fs.rm(file,{force:true});return value;}
   catch(error){if(error instanceof ArcConnectionUnavailable)return {task_id:request.args.task_id,submission_key:request.args.submission_key,saved:'pending_sync',message:'开发记录已保存在本机待同步队列，尚未写入 ARC；重新打开 ARC 后会重试。'};throw error;}
 }

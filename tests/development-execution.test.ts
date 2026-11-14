@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import http from 'node:http';
+import {execFileSync} from 'node:child_process';
 import {developmentArguments,developmentPrompt,developmentSandboxArguments,developmentSandboxError,supportsDevelopmentSandboxProbe} from '../src/main/development-runner';
 import {callArcWithOutbox,pendingDevelopmentWrites,flushDevelopmentWrites,queueDevelopmentWrite} from '../src/main/development-outbox';
 import {ArcService} from '../src/main/service';
@@ -20,6 +21,7 @@ test('Windows sandbox preflight preserves managed permissions and reports identi
   assert.ok(args.includes('--include-managed-config'));assert.equal(args[args.indexOf('--permission-profile')+1],':workspace');assert.equal(args[args.indexOf('--cd')+1],'C:\\工作 区');assert.ok(!args.join(' ').includes('danger'));
   const error=developmentSandboxError({stderr:'registered Core process has no package identity'});assert.equal(error.environmentBlocked,true);assert.match(error.message,/尚未调用模型/);assert.match(error.message,/不会移除身份检查/);
   assert.match(developmentSandboxError({killed:true,message:'Command failed'}).message,/预检超时/);
+  assert.match(developmentSandboxError({stderr:'CreateRestrictedToken failed: 87'}).message,/CreateRestrictedToken 87/);
   assert.equal(supportsDevelopmentSandboxProbe('--include-managed-config --permission-profile --cd'),true);assert.equal(supportsDevelopmentSandboxProbe('Usage: codex sandbox windows'),false);
 });
 test('offline completion persists across clients, retries idempotently, and never reports sync success',async()=>{
@@ -58,10 +60,16 @@ test('external development scopes real workspace, preserves reading path and rec
     await assert.rejects(bridge.call('arc_engineering_context',{workspace_path:directory}),/绑定|归属/);
     const task=await bridge.call('arc_begin_development',{workspace_path:source,goal:'change value',submission_key:'begin'});
     assert.equal((await bridge.call('arc_begin_development',{workspace_path:source,goal:'change value',submission_key:'begin'})).task_id,task.task_id);
+    await assert.rejects(bridge.call('arc_begin_development',{workspace_path:source,goal:'overlap',submission_key:'different'}),/已有开发任务/);
+    await assert.rejects(service.development.start({project_id:project.project_id,goal:'overlap from ARC',submission_key:'arc-other'}),/已有开发任务/);
+    const otherTask=await service.engineering.createTask({project_id:project.project_id,goal:'overlap in shared service',submission_key:'shared-other'});
+    assert.throws(()=>service.engineering.startAttempt(otherTask.task_id,{provider_id:'codex',model:'test',origin:'arc'}),/已有开发任务/);
     const second=path.join(directory,'second');await fs.mkdir(second);await fs.writeFile(path.join(second,'b.ts'),'export const b=1;');
     const secondProject=await service.openProject(second);
     await assert.rejects(bridge.call('arc_engineering_context',{workspace_path:second}),/授权/);
     await bridge.enable(secondProject.project_id);
+    const independent=await bridge.call('arc_begin_development',{workspace_path:second,goal:'different workspace',submission_key:'second'});
+    assert.equal(independent.status,'running');
     assert.equal((await bridge.call('arc_engineering_context',{workspace_path:source})).project_id,project.project_id,'changing the selected project cannot rebind a connected session');
     await fs.writeFile(path.join(source,'main.ts'),'export const value=2;\n');
     const after=await bridge.call('arc_engineering_context',{workspace_path:source});
@@ -70,11 +78,14 @@ test('external development scopes real workspace, preserves reading path and rec
     assert.equal(saved.changes[0].path,'main.ts');assert.equal(saved.verification[0].origin,'self_reported');assert.equal(saved.verification_status,'partial');
     assert.deepEqual(await bridge.call('arc_finish_development',finish),saved);
     const repeated=await bridge.call('arc_begin_development',{workspace_path:source,goal:'change value',submission_key:'begin'});assert.equal(repeated.status,'completed');assert.equal(repeated.attempt_ids.length,1,'retrying a previously completed begin cannot dispatch a new attempt');
+    const continued=await bridge.call('arc_begin_development',{workspace_path:source,goal:'continue',submission_key:'continue',task_id:task.task_id});
+    assert.equal(continued.task_id,task.task_id);assert.equal(continued.attempt_ids.length,2);
     assert.ok(bridgeTools.some(t=>t.name==='arc_read_source'));assert.ok(bridgeTools.some(t=>t.name==='arc_begin_analysis'));
   }finally{await bridge.close();await service.shutdown();service.store.close();await fs.rm(directory,{recursive:true,force:true});}
 });
-test('an external task keeps its version across ARC restart and queued completion is saved automatically',async()=>{
+for(const changedAfterQueue of [false,true])test(`queued completion across ARC restart (workspace changed after queue: ${changedAfterQueue})`,async()=>{
   const directory=await temporary(),source=path.join(directory,'source'),data=path.join(directory,'data');await fs.mkdir(source);await fs.writeFile(path.join(source,'main.ts'),'export const value=1;\n');
+  execFileSync('git',['-C',source,'init'],{stdio:'ignore',windowsHide:true});
   let service=new ArcService(data,path.resolve('.')),bridge=new ArcMcpBridge(service,path.resolve('.'));
   try{
     const project=await service.openProject(source);await bridge.start();await bridge.enable(project.project_id);
@@ -83,7 +94,8 @@ test('an external task keeps its version across ARC restart and queued completio
     await fs.writeFile(path.join(source,'main.ts'),'export const value=2;\n');
     const queued=await callArcWithOutbox(connectionFile,{name:'arc_finish_development',args:{task_id:task.task_id,expected_version:task.version,submission_key:'offline-finish',status:'completed',summary:'外部会话完成；验证未执行',verification:[]},client:{configured_provider:'codex'}});
     assert.equal(queued.saved,'pending_sync');
+    if(changedAfterQueue)await fs.writeFile(path.join(source,'later.bin'),Buffer.from([0,42]));
     service=new ArcService(data,path.resolve('.'));bridge=new ArcMcpBridge(service,path.resolve('.'));await bridge.start();
-    const saved=service.engineering.task(task.task_id);assert.equal(saved.status,'completed');assert.equal(saved.changes[0].path,'main.ts');assert.equal(saved.verification_status,'not_run');assert.equal((await bridge.pendingWrites()).length,0);
+    const saved=service.engineering.task(task.task_id);assert.equal(saved.status,'completed');assert.deepEqual(saved.changes.map(c=>c.path),changedAfterQueue?[]:['main.ts']);assert.equal(saved.changes_status,changedAfterQueue?'needs_review':undefined);assert.equal(!!saved.end_state,!changedAfterQueue);assert.equal(saved.verification_status,'not_run');assert.equal((await bridge.pendingWrites()).length,0);
   }finally{await bridge.close();await service.shutdown();service.store.close();await fs.rm(directory,{recursive:true,force:true});}
 });

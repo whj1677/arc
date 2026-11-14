@@ -108,7 +108,7 @@ test('bundled checker automatically reads bound ARC task, rejects stale code and
   await git('-c', 'user.name=ARC test', '-c', 'user.email=arc@example.invalid', 'commit', '-m', 'fixture');
   const head = (await git('rev-parse', 'HEAD')).stdout.trim();
   await fs.writeFile(path.join(root, 'main.py'), 'value = 2\n');
-  const state = { head, fingerprint: 'frozen-test-state' };
+  const state = { head, fingerprint: 'frozen-test-state',workspace_fingerprint:'test-workspace-bytes' };
   const task = { task_id: 'task-test', goal: 'Update value', summary: 'Updated', workspace_path: root, saved: 'saved', status: 'completed', updated_at: '2026-01-01T00:00:00Z', baseline: state, end_state: state,
     changes: [{path:'main.py', before_sha256:createHash('sha256').update('value = 1\n').digest('hex'), after_sha256:createHash('sha256').update('value = 2\n').digest('hex')}],
     verification: [{command:'inspection', cwd:root, outcome:'passed', exit_code:0, origin:'self_reported', code_state:state}] };
@@ -117,14 +117,14 @@ test('bundled checker automatically reads bound ARC task, rejects stale code and
     if (request.headers.authorization !== 'Bearer fixture-token') { response.writeHead(403); response.end(); return; }
     const chunks: Buffer[]=[]; for await (const chunk of request) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString()); requests.push(body.name);
-    const value = body.name === 'arc_engineering_context' ? {recent_tasks:[task]} : task;
+    const value = body.name === 'arc_engineering_context' ? {workspace:{root_path:root},code_state:state,recent_tasks:[{task_id:task.task_id,updated_at:task.updated_at}]} : task;
     response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({value}));
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
   const port = (server.address() as any).port;
   await fs.writeFile(connectionFile, JSON.stringify({url:`http://127.0.0.1:${port}/tool`, token:'fixture-token'}));
-  const run = () => exec('python', ['-B','check_ai_context.py','--root',root,'--task','task-test'], {cwd:root, windowsHide:true,timeout:20000});
+  const run = () => exec('python', ['-B','check_ai_context.py','--root',root], {cwd:root, windowsHide:true,timeout:20000});
   assert.match((await run()).stdout, /ARC_RECORD_OK/);
   assert.deepEqual(requests, ['arc_engineering_context','arc_development_task']);
   await fs.writeFile(path.join(root, 'main.py'), 'value = 3\n');
@@ -163,12 +163,21 @@ test('bundled checker verifies a real ARC bridge task and fails clearly after di
     const command = 'python -B -c "import runpy; assert runpy.run_path(\'main.py\')[\'value\'] == 2"';
     await exec('python', ['-B','-c',"import runpy; assert runpy.run_path('main.py')['value'] == 2"], {cwd:root,windowsHide:true});
     const context = await bridge.call('arc_engineering_context', {workspace_path:root});
-    const saved = await bridge.call('arc_finish_development', {task_id:task.task_id,expected_version:task.version,submission_key:'actual-bridge-finish',status:'completed',summary:'Updated main.py; Python assertion passed',verification:[{
-      evidence_id:'actual-python-assertion',command,cwd:root,outcome:'passed',exit_code:0,origin:'self_reported',code_state:context.code_state,created_at:new Date().toISOString()
+    const logPath = `logs/${task.task_id}/python.log`;
+    const logFile = path.join(service.directory,logPath);
+    await fs.mkdir(path.dirname(logFile),{recursive:true});
+    await fs.writeFile(logFile,command+'\nexit 0\n');
+    // Bind the real local command output through ARC's observed-evidence path.
+    const saved = await service.engineering.finishTask({task_id:task.task_id,expected_version:task.version,submission_key:'actual-bridge-finish',status:'completed',summary:'Updated main.py; Python assertion passed',verification:[{
+      evidence_id:'actual-python-assertion',command,cwd:root,outcome:'passed',exit_code:0,origin:'observed',log_path:logPath,code_state:context.code_state,created_at:new Date().toISOString()
     }]});
     assert.equal(saved.status, 'completed');
-    const run = () => exec('python', ['-B','scripts/check_ai_context.py','--root',root,'--task',task.task_id], {cwd:root,windowsHide:true,timeout:20000});
-    assert.match((await run()).stdout, /ARC_RECORD_OK/);
+    const run = (...args:string[]) => exec('python', ['-B','scripts/check_ai_context.py','--root',root,...args], {cwd:root,windowsHide:true,timeout:20000});
+    assert.match((await run()).stdout, /ARC_RECORD_OK.*self_reported=0/);
+    assert.match((await run('--task',task.task_id)).stdout, /ARC_RECORD_OK.*self_reported=0/);
+    await fs.rename(logFile,logFile+'.missing');
+    await assert.rejects(run('--task',task.task_id),(error:any)=>error.code===2&&/execution log is missing/.test(error.stdout));
+    await fs.rename(logFile+'.missing',logFile);
     await bridge.close(); bridgeClosed = true;
     await assert.rejects(run(), (error:any) => error.code === 2 && /ARC_RECORD_FAILED/.test(error.stdout) && !/ARC_RECORD_OK/.test(error.stdout));
     const adapter = await exec('python', ['-B','scripts/upgrade_project_rules.py','--target',root,'--mode','ensure'], {cwd:root,windowsHide:true});

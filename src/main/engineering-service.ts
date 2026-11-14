@@ -6,7 +6,7 @@ import type {Project,Snapshot,Explanation} from '../shared';
 import {engineeringSectionCategories,type SaveEngineeringEntry,type EngineeringSectionCategory} from '../engineering';
 import type {CodeState,WorkspaceBinding,ContextEntry,ContextSource,EngineeringContext,EngineeringAnalysis,ContextRequest,EngineeringTask,CreateEngineeringTask,UpdateEngineeringTask,FinishEngineeringTask,DevelopmentAttempt,VerificationEvidence} from '../engineering';
 import {Store,id,now} from './store';
-import {capture,freshness,readSource,sha,relativePath,safeFile} from './snapshot';
+import {capture,freshness,readSource,sha,relativePath,safeFile,workspaceFiles} from './snapshot';
 import {exportEngineeringProject,restoreEngineeringProject} from './engineering-transfer';
 import {scanAecLegacy,type AecScan,type AecLegacyDocument} from './aec-migration';
 
@@ -14,6 +14,12 @@ const exec=promisify(execFile), workspaceKind='engineering_workspace', contextKi
 const requireText=(v:unknown,max=20000)=>{if(typeof v!=='string'||!v.trim()||v.length>max)throw Error(`请输入 1–${max} 个字符`);return v.trim();};
 const samePath=(a:string,b:string)=>process.platform==='win32'?path.resolve(a).toLowerCase()===path.resolve(b).toLowerCase():path.resolve(a)===path.resolve(b);
 async function git(root:string,args:string[]) {return (await exec('git',['-C',root,...args],{windowsHide:true,timeout:10000,maxBuffer:16*1024*1024})).stdout.trim();}
+function stateFiles(snapshot:Snapshot,state?:Pick<CodeState,'assets'>) {
+  return new Map([...snapshot.files.map(f=>[f.path,f.content_sha256] as const),...(state?.assets??[]).map(f=>[f.path,f.sha256] as const)]);
+}
+export function sameVerificationState(a:CodeState,b:CodeState) {
+  return !!a.workspace_fingerprint&&a.workspace_fingerprint===b.workspace_fingerprint&&a.head===b.head&&a.branch===b.branch&&a.git_common_dir===b.git_common_dir;
+}
 // Explicit document names only; README/purpose is not a completed plan.
 export function engineeringDocumentCategory(file:string):EngineeringSectionCategory|undefined {
   const name=path.posix.basename(file).replace(/\.(?:md|txt|json)$/i,'').toLowerCase().replace(/[_ ]/g,'-');
@@ -69,8 +75,9 @@ export class EngineeringService {
     const cached=this.store.maybe<CodeState>('engineering_state',workspace.workspace_id);
     let snapshot=cached?this.store.get<Snapshot>('snapshot',cached.snapshot_id):this.store.get<Snapshot>('snapshot',project.snapshot_id);
     if(!samePath(snapshot.root_path,workspace.root_path)||(await freshness(snapshot)).length){snapshot=await capture(workspace.root_path,projectId,this.store.directory,project.build_config);this.store.put('snapshot',snapshot.source_snapshot_id,snapshot);}
+    const identity=await workspaceFiles(workspace.root_path,snapshot);
     if(common){const after=await git(workspace.root_path,['rev-parse','HEAD']).catch(()=>null),afterBranch=await git(workspace.root_path,['symbolic-ref','--short','-q','HEAD']).catch(()=>null);if(after!==head||afterBranch!==branch)throw Error('采集过程中分支或 HEAD 变化，请重试');}
-    const state:CodeState={snapshot_id:snapshot.source_snapshot_id,fingerprint:snapshot.fingerprint,head,branch,git_common_dir:common,dirty,captured_at:now()};
+    const state:CodeState={snapshot_id:snapshot.source_snapshot_id,fingerprint:snapshot.fingerprint,head,branch,git_common_dir:common,dirty,captured_at:now(),workspace_fingerprint:identity.fingerprint,assets:identity.assets};
     const currentWorkspace=this.store.get<WorkspaceBinding>(workspaceKind,workspace.workspace_id);if(currentWorkspace.status!=='bound'||!samePath(currentWorkspace.root_path,workspace.root_path))throw Error('采集期间工作区已重新绑定，请重新读取');
     this.store.put('engineering_state',workspace.workspace_id,state);return state;
   }
@@ -91,7 +98,7 @@ export class EngineeringService {
     const offset=input.entry_id?0:input.offset??0,limit=input.entry_id?1:Math.min(input.limit??24,40),maxText=input.entry_id?60000:1500;
     const page=ordered.slice(offset,offset+limit).map(e=>({...e,text:e.text.slice(0,maxText),truncated:e.text.length>maxText}));
     const analysis=input.result_id?this.readAnalysis(input.result_id,workspace,state,input):undefined;
-    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.all<Explanation>('explanation').filter(e=>e.result.binding.project_id===projectId).slice(-10).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),recent_tasks:this.tasks({project_id:projectId}).slice(0,5).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
+    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.all<Explanation>('explanation').filter(e=>e.result.binding.project_id===projectId).slice(-10).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id).slice(0,5).map(t=>this.currentVerification(t,restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
   }
   private analysisStatus(explanation:Explanation,workspace:WorkspaceBinding,state:CodeState):EngineeringAnalysis['status']{if(workspace.status==='unbound')return 'unbound';return explanation.source_status==='current'&&this.store.get<Snapshot>('snapshot',explanation.result.binding.source_snapshot_id).fingerprint===state.fingerprint?'current':'needs_review';}
   private readAnalysis(resultId:string,workspace:WorkspaceBinding,state:CodeState,input:ContextRequest):EngineeringAnalysis {
@@ -223,13 +230,37 @@ export class EngineeringService {
     });if(imported)this.changed();return {project_id:projectId,imported,reused,task_ids:taskIds,source_snapshot_id:state.snapshot_id,warnings:scan.warnings};
   }
   tasks(input:{project_id?:string;query?:string;file?:string;status?:string}={}) {return this.store.all<EngineeringTask>(taskKind).filter(t=>(!input.project_id||t.project_id===input.project_id)&&(!input.status||t.status===input.status)&&(!input.file||t.changes.some(c=>c.path===input.file)||t.scope.includes(input.file))&&(!input.query||JSON.stringify([t.goal,t.summary,t.decisions,t.unresolved]).toLowerCase().includes(input.query.toLowerCase()))).sort((a,b)=>b.updated_at.localeCompare(a.updated_at));}
-  task(taskId:string){const task=this.store.get<EngineeringTask>(taskKind,taskId);const baseline=this.store.get<Snapshot>('snapshot',task.baseline.snapshot_id),files=new Map(task.baseline.dirty.map(file=>[file,baseline.files.find(f=>f.path===file)?.content_sha256??null]));for(const file of task.rebind_preexisting_files??[])files.set(file.path,file.sha256);task.preexisting_files=[...files].map(([path,sha256])=>({path,sha256}));return task;}
+  task(taskId:string){const task=this.store.get<EngineeringTask>(taskKind,taskId);const base=task.diff_baseline??task.baseline,baseline=this.store.get<Snapshot>('snapshot',base.snapshot_id),baselineFiles=stateFiles(baseline,base),files=new Map(base.dirty.map(file=>[file,baselineFiles.get(file)??null]));for(const file of task.rebind_preexisting_files??[])files.set(file.path,file.sha256);task.preexisting_files=[...files].map(([path,sha256])=>({path,sha256}));return task;}
+  private currentVerification(task:EngineeringTask,state?:CodeState):EngineeringTask {
+    const status=state?this.verificationStatus(task,state):task.verification_status==='passed'&&task.verification.some(e=>!e.code_state.workspace_fingerprint)?'partial':task.verification_status;
+    return {...task,verification_status:status};
+  }
+  private async verificationState(task:EngineeringTask) {
+    const workspace=this.store.get<WorkspaceBinding>(workspaceKind,task.workspace_id);
+    if(workspace.status!=='bound')return undefined;
+    return this.captureState(task.project_id,task.workspace_path).catch(()=>null);
+  }
+  async currentTask(taskId:string) {
+    const task=this.task(taskId);
+    if(!task.verification.length)return task;
+    const state=await this.verificationState(task);
+    return state===null?{...task,verification_status:'stale'}:this.currentVerification(task,state);
+  }
+  async currentTasks(input:Parameters<EngineeringService['tasks']>[0]) {
+    const states=new Map<string,ReturnType<EngineeringService['verificationState']>>();
+    return Promise.all(this.tasks(input).map(async task=>{
+      if(!task.verification.length)return task;
+      if(!states.has(task.workspace_id))states.set(task.workspace_id,this.verificationState(task));
+      const state=await states.get(task.workspace_id);
+      return state===null?{...task,verification_status:'stale' as const}:this.currentVerification(task,state);
+    }));
+  }
   history(kind:'task'|'context',objectId:string){return this.store.versions(kind==='task'?taskKind:contextKind,objectId);}
   private receiptKey(operation:string,objectId:string,key:string){return sha(`${operation}\0${objectId}\0${requireText(key,300)}`);}
   private saveTask(task:EngineeringTask){task.version++;task.updated_at=now();task.saved='saved';this.store.putVersion(taskKind,task.task_id,task.version,task);}
   async createTask(input:CreateEngineeringTask):Promise<EngineeringTask> {
     const workspace=await this.resolve(input);
-    if(input.task_id){const task=this.task(input.task_id);if(task.workspace_id!==workspace.workspace_id)throw Error('任务属于另一个工作区');const key=this.receiptKey('continue',task.task_id,input.submission_key);if(this.store.maybe('engineering_receipt',key))return task;const text=requireText(input.goal);this.store.transaction(()=>{task.requests??=[];task.requests.push({text,submission_key:input.submission_key,created_at:now()});this.saveTask(task);this.store.put('engineering_receipt',key,task);});this.changed();return task;}
+    if(input.task_id){const prior=this.task(input.task_id);if(prior.workspace_id!==workspace.workspace_id)throw Error('任务属于另一个工作区');await this.captureState(workspace.project_id,workspace.root_path);const task=this.task(input.task_id);const key=this.receiptKey('continue',task.task_id,input.submission_key);if(this.store.maybe('engineering_receipt',key))return task;const text=requireText(input.goal);this.store.transaction(()=>{task.requests??=[];task.requests.push({text,submission_key:input.submission_key,created_at:now()});this.saveTask(task);this.store.put('engineering_receipt',key,task);});this.changed();return task;}
     const key=this.receiptKey('create',workspace.workspace_id,input.submission_key),existing=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(existing)return this.task(existing.task_id);
     const context=await this.context({project_id:workspace.project_id});
     return this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return this.task(retry.task_id);
@@ -258,31 +289,50 @@ export class EngineeringService {
   }
   private checkLogPath(task:EngineeringTask,filePath:string){relativePath(filePath);if(!filePath.startsWith(`development/${task.task_id}/`)&&!filePath.startsWith(`logs/${task.task_id}/`))throw Error('日志路径不属于此任务的证据目录');}
   private verificationStatus(task:EngineeringTask,state:CodeState):EngineeringTask['verification_status'] {
-    if(!task.verification.length)return 'not_run';const current=task.verification.filter(e=>e.code_state.fingerprint===state.fingerprint&&e.code_state.head===state.head);
+    if(!task.verification.length)return 'not_run';
+    if(task.changes_status==='needs_review')return 'stale';
+    const current=task.verification.filter(e=>sameVerificationState(e.code_state,state));
+    if(!current.length&&task.verification.some(e=>!e.code_state.workspace_fingerprint&&e.code_state.fingerprint===state.fingerprint&&e.code_state.head===state.head))return 'partial';
     if(!current.length)return 'stale';const latest=new Map<string,VerificationEvidence>();for(const e of current)latest.set(e.command,e);const checks=[...latest.values()];
-    if(checks.some(e=>e.outcome==='failed'))return 'failed';if(checks.every(e=>e.outcome==='passed'&&e.origin==='observed'&&e.code_state_verified!==false))return 'passed';return 'partial';
+    if(checks.some(e=>e.outcome==='failed'))return 'failed';if(checks.every(e=>e.outcome==='passed'&&e.origin==='observed'&&!!e.log_path&&e.code_state_verified!==false))return 'passed';return 'partial';
   }
   async finishTask(input:FinishEngineeringTask):Promise<EngineeringTask> {
     const key=this.receiptKey('finish',input.task_id,input.submission_key),prior=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(prior)return prior;
     const task=this.task(input.task_id);this.checkUpdate(task,input);const workspace=await this.resolve({project_id:task.project_id});if(workspace.workspace_id!==task.workspace_id||!samePath(workspace.root_path,task.workspace_path))throw Error('任务绑定工作区已改变，拒绝写回');
-    const end=await this.captureState(task.project_id,task.workspace_path);
+    const binding=input.completion_binding;
+    const end=await this.captureState(task.project_id,task.workspace_path).catch(error=>{if(binding===undefined)throw error;return null;});
     const attempt=task.attempt_ids.at(-1)?this.store.get<DevelopmentAttempt>(attemptKind,task.attempt_ids.at(-1)!):undefined;
-    if(end.branch!==(attempt?.baseline??task.baseline).branch||end.git_common_dir!==workspace.git_common_dir)throw Error('WORKSPACE_CONFLICT：任务期间分支或仓库归属变化，请核查后接续');
-    const before=this.store.get<Snapshot>('snapshot',task.baseline.snapshot_id),after=this.store.get<Snapshot>('snapshot',end.snapshot_id),beforeFiles=new Map(before.files.map(f=>[f.path,f.content_sha256])),afterFiles=new Map(after.files.map(f=>[f.path,f.content_sha256]));
-    const changes=[...new Set([...beforeFiles.keys(),...afterFiles.keys()])].filter(p=>beforeFiles.get(p)!==afterFiles.get(p)).map(p=>({path:p,before_sha256:beforeFiles.get(p)??null,after_sha256:afterFiles.get(p)??null,ownership:task.baseline.dirty.includes(p)||task.rebind_preexisting_files?.some(f=>f.path===p)?'preexisting_overlap' as const:'task_change' as const}));
-    return this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;const current=this.task(task.task_id);this.checkUpdate(current,input);current.end_state=end;current.changes=changes;current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);if(input.decisions)current.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
+    const workspaceConflict=end&&(end.branch!==(attempt?.baseline??task.baseline).branch||end.git_common_dir!==workspace.git_common_dir);
+    if(binding===undefined&&workspaceConflict)throw Error('WORKSPACE_CONFLICT：任务期间分支或仓库归属变化，请核查后接续');
+    const ownershipUnknown=!end||(task.changes_status==='needs_review'&&!task.diff_baseline)||binding!==undefined&&(workspaceConflict||!binding||typeof binding.workspace_path!=='string'||!samePath(binding.workspace_path,task.workspace_path)||binding.workspace_fingerprint!==end.workspace_fingerprint||binding.head!==end.head||binding.branch!==end.branch||binding.git_common_dir!==end.git_common_dir);
+    const before=this.store.get<Snapshot>('snapshot',task.baseline.snapshot_id),after=end?this.store.get<Snapshot>('snapshot',end.snapshot_id):before;
+    const comparison=task.diff_baseline??task.baseline;
+    const comparisonSnapshot=comparison===task.baseline?before:this.store.get<Snapshot>('snapshot',comparison.snapshot_id);
+    const assetBaseline=comparison.assets??attempt?.baseline?.assets??[];
+    const beforeFiles=stateFiles(comparisonSnapshot,{assets:assetBaseline}),afterFiles=stateFiles(after,end??undefined);
+    const assets=new Set([...assetBaseline,...(end?.assets??[])].map(asset=>asset.path));
+    const changes=ownershipUnknown?[]:[...new Set([...beforeFiles.keys(),...afterFiles.keys()])]
+      .filter(p=>beforeFiles.get(p)!==afterFiles.get(p))
+      .map(p=>({path:p,before_sha256:beforeFiles.get(p)??null,after_sha256:afterFiles.get(p)??null,ownership:comparison.dirty.includes(p)||task.rebind_preexisting_files?.some(f=>f.path===p)?'preexisting_overlap' as const:'task_change' as const,...(assets.has(p)?{text_diff_unavailable:true}:{})}));
+    return this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);if(input.decisions)current.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
+      if(ownershipUnknown)current.unresolved=[...new Set([...current.unresolved,'无法确认提交完成时与采集时的代码状态一致。报告已保存，差异归属待核查。'])];
       for(const evidence of input.verification??[]){this.checkEvidence(current,evidence);if(!current.verification.some(e=>e.evidence_id===evidence.evidence_id))current.verification.push(evidence);}
-      current.verification_status=this.verificationStatus(current,end);this.saveTask(current);this.markAffected(current.project_id,changes.map(c=>c.path));this.store.put('engineering_receipt',key,current);this.changed();return current;});
+      current.verification_status=this.verificationStatus(current,end??current.baseline);this.saveTask(current);this.markAffected(current.project_id,changes.map(c=>c.path));this.store.put('engineering_receipt',key,current);this.changed();return current;});
   }
   private markAffected(projectId:string,files:string[]) {
     if(!files.length)return;let changed=false;
     for(const entry of this.store.all<ContextEntry>(contextKind))if(entry.project_id===projectId&&entry.status==='current'&&entry.sources.some(s=>files.includes(s.path))){entry.status='needs_review';entry.version++;entry.updated_at=now();this.store.putVersion(contextKind,entry.entry_id,entry.version,entry);changed=true;}
     if(changed){const state=this.store.get<any>('engineering_context_state',projectId);state.version++;this.store.put('engineering_context_state',projectId,state);}
   }
+  checkWorkspaceAvailable(workspace:WorkspaceBinding) {
+    if(this.store.all<DevelopmentAttempt>(attemptKind).some(attempt=>samePath(attempt.workspace_path,workspace.root_path)&&['starting','running'].includes(attempt.status))||
+      this.tasks().some(task=>task.status==='running'&&samePath(task.workspace_path,workspace.root_path)))throw Error('此工作区已有开发任务，请等待结束或停止后再继续。');
+  }
   startAttempt(taskId:string,input:Pick<DevelopmentAttempt,'provider_id'|'model'|'origin'>) {
-    return this.store.transaction(()=>{const task=this.task(taskId);if(task.attempt_ids.some(a=>['starting','running'].includes(this.store.get<DevelopmentAttempt>(attemptKind,a).status)))throw Error('本任务已有正在执行的会话');
+    return this.store.transaction(()=>{const task=this.task(taskId);
       const workspace=this.store.get<WorkspaceBinding>(workspaceKind,task.workspace_id);if(workspace.status!=='bound'||!samePath(workspace.root_path,task.workspace_path))throw Error('任务工作区未绑定或已改变');
-      const attempt:DevelopmentAttempt={...input,attempt_id:id('attempt'),task_id:taskId,project_id:task.project_id,workspace_id:task.workspace_id,workspace_path:task.workspace_path,status:'starting',started_at:now(),baseline:this.store.maybe<CodeState>('engineering_state',task.workspace_id)??task.baseline,context_version:this.store.get<any>('engineering_context_state',task.project_id).version};task.attempt_ids.push(attempt.attempt_id);task.status='running';this.saveTask(task);this.store.put(attemptKind,attempt.attempt_id,attempt);this.changed();return attempt;});
+      this.checkWorkspaceAvailable(workspace);
+      const attempt:DevelopmentAttempt={...input,attempt_id:id('attempt'),task_id:taskId,project_id:task.project_id,workspace_id:task.workspace_id,workspace_path:task.workspace_path,status:'starting',started_at:now(),baseline:this.store.maybe<CodeState>('engineering_state',task.workspace_id)??task.baseline,context_version:this.store.get<any>('engineering_context_state',task.project_id).version};if(task.changes_status==='needs_review')task.diff_baseline=attempt.baseline;task.attempt_ids.push(attempt.attempt_id);task.status='running';this.saveTask(task);this.store.put(attemptKind,attempt.attempt_id,attempt);this.changed();return attempt;});
   }
   updateAttempt(attemptId:string,patch:Partial<DevelopmentAttempt>) {
     const attempt=this.store.get<DevelopmentAttempt>(attemptKind,attemptId);for(const key of ['attempt_id','task_id','project_id','workspace_id','workspace_path'] as const)if(patch[key]!==undefined&&patch[key]!==attempt[key])throw Error('执行归属不可修改');
@@ -298,14 +348,15 @@ export class EngineeringService {
     if(this.tasks({project_id:projectId}).some(t=>t.status==='running'))throw Error('运行中的工程不能重新绑定');
     await this.capturing.get(projectId);await this.scanning.get(projectId);
     const project=this.store.get<Project>('project',projectId),snapshot=await capture(root,projectId,this.store.directory,project.build_config);
+    const identity=await workspaceFiles(root,snapshot);
     let common:string|null=null;try{common=path.resolve(root,await git(root,['rev-parse','--git-common-dir']));}catch{/* Non-Git is supported. */}
     this.store.transaction(()=>{workspace.root_path=root;workspace.status='bound';workspace.git_common_dir=common;workspace.rebound_at=now();this.store.put(workspaceKind,workspace.workspace_id,workspace);project.root_path=root;project.snapshot_id=snapshot.source_snapshot_id;this.store.put('snapshot',snapshot.source_snapshot_id,snapshot);this.store.put('project',projectId,project);this.store.db.prepare('DELETE FROM objects WHERE kind=? AND id=?').run('engineering_state',workspace.workspace_id);
-      for(const task of this.tasks({project_id:projectId})){const before=this.store.get<Snapshot>('snapshot',task.end_state?.snapshot_id??task.baseline.snapshot_id),beforeFiles=new Map(before.files.map(f=>[f.path,f.content_sha256])),afterFiles=new Map(snapshot.files.map(f=>[f.path,f.content_sha256])),preexisting=new Map((task.rebind_preexisting_files??[]).map(f=>[f.path,f.sha256]));for(const file of new Set([...beforeFiles.keys(),...afterFiles.keys()]))if(beforeFiles.get(file)!==afterFiles.get(file))preexisting.set(file,afterFiles.get(file)??null);task.rebind_preexisting_files=[...preexisting].map(([path,sha256])=>({path,sha256}));task.rebind_source_snapshot_id=snapshot.source_snapshot_id;task.workspace_path=root;this.saveTask(task);}
+      for(const task of this.tasks({project_id:projectId})){const beforeState=task.end_state??task.baseline,before=this.store.get<Snapshot>('snapshot',beforeState.snapshot_id),beforeFiles=stateFiles(before,beforeState),afterFiles=stateFiles(snapshot,{assets:identity.assets}),preexisting=new Map((task.rebind_preexisting_files??[]).map(f=>[f.path,f.sha256]));for(const file of new Set([...beforeFiles.keys(),...afterFiles.keys()]))if(beforeFiles.get(file)!==afterFiles.get(file))preexisting.set(file,afterFiles.get(file)??null);task.rebind_preexisting_files=[...preexisting].map(([path,sha256])=>({path,sha256}));task.rebind_source_snapshot_id=snapshot.source_snapshot_id;task.workspace_path=root;this.saveTask(task);}
       for(const explanation of this.store.all<Explanation>('explanation'))if(explanation.result.binding.project_id===projectId){explanation.source_status=this.store.get<Snapshot>('snapshot',explanation.result.binding.source_snapshot_id).fingerprint===snapshot.fingerprint?'current':'needs_review';this.store.put('explanation',explanation.result_id,explanation);}
     });await this.context({project_id:projectId,refresh:true});this.changed();return workspace;
   }
   async exportProject(projectId:string,filePath:string){await this.connect(projectId);return exportEngineeringProject(this.store,projectId,filePath);}
   async readLog(taskId:string,filePath:string){const task=this.task(taskId);this.checkLogPath(task,filePath);const allowed=task.verification.some(e=>e.log_path===filePath)||task.attempt_ids.some(a=>this.store.get<DevelopmentAttempt>(attemptKind,a).log_path===filePath);if(!allowed)throw Error('日志不属于此任务');const file=await safeFile(this.store.directory,filePath),stat=await fs.stat(file);if(stat.size>2*1024*1024)throw Error('日志超过 2 MiB 展示限制，请在数据目录查看');return {path:filePath,text:await fs.readFile(file,'utf8')};}
-  async taskDiff(taskId:string,filePath:string){const task=this.task(taskId);relativePath(filePath);const change=task.changes.find(c=>c.path===filePath);if(!change||!task.end_state)throw Error('文件不属于此任务已保存的差异');const beforeSnapshot=this.store.get<Snapshot>('snapshot',task.baseline.snapshot_id),afterSnapshot=this.store.get<Snapshot>('snapshot',task.end_state.snapshot_id);const before=change.before_sha256?(await readSource(this.store.directory,beforeSnapshot,filePath)).text:'',after=change.after_sha256?(await readSource(this.store.directory,afterSnapshot,filePath)).text:'';return {path:filePath,before:before.slice(0,200000),after:after.slice(0,200000),before_snapshot_id:task.baseline.snapshot_id,after_snapshot_id:task.end_state.snapshot_id,truncated:before.length>200000||after.length>200000};}
+  async taskDiff(taskId:string,filePath:string){const task=this.task(taskId);relativePath(filePath);const change=task.changes.find(c=>c.path===filePath);if(!change||!task.end_state||task.changes_status==='needs_review')throw Error('文件不属于此任务已保存的差异');if(change.text_diff_unavailable)throw Error('已记录文件内容哈希，此文件没有文本差异');const beforeSnapshot=this.store.get<Snapshot>('snapshot',(task.diff_baseline??task.baseline).snapshot_id),afterSnapshot=this.store.get<Snapshot>('snapshot',task.end_state.snapshot_id);const before=change.before_sha256?(await readSource(this.store.directory,beforeSnapshot,filePath)).text:'',after=change.after_sha256?(await readSource(this.store.directory,afterSnapshot,filePath)).text:'';return {path:filePath,before:before.slice(0,200000),after:after.slice(0,200000),before_snapshot_id:beforeSnapshot.source_snapshot_id,after_snapshot_id:task.end_state.snapshot_id,truncated:before.length>200000||after.length>200000};}
   async restoreProject(filePath:string){const result=await restoreEngineeringProject(this.store,filePath);this.changed();return result;}
 }

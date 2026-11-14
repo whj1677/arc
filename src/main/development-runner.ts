@@ -55,6 +55,8 @@ export function developmentSandboxError(error:{message?:string;stdout?:string;st
     ?'Codex 沙箱启动预检超时，已停止检查；尚未调用模型或修改工程。请从正常独立启动入口检查官方 CLI/沙箱环境后重试。\n'+detail
     :detail.includes('registered Core process has no package identity')
     ?'Windows 沙箱环境不可用：当前启动链继承了桌面 Registered Core 标识，但子进程没有对应包身份。尚未调用模型或修改工程。请从正常独立启动入口检查 Codex 沙箱，或修复桌面运行环境后重试；ARC 不会移除身份检查或关闭沙箱。\n'+detail
+    :/CreateRestrictedToken failed: 87/i.test(detail)
+    ?'Windows 拒绝创建 Codex 受限进程（CreateRestrictedToken 87）。尚未调用模型或修改工程。请从正常的官方 CLI 会话复跑沙箱检查。\n'+detail
     :'Codex 工作区沙箱启动检查未通过；尚未调用模型或修改工程。请修复官方 CLI/沙箱环境后重试。\n'+detail),{environmentBlocked:true});
 }
 export function developmentPrompt(task:EngineeringTask,context:EngineeringContext){

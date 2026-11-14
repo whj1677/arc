@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {EngineeringTask,DevelopmentAttempt,VerificationEvidence,CodeState} from '../engineering';
 import type {ProviderProfile} from '../shared';
-import {EngineeringService} from './engineering-service';
+import {EngineeringService,sameVerificationState} from './engineering-service';
 import {runDevelopmentCodex,type DevelopmentCommand} from './development-runner';
 import {readCodexConfiguration} from './codex-configuration';
 import {probeProviders,redact,type ActiveProcess} from './providers';
@@ -30,7 +30,8 @@ export class DevelopmentService {
     const workspace=await this.engineering.resolve({project_id:input.project_id});
     const receipt=this.store.maybe<{task_id:string}>('development_submission',input.submission_key);
     if(receipt){const prior=this.engineering.task(receipt.task_id);if(prior.project_id!==input.project_id)throw Error('开发请求标识属于另一个工程');return prior;}
-    if(this.closing||this.starting.has(workspace.workspace_id)||this.engineering.tasks({project_id:input.project_id}).some(task=>task.status==='running'))throw Error('此工作区已有开发任务，请等待结束或停止后再继续。');
+    if(this.closing||this.starting.has(workspace.workspace_id))throw Error('此工作区已有开发任务，请等待结束或停止后再继续。');
+    this.engineering.checkWorkspaceAvailable(workspace);
     this.starting.add(workspace.workspace_id);
     try{
       const task=await this.engineering.createTask(input);
@@ -54,7 +55,7 @@ export class DevelopmentService {
     this.engineering.updateAttempt(attemptId,{model:configured.model?`配置：${configured.model}`:'沿用 Codex 默认模型（未取得标识）',runtime_version:profile.version});
     const task=this.engineering.task(taskId),context=await this.engineering.context({project_id:task.project_id});
     const baseline=attempt.baseline??task.baseline;
-    if(context.workspace.workspace_id!==task.workspace_id||context.workspace.root_path!==task.workspace_path||context.code_state.branch!==baseline.branch||context.code_state.git_common_dir!==baseline.git_common_dir||context.code_state.head!==baseline.head||context.code_state.fingerprint!==baseline.fingerprint)throw Error('WORKSPACE_CONFLICT：启动前工作区或代码基线已改变，未派发开发。');
+    if(context.workspace.workspace_id!==task.workspace_id||context.workspace.root_path!==task.workspace_path||!sameVerificationState(context.code_state,baseline))throw Error('WORKSPACE_CONFLICT：启动前工作区或代码基线已改变，未派发开发。');
     const records=new Map<string,{command:DevelopmentCommand;state:CodeState;log:string;stateVerified:boolean}>();let captureQueue=Promise.resolve(),possibleWrite=0;
     const result=await this.runner({task,context,profile,storage:this.store.directory,
       event:event=>{if(event.item?.type==='file_change'||event.type==='item.started'&&event.item?.type==='command_execution')possibleWrite++;this.event(attemptId,event);},
@@ -101,7 +102,7 @@ export class DevelopmentService {
     }
     if(this.isStopped(attemptId))throw Error('执行已停止，拒绝迟到开发结果');
     const current=this.engineering.task(taskId);
-    const saved=await this.engineering.finishTask({task_id:taskId,attempt_id:attemptId,expected_version:current.version,submission_key:`${attemptId}:finish`,status:result.result.status,summary:result.result.summary,decisions:result.result.decisions,unresolved:[...result.result.unresolved,...entryFailures],verification});
+    const saved=await this.engineering.finishTask({task_id:taskId,attempt_id:attemptId,expected_version:current.version,submission_key:`${attemptId}:finish`,status:result.result.status,completion_binding:end.workspace_fingerprint?{workspace_path:task.workspace_path,workspace_fingerprint:end.workspace_fingerprint,head:end.head,branch:end.branch,git_common_dir:end.git_common_dir}:null,summary:result.result.summary,decisions:result.result.decisions,unresolved:[...result.result.unresolved,...entryFailures],verification});
     this.engineering.updateAttempt(attemptId,{status:saved.status==='completed'?'completed':'failed',session_id:result.session_id,
       ...(result.model?{model:`运行回执：${result.model}`}:{})});
     this.event(attemptId,{type:'local.stage',message:`开发结果已自动保存到原任务，验证状态：${saved.verification_status}。${entryFailures.length?`另有 ${entryFailures.length} 项工程条目未保存，详见未解决事项。`:''}`});

@@ -1,8 +1,10 @@
 import fs from 'node:fs/promises';
+import {createReadStream} from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import type { CompletionBinding, WorkspaceAsset } from '../engineering';
 import type { Snapshot, SourceFile } from '../shared';
 import { id, now } from './store';
 const exec = promisify(execFile);
@@ -46,6 +48,50 @@ async function ignoredByGit(root:string) {
   } catch { /* Without a verified Git list, retain the ordinary exclusions. */ }
   return gitIgnored;
 }
+// Hash eligible worktree bytes without storing them or exposing binary contents.
+export async function workspaceFiles(root:string, snapshot?:Snapshot) {
+  const gitIgnored=await ignoredByGit(root), files=new Map<string,string>(), assets:WorkspaceAsset[]=[];
+  const textFiles=new Map(snapshot?.files.map(file=>[file.path,file.content_sha256]));
+  async function walk(dir:string,prefix='') {
+    for(const entry of await fs.readdir(dir,{withFileTypes:true})){
+      const rel=prefix?`${prefix}/${entry.name}`:entry.name;
+      if(gitIgnored.has(rel)||ignored.has(entry.name)||secret.test(entry.name)||entry.isSymbolicLink())continue;
+      if(entry.isDirectory()){await walk(path.join(dir,entry.name),rel);continue;}
+      if(!entry.isFile())continue;
+      const input=await safeFile(root,rel), before=await fs.stat(input);
+      const hash=createHash('sha256');
+      for await(const bytes of createReadStream(input))hash.update(bytes);
+      const after=await fs.stat(input);
+      if(before.size!==after.size||before.mtimeMs!==after.mtimeMs||before.ctimeMs!==after.ctimeMs||before.ino!==after.ino)throw Error(`采集期间文件变化：${rel}，请重试`);
+      const digest=hash.digest('hex');
+      files.set(rel,digest);
+      if(!snapshot)continue;
+      if(textFiles.get(rel)===digest)textFiles.delete(rel);
+      else if(textFiles.has(rel))throw Error(`采集期间文本文件变化：${rel}，请重试`);
+      else assets.push({path:rel,sha256:digest});
+    }
+  }
+  await walk(root);
+  if(textFiles.size)throw Error('采集期间文本文件清单变化，请重试');
+  return {fingerprint:sha(JSON.stringify([...files].sort(([a],[b])=>a<b?-1:a>b?1:0))),assets};
+}
+
+export async function bindWorkspaceCompletion(workspacePath:string):Promise<CompletionBinding> {
+  const workspace_path=await fs.realpath(workspacePath);
+  async function checkout(){
+    const git=async (...args:string[])=>(await exec('git',['-C',workspace_path,...args],{windowsHide:true,timeout:10000})).stdout.trim();
+    let git_common_dir:string|null=null;
+    try{git_common_dir=path.resolve(workspace_path,await git('rev-parse','--git-common-dir'));}
+    catch(error){if(!String((error as {stderr?:string}).stderr).includes('not a git repository'))throw error;}
+    const head=git_common_dir?await git('rev-parse','HEAD').catch(()=>null):null;
+    const branch=git_common_dir?await git('symbolic-ref','--short','-q','HEAD').catch(()=>null):null;
+    return {git_common_dir,head,branch};
+  }
+  const before=await checkout(), {fingerprint}=await workspaceFiles(workspace_path),after=await checkout();
+  if(before.head!==after.head||before.branch!==after.branch||before.git_common_dir!==after.git_common_dir)throw Error('采集期间分支或 HEAD 变化，请重试');
+  return {workspace_path,workspace_fingerprint:fingerprint,...after};
+}
+
 export async function capture(rootPath: string, projectId: string, storage: string, buildConfig: string, signal?: AbortSignal, progress?: (n: number) => void): Promise<Snapshot> {
   const root = await fs.realpath(rootPath);
   if (!(await fs.stat(root)).isDirectory()) throw new Error('请选择工程目录');

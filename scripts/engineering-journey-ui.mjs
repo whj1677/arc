@@ -37,15 +37,18 @@ try{
   assert.equal(analysis.status,'completed',analysis.error);await page.locator('.architecture-node').first().waitFor();
   if(fresh)assert.equal(await fs.access(path.join(workspace,'docs','requirements')).then(()=>true,()=>false),false);
   console.log(JSON.stringify({firstContextSeconds,fresh,analysisRun:analysis.binding.run_id,firstAnalysisSeconds:(Date.parse(analysis.ended_at)-Date.parse(analysis.created_at))/1000,contextVersion:context.version}));
-  await page.getByRole('button',{name:'开发与记录',exact:true}).click();
+  await overview.locator('summary').evaluate(summary=>{summary.parentElement.open=true;});
+  await page.getByRole('button',{name:'描述开发任务',exact:true}).click();
+  await page.waitForFunction(()=>document.activeElement?.id==='development-goal');
   const goal='修复订单 total 忽略 quantity 的问题：每项金额应为 price × quantity，quantity 为 0 时该项贡献 0。保留 notes.txt 的已有修改和其他功能，运行 npm test 验证。';
   let tasks=await page.evaluate(id=>window.arc.invoke('engineering_tasks',{project_id:id}),project.project_id);
   let task=tasks.find(item=>item.goal===goal);
   const newDevelopment=!task;
   if(task?.status!=='completed'){
+    const attemptsBefore=task?.attempt_ids.length??0;
     if(task){await page.locator('.engineering-task-row').filter({hasText:goal}).click();await page.getByRole('button',{name:'继续此任务',exact:true}).click();}
     await page.getByLabel('开发任务',{exact:true}).fill(goal);await page.getByRole('button',{name:task?'继续开发':'开始开发',exact:true}).click();
-    task=await waitFor(async()=>(await page.evaluate(id=>window.arc.invoke('engineering_tasks',{project_id:id}),project.project_id)).find(item=>item.goal===goal),value=>!!value,20000);
+    task=await waitFor(async()=>(await page.evaluate(id=>window.arc.invoke('engineering_tasks',{project_id:id}),project.project_id)).find(item=>item.goal===goal),value=>!!value&&value.attempt_ids.length>attemptsBefore,20000);
     console.log(`Started real development ${task.task_id}`);await page.screenshot({path:path.join(scratch,'development-progress.png')});
     const other=path.join(scratch,'other');await fs.mkdir(other,{recursive:true});await fs.writeFile(path.join(other,'README.md'),'A separate project used only to verify task ownership.\n');
     await open(other,false);

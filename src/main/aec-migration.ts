@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { ARC_CHECKER_SOURCE, ARC_MIGRATION_ADAPTER_SOURCE, OFFICIAL_AEC_SCRIPT_HASHES } from './aec-checker-source';
+import { ARC_CHECKER_SOURCE, ARC_MIGRATION_ADAPTER_SOURCE, OFFICIAL_AEC_SCRIPT_HASHES, PREVIOUS_ARC_CHECKER_SHA256 } from './aec-checker-source';
 
 const hash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const AEC_VERSION = 'arc-1';
@@ -42,8 +42,10 @@ export function planAecRuleMigration(file: string, originalContent: string): Aec
   const base = { path: file, originalContent, originalSha256: hash(originalContent), replacementContent: originalContent };
   if (Object.hasOwn(OFFICIAL_AEC_SCRIPT_HASHES, file)) {
     const replacementContent = /\/(?:check_ai_context|collect_delivery_evidence)\.py$/.test(file) ? ARC_CHECKER_SOURCE : ARC_MIGRATION_ADAPTER_SOURCE;
-    if (originalContent === replacementContent) return { ...base, state: 'current' };
-    if (!OFFICIAL_AEC_SCRIPT_HASHES[file].includes(hash(originalContent.replace(/\r\n/g, '\n')))) return { ...base, state: 'conflict', reason: `${file}: 未识别为官方管理版本，保留自定义脚本；需确认其检查/建包条款` };
+    const normalized = originalContent.replace(/\r\n/g, '\n');
+    if (normalized === replacementContent) return { ...base, state: 'current' };
+    if (replacementContent === ARC_CHECKER_SOURCE && hash(normalized) === PREVIOUS_ARC_CHECKER_SHA256) return { ...base, replacementContent, state: 'migrate' };
+    if (!OFFICIAL_AEC_SCRIPT_HASHES[file].includes(hash(normalized))) return { ...base, state: 'conflict', reason: `${file}: 未识别为官方管理版本，保留自定义脚本；需确认其检查/建包条款` };
     return { ...base, replacementContent, state: 'migrate' };
   }
   try {

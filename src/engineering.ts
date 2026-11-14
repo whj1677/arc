@@ -1,9 +1,14 @@
 import type { ProviderId } from './shared';
 import type {AnalysisNode,AnalysisEdge,AnalysisClaim,SourceEvidence,RunBinding} from '../contracts/agent-adapter';
 
+export interface WorkspaceAsset {path:string;sha256:string}
+export interface CompletionBinding {
+  workspace_path:string;workspace_fingerprint:string;head:string|null;branch:string|null;git_common_dir:string|null;
+}
 export interface CodeState {
   snapshot_id:string; fingerprint:string; head:string|null; branch:string|null;
   git_common_dir:string|null; dirty:string[]; captured_at:string;
+  workspace_fingerprint?:string; assets?:WorkspaceAsset[];
 }
 export interface WorkspaceBinding {
   workspace_id:string; project_id:string; root_path:string; status:'bound'|'unbound';
@@ -52,6 +57,7 @@ export interface EngineeringAnalysis {
 export interface FileChange {
   path:string; before_sha256:string|null; after_sha256:string|null;
   ownership:'task_change'|'preexisting_overlap';
+  text_diff_unavailable?:boolean;
 }
 export interface VerificationEvidence {
   evidence_id:string; command:string; cwd:string; outcome:'passed'|'failed'|'blocked'|'not_run';
@@ -63,9 +69,10 @@ export interface EngineeringTask {
   task_id:string; project_id:string; workspace_id:string; workspace_path:string;
   version:number; submission_key:string; goal:string; scope:string[];
   status:'pending'|'running'|'blocked'|'completed'|'failed'|'cancelled'|'interrupted';
-  baseline:CodeState; end_state?:CodeState; context_version:number;
+  baseline:CodeState; end_state?:CodeState; diff_baseline?:CodeState; context_version:number;
   summary:string; decisions:string[]; unresolved:string[]; changes:FileChange[];
-  verification:VerificationEvidence[]; verification_status:'not_run'|'passed'|'failed'|'partial'|'stale';
+  verification:VerificationEvidence[]; changes_status?:'needs_review';
+  verification_status:'not_run'|'passed'|'failed'|'partial'|'stale';
   attempt_ids:string[]; created_at:string; updated_at:string; saved:'saved';
   requests?:{text:string;submission_key:string;created_at:string}[];
   preexisting_files?:{path:string;sha256:string|null}[];
@@ -92,4 +99,5 @@ export interface UpdateEngineeringTask {
 }
 export interface FinishEngineeringTask extends UpdateEngineeringTask {
   status:'completed'|'failed'|'blocked'|'cancelled';
+  completion_binding?:CompletionBinding|null;
 }

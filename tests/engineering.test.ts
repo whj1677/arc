@@ -103,6 +103,8 @@ test('branch conflicts and cancelled attempt late results cannot overwrite a tas
     let task=await f.service.createTask({project_id:'p',goal:'fix',submission_key:'a'});const attempt=f.service.startAttempt(task.task_id,{provider_id:'codex',model:'model',origin:'arc'});task=f.service.task(task.task_id);
     execFileSync('git',['-C',f.root,'checkout','-b','other'],{stdio:'ignore',windowsHide:true});await assert.rejects(f.service.finishTask({task_id:task.task_id,expected_version:task.version,submission_key:'b',status:'completed',attempt_id:attempt.attempt_id}),/WORKSPACE_CONFLICT/);
     f.service.updateAttempt(attempt.attempt_id,{status:'cancelled'});await assert.rejects(f.service.finishTask({task_id:task.task_id,expected_version:task.version,submission_key:'c',status:'completed',attempt_id:attempt.attempt_id}),/迟到/);
+    const stopped=f.service.task(task.task_id);
+    f.service.updateTask({task_id:stopped.task_id,expected_version:stopped.version,submission_key:'confirmed-stop',status:'cancelled'});
     const second=await f.service.createTask({project_id:'p',goal:'next',submission_key:'d'});const live=f.service.startAttempt(second.task_id,{provider_id:'codex',model:'model',origin:'arc'});new EngineeringService(f.store);assert.equal(f.store.get<any>('development_attempt',live.attempt_id).status,'interrupted');assert.equal(f.service.task(second.task_id).status,'interrupted');
     const external=await f.service.createTask({project_id:'p',goal:'external continuation',submission_key:'e'}),remote=f.service.startAttempt(external.task_id,{provider_id:'codex',model:'model',origin:'agent'}),version=f.service.task(external.task_id).version;new EngineeringService(f.store);assert.equal(f.service.task(external.task_id).version,version);assert.equal(f.store.get<any>('development_attempt',remote.attempt_id).connection_status,'unknown');assert.equal((await f.service.finishTask({task_id:external.task_id,expected_version:version,submission_key:'queued-finish',status:'completed',attempt_id:remote.attempt_id})).status,'completed');
   }finally{await f.cleanup();}
@@ -114,6 +116,31 @@ test('a real command with uncertain code-state timing is partial and older verif
     const partial=await f.service.finishTask({task_id:task.task_id,expected_version:task.version,submission_key:'b',status:'completed',verification:[evidence]});assert.equal(partial.verification_status,'partial');
     await fs.writeFile(path.join(f.root,'sum.js'),'export const sum = (a,b) => Number(a)+Number(b);\n');
     const stale=await f.service.finishTask({task_id:task.task_id,expected_version:partial.version,submission_key:'c',status:'completed'});assert.equal(stale.verification_status,'stale');
+  }finally{await f.cleanup();}
+});
+test('binary, non-UTF-8 and oversized changes are included in development identity',async()=>{
+  const f=await fixture();try{
+    const large=Buffer.alloc(2*1024*1024+1,97);
+    await fs.writeFile(path.join(f.root,'large.txt'),large);
+    await fs.writeFile(path.join(f.root,'asset.dat'),Buffer.from([0,1]));
+    const task=await f.service.createTask({project_id:'p',goal:'edit non-reading assets',submission_key:'assets'});
+    large[0]=98;
+    await fs.writeFile(path.join(f.root,'large.txt'),large);
+    await fs.writeFile(path.join(f.root,'asset.dat'),Buffer.from([0,2]));
+    await fs.writeFile(path.join(f.root,'legacy.txt'),Buffer.from([255,254]));
+    const verified=await f.service.captureState('p');
+    assert.equal(verified.fingerprint,task.baseline.fingerprint);
+    assert.notEqual(verified.workspace_fingerprint,task.baseline.workspace_fingerprint);
+    const log_path=`logs/${task.task_id}/verify.log`;
+    await fs.mkdir(path.dirname(path.join(f.store.directory,log_path)),{recursive:true});
+    await fs.writeFile(path.join(f.store.directory,log_path),'command evidence');
+    const evidence:VerificationEvidence={evidence_id:'assets-evidence',command:'verify assets',cwd:f.root,outcome:'passed',exit_code:0,origin:'observed',code_state:verified,log_path,created_at:new Date().toISOString()};
+    const saved=await f.service.finishTask({task_id:task.task_id,expected_version:task.version,submission_key:'finished',status:'completed',verification:[evidence]});
+    assert.deepEqual(saved.changes.map(c=>c.path).sort(),['asset.dat','large.txt','legacy.txt']);
+    assert.ok(saved.changes.every(c=>c.text_diff_unavailable));
+    assert.equal(saved.verification_status,'passed');
+    await fs.writeFile(path.join(f.root,'asset.dat'),Buffer.from([0,3]));
+    assert.equal((await f.service.currentTask(task.task_id)).verification_status,'stale');
   }finally{await f.cleanup();}
 });
 test('export restores reading data, context, task history and logs into an unbound workspace; rejects collisions and path escape',async()=>{
