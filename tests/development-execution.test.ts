@@ -8,13 +8,27 @@ import {developmentArguments,developmentPrompt,developmentSandboxArguments,devel
 import {callArcWithOutbox,pendingDevelopmentWrites,flushDevelopmentWrites,queueDevelopmentWrite} from '../src/main/development-outbox';
 import {ArcService} from '../src/main/service';
 import {ArcMcpBridge,bridgeTools} from '../src/main/mcp-bridge';
+import {resolveDevelopmentScope} from '../src/main/development-scope';
 
 async function temporary(){const root=path.resolve('.test-data');await fs.mkdir(root,{recursive:true});return fs.mkdtemp(path.join(root,'development-execution-'));}
-test('development uses actual workspace, host model, bounded write sandbox and requested approvals',()=>{
-  const args=developmentArguments('C:\\工程 workspace','schema.json','result.json');
-  assert.equal(args[args.indexOf('--cd')+1],'C:\\工程 workspace');assert.equal(args[args.indexOf('--sandbox')+1],'workspace-write');
-  assert.deepEqual(args.slice(0,3),['-a','on-request','exec']);assert.ok(!args.includes('-m'));assert.ok(!args.join(' ').includes('danger'));
-  assert.match(developmentPrompt({task_id:'task-a',workspace_path:'real-workspace',goal:'fix typo'} as any,{} as any),/task-a/);
+test('development uses actual workspace, host model, exact permission profile and no escalation',()=>{
+  const args=developmentArguments('C:\\工程 workspace','schema.json','result.json',['-c','default_permissions="arc-files-test"']);
+  assert.equal(args[args.indexOf('--cd')+1],'C:\\工程 workspace');assert.ok(!args.includes('--sandbox'));
+  assert.deepEqual(args.slice(0,3),['-a','never','exec']);assert.ok(args.includes('default_permissions="arc-files-test"'));assert.ok(!args.includes('-m'));assert.ok(!args.join(' ').includes('danger'));
+  assert.match(developmentPrompt({task_id:'task-a',workspace_path:'real-workspace',goal:'fix typo'} as any,{} as any,['src/cart.mjs']),/src\/cart\.mjs/);
+});
+test('file authorization refuses directories, metadata, wildcards, traversal and hard links',async()=>{
+  const directory=await temporary();
+  try{
+    await fs.mkdir(path.join(directory,'src'));
+    await fs.mkdir(path.join(directory,'.git'));
+    const source=path.join(directory,'src','cart.mjs');
+    await fs.writeFile(source,'source');await fs.writeFile(path.join(directory,'.git','HEAD'),'metadata');
+    assert.deepEqual(await resolveDevelopmentScope(directory,['src/cart.mjs']),[await fs.realpath(source)]);
+    for(const scope of [[],['src'],['src/*.mjs'],['../cart.mjs'],['.git/HEAD'],['src/cart.mjs:other']])await assert.rejects(resolveDevelopmentScope(directory,scope));
+    await fs.link(source,path.join(directory,'alias.mjs'));
+    await assert.rejects(resolveDevelopmentScope(directory,['src/cart.mjs']),/硬链接/);
+  }finally{await fs.rm(directory,{recursive:true,force:true});}
 });
 test('Windows sandbox preflight preserves managed permissions and reports identity failures before model dispatch',()=>{
   const args=developmentSandboxArguments('C:\\工作 区');
@@ -61,7 +75,7 @@ test('external development scopes real workspace, preserves reading path and rec
     const task=await bridge.call('arc_begin_development',{workspace_path:source,goal:'change value',submission_key:'begin'});
     assert.equal((await bridge.call('arc_begin_development',{workspace_path:source,goal:'change value',submission_key:'begin'})).task_id,task.task_id);
     await assert.rejects(bridge.call('arc_begin_development',{workspace_path:source,goal:'overlap',submission_key:'different'}),/已有开发任务/);
-    await assert.rejects(service.development.start({project_id:project.project_id,goal:'overlap from ARC',submission_key:'arc-other'}),/已有开发任务/);
+    await assert.rejects(service.development.start({project_id:project.project_id,goal:'overlap from ARC',submission_key:'arc-other',scope:['main.ts']}),/已有开发任务/);
     const otherTask=await service.engineering.createTask({project_id:project.project_id,goal:'overlap in shared service',submission_key:'shared-other'});
     assert.throws(()=>service.engineering.startAttempt(otherTask.task_id,{provider_id:'codex',model:'test',origin:'arc'}),/已有开发任务/);
     const second=path.join(directory,'second');await fs.mkdir(second);await fs.writeFile(path.join(second,'b.ts'),'export const b=1;');

@@ -86,6 +86,7 @@ export interface DevelopmentAttempt {
   started_at:string; ended_at?:string; pid?:number; session_id?:string; runtime_version?:string;
   error?:string; log_path?:string;
   baseline?:CodeState; context_version?:number;
+  write_scope?:string[];
   connection_status?:'connected'|'unknown';
 }
 export interface ContextRequest {project_id?:string; workspace_path?:string; refresh?:boolean;query?:string;entry_id?:string;result_id?:string;category?:ContextEntry['category'];offset?:number;limit?:number}

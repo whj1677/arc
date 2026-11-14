@@ -51,13 +51,13 @@ test('development orchestration captures real differences, observed exit evidenc
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,configuration);
   try{
     await fs.writeFile(path.join(f.source,'user-note.txt'),'keep user text');
-    const task=await development.start({project_id:f.project.project_id,goal:'change value',submission_key:'first'});await Promise.all([...development.executing.values()]);
+    const task=await development.start({project_id:f.project.project_id,goal:'change value',submission_key:'first',scope:['main.ts']});await Promise.all([...development.executing.values()]);
     const saved=f.service.engineering.task(task.task_id),attempt=f.service.store.get<any>('development_attempt',saved.attempt_ids[0]);
     assert.equal(saved.status,'completed');assert.deepEqual(saved.changes.map(item=>item.path),['main.ts']);assert.equal(await fs.readFile(path.join(f.source,'user-note.txt'),'utf8'),'keep user text');
     assert.equal(saved.verification_status,'passed');
     assert.deepEqual(saved.verification.map(e=>[e.origin,e.outcome,e.exit_code]),[['observed','failed',1],['observed','passed',0],['observed','passed',0]]);
     assert.match(attempt.model,/配置.*test-configured-model/);
-    assert.equal(optionsSeen.task.workspace_path,f.source);assert.equal((await development.start({project_id:f.project.project_id,goal:'change value',submission_key:'first'})).task_id,task.task_id);
+    assert.equal(optionsSeen.task.workspace_path,f.source);assert.equal((await development.start({project_id:f.project.project_id,goal:'change value',submission_key:'first',scope:['main.ts']})).task_id,task.task_id);
     const design=(await f.service.engineering.context({project_id:f.project.project_id,category:'design'})).entries;assert.equal(design.length,1);assert.equal(design[0].origin,'agent');assert.equal(design[0].status,'needs_review');assert.equal(design[0].text,'Retain current API; only change the value.');
     assert.match(await fs.readFile(path.join(f.service.directory,saved.verification[0].log_path!),'utf8'),/assertion failed/);
     assert.match(await fs.readFile(path.join(f.service.directory,saved.verification[1].log_path!),'utf8'),/1 passed/);
@@ -72,14 +72,14 @@ test('modification after validation leaves evidence stale instead of passing the
     await fs.writeFile(path.join(f.source,'main.ts'),'export const value=3;\n');return completed(options.task.task_id,[{command:'node --test',outcome:'passed',note:'earlier check'}]);
   };
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,configuration);
-  try{const task=await development.start({project_id:f.project.project_id,goal:'change',submission_key:'stale'});await Promise.all([...development.executing.values()]);const saved=f.service.engineering.task(task.task_id);assert.equal(saved.verification_status,'stale');assert.notEqual(saved.verification[0].code_state.fingerprint,saved.end_state?.fingerprint);}
+  try{const task=await development.start({project_id:f.project.project_id,goal:'change',submission_key:'stale',scope:['main.ts']});await Promise.all([...development.executing.values()]);const saved=f.service.engineering.task(task.task_id);assert.equal(saved.verification_status,'stale');assert.notEqual(saved.verification[0].code_state.fingerprint,saved.end_state?.fingerprint);}
   finally{await development.shutdown();await f.close();}
 });
 test('cancellation during provider preflight prevents launch and ignores the later probe response',async()=>{
   const f=await fixture(),gate=deferred<ProviderProfile[]>();let calls=0;
   const runner:typeof runDevelopmentCodex=async options=>{calls++;return completed(options.task.task_id);};
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,()=>gate.promise,configuration);
-  try{const task=await development.start({project_id:f.project.project_id,goal:'cancel',submission_key:'cancel'});await development.cancel(task.task_id);gate.resolve([profile]);await Promise.all([...development.executing.values()]);assert.equal(calls,0);assert.equal(f.service.engineering.task(task.task_id).status,'cancelled');}
+  try{const task=await development.start({project_id:f.project.project_id,goal:'cancel',submission_key:'cancel',scope:['main.ts']});await development.cancel(task.task_id);gate.resolve([profile]);await Promise.all([...development.executing.values()]);assert.equal(calls,0);assert.equal(f.service.engineering.task(task.task_id).status,'cancelled');}
   finally{gate.resolve([profile]);await development.shutdown();await f.close();}
 });
 test('sandbox environment failure is saved as blocked with no verification and retained diagnostic',async()=>{
@@ -91,7 +91,7 @@ test('sandbox environment failure is saved as blocked with no verification and r
   };
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,configuration);
   try{
-    const task=await development.start({project_id:f.project.project_id,goal:'blocked sandbox',submission_key:'sandbox-blocked'});await Promise.all([...development.executing.values()]);
+    const task=await development.start({project_id:f.project.project_id,goal:'blocked sandbox',submission_key:'sandbox-blocked',scope:['main.ts']});await Promise.all([...development.executing.values()]);
     const saved=f.service.engineering.task(task.task_id),attempt=f.service.store.get<any>('development_attempt',saved.attempt_ids.at(-1)!);
     assert.equal(saved.status,'blocked');assert.equal(saved.verification_status,'not_run');assert.deepEqual(saved.changes,[]);assert.match(saved.summary,/尚未调用模型/);assert.ok(attempt.log_path);
     const diagnostic=JSON.parse(await fs.readFile(path.join(f.service.directory,attempt.log_path),'utf8'));assert.equal(diagnostic.model_called,false);assert.equal(diagnostic.stage,'sandbox_check');
@@ -103,7 +103,7 @@ test('cancelled running attempt cannot accept a late successful result or roll b
     options.started({child:{pid:999999} as any,cancel:async()=>{cancellations++;}});await fs.writeFile(path.join(f.source,'main.ts'),'export const value=2;\n');launched.resolve();await release.promise;return completed(options.task.task_id);
   };
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,configuration);
-  try{const task=await development.start({project_id:f.project.project_id,goal:'cancel late',submission_key:'cancel-late'});await launched.promise;await development.cancel(task.task_id);release.resolve();await Promise.all([...development.executing.values()]);assert.equal(cancellations,1);assert.equal(f.service.engineering.task(task.task_id).status,'cancelled');assert.match(await fs.readFile(path.join(f.source,'main.ts'),'utf8'),/value=2/);}
+  try{const task=await development.start({project_id:f.project.project_id,goal:'cancel late',submission_key:'cancel-late',scope:['main.ts']});await launched.promise;await development.cancel(task.task_id);release.resolve();await Promise.all([...development.executing.values()]);assert.equal(cancellations,1);assert.equal(f.service.engineering.task(task.task_id).status,'cancelled');assert.match(await fs.readFile(path.join(f.source,'main.ts'),'utf8'),/value=2/);}
   finally{release.resolve();await development.shutdown();await f.close();}
 });
 test('branch movement during configuration blocks launch without silently rebinding the task',async()=>{
@@ -111,7 +111,7 @@ test('branch movement during configuration blocks launch without silently rebind
   const runner:typeof runDevelopmentCodex=async options=>{calls++;return completed(options.task.task_id);};
   const config=async()=>{await exec('git',['-C',f.source,'checkout','-b','changed-during-preflight'],{windowsHide:true});return configuration();};
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,config);
-  try{const task=await development.start({project_id:f.project.project_id,goal:'branch conflict',submission_key:'branch'});await Promise.all([...development.executing.values()]);const saved=f.service.engineering.task(task.task_id);assert.equal(calls,0);assert.equal(saved.status,'blocked');assert.match(saved.unresolved.join('\n'),/WORKSPACE_CONFLICT/);}
+  try{const task=await development.start({project_id:f.project.project_id,goal:'branch conflict',submission_key:'branch',scope:['main.ts']});await Promise.all([...development.executing.values()]);const saved=f.service.engineering.task(task.task_id);assert.equal(calls,0);assert.equal(saved.status,'blocked');assert.match(saved.unresolved.join('\n'),/WORKSPACE_CONFLICT/);}
   finally{await development.shutdown();await f.close();}
 });
 
@@ -130,7 +130,7 @@ test('concurrent user entry edits preserve completed code results, real verifica
   };
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,configuration);
   try{
-    const task=await development.start({project_id:f.project.project_id,goal:'change value',submission_key:'entry-conflict'});await Promise.all([...development.executing.values()]);
+    const task=await development.start({project_id:f.project.project_id,goal:'change value',submission_key:'entry-conflict',scope:['main.ts']});await Promise.all([...development.executing.values()]);
     const saved=f.service.engineering.task(task.task_id);
     assert.equal(saved.status,'completed');assert.equal(saved.summary,'Changed value and verified it');assert.deepEqual(saved.decisions,['Preserve existing interface']);
     assert.deepEqual(saved.changes.map(c=>c.path),['main.ts']);assert.equal(saved.verification_status,'passed');assert.equal(saved.verification[0].origin,'observed');assert.equal(saved.verification[0].exit_code,0);

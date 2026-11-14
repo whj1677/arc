@@ -59,7 +59,7 @@ try{
   if(task?.status!=='completed'){
     const attemptsBefore=task?.attempt_ids.length??0;
     if(task){await page.locator('.engineering-task-row').filter({hasText:goal}).click();await page.getByRole('button',{name:'继续此任务',exact:true}).click();}
-    await page.getByLabel('开发任务',{exact:true}).fill(goal);await page.getByRole('button',{name:task?'继续开发':'开始开发',exact:true}).click();
+    await page.getByLabel('开发任务',{exact:true}).fill(goal);await page.getByLabel('允许修改的文件',{exact:true}).fill('src/cart.mjs');await page.getByRole('button',{name:task?'继续开发':'开始开发',exact:true}).click();
     task=await waitFor(async()=>(await page.evaluate(id=>window.arc.invoke('engineering_tasks',{project_id:id}),project.project_id)).find(item=>item.goal===goal),value=>!!value&&value.attempt_ids.length>attemptsBefore,20000);
     console.log(`Started real development ${task.task_id}`);await page.screenshot({path:path.join(scratch,'development-progress.png')});
     const other=path.join(scratch,'other');await fs.mkdir(other,{recursive:true});await fs.writeFile(path.join(other,'README.md'),'A separate project used only to verify task ownership.\n');

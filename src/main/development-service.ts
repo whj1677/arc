@@ -7,6 +7,7 @@ import {runDevelopmentCodex,type DevelopmentCommand} from './development-runner'
 import {readCodexConfiguration} from './codex-configuration';
 import {probeProviders,redact,type ActiveProcess} from './providers';
 import {id,now,Store} from './store';
+import {resolveDevelopmentScope} from './development-scope';
 
 type CommandRecord={command:DevelopmentCommand;state:CodeState;log:string;stateVerified:boolean};
 
@@ -36,7 +37,7 @@ export class DevelopmentService {
   constructor(readonly engineering:EngineeringService,readonly store:Store,readonly resources:string,readonly emit:(event:any)=>void,private readonly runner=runDevelopmentCodex,private readonly probe=probeProviders,private readonly configuration=readCodexConfiguration){}
   private event(attemptId:string,value:any){this.engineering.appendAttemptEvent(attemptId,JSON.parse(redact(JSON.stringify(value))));this.emit({type:'development_event',attempt_id:attemptId});}
   events(taskId:string){const task=this.engineering.task(taskId),attempts=task.attempt_ids.map(key=>this.store.get<DevelopmentAttempt>('development_attempt',key));return {attempts,events:attempts.flatMap(attempt=>this.engineering.attemptEvents(attempt.attempt_id).map((item:any)=>({...item.event,received_at:item.at,attempt_id:attempt.attempt_id})))};}
-  async start(input:{project_id:string;goal:string;submission_key:string;task_id?:string}):Promise<EngineeringTask>{
+  async start(input:{project_id:string;goal:string;submission_key:string;task_id?:string;scope:string[]}):Promise<EngineeringTask>{
     const workspace=await this.engineering.resolve({project_id:input.project_id});
     const receipt=this.store.maybe<{task_id:string}>('development_submission',input.submission_key);
     if(receipt){const prior=this.engineering.task(receipt.task_id);if(prior.project_id!==input.project_id)throw Error('开发请求标识属于另一个工程');return prior;}
@@ -44,8 +45,10 @@ export class DevelopmentService {
     this.engineering.checkWorkspaceAvailable(workspace);
     this.starting.add(workspace.workspace_id);
     try{
+      const files=await resolveDevelopmentScope(workspace.root_path,input.scope);
+      const scope=files.map(file=>path.relative(workspace.root_path,file).split(path.sep).join('/'));
       const task=await this.engineering.createTask(input);
-      const attempt=this.engineering.startAttempt(task.task_id,{provider_id:'codex',model:'等待官方执行配置',origin:'arc'});
+      const attempt=this.engineering.startAttempt(task.task_id,{provider_id:'codex',model:'等待官方执行配置',origin:'arc',write_scope:scope});
       this.store.put('development_submission',input.submission_key,{task_id:task.task_id});
       const pending=this.execute(attempt).catch(error=>this.fail(attempt,error)).finally(()=>{this.active.delete(attempt.attempt_id);this.executing.delete(attempt.attempt_id);this.cancelled.delete(attempt.attempt_id);});
       this.executing.set(attempt.attempt_id,pending);
@@ -67,7 +70,7 @@ export class DevelopmentService {
     const baseline=attempt.baseline??task.baseline;
     if(context.workspace.workspace_id!==task.workspace_id||context.workspace.root_path!==task.workspace_path||!sameVerificationState(context.code_state,baseline))throw Error('WORKSPACE_CONFLICT：启动前工作区或代码基线已改变，未派发开发。');
     const records:CommandRecord[]=[];let captureQueue=Promise.resolve(),possibleWrite=0;
-    const result=await this.runner({task,context,profile,storage:this.store.directory,
+    const result=await this.runner({task,context,profile,storage:this.store.directory,writeScope:attempt.write_scope!,
       event:event=>{if(event.item?.type==='file_change'||event.type==='item.started'&&event.item?.type==='command_execution')possibleWrite++;this.event(attemptId,event);},
       shouldStart:()=>!this.isStopped(attemptId),
       started:process=>{this.active.set(attemptId,process);if(this.isStopped(attemptId)){void process.cancel().catch(error=>this.event(attemptId,{type:'error',message:redact(String(error))}));return;}this.engineering.updateAttempt(attemptId,{status:'running',pid:process.child.pid});},

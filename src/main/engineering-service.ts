@@ -333,7 +333,7 @@ export class EngineeringService {
     if(this.store.all<DevelopmentAttempt>(attemptKind).some(attempt=>samePath(attempt.workspace_path,workspace.root_path)&&['starting','running'].includes(attempt.status))||
       this.tasks().some(task=>task.status==='running'&&samePath(task.workspace_path,workspace.root_path)))throw Error('此工作区已有开发任务，请等待结束或停止后再继续。');
   }
-  startAttempt(taskId:string,input:Pick<DevelopmentAttempt,'provider_id'|'model'|'origin'>) {
+  startAttempt(taskId:string,input:Pick<DevelopmentAttempt,'provider_id'|'model'|'origin'|'write_scope'>) {
     return this.store.transaction(()=>{const task=this.task(taskId);
       const workspace=this.store.get<WorkspaceBinding>(workspaceKind,task.workspace_id);if(workspace.status!=='bound'||!samePath(workspace.root_path,task.workspace_path))throw Error('任务工作区未绑定或已改变');
       this.checkWorkspaceAvailable(workspace);

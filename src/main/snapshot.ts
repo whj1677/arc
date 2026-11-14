@@ -172,7 +172,7 @@ export async function capture(rootPath: string, projectId: string, storage: stri
   await verify(root);
   if (observed.size !== files.length) throw new Error('捕获期间文件清单变化，请重试');
   let commit: string|null=null, dirty: string|null=null;
-  try { commit = (await exec('git',['-C',root,'rev-parse','HEAD'],{windowsHide:true,timeout:5000})).stdout.trim(); dirty = (await exec('git',['-C',root,'status','--porcelain=v1','--untracked-files=normal'],{windowsHide:true,timeout:5000,maxBuffer:1024*1024})).stdout.trim(); } catch { /* A non-Git project is valid; identity is not guessed. */ }
+  try { commit = (await exec('git',['-C',root,'rev-parse','HEAD'],{windowsHide:true,timeout:5000})).stdout.trim(); dirty = (await exec('git',['--no-optional-locks','-C',root,'status','--porcelain=v1','--untracked-files=normal'],{windowsHide:true,timeout:5000,maxBuffer:1024*1024})).stdout.trim(); } catch { /* A non-Git project is valid; identity is not guessed. */ }
   const snapshot: Snapshot = {source_snapshot_id:snapshotId,project_id:projectId,captured_at:now(),root_path:root,files,excluded,fingerprint:sha(JSON.stringify([files.map(f=>[f.path,f.content_sha256]),buildConfig])),commit,dirty,build_config:buildConfig,consistency:'verified'};
   await fs.mkdir(destination,{recursive:true});
   progress?.(files.length);
