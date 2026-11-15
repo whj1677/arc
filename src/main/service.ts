@@ -34,6 +34,7 @@ export class ArcService {
   private checkingCodex?:Promise<ProviderProfile[]>;
   private readonly refreshingTasks=new Map<string,Promise<void>>();
   private readonly refreshGenerations=new Map<string,string>();
+  private readonly externalWalkthroughs=new Map<string,{taskId:string;resolve:()=>void}>();
   private readonly queuedWalkthroughs=new Map<string,{submissionKey?:string;promise:Promise<void>;resolve:()=>void}>();
   constructor(readonly directory:string,readonly resources:string,readonly emit:(e:any)=>void=()=>{},private readonly codexRunner:typeof runCodex=runCodex) {
     this.store=new Store(directory);
@@ -313,11 +314,24 @@ export class ArcService {
     }
     const task=this.engineering.task(taskId);if(!task.reading||!task.end_state||!['completed','failed','blocked','cancelled'].includes(task.status))return Promise.resolve();
     const updateId=id('walkthrough'),previous=task.walkthrough??{status:'pending' as const,previous_result_id:task.reading.result_id,updated_at:now()};
-    this.engineering.saveWalkthrough(taskId,{...previous,status:'pending',update_id:updateId,error:undefined,updated_at:now()});this.refreshGenerations.set(taskId,updateId);
-    const pending=this.updateTaskWalkthrough(taskId,updateId,submissionKey??`walkthrough-${updateId}`).finally(()=>{
+    this.engineering.saveWalkthrough(taskId,{...previous,status:'pending',update_id:updateId,error:undefined,updated_at:now()});
+    return this.watchRefresh(taskId,updateId,this.updateTaskWalkthrough(taskId,updateId,submissionKey??`walkthrough-${updateId}`));
+  }
+  private watchRefresh(taskId:string,updateId:string,work:Promise<void>):Promise<void> {
+    this.refreshGenerations.set(taskId,updateId);
+    const pending=work.finally(()=>{
       if(this.refreshingTasks.get(taskId)===pending){this.refreshingTasks.delete(taskId);this.refreshGenerations.delete(taskId);}
-      const queued=this.queuedWalkthroughs.get(taskId);if(queued){this.queuedWalkthroughs.delete(taskId);void this.refreshTaskWalkthrough(taskId,queued.submissionKey).then(queued.resolve,queued.resolve);}
+      const queued=this.queuedWalkthroughs.get(taskId);if(queued){this.queuedWalkthroughs.delete(taskId);if(this.closing)queued.resolve();else void this.refreshTaskWalkthrough(taskId,queued.submissionKey).then(queued.resolve,queued.resolve);}
     });this.refreshingTasks.set(taskId,pending);return pending;
+  }
+  trackExternalWalkthrough(runId:string) {
+    if(this.externalWalkthroughs.has(runId))return;const run=this.store.get<Run>('run',runId);if(!run.development_task_id)return;
+    const task=this.engineering.task(run.development_task_id);if(!task.walkthrough||task.walkthrough.run_id!==runId)return;
+    const updateId=task.walkthrough.update_id??id('walkthrough');if(!task.walkthrough.update_id)this.engineering.saveWalkthrough(task.task_id,{...task.walkthrough,update_id:updateId,updated_at:now()});
+    let resolve!:()=>void;const work=new Promise<void>(done=>resolve=done);this.externalWalkthroughs.set(runId,{taskId:task.task_id,resolve});this.watchRefresh(task.task_id,updateId,work);
+  }
+  finishExternalWalkthrough(runId:string) {
+    const active=this.externalWalkthroughs.get(runId);if(active){this.externalWalkthroughs.delete(runId);active.resolve();}
   }
   private async updateTaskWalkthrough(taskId:string,updateId:string,submissionKey:string) {
     let runId:string|undefined;
@@ -544,7 +558,7 @@ export class ArcService {
     const run=this.store.get<Run>('run',runId);
     if(terminal.has(run.status))return run;
     const active=this.active.get(runId);
-    if(run.origin==='mcp'){run.status='cancelled';run.ended_at=now();run.error='Arc 已撤销本次任务的读取和结果写回权限；Agent 对话不会被远程停止，请在 Agent 中停止生成。';this.store.put('run',runId,run);this.changed();return run;}
+    if(run.origin==='mcp'){run.status='cancelled';run.ended_at=now();run.error='Arc 已撤销本次任务的读取和结果写回权限；Agent 对话不会被远程停止，请在 Agent 中停止生成。';this.store.put('run',runId,run);this.finishExternalWalkthrough(runId);this.changed();return run;}
     if(run.status==='validating'&&!active){run.status='cancelled';run.ended_at=now();run.error='本地结果校验已取消，未发布正式说明';this.store.put('run',runId,run);this.changed();return run;}
     if(run.status==='queued'&&!active){run.status='cancelled';run.ended_at=now();this.store.put('run',runId,run);this.changed();return run;}
     if(!active)throw new Error('无法确认此运行的本地进程；状态未知，不冒充远端停止。');
@@ -604,6 +618,7 @@ export class ArcService {
       void stopTree(active.child).catch(()=>{});
     }},12000);
     await pending;clearTimeout(timer);
+    await Promise.allSettled([...this.externalWalkthroughs.keys()].map(runId=>this.cancel(runId)));
     await Promise.allSettled([...this.refreshingTasks.values()]);
     await closeDshWebHosts();
     while(this.indexing.size)await new Promise(resolve=>setTimeout(resolve,20));

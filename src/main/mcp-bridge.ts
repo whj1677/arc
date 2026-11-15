@@ -180,9 +180,10 @@ export class ArcMcpBridge {
       // An explicit local configuration label, never proof of host identity.
       const provider=client?.configured_provider||'codex';
       if(!['codex','dsh','workbuddy','kimi'].includes(provider))throw Error('MCP 宿主配置无效');
-      const request=string(args.request_id,100),key=`mcp:${this.connectionId}:${request}`,requestedDevelopmentTaskId=requested?.project_id===project.project_id&&(!args.scenario_id||requested.scenario_id===args.scenario_id)&&typeof requested.development_task_id==='string'?requested.development_task_id:undefined,developmentTaskId=args.development_task_id??requestedDevelopmentTaskId,developmentTask=developmentTaskId?this.service.engineering.task(string(developmentTaskId,100)):undefined;
-      if(developmentTask&&(developmentTask.project_id!==project.project_id||!developmentTask.reading||args.question_id||args.scenario_id&&args.scenario_id!==developmentTask.reading.scenario_id))throw Error('开发任务与分析场景归属不一致');
+      const request=string(args.request_id,100),key=`mcp:${this.connectionId}:${request}`;
       let run=this.service.store.all<Run>('run').find(r=>r.submission_key===key||r.mcp_request_key===key),created=false;
+      const requestedDevelopmentTaskId=!run&&!args.question_id&&requested?.project_id===project.project_id&&(!args.scenario_id||requested.scenario_id===args.scenario_id)&&typeof requested.development_task_id==='string'?requested.development_task_id:undefined,developmentTaskId=run?.development_task_id??args.development_task_id??requestedDevelopmentTaskId,developmentTask=developmentTaskId?this.service.engineering.task(string(developmentTaskId,100)):undefined;
+      if(developmentTask&&(developmentTask.project_id!==project.project_id||!developmentTask.reading||args.question_id||args.scenario_id&&args.scenario_id!==developmentTask.reading.scenario_id))throw Error('开发任务与分析场景归属不一致');
       if(!run){
         const questionId=args.question_id?string(args.question_id,100):!developmentTask&&!args.scenario_id?waiting.at(-1)?.question_id:undefined;
         if(questionId){
@@ -199,7 +200,7 @@ export class ArcMcpBridge {
         }
         this.service.store.put('run',run.binding.run_id,run);
         this.service.event(run.binding.run_id,{type:'local.stage',stage:'mcp_connected',message:`Agent 已通过 MCP 领取任务；宿主标签 ${provider} 来自本地配置，身份、模型和推理强度未由 Arc 核验`,client:{name:typeof client?.name==='string'?client.name.slice(0,100):'unknown',configured_provider:provider,identity:'MCP client self-reported'}});
-        if(created&&developmentTask){const current=this.service.engineering.task(developmentTask.task_id);if(current.walkthrough?.status!=='pending')throw Error('原任务当前不可开始走读更新');this.service.engineering.saveWalkthrough(current.task_id,{...current.walkthrough,status:'running',run_id:run.binding.run_id,source_snapshot_id:run.binding.source_snapshot_id,updated_at:now()},current.walkthrough.update_id);this.service.store.put('setting','mcp-requested-analysis',null);}
+        if(created&&developmentTask){const current=this.service.engineering.task(developmentTask.task_id);if(current.walkthrough?.status!=='pending')throw Error('原任务当前不可开始走读更新');this.service.engineering.saveWalkthrough(current.task_id,{...current.walkthrough,status:'running',run_id:run.binding.run_id,source_snapshot_id:run.binding.source_snapshot_id,updated_at:now()},current.walkthrough.update_id);this.service.trackExternalWalkthrough(run.binding.run_id);this.service.store.put('setting','mcp-requested-analysis',null);}
         this.service.changed();
       }else if(run.provider_id!==provider||run.binding.project_id!==project.project_id||run.development_task_id!==developmentTask?.task_id||(args.scenario_id&&run.binding.scenario_id!==args.scenario_id)||(args.question_id&&run.reading_question_id!==args.question_id))throw Error('请求标识已被其他宿主或场景使用');
       const snapshot=this.service.store.get<Snapshot>('snapshot',run.binding.source_snapshot_id);
@@ -243,7 +244,7 @@ export class ArcMcpBridge {
         return {status:saved.status,result_id:saved.status==='completed'?value.result_id:undefined,question_id:saved.reading_question_id,validation:saved.validation,error:saved.error};
       })();
       this.inFlight.set(run.binding.run_id,{digest,task});
-      try{return await task;}catch(e){const latest=this.service.store.get<Run>('run',run.binding.run_id);if(['running','validating'].includes(latest.status)){latest.status='failed';latest.ended_at=now();latest.error=redact((e as Error).message);this.service.store.put('run',run.binding.run_id,latest);this.recordDevelopmentWalkthrough(run,latest);this.service.changed();}throw e;}finally{this.inFlight.delete(run.binding.run_id);}
+      try{return await task;}catch(e){const latest=this.service.store.get<Run>('run',run.binding.run_id);if(['running','validating'].includes(latest.status)){latest.status='failed';latest.ended_at=now();latest.error=redact((e as Error).message);this.service.store.put('run',run.binding.run_id,latest);this.recordDevelopmentWalkthrough(run,latest);this.service.changed();}throw e;}finally{this.inFlight.delete(run.binding.run_id);this.service.finishExternalWalkthrough(run.binding.run_id);}
     }
   }
   async close(){this.closed=true;this.revokeRuns();await Promise.allSettled([...this.inFlight.values()].map(x=>x.task));if(this.server)await new Promise<void>(resolve=>this.server!.close(()=>resolve()));}
