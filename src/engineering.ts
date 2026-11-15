@@ -59,11 +59,20 @@ export interface FileChange {
   ownership:'task_change'|'preexisting_overlap';
   text_diff_unavailable?:boolean;
 }
+export interface DevelopmentCriterion {
+  criterion_id:string; text:string; evidence_ids:string[];
+}
+export interface DevelopmentStep {
+  step_id:string; title:string; change:string; status:'pending'|'in_progress'|'completed'|'blocked'|'failed'|'superseded';
+  progress:string; criteria:DevelopmentCriterion[]; evidence_ids:string[]; unresolved:string[];
+  created_at:string; updated_at:string;
+  verification_status?:'not_run'|'passed'|'failed'|'partial'|'stale';
+}
 export interface VerificationEvidence {
   evidence_id:string; command:string; cwd:string; outcome:'passed'|'failed'|'blocked'|'not_run';
   exit_code:number|null; origin:'observed'|'self_reported'; code_state:CodeState;
   created_at:string; log_path?:string; note?:string;
-  code_state_verified?:boolean;
+  code_state_verified?:boolean; step_id?:string; criterion_id?:string;
 }
 export interface TaskReadingBinding {
   feature_id:string; scenario_id:string; result_id:string; source_snapshot_id:string;
@@ -81,7 +90,7 @@ export interface EngineeringTask {
   status:'pending'|'running'|'blocked'|'completed'|'failed'|'cancelled'|'interrupted';
   baseline:CodeState; end_state?:CodeState; diff_baseline?:CodeState; context_version:number;
   summary:string; decisions:string[]; unresolved:string[]; changes:FileChange[];
-  verification:VerificationEvidence[]; changes_status?:'needs_review';
+  verification:VerificationEvidence[]; changes_status?:'needs_review'; steps?:DevelopmentStep[];
   verification_status:'not_run'|'passed'|'failed'|'partial'|'stale';
   attempt_ids:string[]; created_at:string; updated_at:string; saved:'saved';
   requests?:{text:string;submission_key:string;created_at:string}[];
@@ -105,7 +114,7 @@ export interface CreateEngineeringTask extends ContextRequest {
 }
 export interface UpdateEngineeringTask {
   task_id:string; expected_version:number; submission_key:string; summary?:string;
-  decisions?:string[]; unresolved?:string[]; verification?:VerificationEvidence[];
+  decisions?:string[]; unresolved?:string[]; verification?:VerificationEvidence[]; steps?:DevelopmentStep[];
   status?:EngineeringTask['status']; attempt_id?:string;
 }
 export interface FinishEngineeringTask extends UpdateEngineeringTask {

@@ -7,7 +7,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-import { scanAecLegacy, applyAecRuleMigration, installArcAgentRules, planAecRuleMigration } from '../src/main/aec-migration';
+import { scanAecLegacy, applyAecRuleMigration, installArcAgentRules, planAecRuleMigration, ARC_ENGINEERING_RULES } from '../src/main/aec-migration';
 import { ARC_CHECKER_SOURCE } from '../src/main/aec-checker-source';
 import oldScript from './fixtures/aec/legacy-upgrade-rules';
 import { ArcService } from '../src/main/service';
@@ -70,6 +70,21 @@ test('explicit agent installation is idempotent and preserves custom rules', asy
   assert.equal((await installArcAgentRules(root)).changed, false);
   assert.equal(await fs.readFile(path.join(root, 'agents.md'), 'utf8'), content);
   assert.equal((await fs.readdir(root)).length, 1);
+});
+test('recognized arc-1 rule text upgrades on reconnect while user-edited managed text is preserved', async t => {
+  const root = await fixture(t), previous = ARC_ENGINEERING_RULES.split('\n').filter(line => !line.includes('修改前用 arc_update_development')).join('\n');
+  const old = '# Team rules\n<!-- arc-engineering:start version=arc-1 -->\n' + previous + '\n<!-- arc-engineering:end version=arc-1 -->\nKeep custom tail.\n';
+  await fs.writeFile(path.join(root, 'AGENTS.md'), old);
+  const connectionFile = path.join(root, 'mcp', 'connection.json'), upgraded = await installArcAgentRules(root, { connectionFile });
+  assert.equal(upgraded.changed, true);
+  const content = await fs.readFile(path.join(root, 'AGENTS.md'), 'utf8');
+  assert.ok(content.startsWith('# Team rules\n')); assert.ok(content.endsWith('Keep custom tail.\n'));
+  assert.match(content, /arc_save_development_steps|修改前用 arc_update_development/); assert.ok(content.includes('arc-connection-file'));
+  assert.equal((await installArcAgentRules(root, { connectionFile })).changed, false);
+  const customized = content.replace('修改前用 arc_update_development', '用户改写：修改前用 arc_update_development');
+  await fs.writeFile(path.join(root, 'AGENTS.md'), customized);
+  await assert.rejects(installArcAgentRules(root, { connectionFile }), /改写|识别/);
+  assert.equal(await fs.readFile(path.join(root, 'AGENTS.md'), 'utf8'), customized);
 });
 test('tampered replacement cannot change user content outside a managed block', async t => {
   const root = await fixture(t);

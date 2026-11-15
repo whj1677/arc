@@ -41,12 +41,14 @@ test('development orchestration captures real differences, observed exit evidenc
   const f=await fixture();let optionsSeen:any;
   const runner:typeof runDevelopmentCodex=async options=>{
     optionsSeen=options;
+    const step={step_id:'step-order',title:'修改并验证订单计算',change:'只调整当前计算实现',status:'in_progress' as const,progress:'修改前方案已保存',criteria:[{criterion_id:'criterion-order',text:'相关测试有结果',evidence_ids:[]}],evidence_ids:[],unresolved:['尚未验证'],created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
+    await options.saveSteps?.([step]);
     await options.commandCompleted!({id:'test-before',command:'node --test',cwd:f.source,cwd_source:'task_workspace',exit_code:1,output:'assertion failed',completed_at:new Date().toISOString()});
     await fs.writeFile(path.join(f.source,'main.ts'),'export const value=2;\n');
     await options.commandCompleted!({id:'test-command',command:'node --test',cwd:f.source,cwd_source:'task_workspace',exit_code:0,output:'1 passed',completed_at:new Date().toISOString()});
     await options.commandCompleted!({id:'git-check',command:gitReceipt,cwd:f.source,cwd_source:'task_workspace',exit_code:0,output:'Git receipt output',completed_at:new Date().toISOString()});
-    const output=completed(options.task.task_id,[{command:'node --test',outcome:'passed',note:'simulated pass'},{command:gitCheck,outcome:'passed',note:'Git check'}]);
-    return {...output,result:{...output.result,context_entries:[{entry_id:'',expected_version:0,category:'design',key:'Addition boundary',text:'Retain current API; only change the value.'}]}};
+    const output=completed(options.task.task_id,[{command:'node --test',outcome:'passed',note:'simulated pass',step_id:'step-order',criterion_id:'criterion-order'},{command:gitCheck,outcome:'passed',note:'Git check'}]);
+    return {...output,result:{...output.result,steps:[{...step,status:'completed' as const,progress:'修改与验证完成',unresolved:[]}],context_entries:[{entry_id:'',expected_version:0,category:'design',key:'Addition boundary',text:'Retain current API; only change the value.'}]}};
   };
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,configuration);
   try{
@@ -56,6 +58,7 @@ test('development orchestration captures real differences, observed exit evidenc
     assert.equal(saved.status,'completed');assert.deepEqual(saved.changes.map(item=>item.path),['main.ts']);assert.equal(await fs.readFile(path.join(f.source,'user-note.txt'),'utf8'),'keep user text');
     assert.equal(saved.verification_status,'passed');
     assert.deepEqual(saved.verification.map(e=>[e.origin,e.outcome,e.exit_code]),[['observed','failed',1],['observed','passed',0],['observed','passed',0]]);
+    assert.equal(saved.steps?.[0].status,'completed');assert.equal(saved.verification[1].step_id,'step-order');assert.equal(saved.verification[1].criterion_id,'criterion-order');
     assert.match(attempt.model,/配置.*test-configured-model/);
     assert.equal(optionsSeen.task.workspace_path,f.source);assert.equal((await development.start({project_id:f.project.project_id,goal:'change value',submission_key:'first',scope:['main.ts']})).task_id,task.task_id);
     const design=(await f.service.engineering.context({project_id:f.project.project_id,category:'design'})).entries;assert.equal(design.length,1);assert.equal(design[0].origin,'agent');assert.equal(design[0].status,'needs_review');assert.equal(design[0].text,'Retain current API; only change the value.');

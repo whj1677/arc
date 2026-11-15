@@ -242,3 +242,18 @@ test('MCP section writes require an authorized actual workspace and always retai
     const read=await bridge.call('arc_engineering_context',{workspace_path:f.root,category:'design'});assert.equal(read.entries.length,1);assert.equal(read.entries[0].entry_id,saved.entry_id);
   }finally{await bridge.close();await arc.shutdown();arc.store.close();await f.cleanup();}
 });
+
+test('development steps persist plans, criterion evidence, stale state and supersession without breaking recovery',async()=>{
+  const f=await fixture();let restored:Store|undefined;
+  try{
+    let task=await f.service.createTask({project_id:'p',goal:'保留旧行为并修改加法',submission_key:'steps-create'});
+    const plan=(status:'in_progress'|'completed'|'superseded',progress:string,evidenceIds:string[]=[])=>({step_id:'step-add',title:'修正并核对加法',change:'使用现有输入完成最小修改',status,progress,criteria:[{criterion_id:'criterion-add',text:'相关行为测试必须有真实结果',evidence_ids:evidenceIds}],evidence_ids:evidenceIds,unresolved:status==='completed'||status==='superseded'?[]:['行为尚未验证'],created_at:'ignored',updated_at:'ignored'});
+    task=f.service.updateTask({task_id:task.task_id,expected_version:task.version,submission_key:'steps-plan',steps:[plan('in_progress','已保存修改前方案')]});assert.equal(task.steps?.[0].step_id,'step-add');assert.equal(task.steps?.[0].verification_status,undefined);assert.ok(f.service.history('task',task.task_id).some(version=>version.steps?.[0]?.progress==='已保存修改前方案'));
+    const state=await f.service.captureState('p'),evidence:VerificationEvidence={evidence_id:'step-evidence',command:'node --test',cwd:f.root,outcome:'passed',exit_code:0,origin:'self_reported',code_state:state,created_at:new Date().toISOString(),step_id:'step-add',criterion_id:'criterion-add'};
+    task=f.service.updateTask({task_id:task.task_id,expected_version:task.version,submission_key:'steps-evidence',steps:[plan('completed','步骤已完成并关联验证',['step-evidence'])],verification:[evidence]});let current=await f.service.currentTask(task.task_id);assert.equal(current.steps?.[0].verification_status,'partial');assert.equal(current.steps?.[0].criteria[0].evidence_ids[0],'step-evidence');
+    await fs.writeFile(path.join(f.root,'sum.js'),'export const sum = (a,b) => Number(a)+Number(b);\n');current=await f.service.currentTask(task.task_id);assert.equal(current.steps?.[0].verification_status,'stale');assert.equal(current.verification_status,'stale');
+    task=f.service.updateTask({task_id:task.task_id,expected_version:current.version,submission_key:'steps-superseded',steps:[plan('superseded','用户替换要求，此步骤不再执行',['step-evidence'])]});assert.equal(task.steps?.[0].status,'superseded');assert.ok(f.service.history('task',task.task_id).some(version=>version.steps?.[0]?.status==='completed'));
+    assert.throws(()=>f.service.updateTask({task_id:task.task_id,expected_version:task.version,submission_key:'steps-invalid-link',verification:[{...evidence,evidence_id:'wrong-step',step_id:'missing'}]}),/不存在的步骤/);
+    const output=path.join(f.directory,'steps.json');await f.service.exportProject('p',output);restored=new Store(path.join(f.directory,'restored-steps'));const recovered=new EngineeringService(restored);await recovered.restoreProject(output);const saved=recovered.task(task.task_id);assert.equal(saved.steps?.[0].status,'superseded');assert.equal(saved.steps?.[0].criteria[0].criterion_id,'criterion-add');assert.equal(saved.verification[0].step_id,'step-add');
+  }finally{restored?.close();await f.cleanup();}
+});

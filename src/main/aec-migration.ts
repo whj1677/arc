@@ -5,10 +5,12 @@ import { ARC_CHECKER_SOURCE, ARC_MIGRATION_ADAPTER_SOURCE, OFFICIAL_AEC_SCRIPT_H
 
 const hash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const AEC_VERSION = 'arc-1';
+const KNOWN_ARC_RULE_BODY_SHA256 = new Set(['aefad160d947ecf0abf70922512fa404a16f576cabd876a4bb762604fd35cf5c']);
 export const ARC_ENGINEERING_RULES = `本工程通过 ARC 保存工程上下文与开发记录，不需要安装或调用独立 AEC Skill。
 - 普通任务自动调用 arc_engineering_context，workspace_path 必须是当前实际工程绝对路径；只读解释不创建开发任务、不修改工程。
 - 开发前调用 arc_begin_development（workspace_path、goal、稳定 submission_key）；已有 task_id 时续接原任务，冻结正确工作区和开始基线。
 - 使用 Agent 原有能力实施最小充分改动和必要验证；保留已有用户改动。按实际影响记录接口、迁移或重要决定，不强制新建 FIX/REQ 文件包或空章节。
+- 修改前用 arc_update_development 保存方案与步骤，在有意义的进展点更新同一 step_id；步骤写明 change、status、progress、criteria 和 unresolved，验证用 step_id/criterion_id 关联。小改动可只有一步，不生成中间文档套件。
 - 结束调用 arc_finish_development（task_id、expected_version、稳定 submission_key、真实 status、summary、verification、unresolved）；中途用 arc_update_development，恢复用 arc_development_task。
 - 只收到 task_id 的续接请求，先用 arc_development_task 读取完整 goal、requests、decisions、summary、unresolved、reading 和 walkthrough，再读取当前上下文并核对当前源码；不得用 recent_tasks 摘要代替，不把历史决定或完成声明当作当前源码事实。
 - 验证记录包含实际 command、cwd、exit_code、outcome 和对应 code_state；区分 observed 与 self_reported、未运行与通过，失败和未完成项不得省略。
@@ -167,14 +169,21 @@ export async function installArcAgentRules(workspacePath: string, options: { con
   if (options.connectionFile && !path.isAbsolute(options.connectionFile)) throw new Error('ARC 连接文件路径必须是绝对路径');
   const active = legacy?.version === AEC_VERSION ? legacy : managed;
   if (active?.version === AEC_VERSION) {
-    if (!options.connectionFile) return { path: relative, changed: false };
-    const body = original.slice(active.start, active.end), marker = `<!-- arc-connection-file: ${JSON.stringify(options.connectionFile)} -->`;
-    const existingMarkers = [...body.matchAll(/<!-- arc-connection-file: .*? -->/g)];
+    const body = original.slice(active.start, active.end), existingMarkers = [...body.matchAll(/<!-- arc-connection-file: .*? -->/g)];
     if (existingMarkers.length > 1) throw new Error('ARC 连接路径标记重复，未修改用户规则');
-    const updatedBody = existingMarkers.length ? body.replace(existingMarkers[0][0], marker) : body.replace(/-->/, `-->${original.includes('\r\n') ? '\r\n' : '\n'}${marker}`);
-    if (updatedBody === body) return { path: relative, changed: false };
+    const normalized = body
+      .replace(/<!--\s*(?:ai-engineering-context|arc-engineering):(?:start|end)\b[^>]*-->/g, '')
+      .replace(/<!-- arc-connection-file: .*? -->/g, '')
+      .replace(/\r\n/g, '\n').trim();
+    if (normalized !== ARC_ENGINEERING_RULES.replace(/\r\n/g, '\n').trim() && !KNOWN_ARC_RULE_BODY_SHA256.has(hash(normalized))) {
+      throw new Error('ARC 管理规则正文已被用户改写或不是可识别的官方旧版；未覆盖，请人工确认管理块内容');
+    }
+    const newline = original.includes('\r\n') ? '\r\n' : '\n', marker = options.connectionFile ? `<!-- arc-connection-file: ${JSON.stringify(options.connectionFile)} -->` : existingMarkers[0]?.[0];
+    const content = block(legacy === active ? 'ai-engineering-context' : 'arc-engineering', (marker ? marker + newline : '') + ARC_ENGINEERING_RULES, newline);
+    const replacement = original.slice(0, active.start) + content + original.slice(active.end);
+    if (replacement === original) return { path: relative, changed: false };
     if (await fs.readFile(file, 'utf8') !== original) throw new Error('AGENTS.md 在预检后已变化');
-    await atomicWrite(file, original.slice(0, active.start) + updatedBody + original.slice(active.end));
+    await atomicWrite(file, replacement);
     return { path: relative, changed: true };
   }
   const newline = original.includes('\r\n') ? '\r\n' : '\n';

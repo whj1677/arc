@@ -4,7 +4,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import type {Project,Snapshot,Explanation,Feature,Scenario} from '../shared';
 import {engineeringSectionCategories,type SaveEngineeringEntry,type EngineeringSectionCategory} from '../engineering';
-import type {CodeState,WorkspaceBinding,ContextEntry,ContextSource,EngineeringContext,EngineeringAnalysis,ContextRequest,EngineeringTask,CreateEngineeringTask,UpdateEngineeringTask,FinishEngineeringTask,DevelopmentAttempt,VerificationEvidence,TaskReadingBinding,WalkthroughUpdate} from '../engineering';
+import type {CodeState,WorkspaceBinding,ContextEntry,ContextSource,EngineeringContext,EngineeringAnalysis,ContextRequest,EngineeringTask,CreateEngineeringTask,UpdateEngineeringTask,FinishEngineeringTask,DevelopmentAttempt,VerificationEvidence,TaskReadingBinding,WalkthroughUpdate,DevelopmentStep} from '../engineering';
 import {Store,id,now} from './store';
 import {capture,freshness,readSource,sha,relativePath,safeFile,workspaceFiles,workspaceGitDirectory} from './snapshot';
 import {exportEngineeringProject,restoreEngineeringProject} from './engineering-transfer';
@@ -234,9 +234,10 @@ export class EngineeringService {
   }
   tasks(input:{project_id?:string;query?:string;file?:string;status?:string}={}) {return this.store.all<EngineeringTask>(taskKind).filter(t=>(!input.project_id||t.project_id===input.project_id)&&(!input.status||t.status===input.status)&&(!input.file||t.changes.some(c=>c.path===input.file)||t.scope.includes(input.file))&&(!input.query||JSON.stringify([t.goal,t.summary,t.decisions,t.unresolved]).toLowerCase().includes(input.query.toLowerCase()))).sort((a,b)=>b.updated_at.localeCompare(a.updated_at));}
   task(taskId:string){const task=this.store.get<EngineeringTask>(taskKind,taskId);const base=task.diff_baseline??task.baseline,baseline=this.store.get<Snapshot>('snapshot',base.snapshot_id),baselineFiles=stateFiles(baseline,base),files=new Map(base.dirty.map(file=>[file,baselineFiles.get(file)??null]));for(const file of task.rebind_preexisting_files??[])files.set(file.path,file.sha256);task.preexisting_files=[...files].map(([path,sha256])=>({path,sha256}));return task;}
-  private currentVerification(task:EngineeringTask,state?:CodeState):EngineeringTask {
-    const status=state?this.verificationStatus(task,state):task.verification_status==='passed'&&task.verification.some(e=>!e.code_state.workspace_fingerprint)?'partial':task.verification_status;
-    return {...task,verification_status:status};
+  private currentVerification(task:EngineeringTask,state?:CodeState|null):EngineeringTask {
+    const status=state===null?'stale':state?this.verificationStatus(task,state):task.verification_status==='passed'&&task.verification.some(e=>!e.code_state.workspace_fingerprint)?'partial':task.verification_status;
+    const steps=task.steps?.map(step=>({...step,verification_status:this.currentStepStatus(task,step,state)}));
+    return {...task,verification_status:status,...(steps?{steps}:{})};
   }
   private async verificationState(task:EngineeringTask) {
     const workspace=this.store.get<WorkspaceBinding>(workspaceKind,task.workspace_id);
@@ -244,23 +245,52 @@ export class EngineeringService {
     return this.captureState(task.project_id,task.workspace_path).catch(()=>null);
   }
   async currentTask(taskId:string) {
-    const task=this.task(taskId);
-    if(!task.verification.length)return task;
-    const state=await this.verificationState(task);
-    return state===null?{...task,verification_status:'stale'}:this.currentVerification(task,state);
+    const task=this.task(taskId),state=await this.verificationState(task);
+    return this.currentVerification(task,state);
   }
   async currentTasks(input:Parameters<EngineeringService['tasks']>[0]) {
     const states=new Map<string,ReturnType<EngineeringService['verificationState']>>();
     return Promise.all(this.tasks(input).map(async task=>{
-      if(!task.verification.length)return task;
       if(!states.has(task.workspace_id))states.set(task.workspace_id,this.verificationState(task));
       const state=await states.get(task.workspace_id);
-      return state===null?{...task,verification_status:'stale' as const}:this.currentVerification(task,state);
+      return this.currentVerification(task,state);
     }));
   }
   history(kind:'task'|'context',objectId:string){return this.store.versions(kind==='task'?taskKind:contextKind,objectId);}
   private receiptKey(operation:string,objectId:string,key:string){return sha(`${operation}\0${objectId}\0${requireText(key,300)}`);}
   private saveTask(task:EngineeringTask){task.version++;task.updated_at=now();task.saved='saved';this.store.putVersion(taskKind,task.task_id,task.version,task);}
+  private idList(value:unknown):string[] {
+    if(!Array.isArray(value)||value.length>100)throw Error('步骤证据列表无效');
+    const values=value.map(item=>requireText(item,300));if(new Set(values).size!==values.length)throw Error('步骤证据引用重复');return values;
+  }
+  private mergeSteps(task:EngineeringTask,input:DevelopmentStep[]) {
+    if(!Array.isArray(input)||input.length>40)throw Error('开发步骤数量无效');
+    const steps=[...(task.steps??[])],seen=new Set<string>();
+    for(const provided of input){
+      const {verification_status:_computed,...value}=provided,stepId=requireText(value.step_id,160);if(seen.has(stepId))throw Error('同次更新的步骤 ID 重复');seen.add(stepId);
+      if(!['pending','in_progress','completed','blocked','failed','superseded'].includes(value.status))throw Error('步骤状态无效');
+      if(!Array.isArray(value.criteria)||value.criteria.length<1||value.criteria.length>20)throw Error('每个步骤需要 1–20 条验收条件');
+      const criteria=value.criteria.map(criterion=>({criterion_id:requireText(criterion.criterion_id,160),text:requireText(criterion.text,4000),evidence_ids:this.idList(criterion.evidence_ids)}));
+      if(new Set(criteria.map(c=>c.criterion_id)).size!==criteria.length)throw Error('步骤内验收条件 ID 重复');
+      const previous=steps.find(step=>step.step_id===stepId),step:DevelopmentStep={step_id:stepId,title:requireText(value.title,300),change:requireText(value.change,6000),status:value.status,progress:requireText(value.progress,6000),criteria,evidence_ids:this.idList(value.evidence_ids),unresolved:(value.unresolved??[]).map(item=>requireText(item,4000)),created_at:previous?.created_at??now(),updated_at:now()};
+      if(previous)steps[steps.indexOf(previous)]=step;else steps.push(step);
+    }
+    task.steps=steps;
+  }
+  private checkStepEvidence(task:EngineeringTask) {
+    const known=new Set(task.verification.map(item=>item.evidence_id));
+    for(const step of task.steps??[]){
+      const links=[...step.evidence_ids,...step.criteria.flatMap(criterion=>criterion.evidence_ids)];
+      for(const evidenceId of links){const evidence=task.verification.find(item=>item.evidence_id===evidenceId);if(!evidence)throw Error('步骤引用了不存在的验证证据');if(evidence.step_id&&evidence.step_id!==step.step_id)throw Error('验证证据与步骤归属不一致');}
+      for(const criterion of step.criteria)for(const evidenceId of criterion.evidence_ids){const evidence=task.verification.find(item=>item.evidence_id===evidenceId)!;if(evidence.criterion_id&&evidence.criterion_id!==criterion.criterion_id)throw Error('验证证据与验收条件归属不一致');}
+    }
+  }
+  private currentStepStatus(task:EngineeringTask,step:DevelopmentStep,state?:CodeState|null):DevelopmentStep['verification_status'] {
+    const ids=new Set([...step.evidence_ids,...step.criteria.flatMap(criterion=>criterion.evidence_ids)]),linked=task.verification.filter(item=>item.step_id===step.step_id||ids.has(item.evidence_id));
+    if(!linked.length)return 'not_run';if(state===null)return 'stale';if(!state)return 'partial';const current=linked.filter(item=>sameVerificationState(item.code_state,state));if(!current.length)return 'stale';
+    const latest=new Map<string,VerificationEvidence>();for(const item of current)latest.set(item.command,item);const checks=[...latest.values()];
+    if(checks.some(item=>item.outcome==='failed'))return 'failed';return checks.every(item=>item.outcome==='passed'&&item.origin==='observed'&&!!item.log_path&&item.code_state_verified!==false)?'passed':'partial';
+  }
   private validateReading(projectId:string,input?:TaskReadingBinding):TaskReadingBinding|undefined {
     if(!input)return undefined;
     const feature=this.store.get<Feature>('feature',input.feature_id),scenario=this.store.get<Scenario>('scenario',input.scenario_id),explanation=this.store.get<Explanation>('explanation',input.result_id),snapshot=this.store.get<Snapshot>('snapshot',input.source_snapshot_id);
@@ -291,7 +321,9 @@ export class EngineeringService {
     return this.store.transaction(()=>{const task=this.task(input.task_id);this.checkUpdate(task,input);
       if(input.summary!==undefined)task.summary=requireText(input.summary);
       if(input.decisions)task.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)task.unresolved=input.unresolved.map(s=>requireText(s));
+      if(input.steps)this.mergeSteps(task,input.steps);
       if(input.verification)for(const evidence of input.verification){this.checkEvidence(task,evidence);if(!task.verification.some(e=>e.evidence_id===evidence.evidence_id))task.verification.push(evidence);}
+      this.checkStepEvidence(task);
       if(input.status)task.status=input.status;task.verification_status=this.verificationStatus(task,task.end_state??task.baseline);
       this.saveTask(task);this.store.put('engineering_receipt',key,task);this.changed();return task;});
   }
@@ -305,6 +337,8 @@ export class EngineeringService {
     const source=this.store.get<Snapshot>('snapshot',e.code_state.snapshot_id);if(source.project_id!==task.project_id||source.fingerprint!==e.code_state.fingerprint)throw Error('验证代码状态不属于此工程');
     if(!['observed','self_reported'].includes(e.origin)||!['passed','failed','blocked','not_run'].includes(e.outcome))throw Error('验证状态无效');
     if(e.outcome==='passed'&&e.exit_code!==0)throw Error('通过的命令必须有零退出码');if(e.log_path)this.checkLogPath(task,e.log_path);
+    if(e.step_id){const step=task.steps?.find(item=>item.step_id===e.step_id);if(!step)throw Error('验证证据引用了不存在的步骤');if(e.criterion_id&&!step.criteria.some(item=>item.criterion_id===e.criterion_id))throw Error('验证证据引用了不存在的验收条件');}
+    else if(e.criterion_id)throw Error('验收条件关联必须同时指定步骤');
   }
   private checkLogPath(task:EngineeringTask,filePath:string){relativePath(filePath);if(!filePath.startsWith(`development/${task.task_id}/`)&&!filePath.startsWith(`logs/${task.task_id}/`))throw Error('日志路径不属于此任务的证据目录');}
   private verificationStatus(task:EngineeringTask,state:CodeState):EngineeringTask['verification_status'] {
@@ -339,7 +373,9 @@ export class EngineeringService {
       .map(p=>({path:p,before_sha256:beforeFiles.get(p)??null,after_sha256:afterFiles.get(p)??null,ownership:comparison.dirty.includes(p)||task.rebind_preexisting_files?.some(f=>f.path===p)?'preexisting_overlap' as const:'task_change' as const,...(assets.has(p)?{text_diff_unavailable:true}:{})}));
     const saved=this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);if(input.decisions)current.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
       if(ownershipUnknown)current.unresolved=[...new Set([...current.unresolved,'无法确认提交完成时与采集时的代码状态一致。报告已保存，差异归属待核查。'])];
+      if(input.steps)this.mergeSteps(current,input.steps);
       for(const evidence of input.verification??[]){this.checkEvidence(current,evidence);if(!current.verification.some(e=>e.evidence_id===evidence.evidence_id))current.verification.push(evidence);}
+      this.checkStepEvidence(current);
       if(current.reading&&(input.status==='completed'||current.changes.length>0)){
         const previous=current.walkthrough,result=previous?.result_id?this.store.maybe<Explanation>('explanation',previous.result_id):null,unchanged=attemptFiles?[...new Set([...attemptFiles.keys(),...afterFiles.keys()])].every(file=>attemptFiles.get(file)===afterFiles.get(file)):current.changes.length===0;
         const reusable=unchanged&&current.end_state&&result&&this.store.get<Snapshot>('snapshot',result.result.binding.source_snapshot_id).fingerprint===current.end_state.fingerprint;

@@ -8,6 +8,7 @@ import {readCodexConfiguration} from './codex-configuration';
 import {probeProviders,redact,type ActiveProcess} from './providers';
 import {id,now,Store} from './store';
 import {resolveDevelopmentScope} from './development-scope';
+import {sha} from './snapshot';
 
 type CommandRecord={command:DevelopmentCommand;state:CodeState;log:string;stateVerified:boolean};
 
@@ -74,6 +75,7 @@ export class DevelopmentService {
       event:event=>{if(event.item?.type==='file_change'||event.type==='item.started'&&event.item?.type==='command_execution')possibleWrite++;this.event(attemptId,event);},
       shouldStart:()=>!this.isStopped(attemptId),
       started:process=>{this.active.set(attemptId,process);if(this.isStopped(attemptId)){void process.cancel().catch(error=>this.event(attemptId,{type:'error',message:redact(String(error))}));return;}this.engineering.updateAttempt(attemptId,{status:'running',pid:process.child.pid});},
+      saveSteps:async value=>{if(this.isStopped(attemptId))throw Error('执行已停止，拒绝迟到步骤');const current=this.engineering.task(taskId);this.engineering.updateTask({task_id:taskId,attempt_id:attemptId,expected_version:current.version,steps:value as EngineeringTask['steps'],submission_key:`${attemptId}:steps:${sha(JSON.stringify(value))}`});this.event(attemptId,{type:'local.stage',stage:'development_steps_saved',message:'方案与步骤进展已保存到当前任务。'});},
       commandCompleted:command=>{
         const atReceipt=possibleWrite;
         captureQueue=captureQueue.then(async()=>{
@@ -102,16 +104,16 @@ export class DevelopmentService {
       if(!matches.length){
         verification.push({evidence_id:id('verification'),command:report.command,cwd:task.workspace_path,
           outcome:report.outcome,exit_code:report.outcome==='passed'?0:null,origin:'self_reported',
-          code_state:end,created_at:now(),code_state_verified:false,
+          code_state:end,created_at:now(),code_state_verified:false,step_id:report.step_id,criterion_id:report.criterion_id,
           note:`${report.note}；未匹配实际命令回执，此项为 Agent 自述，不能作为独立验证通过。`});
         continue;
       }
       for(const record of matches){
         const outcome=commandOutcome(record.command);
-        const note=result.result.verification.findLast(item=>commandBody(item.command)===key&&item.outcome===outcome)?.note;
+        const matchedReport=result.result.verification.findLast(item=>commandBody(item.command)===key&&item.outcome===outcome),note=matchedReport?.note;
         verification.push({evidence_id:id('verification'),command:record.command.command,cwd:task.workspace_path,
           outcome,exit_code:record.command.exit_code,origin:'observed',
-          code_state:record.state,created_at:record.command.completed_at,log_path:record.log,code_state_verified:record.stateVerified,
+          code_state:record.state,created_at:record.command.completed_at,log_path:record.log,code_state_verified:record.stateVerified,step_id:matchedReport?.step_id,criterion_id:matchedReport?.criterion_id,
           note:`${note?note+'；':''}代码状态采集于命令完成回执后，工作目录为绑定执行目录。${record.stateVerified?'':'采集期间出现后续命令或修改，验证对应代码状态不确定。'}`});
       }
       observedCommands.add(key);
@@ -130,7 +132,7 @@ export class DevelopmentService {
     }
     if(this.isStopped(attemptId))throw Error('执行已停止，拒绝迟到开发结果');
     const current=this.engineering.task(taskId);
-    const saved=await this.engineering.finishTask({task_id:taskId,attempt_id:attemptId,expected_version:current.version,submission_key:`${attemptId}:finish`,status:result.result.status,completion_binding:end.workspace_fingerprint?{workspace_path:task.workspace_path,workspace_fingerprint:end.workspace_fingerprint,head:end.head,branch:end.branch,git_common_dir:end.git_common_dir}:null,summary:result.result.summary,decisions:result.result.decisions,unresolved:[...result.result.unresolved,...entryFailures],verification});
+    const saved=await this.engineering.finishTask({task_id:taskId,attempt_id:attemptId,expected_version:current.version,submission_key:`${attemptId}:finish`,status:result.result.status,completion_binding:end.workspace_fingerprint?{workspace_path:task.workspace_path,workspace_fingerprint:end.workspace_fingerprint,head:end.head,branch:end.branch,git_common_dir:end.git_common_dir}:null,summary:result.result.summary,decisions:result.result.decisions,unresolved:[...result.result.unresolved,...entryFailures],steps:result.result.steps,verification});
     this.engineering.updateAttempt(attemptId,{status:saved.status==='completed'?'completed':'failed',session_id:result.session_id,
       ...(result.model?{model:`运行回执：${result.model}`}:{})});
     this.event(attemptId,{type:'local.stage',message:`开发结果已自动保存到原任务，验证状态：${saved.verification_status}。${entryFailures.length?`另有 ${entryFailures.length} 项工程条目未保存，详见未解决事项。`:''}`});

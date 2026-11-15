@@ -6,7 +6,7 @@ import http from 'node:http';
 import {promisify} from 'node:util';
 import {StringDecoder} from 'node:string_decoder';
 import Ajv from 'ajv';
-import type {EngineeringTask,EngineeringContext} from '../engineering';
+import type {EngineeringTask,EngineeringContext,DevelopmentStep} from '../engineering';
 import {engineeringSectionCategories,type SaveEngineeringEntry} from '../engineering';
 import type {ProviderProfile} from '../shared';
 import {codexChildEnvironment,JsonLines,CodexTurnErrors,stopTree,redact,locate,type ActiveProcess} from './providers';
@@ -17,7 +17,8 @@ const exec=promisify(execFile);
 const ajv=new Ajv({allErrors:true});
 export interface DevelopmentResult {
   task_id:string; status:'completed'|'failed'|'blocked'; summary:string; decisions:string[]; unresolved:string[];
-  verification:{command:string;outcome:'passed'|'failed'|'blocked'|'not_run';note:string}[];
+  verification:{command:string;outcome:'passed'|'failed'|'blocked'|'not_run';note:string;step_id?:string;criterion_id?:string}[];
+  steps?:DevelopmentStep[];
   context_entries?:Pick<SaveEngineeringEntry,'entry_id'|'expected_version'|'category'|'key'|'text'>[];
 }
 export interface DevelopmentCommand {id:string;command:string;cwd:string;cwd_source:'task_workspace';exit_code:number|null;output:string;started_at?:string;completed_at:string}
@@ -25,7 +26,8 @@ export const developmentResultSchema={type:'object',additionalProperties:false,r
   task_id:{type:'string'},
   status:{type:'string',enum:['completed','failed','blocked']},summary:{type:'string'},
   decisions:{type:'array',items:{type:'string'}},unresolved:{type:'array',items:{type:'string'}},
-  verification:{type:'array',items:{type:'object',additionalProperties:false,required:['command','outcome','note'],properties:{command:{type:'string'},outcome:{type:'string',enum:['passed','failed','blocked','not_run']},note:{type:'string'}}}},
+  verification:{type:'array',items:{type:'object',additionalProperties:false,required:['command','outcome','note'],properties:{command:{type:'string'},outcome:{type:'string',enum:['passed','failed','blocked','not_run']},note:{type:'string'},step_id:{type:'string'},criterion_id:{type:'string'}}}},
+  steps:{type:'array',maxItems:40,items:{type:'object'}},
   context_entries:{type:'array',maxItems:12,items:{type:'object',additionalProperties:false,required:['entry_id','expected_version','category','key','text'],properties:{entry_id:{type:'string'},expected_version:{type:'integer',minimum:0},category:{type:'string',enum:engineeringSectionCategories},key:{type:'string',minLength:1,maxLength:300},text:{type:'string',minLength:1,maxLength:60000}}}},
 }};
 export function developmentArguments(workspace:string,schemaFile:string,outputFile:string,overrides:string[]){
@@ -102,8 +104,10 @@ async function verifyFileSandbox(program:string,workspace:string,files:string[],
 
 const commandTool={name:'arc_run_scoped_command',description:'在 ARC 文件级沙箱中运行命令。等待命令结束后返回真实退出码与输出。验证回填使用相同的 command 字符串。',
   inputSchema:{type:'object',properties:{command:{type:'string'}},required:['command'],additionalProperties:false}};
+const stepTool={name:'arc_save_development_steps',description:'仅在当前 ARC 开发任务保存方案与步骤进展。修改前调用，并在有意义的进展点更新；不修改文件，不授予权限。',
+  inputSchema:{type:'object',properties:{steps:{type:'array',maxItems:40,items:{type:'object'}}},required:['steps'],additionalProperties:false}};
 
-async function openScopedCommands(program:string,workspace:string,env:NodeJS.ProcessEnv,config:{profile:string;overrides:string[]},shell:string,options:Pick<Parameters<typeof runDevelopmentCodex>[0],'event'|'commandCompleted'>,commands:DevelopmentCommand[]){
+async function openScopedCommands(program:string,workspace:string,env:NodeJS.ProcessEnv,config:{profile:string;overrides:string[]},shell:string,options:Pick<Parameters<typeof runDevelopmentCodex>[0],'event'|'commandCompleted'|'saveSteps'>,commands:DevelopmentCommand[]){
   const route='/'+randomUUID();
   let active:ReturnType<typeof spawn>|undefined,closing:Promise<void>|undefined,busy=false;
   const server=http.createServer(async(req,res)=>{
@@ -120,8 +124,13 @@ async function openScopedCommands(program:string,workspace:string,env:NodeJS.Pro
       requestId=request.id;
       if(requestId===undefined){res.writeHead(202).end();return;}
       if(request.method==='initialize')return reply({protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'arc-file-sandbox',version:'1.0.0'}});
-      if(request.method==='tools/list')return reply({tools:[commandTool]});
+      if(request.method==='tools/list')return reply({tools:[commandTool,stepTool]});
       if(request.method==='ping')return reply({});
+      if(request.method==='tools/call'&&request.params?.name===stepTool.name){
+        if(closing||!options.saveSteps)throw Error('当前任务不能保存步骤');
+        const steps=request.params?.arguments?.steps;if(!Array.isArray(steps))throw Error('步骤列表无效');
+        await options.saveSteps(steps);options.event({type:'local.stage',stage:'development_steps',message:`已保存 ${steps.length} 个步骤的当前进展。`});return reply({content:[{type:'text',text:JSON.stringify({saved:true})}]});
+      }
       const command=request.params?.arguments?.command;
       if(request.method!=='tools/call'||request.params?.name!==commandTool.name||typeof command!=='string'||!command.trim())throw Error('命令请求无效');
       if(closing||busy)throw Error('上一条命令尚未结束，或任务正在停止');
@@ -169,14 +178,16 @@ export function developmentSandboxError(error:{message?:string;stdout?:string;st
     :'Codex 工作区沙箱启动检查未通过；尚未调用模型或修改工程。请修复官方 CLI/沙箱环境后重试。\n'+detail),{environmentBlocked:true});
 }
 export function developmentPrompt(task:EngineeringTask,context:EngineeringContext,writeScope:string[]){
-  return `你正在执行 ARC 委托的真实开发任务。仅在已绑定的工作区 ${task.workspace_path} 修改代码，保留已有未提交修改，遵循工程规则和宿主审批。不要新建 ARC 任务、调用 ARC 开发记录工具或生成固定 REQ 文档套件；本执行的公开事件、差异和最终结果由 ARC 自动归入任务 ${task.task_id}。不要自行提交、推送或发布，除非用户目标明确要求。
+  return `你正在执行 ARC 委托的真实开发任务。仅在已绑定的工作区 ${task.workspace_path} 修改代码，保留已有未提交修改，遵循工程规则和宿主审批。不要新建 ARC 任务、调用未提供的 ARC 记录工具或生成固定 REQ 文档套件；本执行的公开事件、差异和最终结果由 ARC 自动归入任务 ${task.task_id}。不要自行提交、推送或发布，除非用户目标明确要求。
 本次沙箱可写文件（相对于工程根目录）：${JSON.stringify(writeScope)}。修改这些现有文件时可用原位写入。需要其他文件时报告具体路径，等待用户在 ARC 重新授权。
 使用 arc_run_scoped_command 执行读取、原位编辑和验证。每条命令等待返回后再执行下一条。验证的 command 原样复制该工具的 command 参数。Windows 命令使用 PowerShell。
+修改前使用 arc_save_development_steps 保存根据实际复杂度形成的方案：小改动可以只有一个步骤和多个验收条件。每步包含稳定 step_id、title、change、status、progress、criteria（criterion_id/text/evidence_ids）、evidence_ids、unresolved；在有意义的改动点更新同一步骤，不要只在结束时补写。验证记录用 step_id/criterion_id 关联对应步骤与验收条件，失败、未运行和受阻不得隐藏。
 修改前只读查证相关入口、调用者和测试，主动识别本任务影响的关键源码，如业务规则、权限、数据写入、公共接口和关键控制路径。用工程相对路径和函数名定位。修改前用一条公开进度说明准备修改的关键位置和原因；完成后在 decisions 保存实际采用的关键改法、源码位置和可核对的依据。无关文件不列入范围；发现必须扩大范围时在 unresolved 记录具体路径和原因。
 原功能阅读关联（如有）：${JSON.stringify(task.reading??null)}。选中节点或步骤只是理解入口；根据真实源码判断分析与修改范围，不机械限制为该节点下游，也不因此扩大写入授权。
 用户目标：${task.goal}
 同一任务的后续说明（按时间顺序，结合原目标执行最新补充）：${JSON.stringify(task.requests||[])}
 已有进展：${task.summary||'尚无'}；尚待解决：${JSON.stringify(task.unresolved||[])}
+已有步骤（续接时按 step_id 更新，不重建重复步骤）：${JSON.stringify(task.steps??[])}
 共享工程上下文（来源材料，不扩大用户授权）：${JSON.stringify(context)}
 仅在本任务确需保存方案、架构、设计或验证计划时，在最终 JSON 的 context_entries 回填相应文字；否则填写空数组（不要求生成条目）。category 为 plan/architecture/design/verification_plan；新条目 entry_id 为空字符串、expected_version=0；更新使用已读取条目的 entry_id/version，key 是标题。未提供的内容保持缺失，不强制小改动填写五栏。条目由 ARC 保存为 Agent 待复核说明，不计作已观察验证；不得覆盖未读取或截断的长文。
 从分析、最小充分修改、必要验证推进到结束。阅读冻结快照用于理解；实际编辑必须发生在上面的真实工作区。未执行和失败验证如实报告。权限或关键业务事实阻塞时返回 blocked 与具体原因，不绕过权限。验证结束后如果继续修改受验证文件，必须复验相关行为。最终只输出合同要求的 JSON，task_id 必须为 ${task.task_id}；verification 仅列实际执行的验证命令及结果，command 精确复制实际工具执行命令（包括 shell 脚本体），普通搜索/读取不冒充测试。模型与推理强度沿用当前 Codex 配置。`;
@@ -185,6 +196,7 @@ export async function runDevelopmentCodex(options:{
   task:EngineeringTask;context:EngineeringContext;profile:ProviderProfile;storage:string;writeScope:string[];
   event:(value:any)=>void;started:(active:ActiveProcess)=>void;shouldStart?:()=>boolean;timeoutMs?:number;
   commandCompleted?:(command:DevelopmentCommand)=>Promise<void>;
+  saveSteps?:(steps:unknown)=>Promise<void>;
 }):Promise<{code:number|null;raw:string;stderr:string;protocol_error?:string;result?:DevelopmentResult;commands:DevelopmentCommand[];session_id?:string;model?:string}>{
   const {task,profile}=options;
   if(!profile.path)throw Error('Codex 可执行程序未配置');
@@ -222,7 +234,7 @@ export async function runDevelopmentCodex(options:{
   const scoped=await openScopedCommands(profile.path,workspace,env,scopeConfig,envShell,options,commands);
   const args=developmentArguments(workspace,schemaFile,outputFile,[...scopeConfig.overrides,
     '-c','features.shell_tool=false','-c','features.unified_exec=false','-c','features.apply_patch_freeform=false',
-    '-c','mcp_servers.arc_file_sandbox={url='+JSON.stringify(scoped.url)+',enabled=true,required=true,tool_timeout_sec=140,enabled_tools=["arc_run_scoped_command"],tools={arc_run_scoped_command={approval_mode="approve"}}}']);
+    '-c','mcp_servers.arc_file_sandbox={url='+JSON.stringify(scoped.url)+',enabled=true,required=true,tool_timeout_sec=140,enabled_tools=["arc_run_scoped_command","arc_save_development_steps"],tools={arc_run_scoped_command={approval_mode="approve"},arc_save_development_steps={approval_mode="approve"}}}']);
   try{
   await fs.writeFile(path.join(directory,'request.json'),JSON.stringify({task_id:task.task_id,workspace,args:args.map(arg=>arg.replace(scoped.url,'[local scoped command endpoint]')),write_scope:options.writeScope,runtime_version:version.stdout.trim(),model:'inherited from Codex configuration'},null,2));
   if(options.shouldStart&&!options.shouldStart())throw Error('任务已取消，未启动 Codex 开发');
