@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {ArcService} from '../src/main/service';
-import {ArcMcpBridge} from '../src/main/mcp-bridge';
+import {ArcMcpBridge,bridgeTools} from '../src/main/mcp-bridge';
 import {activity} from '../src/ui/activity';
 async function setup(){const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-mcp-'));const source=path.join(dir,'source');await fs.mkdir(source);await fs.writeFile(path.join(source,'a.ts'),'export const value=1;\n');const service=new ArcService(path.join(dir,'data'),path.resolve('.'));const project=await service.openProject(source);const bridge=new ArcMcpBridge(service,path.resolve('.'));await bridge.start();return {dir,source,service,project,bridge};}
 test('MCP authenticated stdio round trip, scoped frozen reads, progress, revoke and idempotence',async()=>{
@@ -16,7 +16,7 @@ test('MCP authenticated stdio round trip, scoped frozen reads, progress, revoke 
  await bridge.enable(project.project_id);
  child=spawn(process.execPath,['dist/arc-mcp.cjs',bridge.connectionFile],{stdio:['pipe','pipe','pipe'],windowsHide:true});let sequence=0,buffer='';const pending=new Map<number,(x:any)=>void>();child.stdout!.on('data',chunk=>{buffer+=chunk;let end;while((end=buffer.indexOf('\n'))>=0){const response=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);pending.get(response.id)?.(response.result);pending.delete(response.id);}});
  const rpc=(method:string,params:any={})=>new Promise<any>((resolve,reject)=>{const id=++sequence;const timer=setTimeout(()=>reject(Error('RPC timeout')),10000);pending.set(id,x=>{clearTimeout(timer);resolve(x);});child!.stdin!.write(JSON.stringify({jsonrpc:'2.0',id,method,params})+'\n');});
- assert.equal((await rpc('initialize',{clientInfo:{name:'protocol-test'}})).serverInfo.name,'arc');assert.equal((await rpc('tools/list')).tools.length,13);
+ assert.equal((await rpc('initialize',{clientInfo:{name:'protocol-test'}})).serverInfo.name,'arc');const listed=(await rpc('tools/list')).tools;assert.deepEqual(listed.map((tool:any)=>tool.name).sort(),bridgeTools.map(tool=>tool.name).sort());
  const current=await rpc('tools/call',{name:'arc_current_project',arguments:{}});assert.equal(JSON.parse(current.content[0].text).project.project_id,project.project_id);
  const begun=await rpc('tools/call',{name:'arc_begin_analysis',arguments:{request_id:'test'}});const task=JSON.parse(begun.content[0].text),run_id=task.binding.run_id;
  assert.deepEqual((await bridge.call('arc_begin_analysis',{request_id:'test'})).binding,task.binding);assert.equal(service.active.size,0);

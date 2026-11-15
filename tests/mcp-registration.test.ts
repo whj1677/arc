@@ -10,7 +10,8 @@ import {ownedArcRegistration,adoptConnection} from '../src/main/mcp-registration
 
 test('registration recognizes releases from the same installation, rejects unrelated servers and host overrides',()=>{
  const root=path.resolve('test-install'),resources=path.join(root,'release/new/resources/app');
- const old={transport:{type:'stdio',command:process.execPath,args:[path.join(root,'release/old/resources/app/dist/arc-mcp.cjs'),path.join(os.tmpdir(),'old-arc/mcp/connection.json')]}};
+ // This pure ownership check must not inherit Electron/Kimi as the test host.
+ const old={transport:{type:'stdio',command:process.platform==='win32'?'node.exe':'node',args:[path.join(root,'release/old/resources/app/dist/arc-mcp.cjs'),path.join(os.tmpdir(),'old-arc/mcp/connection.json')]}};
  assert.equal(ownedArcRegistration(old,resources),true);
  assert.equal(ownedArcRegistration(old,root),true);
  assert.equal(ownedArcRegistration({...old,transport:{...old.transport,args:[path.resolve('another-install/release/old/resources/app/dist/arc-mcp.cjs'),old.transport.args[1]]}},resources),false);

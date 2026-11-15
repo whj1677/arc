@@ -12,7 +12,7 @@ import {Architecture} from './Architecture';
 import {ZoomSurface} from './ZoomSurface';
 import {Timeline} from './Timeline';
 import {FeatureReading,FeatureReadingDetail} from './FeatureReading';
-import {FeatureDevelopment} from './FeatureDevelopment';
+import {FeatureDevelopment,type FeatureDevelopmentDraft} from './FeatureDevelopment';
 import {featureReadingModel,featureReadingPosition,featureViewPosition,featurePathPosition,functionPathPosition,featureViews,guideEvidenceIds,guidePathForStep} from './feature-reading-model';
 import {SystemDetail} from './SystemDetail';
 import {StepDetail} from './StepDetail';
@@ -48,6 +48,7 @@ function App(){
   const [error,setError]=useState(''),[notice,setNotice]=useState(''),[saved,setSaved]=useState(''),[modal,setModal]=useState(''),[pending,setPending]=useState(false);
   const [formName,setFormName]=useState(''),[formQuestion,setFormQuestion]=useState(''),[search,setSearch]=useState(''),[provider,setProvider]=useState('codex'),[clueDrafts,setClueDrafts]=useState<Record<string,string>>({});
   const [formFeature,setFormFeature]=useState('');
+  const [featureDrafts,setFeatureDrafts]=useState<Record<string,FeatureDevelopmentDraft>>({});
   const [focusDevelopment,setFocusDevelopment]=useState(false);
   const [indexes,setIndexes]=useState<Record<string,any>>({}),[eventState,setEventState]=useState<{runId:string;items:any[]}>({runId:'',items:[]});
   const [showDetail,setShowDetail]=useState(false),[showCatalog,setShowCatalog]=useState(false),[archiveVisible,setArchiveVisible]=useState(false);
@@ -106,6 +107,7 @@ function App(){
   const pendingScene=data.scenarios.find(s=>s.project_id===projectId&&waitingForAgent(data,s.scenario_id));
   const currentFeature=data.features.find(f=>f.feature_id===scenario?.feature_id);
   const featureTask=(data.development_tasks??[]).filter(task=>task.reading?.scenario_id===scenarioId).sort((a,b)=>b.updated_at.localeCompare(a.updated_at))[0];
+  const featureDraft=featureDrafts[scenarioId]??{editing:false,request:'',scope:featureTask?.scope.join('\n')||selectedFile,mode:'codex' as const};
   const questionLocation=readingQuestionTarget(result,reading,currentFeature?.feature_id||projectId,data.snapshots.find(s=>s.source_snapshot_id===(result?.binding.source_snapshot_id||project?.snapshot_id)));
   if(questionLocation.target.kind==='feature')questionLocation.label=reading.entrance==='overview'?'当前工程整体':`${currentFeature?.name||scenario?.title||'当前功能'} · 整体`;
   const featurePurpose=catalogExplanation?.result.nodes.find(n=>n.node_id===currentFeature?.discovery?.node_id)?.description;
@@ -314,7 +316,7 @@ function App(){
     <ScrollPanel positions={reading.scroll} restoreKey={loadedKey+':'+(result?.result_id||'')+(reading.detail_tab==='agent'?':'+activityFocus:(featureReading||businessReading||systemReading||reading.view==='functions')&&reading.detail_tab==='details'?':'+reading.selected:'')} onPosition={savePosition} name={`detail-${reading.view}-${reading.detail_tab}`}>
       {reading.detail_tab==='details'&&<>
         <div className="ask-here"><button className="primary" onClick={askHere}>就这里提问</button></div>
-        {project&&featureReading&&result&&scenario&&<FeatureDevelopment project={project} scenario={scenario} result={result} target={questionLocation.target} task={featureTask} suggestedFile={selectedFile} reload={reload} onViewResult={viewFeatureResult} onOpenTask={openFeatureTask}/>}
+        {project&&featureReading&&result&&scenario&&<FeatureDevelopment project={project} scenario={scenario} result={result} target={questionLocation.target} task={featureTask} suggestedFile={selectedFile} draft={featureDraft} onDraft={patch=>setFeatureDrafts(items=>({...items,[scenarioId]:{...featureDraft,...patch}}))} reload={reload} onViewResult={viewFeatureResult} onOpenTask={openFeatureTask}/>}
         {featureReading&&readingGuide&&result?<FeatureReadingDetail guide={readingGuide} result={result} selected={reading.selected} view={reading.view} onFile={readingFile} onStep={readingStep} onEvidence={evidence}/>:featureReading?<p>当前功能尚未有分析说明，可以直接提问。</p>:reading.view==='files'&&sourceSnapshot?<FileSummary data={data} projectId={projectId} snapshot={sourceSnapshot} path={selectedFile} ask={askHere}/>:reading.view==='functions'&&result&&functionStep?<FunctionStepDetail result={result} selection={functionStep} select={select} evidence={evidence}/>:reading.view==='functions'&&result&&selectedNode?.kind==='function'?<FunctionDetail result={result} node={selectedNode} select={selectFunctionRelation} evidence={evidence}/>:businessReading&&result?<StepDetail result={result} selected={reading.selected} select={select}/>:systemReading&&result?<SystemDetail result={result} selected={reading.selected} select={select} inspect={inspectComponent}/>:<>
           <span className="eyebrow">{selectedCall?.kind||(selectedEdge?(selectedEdge.transfers?.length?'数据交接':edgeNames[selectedEdge.kind]):selectedNode?.execution_context.label||analysisScope)}</span>
           <h2>{activeObject?.label||scenario?.title||'工程全貌'}</h2>

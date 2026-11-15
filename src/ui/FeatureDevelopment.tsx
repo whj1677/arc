@@ -6,15 +6,18 @@ const api=window.arc;
 const developmentStates:Record<EngineeringTask['status'],string>={pending:'待执行',running:'开发执行中',blocked:'开发需要处理',completed:'开发结果已保存',failed:'开发失败，成果已保留',cancelled:'开发已取消，成果已保留',interrupted:'开发中断，成果已保留'};
 const walkthroughStates={pending:'等待更新功能走读',running:'正在按新代码更新功能走读',completed:'新版功能走读已保存',failed:'功能走读更新失败'};
 
+export interface FeatureDevelopmentDraft {editing:boolean;request:string;scope:string;mode:'codex'|'kimi'}
 type Props={
   project:Project;scenario:Scenario;result:AnalysisResult;target:ReadingTarget;task?:EngineeringTask;suggestedFile:string;
+  draft:FeatureDevelopmentDraft;onDraft:(patch:Partial<FeatureDevelopmentDraft>)=>void;
   reload:()=>Promise<unknown>;onViewResult:(resultId:string)=>void;onOpenTask:(taskId:string)=>void;
 };
 
 /** A small in-place action over the existing reading and development channels. */
-export function FeatureDevelopment({project,scenario,result,target,task,suggestedFile,reload,onViewResult,onOpenTask}:Props){
-  const [editing,setEditing]=useState(false),[request,setRequest]=useState(''),[scope,setScope]=useState(''),[mode,setMode]=useState<'codex'|'kimi'>('codex'),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[currentTask,setCurrentTask]=useState(task);
-  useEffect(()=>{setEditing(false);setRequest('');setScope(task?.scope.join('\n')||suggestedFile);setError('');setNotice('');},[scenario.scenario_id,task?.task_id]);
+export function FeatureDevelopment({project,scenario,result,target,task,draft,onDraft,reload,onViewResult,onOpenTask}:Props){
+  const {editing,request,scope,mode}=draft,setEditing=(value:boolean)=>onDraft({editing:value}),setRequest=(value:string)=>onDraft({request:value}),setScope=(value:string)=>onDraft({scope:value}),setMode=(value:'codex'|'kimi')=>onDraft({mode:value});
+  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[currentTask,setCurrentTask]=useState(task);
+  useEffect(()=>{setError('');setNotice('');},[scenario.scenario_id,task?.task_id]);
   useEffect(()=>{let active=true;setCurrentTask(task);if(!task)return;const read=async()=>{try{const value=await api.invoke<EngineeringTask>('engineering_task',{task_id:task.task_id});if(active)setCurrentTask(value);}catch(e){if(active)setError((e as Error).message);}};void read();const timer=setInterval(()=>void read(),5000);return()=>{active=false;clearInterval(timer);};},[task?.task_id,task?.updated_at]);
   const running=task?.status==='running',walkthrough=task?.walkthrough,verificationStatus=currentTask?.verification_status??task?.verification_status;
   async function submit(event:React.FormEvent){
