@@ -70,7 +70,7 @@ export interface ReadingState {
   reading_focus?: string;
   feature_reading_version?: number;
 }
-export interface AnalysisRequest { project_id:string; scenario_id:string; source_snapshot_id:string; question_revision_id?:string; created_at?:string }
+export interface AnalysisRequest { project_id:string; scenario_id:string; source_snapshot_id:string; question_revision_id?:string; created_at?:string; development_task_id?:string }
 export interface WorkspaceData { projects: Project[]; features: Feature[]; scenarios: Scenario[]; revisions: Revision[]; annotations: Annotation[]; runs: Run[]; explanations: Explanation[]; providers: ProviderProfile[]; snapshots: Snapshot[]; requested_analysis?:AnalysisRequest; questions?:ReadingQuestion[]; development_tasks?:import('./engineering').EngineeringTask[] }
 export interface ArcApi {
   invoke<T = any>(operation: string, args?: unknown): Promise<T>;

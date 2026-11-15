@@ -15,6 +15,8 @@ try{
   if(command==='setup'){
     const [workspace,name,question]=args,project=await service.openProject(path.resolve(workspace));let scenario=service.data().scenarios.find(item=>item.project_id===project.project_id&&item.title===question);
     if(!scenario)scenario=service.addFeature(project.project_id,name,question).scenario;await bridge.enable(project.project_id);print({project,scenario});
+  }else if(command==='current'){
+    print(await bridge.call('arc_current_project',{},client));
   }else if(command==='context'){
     print(await bridge.call('arc_engineering_context',{workspace_path:path.resolve(args[0])},client));
   }else if(command==='begin-analysis'){

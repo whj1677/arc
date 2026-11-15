@@ -33,6 +33,8 @@ export class ArcService {
   private asking=new Map<string,Promise<ReadingQuestion>>();
   private checkingCodex?:Promise<ProviderProfile[]>;
   private readonly refreshingTasks=new Map<string,Promise<void>>();
+  private readonly refreshGenerations=new Map<string,string>();
+  private readonly queuedWalkthroughs=new Map<string,{submissionKey?:string;promise:Promise<void>;resolve:()=>void}>();
   constructor(readonly directory:string,readonly resources:string,readonly emit:(e:any)=>void=()=>{},private readonly codexRunner:typeof runCodex=runCodex) {
     this.store=new Store(directory);
     this.engineering=new EngineeringService(this.store,()=>this.changed());
@@ -129,15 +131,16 @@ export class ArcService {
     }
     return project.snapshot_id;
   }
-  prepareAnalysis(scenarioId:string){
+  prepareAnalysis(scenarioId:string,developmentTaskId?:string){
     const scene=this.store.get<Scenario>('scenario',scenarioId),project=this.store.get<Project>('project',scene.project_id),feature=this.store.get<Feature>('feature',scene.feature_id);
     if(project.fictional)throw Error('演示工程不派发真实分析');
     if(scene.archived||feature.archived)throw Error('请先恢复已归档功能或场景');
+    if(developmentTaskId){const task=this.engineering.task(developmentTaskId);if(task.project_id!==scene.project_id||task.reading?.scenario_id!==scenarioId)throw Error('开发任务与待领取场景归属不一致');}
     const source=this.analysisSnapshot(scene);
     const active=this.store.all<Run>('run').find(r=>!r.reading_question_id&&r.binding.scenario_id===scenarioId&&['queued','running','validating','cancel_requested'].includes(r.status));
     if(active)return {run_id:active.binding.run_id};
-    this.store.put('setting','mcp-requested-analysis',{project_id:scene.project_id,scenario_id:scenarioId,source_snapshot_id:source,question_revision_id:scene.question_revision_id,created_at:now()});
-    this.changed();return {scenario_id:scenarioId};
+    this.store.put('setting','mcp-requested-analysis',{project_id:scene.project_id,scenario_id:scenarioId,source_snapshot_id:source,question_revision_id:scene.question_revision_id,created_at:now(),...(developmentTaskId?{development_task_id:developmentTaskId}:{})});
+    this.changed();return {scenario_id:scenarioId,...(developmentTaskId?{development_task_id:developmentTaskId}:{})};
   }
   addScenario(featureId:string,question:string) {
     const feature=this.store.get<Feature>('feature',featureId),q=text(question);
@@ -300,11 +303,21 @@ export class ArcService {
     return run;
   }
   refreshTaskWalkthrough(taskId:string,submissionKey?:string):Promise<void> {
-    const active=this.refreshingTasks.get(taskId);if(active)return active;
+    const active=this.refreshingTasks.get(taskId);
+    if(active){
+      if(this.engineering.task(taskId).walkthrough?.update_id===this.refreshGenerations.get(taskId))return active;
+      let queued=this.queuedWalkthroughs.get(taskId);
+      if(!queued){let resolve!:()=>void;queued={submissionKey,promise:new Promise<void>(done=>resolve=done),resolve};this.queuedWalkthroughs.set(taskId,queued);}
+      else if(submissionKey)queued.submissionKey=submissionKey;
+      return queued.promise;
+    }
     const task=this.engineering.task(taskId);if(!task.reading||!task.end_state||!['completed','failed','blocked','cancelled'].includes(task.status))return Promise.resolve();
     const updateId=id('walkthrough'),previous=task.walkthrough??{status:'pending' as const,previous_result_id:task.reading.result_id,updated_at:now()};
-    this.engineering.saveWalkthrough(taskId,{...previous,status:'pending',update_id:updateId,error:undefined,updated_at:now()});
-    const pending=this.updateTaskWalkthrough(taskId,updateId,submissionKey??`walkthrough-${updateId}`).finally(()=>this.refreshingTasks.delete(taskId));this.refreshingTasks.set(taskId,pending);return pending;
+    this.engineering.saveWalkthrough(taskId,{...previous,status:'pending',update_id:updateId,error:undefined,updated_at:now()});this.refreshGenerations.set(taskId,updateId);
+    const pending=this.updateTaskWalkthrough(taskId,updateId,submissionKey??`walkthrough-${updateId}`).finally(()=>{
+      if(this.refreshingTasks.get(taskId)===pending){this.refreshingTasks.delete(taskId);this.refreshGenerations.delete(taskId);}
+      const queued=this.queuedWalkthroughs.get(taskId);if(queued){this.queuedWalkthroughs.delete(taskId);void this.refreshTaskWalkthrough(taskId,queued.submissionKey).then(queued.resolve,queued.resolve);}
+    });this.refreshingTasks.set(taskId,pending);return pending;
   }
   private async updateTaskWalkthrough(taskId:string,updateId:string,submissionKey:string) {
     let runId:string|undefined;
@@ -315,7 +328,7 @@ export class ArcService {
       const attempt=current.attempt_ids.at(-1)?this.store.get<import('../engineering').DevelopmentAttempt>('development_attempt',current.attempt_ids.at(-1)!):undefined;
       if(attempt?.origin==='agent'&&attempt.provider_id==='kimi'){
         this.engineering.saveWalkthrough(taskId,{...current.walkthrough!,status:'pending',source_snapshot_id:snapshot.source_snapshot_id,updated_at:now()},updateId);
-        this.prepareAnalysis(reading.scenario_id);return;
+        this.prepareAnalysis(reading.scenario_id,taskId);return;
       }
       const run=await this.startRun(reading.scenario_id,'codex',submissionKey,undefined,{sourceSnapshotId:snapshot.source_snapshot_id,developmentTaskId:taskId,refreshFromResultId:current.walkthrough!.previous_result_id});runId=run.binding.run_id;
       this.engineering.saveWalkthrough(taskId,{...current.walkthrough!,status:'running',run_id:runId,source_snapshot_id:snapshot.source_snapshot_id,updated_at:now()},updateId);
