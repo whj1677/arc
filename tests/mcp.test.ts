@@ -66,6 +66,30 @@ test('dispatch context combines effective project materials with only its own ta
   const strict=await bridge.call('arc_engineering_context',{workspace_path:source,task_id:task.task_id,view:'strict'});assert.deepEqual(strict.entries.map((e:any)=>e.text),['current task']);
  }finally{await bridge.close();await service.shutdown();service.store.close();}
 });
+test('dispatched tasks can finish without documents or save only a needed design',async()=>{
+ const {source,service,project,bridge}=await setup();try{
+  await bridge.enable(project.project_id);await service.engineering.connect(project.project_id);
+  for(const category of [null,'design'] as const){
+   const key=category||'no-documents';
+   const task=await service.engineering.createTask({project_id:project.project_id,goal:'A small scoped change',scope:['a.ts'],submission_key:key});
+   // This is a protocol regression, not a real Codex execution or delivery receipt.
+   const dispatch=bridge.dispatch.enqueue(project.project_id,{task_id:task.task_id,submission_key:key,scope:['a.ts']});
+   service.store.put('external_dispatch',dispatch.dispatch_id,{...dispatch,state:'awaiting_claim'});
+   const claimed=await bridge.call('arc_claim_dispatch',{dispatch_id:dispatch.dispatch_id});
+   assert.match(claimed.instructions,/均为可选资料/);assert.match(claimed.instructions,/无需时不调用/);
+   assert.doesNotMatch(claimed.instructions,/先调用 arc_save_engineering_entry/);
+   const read=()=>bridge.call('arc_engineering_context',{workspace_path:source,task_id:task.task_id,view:'strict'});
+   assert.deepEqual((await read()).entries,[],'submission and claim must not create documents');
+   const step={step_id:'small',title:'Scoped check',change:'Check the requested behavior',status:'completed',progress:'Protocol check only',criteria:[{criterion_id:'scope',text:'No generated documents',evidence_ids:[]}],evidence_ids:[],unresolved:[]};
+   const updated=await bridge.call('arc_update_development',{task_id:task.task_id,expected_version:claimed.task.version,submission_key:key+'-step',steps:[step]});
+   if(category)await bridge.call('arc_save_engineering_entry',{workspace_path:source,task_id:task.task_id,category,key:'Return contract',text:'Keep the exported value as a number; do not change its consumers.',expected_version:0,submission_key:key+'-entry'});
+   const finished=await bridge.call('arc_finish_development',{task_id:task.task_id,expected_version:updated.version,submission_key:key+'-finish',status:'completed',summary:'Protocol regression only; no model or code execution.',verification:[]});
+   assert.equal(finished.status,'completed');assert.equal(finished.verification_status,'not_run');
+   assert.deepEqual((await read()).entries.map((e:any)=>e.category),category?[category]:[],'completion must not fill missing document categories');
+  }
+ }finally{await bridge.close();await service.shutdown();service.store.close();}
+});
+
 test('MCP rejects forged binding, preserves raw result, accepts valid result once',async()=>{
  const {service,project,bridge}=await setup();try{
  await bridge.enable(project.project_id);const t=await bridge.call('arc_begin_analysis',{request_id:'valid'}),file=t.files[0];
