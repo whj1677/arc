@@ -22,7 +22,9 @@ export const redact = (text:string) => text.replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|
 export async function locate(name:string, configured?:string) {
   if(configured) { if(!path.isAbsolute(configured))throw new Error('程序路径必须是绝对路径');await fs.access(configured);return configured; }
   const {stdout}=await exec(process.platform==='win32'?'where.exe':'which',[name],{windowsHide:true,timeout:5000});
-  return stdout.trim().split(/\r?\n/)[0];
+  const candidates=stdout.trim().split(/\r?\n/);
+  // Windows desktop bundles can put a Unix launcher before their native binary.
+  return (process.platform==='win32'?candidates.find(file=>/\.exe$/i.test(file)):undefined)??candidates[0];
 }
 export async function resolveDsh(configured?:string) {
   const file=await locate('dsh',configured);
@@ -95,10 +97,9 @@ export function codexChildEnvironment(parent:NodeJS.ProcessEnv) {
   return env;
 }
 export function readingWatchdog(run:Pick<Run,'reading_question_id'|'overview_format'> & Partial<Pick<Run,'created_at'>>,stop:()=>Promise<void>,fail:(message:string)=>void,event:(value:any)=>void,stopFailed:(error:unknown)=>void) {
-  if(!run.reading_question_id&&!run.overview_format)return;
-  const elapsed=run.overview_format&&run.created_at?Date.now()-Date.parse(run.created_at):0;
+  const elapsed=run.created_at?Date.now()-Date.parse(run.created_at):0;
   return setTimeout(()=>{
-    const message=`${run.overview_format?'首次分析':'阅读追问'}超过 5 分钟执行期限；已请求停止，问题、公开进度和已收原文保留，可重试这个问题。`;
+    const message=`${run.overview_format?'首次分析':run.reading_question_id?'阅读追问':'功能与调用链分析'}超过 5 分钟执行期限；已请求停止，问题、公开进度和已收原文保留，可重试这个问题。`;
     fail(message);event({type:'local.stage',stage:'timeout',message});
     void stop().catch(stopFailed);
   },Math.max(1,5*60*1000-elapsed));

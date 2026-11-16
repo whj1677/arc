@@ -15,15 +15,15 @@ test('a changed executable cannot reuse a previously accepted Codex profile',asy
   await assert.rejects(runCodex({profile:{path:process.execPath,version:'codex-cli 0.163.0-alpha.10.2'}} as any),/Codex 程序版本已变化.*尚未派发分析/);
 });
 
-test('a stuck reading question stops after five minutes while full analysis keeps its existing duration',async t=>{
+test('reading questions and detailed function analysis both stop after five minutes',async t=>{
   t.mock.timers.enable({apis:['setTimeout']});
   const events:any[]=[];let stopped=0,error='';
   const stop=async()=>{stopped++;};
   const deadline=readingWatchdog({reading_question_id:'reading-timeout'},stop,message=>{error=message;},event=>events.push(event),()=>assert.fail('stopping should succeed'));
-  assert.equal(readingWatchdog({},stop,()=>assert.fail('full analysis must not time out'),()=>{},()=>assert.fail('full analysis must not stop')),undefined);
+  let detailed='';const full=readingWatchdog({},stop,message=>{detailed=message;},()=>{},()=>assert.fail('stopping should succeed'));
   t.mock.timers.tick(5*60*1000-1);assert.equal(stopped,0);assert.equal(error,'');
-  t.mock.timers.tick(1);await Promise.resolve();assert.equal(stopped,1);assert.match(error,/5 分钟.*已收原文保留/);assert.equal(events[0].stage,'timeout');
-  clearTimeout(deadline);
+  t.mock.timers.tick(1);await Promise.resolve();assert.equal(stopped,2);assert.match(detailed,/功能与调用链分析/);assert.match(error,/5 分钟.*已收原文保留/);assert.equal(events[0].stage,'timeout');
+  clearTimeout(deadline);clearTimeout(full);
 });
 
 test('a reading timeout reports a rejected stop instead of continuing to wait silently',async t=>{

@@ -26,6 +26,7 @@ export class ArcService {
   readonly store:Store;
   readonly engineering:EngineeringService;
   readonly development:DevelopmentService;
+  dispatchRun?: (run:Run)=>void;
   readonly active=new Map<string,ActiveProcess>();
   readonly indexing=new Map<string,AbortController>();
   readonly executing=new Map<string,Promise<void>>();
@@ -269,6 +270,7 @@ export class ArcService {
     item.run_id=runId;item.run_ids.push(runId);
     this.store.transaction(()=>{this.store.put('run',runId,run);this.store.put('reading_question',item.question_id,item);});
     this.event(runId,{type:'local.stage',stage:mode==='mcp'?'waiting_agent':'queued',message:mode==='mcp'?'问题和源码已固定，等待外部 Agent 通过 MCP 领取；尚未执行分析':'问题和源码已固定，正在准备 Codex 只读分析'});this.changed();
+    if(this.dispatchRun){this.dispatchRun(run);return item;}
     if(mode==='codex'){const task=this.execute(run).catch(error=>this.fail(runId,error)).finally(()=>this.executing.delete(runId));this.executing.set(runId,task);}
     return item;
   }
@@ -299,6 +301,7 @@ export class ArcService {
     if(providerId==='codex'&&scenario.question===overviewQuestion)run.overview_format='overview-1';
     this.store.put('run',runId,run);this.changed();
     this.event(runId,{type:'local.stage',stage:'queued',message:options.developmentTaskId?'开发结果已保存；正在按新代码重新核对同一功能，旧说明保留':'任务与源码快照已绑定，正在准备 Agent 连接'});
+    if(this.dispatchRun&&run.provider_id==='codex'){this.dispatchRun(run);return run;}
     const task=this.execute(run).catch(error=>this.fail(runId,error)).finally(()=>this.executing.delete(runId));
     this.executing.set(runId,task);
     return run;
@@ -345,7 +348,8 @@ export class ArcService {
         this.prepareAnalysis(reading.scenario_id,taskId);return;
       }
       const run=await this.startRun(reading.scenario_id,'codex',submissionKey,undefined,{sourceSnapshotId:snapshot.source_snapshot_id,developmentTaskId:taskId,refreshFromResultId:current.walkthrough!.previous_result_id});runId=run.binding.run_id;
-      this.engineering.saveWalkthrough(taskId,{...current.walkthrough!,status:'running',run_id:runId,source_snapshot_id:snapshot.source_snapshot_id,updated_at:now()},updateId);
+      this.engineering.saveWalkthrough(taskId,{...current.walkthrough!,status:this.dispatchRun?'pending':'running',run_id:runId,source_snapshot_id:snapshot.source_snapshot_id,updated_at:now()},updateId);
+      if(this.dispatchRun)return;
       const executing=this.executing.get(runId);if(executing)await executing;
       const finalRun=this.store.get<Run>('run',runId),explanation=this.store.all<Explanation>('explanation').find(e=>e.result.binding.run_id===runId),latest=this.engineering.task(taskId);
       if(finalRun.status==='completed'&&explanation)this.engineering.saveWalkthrough(taskId,{...latest.walkthrough!,status:'completed',result_id:explanation.result_id,source_snapshot_id:explanation.result.binding.source_snapshot_id,error:undefined,updated_at:now()},updateId);
@@ -368,6 +372,7 @@ export class ArcService {
     if(this.store.all<Run>('run').some(r=>r.binding.scenario_id===previous.binding.scenario_id&&!r.reading_question_id&&!terminal.has(r.status)&&r.status!=='unknown'))throw Error('该场景已有进行中的分析，请等待或停止后补查');
     const runId=id('run'),run:Run={binding:{...previous.binding,run_id:runId},provider_id:'codex',status:'queued',question:previous.question,title:'自动补查工程关系',created_at:now(),submission_key:submissionKey,previous_run_id:previous.binding.run_id,output_path:path.join(this.directory,'runs',runId,'result.json'),overview_format:'overview-1',overview_from_result_id:resultId};
     this.store.put('run',runId,run);this.event(runId,{type:'local.stage',stage:'overview_resume',message:'沿用这份说明的冻结源码与候选关系，自动补查缺口；完成后保存新版本，原说明保留。'});this.changed();
+    if(this.dispatchRun&&run.provider_id==='codex'){this.dispatchRun(run);return run;}
     const task=this.execute(run).catch(error=>this.fail(runId,error)).finally(()=>this.executing.delete(runId));this.executing.set(runId,task);return run;
   }
   event(runId:string,event:any,eventId?:string,sequence?:number) {

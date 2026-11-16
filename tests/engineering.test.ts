@@ -257,3 +257,27 @@ test('development steps persist plans, criterion evidence, stale state and super
     const output=path.join(f.directory,'steps.json');await f.service.exportProject('p',output);restored=new Store(path.join(f.directory,'restored-steps'));const recovered=new EngineeringService(restored);await recovered.restoreProject(output);const saved=recovered.task(task.task_id);assert.equal(saved.steps?.[0].status,'superseded');assert.equal(saved.steps?.[0].criteria[0].criterion_id,'criterion-add');assert.equal(saved.verification[0].step_id,'step-add');
   }finally{restored?.close();await f.cleanup();}
 });
+
+
+test('numbered AEC documents and task-scoped design preserve separate ownership',async()=>{
+  const {engineeringDocumentCategory}=await import('../src/main/engineering-service');
+  assert.equal(engineeringDocumentCategory('docs/01_architecture.md'),'architecture');
+  assert.equal(engineeringDocumentCategory('docs/02_design.md'),'design');
+  assert.equal(engineeringDocumentCategory('docs/04_verification.md'),'verification_plan');
+  const f=await fixture();
+  try{
+    await fs.mkdir(path.join(f.root,'docs/ai_engineering'),{recursive:true});
+    await fs.writeFile(path.join(f.root,'docs/ai_engineering/02_design.md'),'# 历史设计\n保留原来源，不代表当前实现。');
+    await f.service.importAec('p');
+    const imported=f.store.all<any>('engineering_context').find(entry=>entry.legacy_import?.import_key==='aec:docs/ai_engineering/02_design.md');assert.ok(imported);
+    const wrong={...imported,category:'purpose',version:imported.version+1};f.store.putVersion('engineering_context',wrong.entry_id,wrong.version,wrong);
+    const migrated=(await f.service.context({project_id:'p',category:'design'})).entries.find(entry=>entry.entry_id===wrong.entry_id)!;
+    assert.equal(migrated.text,wrong.text);assert.deepEqual(migrated.sources,wrong.sources);assert.equal(migrated.status,'needs_review');assert.equal(migrated.version,wrong.version+1);assert.ok(f.service.history('context',wrong.entry_id).some(entry=>entry.category==='purpose'));
+    const first=await f.service.createTask({project_id:'p',goal:'first',submission_key:'first-task',scope:['sum.js']});
+    const second=await f.service.createTask({project_id:'p',goal:'second',submission_key:'second-task',scope:['sum.js']});
+    for(const task of [first,second])await f.service.saveEntry({project_id:'p',task_id:task.task_id,category:'design',key:'接口设计',text:task.goal,expected_version:0,submission_key:task.task_id},'user');
+    const own=await f.service.context({project_id:'p',task_id:first.task_id,category:'design'});
+    assert.equal(own.entries.length,1);assert.equal(own.entries[0].text,'first');
+    await assert.rejects(f.service.saveEntry({project_id:'p',task_id:second.task_id,entry_id:own.entries[0].entry_id,category:'design',key:'接口设计',text:'wrong',expected_version:1,submission_key:'wrong-owner'},'user'),/不属于/);
+  }finally{await f.cleanup();}
+});

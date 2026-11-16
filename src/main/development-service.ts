@@ -123,7 +123,7 @@ export class DevelopmentService {
     for(const [index,entry]of (result.result.context_entries??[]).entries()){
       if(this.isStopped(attemptId))throw Error('执行已停止，拒绝迟到工程条目');
       try{
-        await this.engineering.saveEntry({...entry,entry_id:entry.entry_id||undefined,project_id:task.project_id,workspace_path:task.workspace_path,submission_key:`${attemptId}:entry:${index}`,status:'needs_review'},'agent',()=>!this.isStopped(attemptId));
+        await this.engineering.saveEntry({...entry,task_id:task.task_id,entry_id:entry.entry_id||undefined,project_id:task.project_id,workspace_path:task.workspace_path,submission_key:`${attemptId}:entry:${index}`,status:'needs_review'},'agent',()=>!this.isStopped(attemptId));
       }catch(error){
         if(this.isStopped(attemptId))throw error;
         const message=`工程条目 ${index+1}（${entry.category}）未保存：${redact((error as Error).message||String(error))}`;

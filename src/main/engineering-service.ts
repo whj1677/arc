@@ -23,8 +23,8 @@ export function sameVerificationState(a:CodeState,b:CodeState) {
 }
 // Explicit document names only; README/purpose is not a completed plan.
 export function engineeringDocumentCategory(file:string):EngineeringSectionCategory|undefined {
-  const name=path.posix.basename(file).replace(/\.(?:md|txt|json)$/i,'').toLowerCase().replace(/[_ ]/g,'-');
-  if(/^(?:verification-plan|test-plan|acceptance-plan|验证计划|测试计划|验收计划)$/.test(name))return 'verification_plan';
+  const name=path.posix.basename(file).replace(/\.(?:md|txt|json)$/i,'').toLowerCase().replace(/[_ ]/g,'-').replace(/^\d+-/,'');
+  if(/^(?:verification|verification-plan|test-plan|acceptance-plan|验证计划|测试计划|验收计划)$/.test(name))return 'verification_plan';
   if(/^(?:architecture|system-architecture|架构|系统架构)$/.test(name))return 'architecture';
   if(/^(?:design|detailed-design|technical-design|设计|详细设计|技术设计)$/.test(name))return 'design';
   if(/^(?:plan|implementation-plan|development-plan|proposal|方案|实施方案|开发计划)$/.test(name))return 'plan';
@@ -92,16 +92,23 @@ export class EngineeringService {
     if(!restored&&(input.refresh||!old||old.fingerprint!==state.fingerprint)){
       const pending=this.scanning.get(projectId);if(pending)await pending;else{const scan=this.scanContext(projectId,state);this.scanning.set(projectId,scan);try{await scan;}finally{this.scanning.delete(projectId);}}
     }
+    if(input.task_id&&this.task(input.task_id).project_id!==projectId)throw Error('任务不属于当前工程');
+    let reclassified=false;
+    for(const entry of this.store.all<ContextEntry>(contextKind))if(entry.project_id===projectId&&entry.legacy_import&&entry.origin==='document'){
+      const category=engineeringDocumentCategory(entry.legacy_import.import_key.replace(/^aec:/,''));
+      if(category&&category!==entry.category){entry.category=category;entry.version++;entry.updated_at=now();this.store.putVersion(contextKind,entry.entry_id,entry.version,entry);reclassified=true;}
+    }
+    if(reclassified){const current=this.store.get<any>('engineering_context_state',projectId);current.version++;this.store.put('engineering_context_state',projectId,current);}
     const contextState=this.store.get<{version:number}>('engineering_context_state',projectId);
     if(input.offset!==undefined&&(!Number.isSafeInteger(input.offset)||input.offset<0)||input.limit!==undefined&&(!Number.isSafeInteger(input.limit)||input.limit<1))throw Error('上下文分页参数无效');
-    const entries=this.store.all<ContextEntry>(contextKind).filter(e=>e.project_id===projectId&&e.status!=='superseded'&&(!input.category||e.category===input.category)&&(!input.entry_id||e.entry_id===input.entry_id)&&(!input.query||`${e.key}\n${e.text}`.toLowerCase().includes(input.query.toLowerCase())));
+    const entries=this.store.all<ContextEntry>(contextKind).filter(e=>e.project_id===projectId&&e.status!=='superseded'&&(input.task_id===undefined||(e.task_id??'')===input.task_id)&&(!input.category||e.category===input.category)&&(!input.entry_id||e.entry_id===input.entry_id)&&(!input.query||`${e.key}\n${e.text}`.toLowerCase().includes(input.query.toLowerCase())));
     const categories:ContextEntry['category'][]=[...engineeringSectionCategories,'purpose','rule','build','technology','module','interface','decision','issue'];
     const groups=categories.map(category=>entries.filter(e=>e.category===category).sort((a,b)=>Number(b.origin==='user')-Number(a.origin==='user')||Number(b.status==='current')-Number(a.status==='current')||a.key.localeCompare(b.key)));
     const ordered:ContextEntry[]=[];for(let i=0;i<Math.max(...groups.map(group=>group.length));i++)for(const group of groups)if(group[i])ordered.push(group[i]);
     const offset=input.entry_id?0:input.offset??0,limit=input.entry_id?1:Math.min(input.limit??24,40),maxText=input.entry_id?60000:1500;
     const page=ordered.slice(offset,offset+limit).map(e=>({...e,text:e.text.slice(0,maxText),truncated:e.text.length>maxText}));
     const analysis=input.result_id?this.readAnalysis(input.result_id,workspace,state,input):undefined;
-    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.all<Explanation>('explanation').filter(e=>e.result.binding.project_id===projectId).slice(-10).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id).slice(0,5).map(t=>this.currentVerification(t,restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
+    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.all<Explanation>('explanation').filter(e=>e.result.binding.project_id===projectId).slice(-10).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),architecture:!!e.result.architecture?.node_ids.length,summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id).slice(0,5).map(t=>this.currentVerification(t,restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
   }
   private analysisStatus(explanation:Explanation,workspace:WorkspaceBinding,state:CodeState):EngineeringAnalysis['status']{if(workspace.status==='unbound')return 'unbound';return explanation.source_status==='current'&&this.store.get<Snapshot>('snapshot',explanation.result.binding.source_snapshot_id).fingerprint===state.fingerprint?'current':'needs_review';}
   private readAnalysis(resultId:string,workspace:WorkspaceBinding,state:CodeState,input:ContextRequest):EngineeringAnalysis {
@@ -182,6 +189,7 @@ export class EngineeringService {
     if(!engineeringSectionCategories.includes(input.category)||!['user','agent'].includes(origin))throw Error('工程栏目或来源无效');
     if(!Number.isSafeInteger(input.expected_version)||input.expected_version<0)throw Error('条目版本无效');
     if(input.status!==undefined&&!['current','needs_review'].includes(input.status))throw Error('条目状态无效');
+    if(input.task_id&&this.task(input.task_id).project_id!==workspace.project_id)throw Error('条目任务不属于当前工作区');
     const text=requireText(input.text,60000),entryKey=requireText(input.key,300),submission=requireText(input.submission_key,300);
     const receiptKey=this.receiptKey('entry',workspace.project_id,submission),digest=sha(JSON.stringify({...input,origin}));
     return this.store.transaction(()=>{
@@ -191,7 +199,7 @@ export class EngineeringService {
       const binding=this.store.get<WorkspaceBinding>(workspaceKind,workspace.workspace_id);
       if(binding.status!=='bound'||!samePath(binding.root_path,workspace.root_path))throw Error('工作区已改变，请重新读取');
       const old=input.entry_id?this.store.get<ContextEntry>(contextKind,input.entry_id):undefined;
-      if(old&&old.project_id!==workspace.project_id)throw Error('条目不属于当前工作区');
+      if(old&&(old.project_id!==workspace.project_id||old.task_id!==input.task_id))throw Error('条目不属于当前工作区');
       if((old?.version??0)!==input.expected_version)throw Error('VERSION_CONFLICT：条目已更新，请重新读取');
       const sources=input.sources??old?.sources??[];
       if(!Array.isArray(sources)||sources.length>40)throw Error('来源列表无效');
@@ -199,8 +207,8 @@ export class EngineeringService {
       for(const source of sources){const snapshot=this.store.get<Snapshot>('snapshot',source.snapshot_id),file=snapshot.files.find(f=>f.path===source.path);if(snapshot.project_id!==workspace.project_id||!file||file.content_sha256!==source.content_sha256||!Number.isSafeInteger(source.line_start)||!Number.isSafeInteger(source.line_end)||source.line_start<1||source.line_end<source.line_start||source.line_end>file.line_count)throw Error('来源快照、文件或行号不匹配');if(snapshot.fingerprint!==context.code_state.fingerprint)sourcesCurrent=false;}
       const fork=!!old&&['source','document'].includes(old.origin);
       const key=entryKey.startsWith('entry:')?entryKey:`entry:${entryKey}`;
-      if(this.store.all<ContextEntry>(contextKind).some(e=>e.project_id===workspace.project_id&&e.category===input.category&&e.key===key&&e.status!=='superseded'&&e.entry_id!==old?.entry_id))throw Error('VERSION_CONFLICT：同名条目已存在，请读取后编辑');
-      const entry:ContextEntry={entry_id:old&&!fork?old.entry_id:id('context'),project_id:workspace.project_id,version:old&&!fork?old.version+1:1,key,category:input.category,origin,text,status:origin==='user'&&sources.length&&sourcesCurrent?(input.status??'needs_review'):'needs_review',sources,code_fingerprint:context.code_state.fingerprint,updated_at:now(),...(fork?{supersedes:old!.entry_id}:old?.supersedes?{supersedes:old.supersedes}:{}),...(fork?{conflict:'修订与原文并列保留；原文来源及历史未覆盖。'}:{})};
+      if(this.store.all<ContextEntry>(contextKind).some(e=>e.project_id===workspace.project_id&&e.category===input.category&&e.task_id===input.task_id&&e.key===key&&e.status!=='superseded'&&e.entry_id!==old?.entry_id))throw Error('VERSION_CONFLICT：同名条目已存在，请读取后编辑');
+      const entry:ContextEntry={entry_id:old&&!fork?old.entry_id:id('context'),project_id:workspace.project_id,...(input.task_id?{task_id:input.task_id}:{}),version:old&&!fork?old.version+1:1,key,category:input.category,origin,text,status:origin==='user'&&sources.length&&sourcesCurrent?(input.status??'needs_review'):'needs_review',sources,code_fingerprint:context.code_state.fingerprint,updated_at:now(),...(fork?{supersedes:old!.entry_id}:old?.supersedes?{supersedes:old.supersedes}:{}),...(fork?{conflict:'修订与原文并列保留；原文来源及历史未覆盖。'}:{})};
       this.store.putVersion(contextKind,entry.entry_id,entry.version,entry);
       this.store.put('engineering_receipt',receiptKey,{project_id:workspace.project_id,digest,entry});
       const state=this.store.get<{version:number}>('engineering_context_state',workspace.project_id);state.version++;this.store.put('engineering_context_state',workspace.project_id,state);
@@ -272,6 +280,7 @@ export class EngineeringService {
       if(!Array.isArray(value.criteria)||value.criteria.length<1||value.criteria.length>20)throw Error('每个步骤需要 1–20 条验收条件');
       const criteria=value.criteria.map(criterion=>({criterion_id:requireText(criterion.criterion_id,160),text:requireText(criterion.text,4000),evidence_ids:this.idList(criterion.evidence_ids)}));
       if(new Set(criteria.map(c=>c.criterion_id)).size!==criteria.length)throw Error('步骤内验收条件 ID 重复');
+      if(typeof value.title!=='string'||!value.title.trim())throw Error('步骤 '+stepId+' 缺少 title（步骤标题）');
       const previous=steps.find(step=>step.step_id===stepId),step:DevelopmentStep={step_id:stepId,title:requireText(value.title,300),change:requireText(value.change,6000),status:value.status,progress:requireText(value.progress,6000),criteria,evidence_ids:this.idList(value.evidence_ids),unresolved:(value.unresolved??[]).map(item=>requireText(item,4000)),created_at:previous?.created_at??now(),updated_at:now()};
       if(previous)steps[steps.indexOf(previous)]=step;else steps.push(step);
     }
@@ -382,6 +391,7 @@ export class EngineeringService {
         if(reusable)current.walkthrough={...previous!,status:'completed',result_id:result.result_id,source_snapshot_id:result.result.binding.source_snapshot_id,error:undefined,updated_at:now()};
         else current.walkthrough={status:current.end_state?'pending':'failed',previous_result_id:previous?.result_id??current.reading.result_id,source_snapshot_id:current.end_state?.snapshot_id,...(current.end_state?{}:{error:'没有可确认的开发结束代码状态；旧走读保留。'}),updated_at:now()};
       }
+      if(current.reading&&input.status!=='completed'&&!current.changes.length&&current.walkthrough?.status==='pending')current.walkthrough={...current.walkthrough,status:'failed',error:'开发未完成且没有源码改动，未触发走读更新；原说明保留。',updated_at:now()};
       current.verification_status=this.verificationStatus(current,end??current.baseline);this.saveTask(current);this.markAffected(current.project_id,changes.map(c=>c.path));this.store.put('engineering_receipt',key,current);this.changed();return current;});
     if(saved.walkthrough?.status==='pending'&&saved.end_state)this.onTaskFinished(saved);return saved;
   }

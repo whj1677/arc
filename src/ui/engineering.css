@@ -1,8 +1,8 @@
-.engineering-overview{margin:1rem;padding:1rem 1.25rem;border:1px solid var(--border);border-radius:.6rem;background:var(--surface)}
+.engineering-overview{margin:1rem;padding:1rem 1.25rem;border:1px solid var(--border);border-radius:.6rem;background:var(--surface);flex-shrink:0;min-width:0}
 .engineering-overview>summary{color:var(--accent);font-weight:600;cursor:pointer}.engineering-overview>summary::marker{color:var(--accent)}
-.engineering-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:1.25rem}.engineering-facts h3{font-size:1rem;color:var(--blue);margin:.75rem 0}
+.engineering-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,22rem),1fr));gap:1.25rem}.engineering-facts>section{min-width:0}.engineering-facts h3{font-size:1rem;color:var(--blue);margin:.75rem 0}
 .engineering-fact{padding:.5rem 0;border-bottom:1px solid var(--border)}.engineering-fact p{margin:.25rem 0;white-space:pre-wrap;overflow-wrap:anywhere}.engineering-fact small{display:inline-block;color:var(--muted);margin-right:.5rem}
-.engineering-fact p:first-child{display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}
+.engineering-fact{line-height:1.75;min-width:0}.engineering-fact details{margin:.5rem 0}.engineering-fact summary{cursor:pointer;color:var(--accent)}.engineering-markdown{overflow-wrap:anywhere;line-height:1.8}.engineering-markdown p{white-space:pre-wrap}.engineering-markdown pre{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;overflow:auto}.engineering-markdown h3,.engineering-markdown h4{margin:1rem 0 .5rem}.engineering-markdown ul{padding-left:1.4rem}.engineering-markdown li{white-space:pre-wrap}
 .engineering-source{margin-top:1rem;padding:1rem;border:1px solid var(--accent);border-radius:.5rem}.engineering-source form{display:grid;gap:.5rem;margin-top:1rem}.engineering-source textarea{min-height:5rem}
 .workspace.engineering-mode{grid-template-columns:var(--left) 5px minmax(0,1fr)}.workspace.engineering-mode.catalog-hidden{grid-template-columns:minmax(0,1fr)}
 .engineering-workspace{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:auto;background:var(--bg)}

@@ -20,6 +20,19 @@ function result(run:Run,snapshot:Snapshot,text:string):AnalysisResult{
 }
 async function close(service:ArcService,bridge?:ArcMcpBridge){await bridge?.close();await service.shutdown();service.store.close();}
 
+test('blocked development without changes does not dispatch an automatic walkthrough',async()=>{
+  let calls=0;const runner:typeof runCodex=async options=>{calls++;return {code:0,raw:JSON.stringify(result(options.run,options.snapshot,'原实现')),stderr:''};};
+  const f=await fixture(runner);
+  try{
+    const run=await f.service.startRun(f.scenario.scenario_id,'codex','blocked-original');await f.service.executing.get(run.binding.run_id);
+    const old=f.service.data().explanations[0],reading={feature_id:f.feature.feature_id,scenario_id:f.scenario.scenario_id,result_id:old.result_id,source_snapshot_id:old.result.binding.source_snapshot_id,target:{kind:'feature' as const,id:f.feature.feature_id}};
+    let task=await f.service.engineering.createTask({project_id:f.project.project_id,goal:'权限受阻',submission_key:'blocked-task',reading});
+    const attempt=f.service.engineering.startAttempt(task.task_id,{provider_id:'codex',model:'test',origin:'agent'});task=f.service.engineering.task(task.task_id);
+    task=await f.service.engineering.finishTask({task_id:task.task_id,attempt_id:attempt.attempt_id,expected_version:task.version,submission_key:'blocked-finish',status:'blocked',summary:'宿主只读'});
+    assert.equal(task.walkthrough?.status,'failed');assert.equal(task.changes.length,0);assert.equal(calls,1);assert.equal(f.service.data().runs.length,1);
+  }finally{await close(f.service);await fs.rm(f.directory,{recursive:true,force:true});}
+});
+
 test('feature-linked development republishes the same scenario and preserves full MCP and export continuity',async()=>{
   const prompts:string[]=[];let calls=0;
   const runner:typeof runCodex=async options=>{calls++;prompts.push(options.prompt);return {code:0,raw:JSON.stringify(result(options.run,options.snapshot,calls===1?'旧实现说明':`第 ${calls-1} 次开发后的新实现`)),stderr:''};};

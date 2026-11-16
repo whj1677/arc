@@ -24,10 +24,12 @@ export interface LegacyImport {
 export const engineeringSectionCategories=['plan','architecture','design','verification_plan'] as const;
 export type EngineeringSectionCategory=typeof engineeringSectionCategories[number];
 export interface SaveEngineeringEntry {
+  task_id?:string;
   project_id?:string;workspace_path?:string;entry_id?:string;expected_version:number;submission_key:string;
   category:EngineeringSectionCategory;key:string;text:string;status?:'current'|'needs_review';sources?:ContextSource[];
 }
 export interface ContextEntry {
+  task_id?:string;
   entry_id:string; project_id:string; version:number; key:string;
   category:'purpose'|'module'|'interface'|'build'|'rule'|'decision'|'issue'|'technology'|EngineeringSectionCategory;
   origin:'source'|'document'|'user'|'agent'; text:string;
@@ -38,7 +40,7 @@ export interface ContextEntry {
 }
 export interface EngineeringContext {
   project_id:string; workspace:WorkspaceBinding; version:number; code_state:CodeState;
-  entries:ContextEntry[]; analysis_refs:{result_id:string; source_snapshot_id:string; status:string;summary:string}[];
+  entries:ContextEntry[]; analysis_refs:{result_id:string; source_snapshot_id:string; status:string;summary:string;architecture?:boolean}[];
   analysis?:EngineeringAnalysis;
   recent_tasks:Pick<EngineeringTask,'task_id'|'goal'|'status'|'summary'|'version'|'updated_at'|'verification_status'|'decisions'|'unresolved'>[];
   total_entries:number; next_offset:number|null;
@@ -108,7 +110,7 @@ export interface DevelopmentAttempt {
   write_scope?:string[];
   connection_status?:'connected'|'unknown';
 }
-export interface ContextRequest {project_id?:string; workspace_path?:string; refresh?:boolean;query?:string;entry_id?:string;result_id?:string;category?:ContextEntry['category'];offset?:number;limit?:number}
+export interface ContextRequest {task_id?:string;project_id?:string; workspace_path?:string; refresh?:boolean;query?:string;entry_id?:string;result_id?:string;category?:ContextEntry['category'];offset?:number;limit?:number}
 export interface CreateEngineeringTask extends ContextRequest {
   goal:string; submission_key:string; task_id?:string; scope?:string[]; reading?:TaskReadingBinding;
 }
