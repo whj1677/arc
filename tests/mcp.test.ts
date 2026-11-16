@@ -21,6 +21,9 @@ test('MCP authenticated stdio round trip, scoped frozen reads, progress, revoke 
  const begun=await rpc('tools/call',{name:'arc_begin_analysis',arguments:{request_id:'test'}});const task=JSON.parse(begun.content[0].text),run_id=task.binding.run_id;
  assert.deepEqual((await bridge.call('arc_begin_analysis',{request_id:'test'})).binding,task.binding);assert.equal(service.active.size,0);
  await fs.writeFile(path.join(source,'a.ts'),'changed\n');assert.equal((await bridge.call('arc_read_source',{run_id,path:'a.ts'})).lines[0].text,'export const value=1;');
+ await service.engineering.connect(project.project_id);const refreshed=await bridge.call('arc_engineering_context',{workspace_path:source,refresh:true});
+ const next=await bridge.call('arc_begin_analysis',{request_id:'after-rescan'});assert.equal(next.binding.source_snapshot_id,service.store.get('project',project.project_id).snapshot_id);assert.notEqual(next.binding.source_snapshot_id,task.binding.source_snapshot_id);
+ assert.equal((await bridge.call('arc_read_source',{run_id:next.binding.run_id,path:'a.ts'})).lines[0].text,'changed');assert.equal((await bridge.call('arc_read_source',{run_id,path:'a.ts'})).lines[0].text,'export const value=1;');assert.equal(refreshed.code_state.fingerprint,service.store.get('snapshot',next.binding.source_snapshot_id).fingerprint);
  await assert.rejects(bridge.call('arc_read_source',{run_id,path:'../secret'}));
  await bridge.call('arc_report_progress',{run_id,event_id:'progress-1',message:'已读取真实冻结文件'});await bridge.call('arc_report_progress',{run_id,event_id:'progress-1',message:'已读取真实冻结文件'});
  assert.equal(service.store.events(run_id).filter(e=>e.item?.type==='agent_message').length,1);
@@ -39,6 +42,28 @@ test('MCP host configuration labels WorkBuddy without claiming verified identity
   await assert.rejects(bridge.call('arc_begin_analysis',{request_id:'bad-host'},{configured_provider:'unknown'}),/宿主配置无效/);
   const legacy=await bridge.call('arc_begin_analysis',{request_id:'legacy'},{name:'WorkBuddy'});
   assert.equal(legacy.provider.provider_id,'codex','a self-reported client name must not silently choose a provider');
+ }finally{await bridge.close();await service.shutdown();service.store.close();}
+});
+
+test('dispatch context combines effective project materials with only its own task and exposes all editable categories',async()=>{
+ const {source,service,project,bridge}=await setup();try{
+  await bridge.enable(project.project_id);await service.engineering.connect(project.project_id);
+  const schema=bridgeTools.find(t=>t.name==='arc_save_engineering_entry')!.inputSchema.properties.category;
+  for(const category of ['purpose','build','rule','issue','module','interface']){
+   assert.ok(schema.enum.includes(category));
+   const entry=await bridge.call('arc_save_engineering_entry',{workspace_path:source,category,key:category,text:`Project ${category}`,expected_version:0,submission_key:`material-${category}`});assert.equal(entry.category,category);assert.equal(entry.task_id,undefined);
+  }
+  const task=await service.engineering.createTask({project_id:project.project_id,goal:'current task',scope:['a.ts'],submission_key:'current'});
+  const other=await service.engineering.createTask({project_id:project.project_id,goal:'other task',scope:['a.ts'],submission_key:'other'});
+  for(const item of [task,other])await service.engineering.saveEntry({project_id:project.project_id,task_id:item.task_id,category:'plan',key:'task plan',text:item.goal,expected_version:0,submission_key:item.task_id},'user');
+  // Protocol fixture: delivery itself is covered by external-dispatch tests;
+  // real fresh-session acceptance is performed separately against the live app.
+  const dispatch=bridge.dispatch.enqueue(project.project_id,{task_id:task.task_id,submission_key:'claim-context',scope:['a.ts']});
+  service.store.put('external_dispatch',dispatch.dispatch_id,{...dispatch,state:'awaiting_claim'});
+  const claimed=await bridge.call('arc_claim_dispatch',{dispatch_id:dispatch.dispatch_id});
+  for(const category of ['purpose','build','rule','issue','module','interface'])assert.ok(claimed.context.entries.some((e:any)=>e.text===`Project ${category}`));
+  assert.ok(claimed.context.entries.some((e:any)=>e.text==='current task'));assert.ok(!claimed.context.entries.some((e:any)=>e.task_id===other.task_id));assert.ok(!claimed.context.recent_tasks.some((t:any)=>t.task_id===other.task_id));
+  const strict=await bridge.call('arc_engineering_context',{workspace_path:source,task_id:task.task_id,view:'strict'});assert.deepEqual(strict.entries.map((e:any)=>e.text),['current task']);
  }finally{await bridge.close();await service.shutdown();service.store.close();}
 });
 test('MCP rejects forged binding, preserves raw result, accepts valid result once',async()=>{

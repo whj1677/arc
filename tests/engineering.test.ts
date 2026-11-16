@@ -25,6 +25,35 @@ async function fixture(git=false) {
   const service=new EngineeringService(store);await service.connect('p');
   return {directory,root,store,service,cleanup:async()=>{store.close();await fs.rm(directory,{recursive:true,force:true});}};
 }
+
+test('project materials keep one effective full revision through scans and restart, and execution context excludes other tasks',async()=>{
+  const f=await fixture();let reopened:Store|undefined;
+  try{
+    await fs.mkdir(path.join(f.root,'examples/demo'),{recursive:true});await fs.writeFile(path.join(f.root,'examples/demo/README.md'),'# Nested demo only\nRun npm run missing.');
+    const first=await f.service.context({project_id:'p'}),source=(await f.service.context({project_id:'p',entry_id:first.entries.find(e=>e.key==='initial:build')!.entry_id})).entries[0];
+    assert.match(source.text,/node --test/);assert.ok(source.sources.some(s=>s.path==='package.json'));
+    assert.ok(first.entries.some(e=>e.key==='initial:purpose'&&e.text.includes('A real small project')));
+    assert.ok(!first.entries.find(e=>e.key==='initial:purpose')!.text.includes('Nested demo only'));
+    assert.ok(first.entries.some(e=>e.key==='initial:architecture'&&e.text.includes('尚未取得工程全貌分析')));
+    const body='# 构建说明\n\n| 阶段 | 命令 |\n| --- | --- |\n| 测试 | `npm test` |\n\n```sh\nnpm test\n```\n\n[说明](https://example.com)\n'+('完整说明。'.repeat(400));
+    const edited=await f.service.saveEntry({project_id:'p',category:'build',entry_id:source.entry_id,key:'编译说明',text:body,expected_version:source.version,submission_key:'edit-build'},'user');
+    const rule=await f.service.saveEntry({project_id:'p',category:'rule',key:'工程边界',text:'只修改获准文件；历史验证不能证明当前代码通过。',expected_version:0,submission_key:'new-rule'},'user');
+    await f.service.saveEntry({project_id:'p',category:'issue',key:'已知问题',text:'硬件兼容性尚未验证。',expected_version:0,submission_key:'new-issue'},'user');
+    const own=await f.service.createTask({project_id:'p',goal:'current task',submission_key:'own'}),other=await f.service.createTask({project_id:'p',goal:'other task',submission_key:'other'});
+    for(const task of [own,other])await f.service.saveEntry({project_id:'p',task_id:task.task_id,category:'plan',key:'任务方案',text:task.goal,expected_version:0,submission_key:task.task_id},'agent');
+    const strict=await f.service.context({project_id:'p',task_id:own.task_id});assert.deepEqual(strict.entries.map(e=>e.text),['current task']);
+    const execution=await f.service.context({project_id:'p',task_id:own.task_id,view:'execution'});
+    assert.ok(execution.entries.some(e=>e.entry_id===rule.entry_id));assert.ok(execution.entries.some(e=>e.entry_id===edited.entry_id));
+    assert.ok(!execution.entries.some(e=>e.entry_id===source.entry_id||e.task_id===other.task_id));
+    assert.equal((await f.service.context({project_id:'p',entry_id:edited.entry_id})).entries[0].text,body);
+    assert.equal((await f.service.context({project_id:'p',entry_id:source.entry_id})).entries[0].text,source.text);
+    const pkg=JSON.parse(await fs.readFile(path.join(f.root,'package.json'),'utf8'));pkg.scripts.test='node --test --test-reporter=spec';await fs.writeFile(path.join(f.root,'package.json'),JSON.stringify(pkg,null,2));
+    const scanned=await f.service.context({project_id:'p',refresh:true,entry_id:edited.entry_id});assert.equal(scanned.entries[0].text,body);assert.match(scanned.entries[0].update_suggestion!.proposed_text,/test-reporter=spec/);
+    reopened=new Store(f.store.directory);const restarted=new EngineeringService(reopened);assert.equal((await restarted.context({project_id:'p',entry_id:edited.entry_id})).entries[0].text,body);
+    assert.equal(restarted.history('context',source.entry_id)[0].text,source.text);
+    await assert.rejects(restarted.saveEntry({project_id:'p',task_id:other.task_id,entry_id:edited.entry_id,category:'build',key:'编译说明',text:'wrong owner',expected_version:edited.version,submission_key:'wrong-owner'},'user'),/不属于/);
+  }finally{reopened?.close();await f.cleanup();}
+});
 test('a desktop launch without Git on PATH cannot identify an existing Git workspace as non-Git',async()=>{
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'arc-git-path-'));
   const repo=path.join(directory,'repo'),plain=path.join(directory,'plain');
@@ -46,12 +75,13 @@ test('engineering v1 upgrade preserves existing reading objects and persists ver
 test('context shares source versions, detects document conflict and preserves user corrections through incremental scans',async()=>{
   const f=await fixture();try {
     const first=await f.service.context({project_id:'p'}),again=await f.service.context({project_id:'p'});assert.equal(first.version,again.version);assert.equal(first.code_state.snapshot_id,again.code_state.snapshot_id);
-    const doc=first.entries.find(e=>e.key==='document:README.md')!;assert.equal(doc.status,'needs_review');assert.match(doc.conflict!,/missing/);
+    const sourceDoc=f.store.all<any>('engineering_context').find(e=>e.key==='document:README.md');
+    const doc=(await f.service.context({project_id:'p',entry_id:sourceDoc.entry_id})).entries[0];assert.equal(doc.status,'needs_review');assert.match(doc.conflict!,/missing/);
     const correction=f.service.reviseContext({entry_id:doc.entry_id,expected_version:doc.version,text:'使用 npm test；README 尚未修正',submission_key:'correct'});
     const corrected=f.service.reviseContext({entry_id:correction.entry_id,expected_version:correction.version,text:'用户已确认使用 npm test',submission_key:'correct-again'});assert.equal(corrected.entry_id,correction.entry_id);assert.equal(f.service.history('context',corrected.entry_id).length,2);
-    const stable=first.entries.find(e=>e.key==='build:package.json:test')!;await fs.writeFile(path.join(f.root,'sum.js'),'export const sum = (a,b) => Number(a)+Number(b);\n');
-    const refreshed=await f.service.context({project_id:'p'});assert.ok(refreshed.entries.some(e=>e.entry_id===correction.entry_id&&e.text==='用户已确认使用 npm test'));assert.equal(refreshed.entries.find(e=>e.entry_id===stable.entry_id)?.version,stable.version);
-    assert.ok(refreshed.entries.every(e=>e.sources.length));
+    const stable=f.store.all<any>('engineering_context').find(e=>e.key==='build:package.json:test')!;await fs.writeFile(path.join(f.root,'sum.js'),'export const sum = (a,b) => Number(a)+Number(b);\n');
+    const refreshed=await f.service.context({project_id:'p'});assert.ok(refreshed.entries.some(e=>e.entry_id===correction.entry_id&&e.text==='用户已确认使用 npm test'));assert.equal((await f.service.context({project_id:'p',entry_id:stable.entry_id})).entries[0].version,stable.version);
+    assert.ok(refreshed.entries.filter(e=>e.origin==='source'||e.origin==='document').every(e=>e.sources.length));
   }finally{await f.cleanup();}
 });
 test('task capture distinguishes preexisting dirty overlaps, idempotency, conflicts, verification versions and request continuation',async()=>{
@@ -80,10 +110,11 @@ test('context reads are bounded and details/search/page requests keep the same s
   const f=await fixture();try{
     await fs.writeFile(path.join(f.root,'README.md'),'# Detailed context\n'+('A documented engineering fact.\n'.repeat(100)));
     await fs.writeFile(path.join(f.root,'package.json'),JSON.stringify({name:'fixture',scripts:Object.fromEntries(Array.from({length:50},(_,i)=>[`check${i}`,'node --test']))}));
+    await fs.mkdir(path.join(f.root,'modules'));await Promise.all(Array.from({length:50},(_,i)=>fs.writeFile(path.join(f.root,'modules',`module${i}.md`),`Module ${i} context`)));
     const first=await f.service.context({project_id:'p'});assert.equal(first.entries.length,24);assert.ok(first.total_entries>40);assert.equal(first.next_offset,24);assert.ok(first.entries.every(e=>e.text.length<=1500));
     const second=await f.service.context({project_id:'p',offset:24,limit:40});assert.equal(second.version,first.version);assert.ok(second.entries.every(e=>!first.entries.some(a=>a.entry_id===e.entry_id)));
-    const doc=first.entries.find(e=>e.key==='document:README.md')!;assert.equal(doc.truncated,true);const detail=await f.service.context({project_id:'p',entry_id:doc.entry_id});assert.equal(detail.entries.length,1);assert.ok(detail.entries[0].text.length>1500);assert.equal(detail.version,first.version);
-    const search=await f.service.context({project_id:'p',query:'check49'});assert.equal(search.entries.length,1);assert.match(search.entries[0].key,/check49/);
+    const doc=first.entries.find(e=>e.key==='initial:purpose')!;assert.equal(doc.truncated,true);const detail=await f.service.context({project_id:'p',entry_id:doc.entry_id});assert.equal(detail.entries.length,1);assert.ok(detail.entries[0].text.length>1500);assert.equal(detail.version,first.version);
+    const search=await f.service.context({project_id:'p',query:'Module 49 context'});assert.equal(search.entries.length,1);assert.match(search.entries[0].key,/module49/);
   }finally{await f.cleanup();}
 });
 test('Agent reads the existing UI analysis on demand with identical frozen relationships and evidence, without republishing stale graphs',async()=>{
@@ -96,6 +127,7 @@ test('Agent reads the existing UI analysis on demand with identical frozen relat
     const result:AnalysisResult={schema_version:'1.0',fictional:false,result_id:'saved-overview',binding:{project_id:'p',feature_id:scenario.feature_id,scenario_id:scenario.scenario_id,question_revision_id:scenario.question_revision_id,source_snapshot_id:snapshot.source_snapshot_id,run_id:'saved-run'},provider:{provider_id:'codex',connection_id:'existing-analysis',adapter_version:'1'},summary:{text:'求和模块依赖数值转换模块；这是已有说明。',claim_ids:['claim']},coverage:{covered_scope:['sum.js 的导入声明'],unresolved_scope:['运行行为未在此说明中验证']},architecture:{node_ids:['sum','number'],edge_ids:['imports']},nodes:[node('sum','求和模块'),node('number','数值转换模块')],edges:[{edge_id:'imports',kind:'dependency',source_node_id:'sum',target_node_id:'number',label:'导入 number',status:'source_supported',claim_ids:['claim'],evidence_ids:['import-evidence']}],claims:[{claim_id:'claim',statement:'sum.js 导入 other.js 的 number',status:'source_supported',rationale:'导入声明',limitations:['静态导入关系不等于已运行验证'],evidence_ids:['import-evidence'],targets:{node_ids:['sum','number'],edge_ids:['imports'],io_ids:[]}}],evidence:[evidence],gaps:[]};
     arc.store.put('explanation',result.result_id,{result_id:result.result_id,scenario_id:scenario.scenario_id,created_at:new Date().toISOString(),source_status:'current',result});await bridge.enable('p');
     const base=await bridge.call('arc_engineering_context',{workspace_path:f.root});assert.equal(base.analysis,undefined);assert.equal(base.analysis_refs[0].summary,result.summary.text);assert.equal(base.analysis_refs[0].status,'current');
+    const initial=base.entries.find((e:any)=>e.key==='initial:architecture');assert.match(initial.text,/求和模块的已保存说明/);assert.match(initial.text,/导入 number/);assert.equal(initial.analysis_result_id,result.result_id);assert.deepEqual(initial.sources.map((s:any)=>s.path),['sum.js']);
     const entriesBefore=arc.store.all('engineering_context').length;
     const page=await bridge.call('arc_engineering_context',{workspace_path:f.root,result_id:result.result_id,limit:1});assert.equal(page.analysis.total_items,3);assert.equal(page.analysis.nodes.length,1);assert.equal(page.analysis.next_offset,1);assert.deepEqual(page.analysis.binding,result.binding);assert.deepEqual(page.analysis.evidence,[evidence]);assert.equal(page.analysis.nodes[0].in_architecture,true);
     const relation=await bridge.call('arc_engineering_context',{workspace_path:f.root,result_id:result.result_id,query:'dependency',limit:1});assert.equal(relation.analysis.edges.length,1);assert.equal(relation.analysis.edges[0].edge_id,result.edges[0].edge_id);assert.equal(relation.analysis.edges[0].kind,'dependency');assert.equal(relation.analysis.edges[0].status,result.edges[0].status);assert.deepEqual(relation.analysis.claims,result.claims);assert.deepEqual(relation.analysis.node_refs.map((n:any)=>n.node_id),['sum','number']);assert.deepEqual(relation.analysis.evidence,[evidence]);assert.equal(arc.store.all('engineering_context').length,entriesBefore);assert.equal(arc.engineering.tasks().length,0);
@@ -222,7 +254,7 @@ test('explicit documents classify into sections without inventing content and so
     await fs.writeFile(path.join(f.root,'docs/requirements/REQ-1/verification-plan.md'),'# Verification plan\nCheck negative input.');
     await f.service.importAec('p');
     const design=(await f.service.context({project_id:'p',category:'design'})).entries;assert.equal(design.length,1);assert.equal(design[0].origin,'document');assert.equal(design[0].status,'needs_review');
-    assert.equal((await f.service.context({project_id:'p',category:'verification_plan'})).entries.length,1);assert.equal((await f.service.context({project_id:'p',category:'architecture'})).entries.length,0);
+    assert.equal((await f.service.context({project_id:'p',category:'verification_plan'})).entries.length,1);const initialArchitecture=(await f.service.context({project_id:'p',category:'architecture'})).entries;assert.equal(initialArchitecture.length,1);assert.match(initialArchitecture[0].text,/尚未取得工程全貌分析/);assert.equal(initialArchitecture[0].status,'needs_review');
     const source=design[0].sources[0],input={project_id:'p',category:'architecture' as const,key:'Architecture note',text:'Proposal',expected_version:0,submission_key:'source-invalid',sources:[{...source,content_sha256:'wrong'}]};
     await assert.rejects(f.service.saveEntry(input,'agent'),/来源快照/);
     const saved=await f.service.saveEntry({...input,submission_key:'source-valid',sources:[source],status:'current'},'agent');assert.deepEqual(saved.sources,[source]);assert.equal(saved.status,'needs_review');

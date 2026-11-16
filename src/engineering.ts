@@ -23,10 +23,11 @@ export interface LegacyImport {
 }
 export const engineeringSectionCategories=['plan','architecture','design','verification_plan'] as const;
 export type EngineeringSectionCategory=typeof engineeringSectionCategories[number];
+export const engineeringCategories=['purpose','build','rule','issue','module','interface','decision','technology',...engineeringSectionCategories] as const;
 export interface SaveEngineeringEntry {
   task_id?:string;
   project_id?:string;workspace_path?:string;entry_id?:string;expected_version:number;submission_key:string;
-  category:EngineeringSectionCategory;key:string;text:string;status?:'current'|'needs_review';sources?:ContextSource[];
+  category:typeof engineeringCategories[number];key:string;text:string;status?:'current'|'needs_review';sources?:ContextSource[];
 }
 export interface ContextEntry {
   task_id?:string;
@@ -36,6 +37,10 @@ export interface ContextEntry {
   status:'current'|'needs_review'|'superseded'; sources:ContextSource[];
   code_fingerprint:string; updated_at:string; supersedes?:string; conflict?:string;
   truncated?:boolean;
+  update_suggestion?:{source_entry_id:string;source_version:number;previous_text:string;proposed_text:string};
+  analysis_result_id?:string;
+  covered_entries?:string[];
+  source_version?:number;
   legacy_import?:LegacyImport;
 }
 export interface EngineeringContext {
@@ -110,7 +115,7 @@ export interface DevelopmentAttempt {
   write_scope?:string[];
   connection_status?:'connected'|'unknown';
 }
-export interface ContextRequest {task_id?:string;project_id?:string; workspace_path?:string; refresh?:boolean;query?:string;entry_id?:string;result_id?:string;category?:ContextEntry['category'];offset?:number;limit?:number}
+export interface ContextRequest {view?:'strict'|'execution';task_id?:string;project_id?:string; workspace_path?:string; refresh?:boolean;query?:string;entry_id?:string;result_id?:string;category?:ContextEntry['category'];offset?:number;limit?:number}
 export interface CreateEngineeringTask extends ContextRequest {
   goal:string; submission_key:string; task_id?:string; scope?:string[]; reading?:TaskReadingBinding;
 }

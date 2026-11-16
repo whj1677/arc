@@ -67,7 +67,7 @@ export class DevelopmentService {
     const configured=await this.configuration(profile.path,attempt.workspace_path);
     if(this.isStopped(attemptId))return;
     this.engineering.updateAttempt(attemptId,{model:configured.model?`配置：${configured.model}`:'沿用 Codex 默认模型（未取得标识）',runtime_version:profile.version});
-    const task=this.engineering.task(taskId),context=await this.engineering.context({project_id:task.project_id});
+    const task=this.engineering.task(taskId),context=await this.engineering.executionContext(task.project_id,task.task_id);
     const baseline=attempt.baseline??task.baseline;
     if(context.workspace.workspace_id!==task.workspace_id||context.workspace.root_path!==task.workspace_path||!sameVerificationState(context.code_state,baseline))throw Error('WORKSPACE_CONFLICT：启动前工作区或代码基线已改变，未派发开发。');
     const records:CommandRecord[]=[];let captureQueue=Promise.resolve(),possibleWrite=0;
@@ -123,7 +123,9 @@ export class DevelopmentService {
     for(const [index,entry]of (result.result.context_entries??[]).entries()){
       if(this.isStopped(attemptId))throw Error('执行已停止，拒绝迟到工程条目');
       try{
-        await this.engineering.saveEntry({...entry,task_id:task.task_id,entry_id:entry.entry_id||undefined,project_id:task.project_id,workspace_path:task.workspace_path,submission_key:`${attemptId}:entry:${index}`,status:'needs_review'},'agent',()=>!this.isStopped(attemptId));
+        const existing=entry.entry_id?context.entries.find(value=>value.entry_id===entry.entry_id):undefined;
+        if(entry.entry_id&&!existing)throw Error('条目不属于本次执行上下文');
+        await this.engineering.saveEntry({...entry,task_id:entry.entry_id?existing?.task_id:task.task_id,entry_id:entry.entry_id||undefined,project_id:task.project_id,workspace_path:task.workspace_path,submission_key:`${attemptId}:entry:${index}`,status:'needs_review'},'agent',()=>!this.isStopped(attemptId));
       }catch(error){
         if(this.isStopped(attemptId))throw error;
         const message=`工程条目 ${index+1}（${entry.category}）未保存：${redact((error as Error).message||String(error))}`;

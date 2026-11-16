@@ -28,8 +28,17 @@ type Draft={key:string;text:string;entry?:ContextEntry};
 
 /** Render local text as React nodes. Raw HTML is always displayed as text. */
 export function ContextText({text}:{text:string}){
+  const inline=(value:string):React.ReactNode[]=>value.split(/(`[^`]+`|\[[^\]]+\]\([^\s)]+\)|\*\*[^*]+\*\*)/g).map((part,i)=>{
+    if(part.startsWith('`')&&part.endsWith('`'))return <code key={i}>{part.slice(1,-1)}</code>;
+    if(part.startsWith('**')&&part.endsWith('**'))return <strong key={i}>{part.slice(2,-2)}</strong>;
+    const link=part.match(/^\[([^\]]+)\]\(([^\s)]+)\)$/);
+    if(link&&/^(https?:\/\/|mailto:)/i.test(link[2]))return <a key={i} href={link[2]} onClick={e=>{e.preventDefault();void api.invoke('engineering_open_link',{url:link[2]}).catch(error=>window.alert(error.message));}}>{link[1]}</a>;
+    return part;
+  });
   const blocks:React.ReactNode[]=[];
   const lines=text.replace(/\r\n/g,'\n').split('\n');
+  const cells=(line:string)=>line.trim().replace(/^\|/,'').replace(/\|$/,'').split(/(?<!\\)\|/).map(s=>s.trim().replace(/\\\|/g,'|'));
+  const isTable=(index:number)=>index+1<lines.length&&lines[index].includes('|')&&cells(lines[index+1]).every(s=>/^:?-{3,}:?$/.test(s));
   for(let i=0;i<lines.length;){
     const line=lines[i];
     if(!line.trim()){i++;continue;}
@@ -38,16 +47,22 @@ export function ContextText({text}:{text:string}){
       while(i<lines.length&&!lines[i].startsWith('```'))code.push(lines[i++]);
       i++;blocks.push(<pre key={i}><code>{code.join('\n')}</code></pre>);continue;
     }
-    const heading=line.match(/^#{1,6}\s+(.+)$/);
-    if(heading){blocks.push(<h4 key={i}>{heading[1]}</h4>);i++;continue;}
+    const heading=line.match(/^(#{1,6})\s+(.+)$/);
+    if(heading){blocks.push(React.createElement('h'+heading[1].length,{key:i},inline(heading[2])));i++;continue;}
+    if(isTable(i)){
+      const headers=cells(line),rows:string[][]=[];i+=2;
+      while(i<lines.length&&lines[i].trim()&&lines[i].includes('|'))rows.push(cells(lines[i++]));
+      blocks.push(<div className="engineering-table" key={i}><table><thead><tr>{headers.map((cell,j)=><th key={j}>{inline(cell)}</th>)}</tr></thead><tbody>{rows.map((row,j)=><tr key={j}>{headers.map((_,k)=><td key={k}>{inline(row[k]||'')}</td>)}</tr>)}</tbody></table></div>);continue;
+    }
     if(/^\s*(?:[-*+] |\d+\. )/.test(line)){
       const items:string[]=[];
       while(i<lines.length&&/^\s*(?:[-*+] |\d+\. )/.test(lines[i]))items.push(lines[i++].replace(/^\s*(?:[-*+] |\d+\. )/,''));
-      blocks.push(<ul key={i}>{items.map((item,j)=><li key={j}>{item}</li>)}</ul>);continue;
+      const children=items.map((item,j)=><li key={j}>{inline(item)}</li>);
+      blocks.push(/^\s*\d+\./.test(line)?<ol key={i}>{children}</ol>:<ul key={i}>{children}</ul>);continue;
     }
     const paragraph=[line];i++;
-    while(i<lines.length&&lines[i].trim()&&!/^(?:#|```|\s*[-*+] |\s*\d+\. )/.test(lines[i]))paragraph.push(lines[i++]);
-    blocks.push(<p key={i}>{paragraph.join('\n')}</p>);
+    while(i<lines.length&&lines[i].trim()&&!isTable(i)&&!/^(?:#|```|\s*[-*+] |\s*\d+\. )/.test(lines[i]))paragraph.push(lines[i++]);
+    blocks.push(<p key={i}>{inline(paragraph.join('\n'))}</p>);
   }
   return <div className="engineering-markdown">{blocks}</div>;
 }

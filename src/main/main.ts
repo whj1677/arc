@@ -36,10 +36,11 @@ app.whenReady().then(async()=>{
         case 'mcp_enable':value=await bridge.enable(args.project_id,args.register_codex===true);break;
         case 'mcp_disable':value=bridge.disable();break;
         case 'data':value=service.data();break;
-        case 'engineering_context':await service.engineering.connect(args.project_id);value=await service.engineering.context(args);break;
+        case 'engineering_context':await service.engineering.connect(args.project_id);if(args.refresh)await service.refresh(args.project_id);value=await service.engineering.context(args);break;
         case 'engineering_tasks':value=await service.engineering.currentTasks(args);break;
         case 'engineering_task':value=await service.engineering.currentTask(args.task_id);break;
         case 'engineering_history':value=service.engineering.history(args.kind,args.id);break;
+        case 'engineering_open_link':{const url=new URL(args.url);if(!['https:','http:','mailto:'].includes(url.protocol))throw Error('不支持此链接协议');await shell.openExternal(url.href);value={opened:true};break;}
         case 'engineering_revise':value=service.engineering.reviseContext(args);break;
         case 'engineering_save_entry':value=await service.engineering.saveEntry(args,'user');break;
         case 'engineering_log':value=await service.engineering.readLog(args.task_id,args.path);break;

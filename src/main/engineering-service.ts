@@ -3,7 +3,7 @@ import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import type {Project,Snapshot,Explanation,Feature,Scenario} from '../shared';
-import {engineeringSectionCategories,type SaveEngineeringEntry,type EngineeringSectionCategory} from '../engineering';
+import {engineeringCategories,engineeringSectionCategories,type SaveEngineeringEntry,type EngineeringSectionCategory} from '../engineering';
 import type {CodeState,WorkspaceBinding,ContextEntry,ContextSource,EngineeringContext,EngineeringAnalysis,ContextRequest,EngineeringTask,CreateEngineeringTask,UpdateEngineeringTask,FinishEngineeringTask,DevelopmentAttempt,VerificationEvidence,TaskReadingBinding,WalkthroughUpdate,DevelopmentStep} from '../engineering';
 import {Store,id,now} from './store';
 import {capture,freshness,readSource,sha,relativePath,safeFile,workspaceFiles,workspaceGitDirectory} from './snapshot';
@@ -33,6 +33,7 @@ export function engineeringDocumentCategory(file:string):EngineeringSectionCateg
 export class EngineeringService {
   private readonly capturing=new Map<string,Promise<CodeState>>();
   private readonly scanning=new Map<string,Promise<void>>();
+  private readonly initializing=new Map<string,Promise<void>>();
   onTaskFinished:(task:EngineeringTask)=>void=()=>{};
   constructor(readonly store:Store,readonly changed:()=>void=()=>{}) {
     for(const attempt of store.all<DevelopmentAttempt>(attemptKind))if(['starting','running'].includes(attempt.status)) {
@@ -85,6 +86,7 @@ export class EngineeringService {
     this.store.put('engineering_state',workspace.workspace_id,state);return state;
   }
   async context(input:ContextRequest):Promise<EngineeringContext> {
+    if(input.view!==undefined&&!['strict','execution'].includes(input.view))throw Error('上下文读取模式无效');
     const restored=input.project_id&&!input.workspace_path?this.store.all<WorkspaceBinding>(workspaceKind).find(w=>w.project_id===input.project_id&&w.status==='unbound'):undefined;
     const workspace=restored??await this.resolve(input),projectId=workspace.project_id;
     const state=restored?this.store.get<CodeState>('engineering_state',workspace.workspace_id):await this.captureState(projectId);
@@ -93,6 +95,7 @@ export class EngineeringService {
       const pending=this.scanning.get(projectId);if(pending)await pending;else{const scan=this.scanContext(projectId,state);this.scanning.set(projectId,scan);try{await scan;}finally{this.scanning.delete(projectId);}}
     }
     if(input.task_id&&this.task(input.task_id).project_id!==projectId)throw Error('任务不属于当前工程');
+    if(!restored)await this.initializeMaterials(projectId,state);
     let reclassified=false;
     for(const entry of this.store.all<ContextEntry>(contextKind))if(entry.project_id===projectId&&entry.legacy_import&&entry.origin==='document'){
       const category=engineeringDocumentCategory(entry.legacy_import.import_key.replace(/^aec:/,''));
@@ -101,14 +104,31 @@ export class EngineeringService {
     if(reclassified){const current=this.store.get<any>('engineering_context_state',projectId);current.version++;this.store.put('engineering_context_state',projectId,current);}
     const contextState=this.store.get<{version:number}>('engineering_context_state',projectId);
     if(input.offset!==undefined&&(!Number.isSafeInteger(input.offset)||input.offset<0)||input.limit!==undefined&&(!Number.isSafeInteger(input.limit)||input.limit<1))throw Error('上下文分页参数无效');
-    const entries=this.store.all<ContextEntry>(contextKind).filter(e=>e.project_id===projectId&&e.status!=='superseded'&&(input.task_id===undefined||(e.task_id??'')===input.task_id)&&(!input.category||e.category===input.category)&&(!input.entry_id||e.entry_id===input.entry_id)&&(!input.query||`${e.key}\n${e.text}`.toLowerCase().includes(input.query.toLowerCase())));
-    const categories:ContextEntry['category'][]=[...engineeringSectionCategories,'purpose','rule','build','technology','module','interface','decision','issue'];
-    const groups=categories.map(category=>entries.filter(e=>e.category===category).sort((a,b)=>Number(b.origin==='user')-Number(a.origin==='user')||Number(b.status==='current')-Number(a.status==='current')||a.key.localeCompare(b.key)));
+    const all=this.store.all<ContextEntry>(contextKind).filter(e=>e.project_id===projectId);
+    const replaced=new Set(all.filter(e=>e.status!=='superseded'&&e.supersedes).map(e=>e.supersedes));
+    // A direct correction of an original source also invalidates an aggregate
+    // that still quotes that original. Keep the other uncovered sources visible.
+    for(const entry of all.filter(e=>e.status!=='superseded'&&!replaced.has(e.entry_id)))if(entry.covered_entries?.some(source=>replaced.has(source)))replaced.add(entry.entry_id);
+    for(const entry of all.filter(e=>e.status!=='superseded'&&!replaced.has(e.entry_id)))for(const covered of entry.covered_entries??[])replaced.add(covered);
+    const entries=all.filter(e=>(input.entry_id?e.entry_id===input.entry_id:e.status!=='superseded'&&!replaced.has(e.entry_id))&&(input.view==='execution'?(!e.task_id||e.task_id===input.task_id):(input.task_id===undefined||(e.task_id??'')===input.task_id))&&(!input.category||e.category===input.category)&&(!input.query||`${e.key}\n${e.text}`.toLowerCase().includes(input.query.toLowerCase())));
+    const categories:ContextEntry['category'][]=['rule','purpose','build','issue','architecture','module','interface','technology','decision','plan','design','verification_plan'];
+    const groups=categories.map(category=>entries.filter(e=>e.category===category).sort((a,b)=>Number(b.origin==='user')-Number(a.origin==='user')||Number(b.key.startsWith('initial:'))-Number(a.key.startsWith('initial:'))||Number(b.status==='current')-Number(a.status==='current')||a.key.localeCompare(b.key)));
     const ordered:ContextEntry[]=[];for(let i=0;i<Math.max(...groups.map(group=>group.length));i++)for(const group of groups)if(group[i])ordered.push(group[i]);
     const offset=input.entry_id?0:input.offset??0,limit=input.entry_id?1:Math.min(input.limit??24,40),maxText=input.entry_id?60000:1500;
-    const page=ordered.slice(offset,offset+limit).map(e=>({...e,text:e.text.slice(0,maxText),truncated:e.text.length>maxText}));
+    const page=ordered.slice(offset,offset+limit).map(e=>{
+      const source=e.supersedes?all.find(s=>s.entry_id===e.supersedes):undefined;
+      const changed=source&&(e.source_version?source.version!==e.source_version:source.sources.some(s=>!e.sources.some(old=>old.path===s.path&&old.content_sha256===s.content_sha256)));
+      const previous=source&&changed?this.history('context',source.entry_id).find(v=>e.source_version?v.version===e.source_version:v.sources.every((s:ContextSource)=>e.sources.some(old=>old.path===s.path&&old.content_sha256===s.content_sha256))):undefined;
+      return {...e,text:e.text.slice(0,maxText),truncated:e.text.length>maxText,...(source&&changed?{update_suggestion:{source_entry_id:source.entry_id,source_version:source.version,previous_text:previous?.text??'原来源见冻结引用',proposed_text:source.text}}:{})};
+    });
     const analysis=input.result_id?this.readAnalysis(input.result_id,workspace,state,input):undefined;
-    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.all<Explanation>('explanation').filter(e=>e.result.binding.project_id===projectId).slice(-10).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),architecture:!!e.result.architecture?.node_ids.length,summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id).slice(0,5).map(t=>this.currentVerification(t,restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
+    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.all<Explanation>('explanation').filter(e=>e.result.binding.project_id===projectId).slice(-10).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),architecture:!!e.result.architecture?.node_ids.length,summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id&&(input.view!=='execution'||t.task_id===input.task_id)).slice(0,5).map(t=>this.currentVerification(t,restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
+  }
+  async executionContext(projectId:string,taskId:string):Promise<EngineeringContext>{
+    let context=await this.context({project_id:projectId,task_id:taskId,view:'execution',limit:40});
+    const entries=[...context.entries];
+    while(context.next_offset!==null){context=await this.context({project_id:projectId,task_id:taskId,view:'execution',limit:40,offset:context.next_offset});entries.push(...context.entries);}
+    return {...context,entries:entries.map(e=>({...e,text:this.store.get<ContextEntry>(contextKind,e.entry_id).text,truncated:false})),next_offset:null};
   }
   private analysisStatus(explanation:Explanation,workspace:WorkspaceBinding,state:CodeState):EngineeringAnalysis['status']{if(workspace.status==='unbound')return 'unbound';return explanation.source_status==='current'&&this.store.get<Snapshot>('snapshot',explanation.result.binding.source_snapshot_id).fingerprint===state.fingerprint?'current':'needs_review';}
   private readAnalysis(resultId:string,workspace:WorkspaceBinding,state:CodeState,input:ContextRequest):EngineeringAnalysis {
@@ -130,6 +150,54 @@ export class EngineeringService {
     const evidenceIds=new Set([...nodes.flatMap(n=>n.evidence_ids),...edges.flatMap(e=>e.evidence_ids),...claims.flatMap(c=>c.evidence_ids)]),matchingEvidence=result.evidence.filter(e=>evidenceIds.has(e.evidence_id));
     const relatedNodeIds=new Set([...edges.flatMap(e=>[e.source_node_id,e.target_node_id]),...nodes.map(n=>n.parent_node_id).filter((id):id is string=>!!id)]);
     return {result_id:explanation.result_id,binding:result.binding,created_at:explanation.created_at,source_snapshot_id:source.source_snapshot_id,source_fingerprint:source.fingerprint,source_status:explanation.source_status,status:this.analysisStatus(explanation,workspace,state),summary:result.summary.text.slice(0,2000),coverage:{covered_scope:result.coverage.covered_scope.slice(0,10).map(s=>s.slice(0,1000)),unresolved_scope:result.coverage.unresolved_scope.slice(0,10).map(s=>s.slice(0,1000))},nodes,edges,node_refs:result.nodes.filter(n=>relatedNodeIds.has(n.node_id)).map(n=>({node_id:n.node_id,label:n.label.slice(0,500),kind:n.kind})),claims,evidence:matchingEvidence.slice(0,160).map(e=>({...e,note:e.note.slice(0,1500)})),total_items:items.length,next_offset:offset+limit<items.length?offset+limit:null,truncated:result.summary.text.length>2000||nodes.some(n=>n.truncated)||edges.some(e=>e.truncated)||matchingClaims.length>80||matchingEvidence.length>160||matchingClaims.some(c=>c.statement.length>1500||c.rationale.length>1500||c.evidence_ids.length>20||c.limitations.length>10)||result.coverage.covered_scope.length>10||result.coverage.unresolved_scope.length>10};
+  }
+  /** Derive editable reading material from the existing scan and published overview.
+   * No model call, source writes, or execution claims are made here. */
+  private async initializeMaterials(projectId:string,state:CodeState):Promise<void> {
+    const pending=this.initializing.get(projectId);if(pending){await pending;return this.initializeMaterials(projectId,state);}
+    const work=this.initializeMaterialsActual(projectId,state);this.initializing.set(projectId,work);
+    try{await work;}finally{this.initializing.delete(projectId);}
+  }
+  private async initializeMaterialsActual(projectId:string,state:CodeState) {
+    const project=this.store.get<Project>('project',projectId);
+    const explanation=project.overview_scenario_id?this.store.all<Explanation>('explanation').filter(e=>e.result.binding.project_id===projectId&&e.scenario_id===project.overview_scenario_id).sort((a,b)=>b.created_at.localeCompare(a.created_at))[0]:undefined;
+    const stamp=state.fingerprint+':'+(explanation?.result_id??'waiting');
+    if(this.store.maybe<string>('engineering_materials_state',projectId)===stamp)return;
+    const snapshot=this.store.get<Snapshot>('snapshot',state.snapshot_id),entries=this.store.all<ContextEntry>(contextKind).filter(e=>e.project_id===projectId&&!e.task_id);
+    const root=entries.filter(e=>e.sources[0]&&!e.sources[0].path.includes('/')&&!e.legacy_import&&!e.key.startsWith('initial:')&&!['user','agent'].includes(e.origin));
+    const result=explanation?.result;
+    const references=(items:ContextEntry[])=>Array.from(new Map(items.flatMap(e=>e.sources).map(s=>[`${s.snapshot_id}:${s.path}:${s.line_start}`,s])).values()).slice(0,40);
+    const quoted=(items:ContextEntry[])=>items.map(e=>`### ${e.sources[0]?.path??e.key}\n\n${e.text.length>10000?e.text.slice(0,10000)+'\n\n（来源节选；完整原文可通过来源引用读取。）':e.text}`).join('\n\n');
+    const evidence=(ids:readonly string[])=>result?.evidence.filter(e=>ids.includes(e.evidence_id)).map(e=>({path:e.path,snapshot_id:e.source_snapshot_id,content_sha256:e.content_sha256,line_start:e.line_start,line_end:e.line_end}))??[];
+    const sourceRefs=result?evidence(result.evidence.map(e=>e.evidence_id)).slice(0,40):[];
+    const missing='尚未取得工程全貌分析。请通过现有“开始工程分析”连接外部 Codex；完成后这里自动归纳已查源码及待确认项。';
+    const docs=root.filter(e=>e.category==='purpose');
+    const builds=root.filter(e=>e.category==='build');
+    const rules=root.filter(e=>e.category==='rule');
+    const historyFiles=snapshot.files.filter(f=>/^(?:docs\/)?(?:DECISIONS|KNOWN[-_]ISSUES|CHANGELOG)\.md$/i.test(f.path));
+    const history=await Promise.all(historyFiles.map(async f=>({text:(await readSource(this.store.directory,snapshot,f.path)).text,path:f.path,source:{path:f.path,snapshot_id:state.snapshot_id,content_sha256:f.content_sha256,line_start:1,line_end:f.line_count}})));
+    const proposals:{category:ContextEntry['category'];title:string;text:string;sources:ContextSource[]}[]=[
+      {category:'purpose',title:'工程概述',text:`# ${project.name} · 工程概述\n\n${result?result.summary.text:missing}\n\n## 根工程文档声明\n\n${quoted(docs)||'根目录未发现用途文档；不能仅凭目录名推断业务用途。'}\n\n## 阅读边界\n\n${result?result.coverage.unresolved_scope.map(s=>'- '+s).join('\n')||'当前全貌未列出额外缺口；这不等于已覆盖全部源码或完成全仓审计。':'源码职责尚待外部 Codex 分析，扫描事实不代替语义审查。'}`,sources:[...references(docs),...sourceRefs].slice(0,40)},
+      {category:'architecture',title:'当前架构与接口',text:`# 当前架构与接口\n\n${result?'以下来自已保存的源码分析；属于 Agent 归纳，编辑本说明不会修改源码。':missing}\n\n${result?result.nodes.filter(n=>result.architecture?.node_ids.includes(n.node_id)).map(n=>`## ${n.label}\n\n${n.description}`).join('\n\n'):''}\n\n## 协作与接口\n\n${result?result.edges.filter(e=>result.architecture?.edge_ids.includes(e.edge_id)).map(e=>`- ${result.nodes.find(n=>n.node_id===e.source_node_id)?.label??e.source_node_id} → ${result.nodes.find(n=>n.node_id===e.target_node_id)?.label??e.target_node_id}：${e.label}（${e.kind}，${e.status}）`).join('\n')||'尚无有依据的接口关系；需继续读取公开入口。':quoted(root.filter(e=>e.category==='interface'))||'扫描未确认公开接口；需读取入口及调用方。'}`,sources:sourceRefs.length?sourceRefs:references(root.filter(e=>e.category==='interface'))},
+      {category:'build',title:'构建运行与验证',text:`# 构建运行与验证\n\n## 根工程配置声明\n\n${quoted(builds)||'未发现可确认的根工程构建配置；请核对 README 中的运行步骤与实际工具环境。'}\n\n## 运行环境\n\n${quoted(root.filter(e=>e.category==='technology'))||'环境版本未由机器配置确认。'}\n\n## 实际验证状态\n\n初始化仅扫描配置与阅读源码，没有执行上述命令。实际执行证据位于开发任务的“验证”，绑定当时的代码状态；历史通过不代表当前版本已通过。`,sources:references([...builds,...root.filter(e=>e.category==='technology')])},
+      {category:'rule',title:'工程约束与边界',text:`# 工程约束与边界\n\n${quoted(rules)||'根目录未发现 AGENTS.md / CLAUDE.md。业务限制、硬件条件与发布边界尚待工程负责人确认。'}\n\n## 资料与证据的边界\n\n- 本正文是工程资料，人工编辑不修改源码。\n- 用户约束与源码事实分别标注；发现冲突需核对，不自动覆盖。\n- 构建命令是配置声明；验证结论必须引用实际执行记录及对应代码版本。`,sources:references(rules)},
+      {category:'decision',title:'历史决策',text:`# 历史决策\n\n${history.length?history.map(h=>`## ${h.path} · 历史文档声明\n\n${h.text.slice(0,10000)}${h.text.length>10000?'\n\n（节选；完整历史见原始来源。）':''}`).join('\n\n'):'未发现明确的决策记录。不能从当前代码反推当时的决策理由；后续确认后可在 ARC 补充。'}\n\n历史材料保留原始来源，不等于当前实现或当前验证。`,sources:history.map(h=>h.source)},
+      {category:'issue',title:'已知问题与待确认项',text:`# 已知问题与待确认项\n\n${result?result.coverage.unresolved_scope.map(s=>'- '+s).join('\n')||'本轮全貌未声明已知问题；不代表工程没有缺陷。':missing}\n\n${quoted(root.filter(e=>e.category==='issue'))}\n\n## 尚未执行\n\n初始化未执行全量测试、真实设备联调或发布验收；需要时按本次任务范围验证。`,sources:[...sourceRefs,...references(root.filter(e=>e.category==='issue'))].slice(0,40)},
+    ];
+    if(result){
+      proposals.push({category:'module',title:'模块职责',text:'# 模块职责 · Agent 源码归纳\n\n'+result.nodes.filter(n=>result.architecture?.node_ids.includes(n.node_id)).map(n=>`## ${n.label}\n\n${n.description}`).join('\n\n'),sources:sourceRefs});
+      proposals.push({category:'interface',title:'接口与协作',text:'# 接口与协作 · Agent 源码归纳\n\n'+result.edges.filter(e=>result.architecture?.edge_ids.includes(e.edge_id)).map(e=>`- ${e.label}（${e.kind}，${e.status}）`).join('\n')+'\n\n这里只描述本轮已查证关系；完整接口签名与未覆盖路径仍需按来源读取。',sources:sourceRefs});
+    }
+    this.store.transaction(()=>{
+      for(const proposal of proposals){
+        const key='initial:'+proposal.category,old=entries.find(e=>e.key===key);
+        if(old&&old.text===proposal.text&&JSON.stringify(old.sources)===JSON.stringify(proposal.sources))continue;
+        const entry:ContextEntry={entry_id:old?.entry_id??id('context'),project_id:projectId,version:(old?.version??0)+1,key,category:proposal.category,origin:'agent',text:proposal.text,status:'needs_review',sources:proposal.sources,code_fingerprint:state.fingerprint,updated_at:now(),analysis_result_id:explanation?.result_id,covered_entries:(['module','interface'].includes(proposal.category)?entries:root).filter(e=>e.category===proposal.category&&!e.key.startsWith('initial:')&&!['user','agent'].includes(e.origin)).map(e=>e.entry_id)};
+        this.store.putVersion(contextKind,entry.entry_id,entry.version,entry);
+      }
+      this.store.put('engineering_materials_state',projectId,stamp);
+      const current=this.store.get<any>('engineering_context_state',projectId);current.version++;this.store.put('engineering_context_state',projectId,current);
+    });
   }
   private async scanContext(projectId:string,state:CodeState) {
     const snapshot=this.store.get<Snapshot>('snapshot',state.snapshot_id),previous=this.store.all<ContextEntry>(contextKind).filter(e=>e.project_id===projectId),found=new Set<string>();
@@ -186,7 +254,7 @@ export class EngineeringService {
   }
   async saveEntry(input:SaveEngineeringEntry,origin:'user'|'agent',maySave:()=>boolean=()=>true):Promise<ContextEntry> {
     const workspace=await this.resolve(input),context=await this.context({project_id:workspace.project_id});
-    if(!engineeringSectionCategories.includes(input.category)||!['user','agent'].includes(origin))throw Error('工程栏目或来源无效');
+    if(!engineeringCategories.includes(input.category)||!['user','agent'].includes(origin))throw Error('工程栏目或来源无效');
     if(!Number.isSafeInteger(input.expected_version)||input.expected_version<0)throw Error('条目版本无效');
     if(input.status!==undefined&&!['current','needs_review'].includes(input.status))throw Error('条目状态无效');
     if(input.task_id&&this.task(input.task_id).project_id!==workspace.project_id)throw Error('条目任务不属于当前工作区');
@@ -200,15 +268,20 @@ export class EngineeringService {
       if(binding.status!=='bound'||!samePath(binding.root_path,workspace.root_path))throw Error('工作区已改变，请重新读取');
       const old=input.entry_id?this.store.get<ContextEntry>(contextKind,input.entry_id):undefined;
       if(old&&(old.project_id!==workspace.project_id||old.task_id!==input.task_id))throw Error('条目不属于当前工作区');
+      if(old&&old.category!==input.category)throw Error('编辑不能改变资料类别，请在目标类别新增');
+      if(old&&this.store.all<ContextEntry>(contextKind).some(e=>e.project_id===workspace.project_id&&e.supersedes===old.entry_id&&e.status!=='superseded'))throw Error('VERSION_CONFLICT：已有当前有效修订，请读取后编辑');
       if((old?.version??0)!==input.expected_version)throw Error('VERSION_CONFLICT：条目已更新，请重新读取');
       const sources=input.sources??old?.sources??[];
       if(!Array.isArray(sources)||sources.length>40)throw Error('来源列表无效');
       let sourcesCurrent=true;
       for(const source of sources){const snapshot=this.store.get<Snapshot>('snapshot',source.snapshot_id),file=snapshot.files.find(f=>f.path===source.path);if(snapshot.project_id!==workspace.project_id||!file||file.content_sha256!==source.content_sha256||!Number.isSafeInteger(source.line_start)||!Number.isSafeInteger(source.line_end)||source.line_start<1||source.line_end<source.line_start||source.line_end>file.line_count)throw Error('来源快照、文件或行号不匹配');if(snapshot.fingerprint!==context.code_state.fingerprint)sourcesCurrent=false;}
-      const fork=!!old&&['source','document'].includes(old.origin);
+      const fork=!!old&&(['source','document'].includes(old.origin)||old.key.startsWith('initial:'));
       const key=entryKey.startsWith('entry:')?entryKey:`entry:${entryKey}`;
       if(this.store.all<ContextEntry>(contextKind).some(e=>e.project_id===workspace.project_id&&e.category===input.category&&e.task_id===input.task_id&&e.key===key&&e.status!=='superseded'&&e.entry_id!==old?.entry_id))throw Error('VERSION_CONFLICT：同名条目已存在，请读取后编辑');
       const entry:ContextEntry={entry_id:old&&!fork?old.entry_id:id('context'),project_id:workspace.project_id,...(input.task_id?{task_id:input.task_id}:{}),version:old&&!fork?old.version+1:1,key,category:input.category,origin,text,status:origin==='user'&&sources.length&&sourcesCurrent?(input.status??'needs_review'):'needs_review',sources,code_fingerprint:context.code_state.fingerprint,updated_at:now(),...(fork?{supersedes:old!.entry_id}:old?.supersedes?{supersedes:old.supersedes}:{}),...(fork?{conflict:'修订与原文并列保留；原文来源及历史未覆盖。'}:{})};
+      if(old?.covered_entries)entry.covered_entries=old.covered_entries;
+      if(old?.analysis_result_id)entry.analysis_result_id=old.analysis_result_id;
+      if(fork)entry.source_version=old!.version;else if(old?.source_version)entry.source_version=old.source_version;
       this.store.putVersion(contextKind,entry.entry_id,entry.version,entry);
       this.store.put('engineering_receipt',receiptKey,{project_id:workspace.project_id,digest,entry});
       const state=this.store.get<{version:number}>('engineering_context_state',workspace.project_id);state.version++;this.store.put('engineering_context_state',workspace.project_id,state);
