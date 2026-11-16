@@ -32,6 +32,8 @@ test('project materials keep one effective full revision through scans and resta
     await fs.mkdir(path.join(f.root,'examples/demo'),{recursive:true});await fs.writeFile(path.join(f.root,'examples/demo/README.md'),'# Nested demo only\nRun npm run missing.');
     const first=await f.service.context({project_id:'p'}),source=(await f.service.context({project_id:'p',entry_id:first.entries.find(e=>e.key==='initial:build')!.entry_id})).entries[0];
     assert.match(source.text,/node --test/);assert.ok(source.sources.some(s=>s.path==='package.json'));
+    assert.deepEqual(f.service.tasks({project_id:'p'}),[],'connecting and reading must not create a development task');
+    assert.ok(first.entries.every(e=>!e.task_id&&!['plan','design','verification_plan'].includes(e.category)),'initial materials must not invent requirement documents');
     assert.ok(first.entries.some(e=>e.key==='initial:purpose'&&e.text.includes('A real small project')));
     assert.ok(!first.entries.find(e=>e.key==='initial:purpose')!.text.includes('Nested demo only'));
     assert.ok(first.entries.some(e=>e.key==='initial:architecture'&&e.text.includes('尚未取得工程全貌分析')));
