@@ -33,3 +33,4 @@
 .system-overview-dense .exchange-endpoints{gap:.35em;line-height:1.4}
 .system-overview-dense .system-exchange strong{color:#91e5cb}
 @media(max-width:899px){.system-overview-dense{grid-template-columns:1fr}.system-overview-dense .system-components{display:grid!important;grid-template-columns:repeat(auto-fit,minmax(10em,1fr))!important}}
+.architecture-content-summary{color:var(--ink);margin:0 0 1rem;padding:.8rem 1rem;border:1px solid var(--border);border-radius:.6rem;background:var(--surface)}.architecture-content-summary p{margin:0 0 .55rem;line-height:1.75}.architecture-content-summary div{display:flex;flex-wrap:wrap;gap:.5rem}.architecture-content-summary span{color:var(--accent);font-size:.75rem}.architecture-content-summary small{display:block;margin-top:.45rem;color:var(--muted);line-height:1.6}

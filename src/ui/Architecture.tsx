@@ -14,6 +14,7 @@ export function Architecture({result,selected,select,inspect,modules,zoom,search
  const selectedPair=model.pairs.find(pair=>pair.some(e=>e.edge_id===selected));
  return <section ref={root} className="architecture-map" aria-label="系统协作导图">
   <header className="architecture-map-heading"><div><span className="eyebrow">SYSTEM MAP</span><h2>一张图，看清系统</h2></div><p>点组件看职责<br/>点连线看传递</p></header>
+  <div className="architecture-content-summary"><p>{result.summary.text}</p><div><span>{result.coverage.covered_scope.length} 项已覆盖</span><span>{result.coverage.unresolved_scope.length} 项未覆盖</span>{result.gaps.length>0&&<span>{result.gaps.length} 个待确认问题</span>}</div>{result.coverage.unresolved_scope[0]&&<small>边界：{result.coverage.unresolved_scope[0]}</small>}</div>
   <svg className="architecture-map-canvas" data-zoom-surface width={model.width*scale} height={model.height*scale} viewBox={`0 0 ${model.width} ${model.height}`} role="group" aria-label="系统架构图">
    <defs><marker id={marker} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto-start-reverse"><path d="M0 0 L7 3.5 L0 7" fill="context-stroke"/></marker></defs>
    {model.boundaries.map(b=><rect key={b.id} className="architecture-container" x={b.x} y={b.y} width={b.width} height={b.height} rx="24"><title>包含明确归属的内部模块</title></rect>)}
