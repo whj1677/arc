@@ -71,4 +71,6 @@ dialog,.modal-heading,.provider-card,.drawer{background:#fff;color:var(--ink);bo
 @media(max-width:480px){.workbench-primary-nav{overflow-x:hidden}.workbench-primary-nav button{flex:1;min-width:0;padding:8px 5px}.workbench-primary-nav .workbench-nav-icon{display:none}.workbench-primary-nav .workbench-nav-label{display:inline;font-size:12px}}
 @media(max-width:1180px){.workbench-section-label,.workbench-project-meta,.workbench-local-status{display:none}.workbench-project-block{padding:0}}
 @media(max-width:720px){.workbench-project-block{width:100%;min-width:0}.workbench-project{width:100%}.workbench-navigation{gap:8px 12px}}
+@media(max-width:720px){.workbench-brand{grid-column:1;grid-row:1}.workbench-project-block{grid-column:2;grid-row:1}.workbench-side-actions{grid-column:3;grid-row:1}.workbench-primary-nav{grid-column:1/-1;grid-row:2}}
+@media(min-width:1280px){.workspace-question,.workspace-detail-toggle{display:none}}
 @media(prefers-reduced-motion:reduce){.arc-workbench *{scroll-behavior:auto!important}}
