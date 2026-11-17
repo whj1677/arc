@@ -36,6 +36,11 @@ test('file page and details stay within the selected explanation, including hist
  const detail=renderToStaticMarkup(React.createElement(FeatureReadingDetail,{guide,result,selected:'file:'+ev.path,view:'files',onFile:()=>{},onStep:()=>{},onEvidence:()=>{}}));
  assert.ok(detail.includes('在哪一步用到'));assert.ok(detail.includes('提交保存'));assert.equal(guidePathForStep(guide,'save')?.id,'draft');
 });
+test('incomplete saved guides recover evidence-bound file entries without inventing file purposes',()=>{
+ const incomplete={...result,reading_guide:{...guide,files:[],paths:[{...guide.paths[0],files:[]}]}};
+ const projected=featureReadingModel(incomplete);assert.deepEqual(projected.files.map(file=>file.path),[ev.path]);assert.deepEqual(projected.paths[0].files,[ev.path]);assert.deepEqual(projected.files[0].step_ids,['input','save']);assert.match(projected.files[0].description,/职责尚未单独分析/);assert.equal(incomplete.reading_guide.files.length,0);
+});
+
 test('unknown order has no sequence arrows and distinct selection types cannot collide',()=>{
  const unordered={...base,edges:[]};const html=render(unordered);assert.ok(html.includes('先后关系未确认'));assert.ok(!html.includes('fr-arrow'));
  assert.equal((guideItem(guide,'step:input') as any).title,'编辑输入');assert.equal((guideItem(guide,'role:input') as any).title,'保存服务');

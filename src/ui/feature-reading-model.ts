@@ -3,7 +3,17 @@ import {timelineModel} from './timeline-model';
 
 // Every projection uses only the selected explanation. No cross-result file lookup.
 export function featureReadingModel(result:AnalysisResult):ReadingGuide {
-  if(result.reading_guide)return result.reading_guide;
+  if(result.reading_guide){
+    const source=result.reading_guide;
+    if(source.files.length&&source.paths.every(path=>path.files.length))return source;
+    const referenced=new Set(source.steps.flatMap(step=>step.evidence_ids)),relevant=result.evidence.filter(e=>referenced.has(e.evidence_id));
+    const files:ReadingGuide['files']=source.files.length?source.files:[...new Set(relevant.map(e=>e.path))].map(file=>{
+      const refs=relevant.filter(e=>e.path===file),ids=new Set(refs.map(e=>e.evidence_id)),linked=source.steps.filter(step=>step.evidence_ids.some(id=>ids.has(id)));
+      return {path:file,title:file.split('/').at(-1)!,description:'由当前业务步骤的实际引用确定；文件职责尚未单独分析。',detail:'这里只恢复文件入口和步骤关联，不把引用当成完整文件说明。',step_ids:linked.map(step=>step.id),evidence_ids:refs.map(e=>e.evidence_id)};
+    });
+    const paths=source.paths.map(path=>path.files.length?path:{...path,files:[...new Set(path.step_ids.flatMap(id=>files.filter(file=>file.step_ids.includes(id)).map(file=>file.path)))]});
+    return {...source,files,paths};
+  }
   const model=timelineModel(result),flow=result.edges.filter(e=>e.kind==='control_flow');
   const exceptionIds=new Set(flow.filter(e=>e.flow_role==='exception').map(e=>e.target_node_id));
   const business=result.nodes.filter(n=>n.kind!=='function'&&!n.source_scope);
