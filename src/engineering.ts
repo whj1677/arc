@@ -94,6 +94,7 @@ export interface EngineeringTask {
   task_id:string; project_id:string; workspace_id:string; workspace_path:string;
   reading?:TaskReadingBinding; walkthrough?:WalkthroughUpdate;
   version:number; submission_key:string; goal:string; scope:string[];
+  workflow?:'analysis'|'ready'|'execution'; proposed_scope?:string[];
   status:'pending'|'running'|'blocked'|'completed'|'failed'|'cancelled'|'interrupted';
   baseline:CodeState; end_state?:CodeState; diff_baseline?:CodeState; context_version:number;
   summary:string; decisions:string[]; unresolved:string[]; changes:FileChange[];
@@ -121,6 +122,7 @@ export interface CreateEngineeringTask extends ContextRequest {
 }
 export interface UpdateEngineeringTask {
   task_id:string; expected_version:number; submission_key:string; summary?:string;
+  proposed_scope?:string[];
   decisions?:string[]; unresolved?:string[]; verification?:VerificationEvidence[]; steps?:DevelopmentStep[];
   status?:EngineeringTask['status']; attempt_id?:string;
 }

@@ -395,6 +395,11 @@ export class EngineeringService {
       const task:EngineeringTask={task_id:id('task'),project_id:workspace.project_id,workspace_id:workspace.workspace_id,workspace_path:workspace.root_path,...(reading?{reading}:{}),version:0,submission_key:input.submission_key,goal:requireText(input.goal),scope:(input.scope??[]).map(relativePath),status:'pending',baseline:context.code_state,context_version:context.version,summary:'',decisions:[],unresolved:[],changes:[],verification:[],verification_status:'not_run',attempt_ids:[],requests:[],created_at:now(),updated_at:now(),saved:'saved'};
       this.saveTask(task);this.store.put('engineering_receipt',key,task);this.changed();return task;});
   }
+  prepareWorkflow(taskId:string,phase:'analysis'|'execution',scope:string[]):EngineeringTask {
+    const task=this.task(taskId);task.workflow=phase;task.scope=scope.map(relativePath);task.status='pending';
+    if(phase==='analysis')task.proposed_scope=[];
+    this.saveTask(task);this.changed();return task;
+  }
   saveWalkthrough(taskId:string,update:WalkthroughUpdate,expectedUpdateId?:string):EngineeringTask {
     return this.store.transaction(()=>{const task=this.task(taskId);if(!task.reading)throw Error('任务没有关联的功能走读');if(expectedUpdateId!==undefined&&task.walkthrough?.update_id!==expectedUpdateId)return task;task.walkthrough=update;this.saveTask(task);this.changed();return task;});
   }
@@ -403,6 +408,7 @@ export class EngineeringService {
     return this.store.transaction(()=>{const task=this.task(input.task_id);this.checkUpdate(task,input);
       if(input.summary!==undefined)task.summary=requireText(input.summary);
       if(input.decisions)task.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)task.unresolved=input.unresolved.map(s=>requireText(s));
+      if(input.proposed_scope)task.proposed_scope=input.proposed_scope.map(relativePath);
       if(input.steps)this.mergeSteps(task,input.steps);
       if(input.verification)for(const evidence of input.verification){this.checkEvidence(task,evidence);if(!task.verification.some(e=>e.evidence_id===evidence.evidence_id))task.verification.push(evidence);}
       this.checkStepEvidence(task);
@@ -440,6 +446,7 @@ export class EngineeringService {
     const workspaceConflict=end&&(end.branch!==(attempt?.baseline??task.baseline).branch||end.git_common_dir!==workspace.git_common_dir);
     if(binding===undefined&&workspaceConflict)throw Error('WORKSPACE_CONFLICT：任务期间分支或仓库归属变化，请核查后接续');
     const ownershipUnknown=!end||(task.changes_status==='needs_review'&&!task.diff_baseline)||binding!==undefined&&(workspaceConflict||!binding||typeof binding.workspace_path!=='string'||!samePath(binding.workspace_path,task.workspace_path)||binding.workspace_fingerprint!==end.workspace_fingerprint||binding.head!==end.head||binding.branch!==end.branch||binding.git_common_dir!==end.git_common_dir);
+    const analyzing=task.workflow==='analysis';
     const before=this.store.get<Snapshot>('snapshot',task.baseline.snapshot_id),after=end?this.store.get<Snapshot>('snapshot',end.snapshot_id):before;
     const comparison=task.diff_baseline??task.baseline;
     const comparisonSnapshot=comparison===task.baseline?before:this.store.get<Snapshot>('snapshot',comparison.snapshot_id);
@@ -455,18 +462,24 @@ export class EngineeringService {
       .map(p=>({path:p,before_sha256:beforeFiles.get(p)??null,after_sha256:afterFiles.get(p)??null,ownership:comparison.dirty.includes(p)||task.rebind_preexisting_files?.some(f=>f.path===p)?'preexisting_overlap' as const:'task_change' as const,...(assets.has(p)?{text_diff_unavailable:true}:{})}));
     const saved=this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);if(input.decisions)current.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
       if(ownershipUnknown)current.unresolved=[...new Set([...current.unresolved,'无法确认提交完成时与采集时的代码状态一致。报告已保存，差异归属待核查。'])];
+      if(input.proposed_scope)current.proposed_scope=input.proposed_scope.map(relativePath);
       if(input.steps)this.mergeSteps(current,input.steps);
+      if(analyzing&&input.status==='completed'){
+        const changed=!attemptFiles||ownershipUnknown||[...new Set([...attemptFiles.keys(),...afterFiles.keys()])].some(file=>attemptFiles.get(file)!==afterFiles.get(file));
+        if(changed||!current.summary.trim()||!current.steps?.length){current.status='blocked';current.unresolved.push(changed?'只读分析期间代码状态发生变化，需核对后重新分析；未批准执行。':'分析缺少可审阅的摘要或实施步骤。');}
+        else {current.workflow='ready';current.status='pending';}
+      }
       for(const evidence of input.verification??[]){this.checkEvidence(current,evidence);if(!current.verification.some(e=>e.evidence_id===evidence.evidence_id))current.verification.push(evidence);}
       this.checkStepEvidence(current);
-      if(current.reading&&(input.status==='completed'||current.changes.length>0)){
+      if(!analyzing&&current.reading&&(input.status==='completed'||current.changes.length>0)){
         const previous=current.walkthrough,result=previous?.result_id?this.store.maybe<Explanation>('explanation',previous.result_id):null,unchanged=attemptFiles?[...new Set([...attemptFiles.keys(),...afterFiles.keys()])].every(file=>attemptFiles.get(file)===afterFiles.get(file)):current.changes.length===0;
         const reusable=unchanged&&current.end_state&&result&&this.store.get<Snapshot>('snapshot',result.result.binding.source_snapshot_id).fingerprint===current.end_state.fingerprint;
         if(reusable)current.walkthrough={...previous!,status:'completed',result_id:result.result_id,source_snapshot_id:result.result.binding.source_snapshot_id,error:undefined,updated_at:now()};
         else current.walkthrough={status:current.end_state?'pending':'failed',previous_result_id:previous?.result_id??current.reading.result_id,source_snapshot_id:current.end_state?.snapshot_id,...(current.end_state?{}:{error:'没有可确认的开发结束代码状态；旧走读保留。'}),updated_at:now()};
       }
-      if(current.reading&&input.status!=='completed'&&!current.changes.length&&current.walkthrough?.status==='pending')current.walkthrough={...current.walkthrough,status:'failed',error:'开发未完成且没有源码改动，未触发走读更新；原说明保留。',updated_at:now()};
+      if(!analyzing&&current.reading&&input.status!=='completed'&&!current.changes.length&&current.walkthrough?.status==='pending')current.walkthrough={...current.walkthrough,status:'failed',error:'开发未完成且没有源码改动，未触发走读更新；原说明保留。',updated_at:now()};
       current.verification_status=this.verificationStatus(current,end??current.baseline);this.saveTask(current);this.markAffected(current.project_id,changes.map(c=>c.path));this.store.put('engineering_receipt',key,current);this.changed();return current;});
-    if(saved.walkthrough?.status==='pending'&&saved.end_state)this.onTaskFinished(saved);return saved;
+    if(!analyzing&&saved.walkthrough?.status==='pending'&&saved.end_state)this.onTaskFinished(saved);return saved;
   }
   private markAffected(projectId:string,files:string[]) {
     if(!files.length)return;let changed=false;
@@ -481,7 +494,7 @@ export class EngineeringService {
     return this.store.transaction(()=>{const task=this.task(taskId);
       const workspace=this.store.get<WorkspaceBinding>(workspaceKind,task.workspace_id);if(workspace.status!=='bound'||!samePath(workspace.root_path,task.workspace_path))throw Error('任务工作区未绑定或已改变');
       this.checkWorkspaceAvailable(workspace);
-      const attempt:DevelopmentAttempt={...input,attempt_id:id('attempt'),task_id:taskId,project_id:task.project_id,workspace_id:task.workspace_id,workspace_path:task.workspace_path,status:'starting',started_at:now(),baseline:this.store.maybe<CodeState>('engineering_state',task.workspace_id)??task.baseline,context_version:this.store.get<any>('engineering_context_state',task.project_id).version};if(task.changes_status==='needs_review')task.diff_baseline=attempt.baseline;if(task.reading)task.walkthrough={status:'pending',previous_result_id:task.walkthrough?.result_id??task.reading.result_id,result_id:task.walkthrough?.result_id,source_snapshot_id:task.walkthrough?.source_snapshot_id,updated_at:now()};task.attempt_ids.push(attempt.attempt_id);task.status='running';this.saveTask(task);this.store.put(attemptKind,attempt.attempt_id,attempt);this.changed();return attempt;});
+      const attempt:DevelopmentAttempt={...input,attempt_id:id('attempt'),task_id:taskId,project_id:task.project_id,workspace_id:task.workspace_id,workspace_path:task.workspace_path,status:'starting',started_at:now(),baseline:this.store.maybe<CodeState>('engineering_state',task.workspace_id)??task.baseline,context_version:this.store.get<any>('engineering_context_state',task.project_id).version};if(task.changes_status==='needs_review')task.diff_baseline=attempt.baseline;if(task.reading&&task.workflow!=='analysis')task.walkthrough={status:'pending',previous_result_id:task.walkthrough?.result_id??task.reading.result_id,result_id:task.walkthrough?.result_id,source_snapshot_id:task.walkthrough?.source_snapshot_id,updated_at:now()};task.attempt_ids.push(attempt.attempt_id);task.status='running';this.saveTask(task);this.store.put(attemptKind,attempt.attempt_id,attempt);this.changed();return attempt;});
   }
   updateAttempt(attemptId:string,patch:Partial<DevelopmentAttempt>) {
     const attempt=this.store.get<DevelopmentAttempt>(attemptKind,attemptId);for(const key of ['attempt_id','task_id','project_id','workspace_id','workspace_path'] as const)if(patch[key]!==undefined&&patch[key]!==attempt[key])throw Error('执行归属不可修改');

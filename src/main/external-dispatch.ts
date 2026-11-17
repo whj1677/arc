@@ -12,7 +12,7 @@ export interface ExecutorBinding {
   name?:string;
 }
 export interface Dispatch {
-  dispatch_id:string;project_id:string;run_id?:string;task_id?:string;thread_id?:string;submission_key?:string;attempt_id?:string;request?:string;scope?:string[];
+  dispatch_id:string;project_id:string;run_id?:string;task_id?:string;thread_id?:string;submission_key?:string;attempt_id?:string;request?:string;scope?:string[];phase?:'analysis'|'execution';
   state:'queued'|'sending'|'awaiting_claim'|'running'|'completed'|'blocked'|'unknown'|'cancelled';
   created_at:string;sent_at?:string;claimed_at?:string;last_activity?:string;error?:string;revoked?:boolean;
 }
@@ -74,7 +74,7 @@ export class ExternalDispatch {
     const binding:ExecutorBinding={project_id:projectId,workspace_path:workspace,program,thread_id:threadId,name:thread.name||thread.preview?.slice(0,80),model:thread.model??null,reasoning_effort:thread.reasoningEffort??null,version:String(version).trim(),checked_at:now()};
     this.store.put('external_executor',projectId,binding);this.changed();void this.pump();return binding;
   }
-  enqueue(projectId:string,target:{run_id?:string;task_id?:string;submission_key?:string;request?:string;scope?:string[]}){
+  enqueue(projectId:string,target:{run_id?:string;task_id?:string;submission_key?:string;request?:string;scope?:string[];phase?:'analysis'|'execution'}){
     const existing=this.items().find(item=>item.project_id===projectId&&item.run_id===target.run_id&&item.task_id===target.task_id&&item.submission_key===target.submission_key);
     if(existing)return existing;
     const item:Dispatch={dispatch_id:id('dispatch'),project_id:projectId,...target,state:'queued',created_at:now()};
@@ -140,7 +140,7 @@ export class ExternalDispatch {
           binding.model=current.thread.model??null;binding.reasoning_effort=current.thread.reasoningEffort??null;binding.checked_at=now();this.store.put('external_executor',binding.project_id,binding);
           await this.command(binding.program,['app-server','daemon','version'],{windowsHide:true,timeout:10000});
           item.thread_id=binding.thread_id;item.state='sending';item.sent_at=now();item.error=undefined;this.save(item);
-          const message=`ARC 派发 ${item.dispatch_id}。先调用 arc_claim_dispatch，dispatch_id=${item.dispatch_id}，按返回的固定任务、上下文与权限执行。仅操作 ${binding.workspace_path}。如已领取，继续同一任务，禁止新建重复修改。开发前保存必要方案和步骤，执行中回填，最后提交验证与结果。分析只读冻结源码。`;
+          const message=`ARC 派发 ${item.dispatch_id}。先调用 arc_claim_dispatch，dispatch_id=${item.dispatch_id}，按返回的固定任务、上下文与权限执行。仅操作 ${binding.workspace_path}。如已领取，继续同一任务，禁止新建重复修改。${item.task_id?`${item.phase==='analysis'?'本次是只读需求分析，禁止修改工程或运行构建测试；保存步骤、建议文件范围，完成分析后停止，等待用户确认。':'开发前保存必要步骤，独立方案、设计和验证计划按需；执行中回填，最后提交真实验证与结果。'}使用会话原生只读文件或命令工具核对当前工作区源码；arc_read_source 仅适用于工程分析运行，不接受开发 task_id。`:'工程分析只读本次运行的冻结源码，按领取返回的 run_id 使用 arc_list_files 和 arc_read_source。'}`;
           const response=await this.command(binding.program,['queue','--thread',binding.thread_id,'--message',message,'--resume'],{cwd:binding.workspace_path,windowsHide:true,timeout:20000});
           const latest=this.store.get<Dispatch>('external_dispatch',item.dispatch_id);
           if(latest.state==='sending'){latest.state='awaiting_claim';latest.error=String(response.stderr).trim()?redact(String(response.stderr).trim()):'已排入 Codex，等待实际领取确认';this.save(latest);}

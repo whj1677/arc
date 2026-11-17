@@ -120,3 +120,47 @@ test('manual import activity cannot claim a completed Agent analysis',()=>{
 test('long event histories retain final messages and monotonic sequence beyond 2000',async()=>{
  const {service,bridge}=await setup();try{for(let n=1;n<=2002;n++)service.store.event('long',String(n),n,{sequence:n,type:'test'});assert.equal(service.store.nextSequence('long'),2003);assert.equal(service.store.events('long').at(-1).sequence,2002);}finally{await bridge.close();service.store.close();}
 });
+
+
+test('ARC requirement analysis waits for reviewed scope, keeps one task and creates no document suite',async()=>{
+ const {dir,source,service,project,bridge}=await setup();try{
+  const task=await bridge.queueDevelopment({project_id:project.project_id,goal:'Change value after review',phase:'analysis',submission_key:'analysis'});
+  assert.equal(task.workflow,'analysis');assert.deepEqual(task.scope,[]);
+  assert.equal((await bridge.queueDevelopment({project_id:project.project_id,goal:'retry',phase:'analysis',submission_key:'analysis'})).task_id,task.task_id);
+  const dispatch=bridge.dispatch.items(project.project_id).at(-1)!;
+  // Only the protocol delivery state is simulated here; real UI/CLI acceptance is separate.
+  service.store.put('external_dispatch',dispatch.dispatch_id,{...dispatch,state:'awaiting_claim'});
+  const claim=await bridge.call('arc_claim_dispatch',{dispatch_id:dispatch.dispatch_id});
+  assert.equal(claim.phase,'analysis');assert.deepEqual(claim.allowed_files,[]);assert.match(claim.instructions,/只读需求分析/);
+  await assert.rejects(bridge.queueDevelopment({project_id:project.project_id,task_id:task.task_id,goal:'premature',phase:'execution',scope:['a.ts'],submission_key:'premature'}));
+  await assert.rejects(bridge.call('arc_update_development',{task_id:task.task_id,expected_version:claim.task.version,submission_key:'false-proof',verification:[{}]}),/只读分析/);
+  const step={step_id:'change',title:'Change exported value',change:'Change only a.ts; keep the exported name.',status:'pending',progress:'Read a.ts; implementation waits for approval.',criteria:[{criterion_id:'value',text:'Export value is 2.',evidence_ids:[]}],evidence_ids:[],unresolved:[]};
+  const ready=await bridge.call('arc_finish_development',{task_id:task.task_id,expected_version:claim.task.version,submission_key:'analysis-finish',status:'completed',summary:'Read the source and found a single exported value.',proposed_scope:['a.ts'],steps:[step],verification:[]});
+  assert.equal(ready.workflow,'ready');assert.equal(ready.status,'pending');assert.equal(ready.verification_status,'not_run');assert.deepEqual(ready.proposed_scope,['a.ts']);assert.deepEqual(ready.scope,[]);
+  assert.equal(await fs.readFile(path.join(source,'a.ts'),'utf8'),'export const value=1;\n');
+  await bridge.dispatch.pump();assert.equal(bridge.dispatch.items(project.project_id).at(-1)!.state,'completed');
+  await assert.rejects(bridge.queueDevelopment({project_id:project.project_id,task_id:task.task_id,expected_version:ready.version-1,goal:'execute',phase:'execution',scope:['a.ts'],submission_key:'old-review'}),/VERSION_CONFLICT/);
+  const execute=await bridge.queueDevelopment({project_id:project.project_id,task_id:task.task_id,expected_version:ready.version,goal:'execute reviewed scope',phase:'execution',scope:['a.ts'],submission_key:'execute'});
+  assert.equal(execute.task_id,task.task_id);assert.equal(execute.workflow,'execution');
+  const next=bridge.dispatch.items(project.project_id).at(-1)!;service.store.put('external_dispatch',next.dispatch_id,{...next,state:'awaiting_claim'});
+  const executing=await bridge.call('arc_claim_dispatch',{dispatch_id:next.dispatch_id});assert.deepEqual(executing.allowed_files,['a.ts']);
+  await fs.writeFile(path.join(source,'a.ts'),'export const value=2;\n');
+  const done=await bridge.call('arc_finish_development',{task_id:task.task_id,expected_version:executing.task.version,submission_key:'executed',status:'completed',summary:'Changed requested export; protocol regression only.',verification:[]});
+  assert.equal(done.status,'completed');assert.equal(done.attempt_ids.length,2);assert.equal(done.changes[0].path,'a.ts');
+  assert.deepEqual((await bridge.call('arc_engineering_context',{workspace_path:source,task_id:task.task_id,view:'strict'})).entries,[]);
+ }finally{await bridge.close();await service.shutdown();service.store.close();await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('analysis detects source changes, while direct Agent development has no ARC review gate',async()=>{
+ const {dir,source,service,project,bridge}=await setup();try{
+  const task=await bridge.queueDevelopment({project_id:project.project_id,goal:'Read only',phase:'analysis',submission_key:'readonly'});
+  const dispatch=bridge.dispatch.items(project.project_id).at(-1)!;service.store.put('external_dispatch',dispatch.dispatch_id,{...dispatch,state:'awaiting_claim'});
+  const claim=await bridge.call('arc_claim_dispatch',{dispatch_id:dispatch.dispatch_id});await fs.writeFile(path.join(source,'a.ts'),'export const value=3;\n');
+  const blocked=await bridge.call('arc_finish_development',{task_id:task.task_id,expected_version:claim.task.version,submission_key:'analysis-changed',status:'completed',summary:'Unexpected change detected',verification:[]});
+  assert.equal(blocked.status,'blocked');assert.equal(blocked.workflow,'analysis');assert.match(blocked.unresolved.join(' '),/代码状态发生变化/);
+  const direct=await bridge.call('arc_begin_development',{workspace_path:source,goal:'User authorized direct change',scope:['a.ts'],submission_key:'direct'});
+  assert.equal(direct.status,'running');assert.equal(direct.workflow,undefined);
+  const done=await bridge.call('arc_finish_development',{task_id:direct.task_id,expected_version:direct.version,submission_key:'direct-finish',status:'completed',summary:'Direct path receives results without requiring documents.',verification:[]});
+  assert.equal(done.status,'completed');assert.equal(done.workflow,undefined);
+ }finally{await bridge.close();await service.shutdown();service.store.close();await fs.rm(dir,{recursive:true,force:true});}
+});
