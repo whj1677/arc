@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {capture} from '../src/main/snapshot';
 import {overviewSchema,prepareOverview,overviewPrompt} from '../src/main/overview-result';
+import {overviewDiscoveryQuestion} from '../src/main/architecture-analysis';
 import {promptContext} from '../src/main/prompt-context';
 import type {Run} from '../src/shared';
 
@@ -49,6 +50,22 @@ test('compact overview verifies exact source and maps facts to the existing resu
   assert.deepEqual(await prepareOverview(value,run,snapshot,storage),result,'conversion is deterministic');
   const prompt=overviewPrompt(run,snapshot,promptContext(snapshot,[]));assert.match(prompt,/overview-1/);assert.match(prompt,/不表示同步完成/);assert.match(prompt,/unresolved/);
   const check=(schema:any)=>{if(schema&&typeof schema==='object'){if(schema.properties){assert.equal(schema.additionalProperties,false);assert.deepEqual(schema.required,Object.keys(schema.properties));}Object.values(schema).forEach(check);}};check(overviewSchema);
+});
+
+test('overview generates source-bound readings with the catalog, preserves a legacy draft without readings',async t=>{
+  const {value,run,snapshot,storage}=await fixture(t);
+  const reading={node_id:'send-feature',entry:'调用 submit',outcome:'字符串进入队列',steps:[{text:'把传入的值加入队列。',evidence_ids:['e-send']}],boundary:'接收时机与外部调用方未查证。'};
+  const current={...run,question:overviewDiscoveryQuestion};
+  await assert.rejects(prepareOverview(value,current,snapshot,storage),/readings/);
+  const result=await prepareOverview({...value,readings:[reading]},current,snapshot,storage);
+  assert.deepEqual(result.feature_catalog?.readings,[reading]);
+  assert.equal(result.evidence.find(e=>e.evidence_id===reading.steps[0].evidence_ids[0])?.line_start,3);
+  await assert.rejects(prepareOverview({...value,readings:[]},run,snapshot,storage),/功能缺少阅读内容/);
+  const empty={...value,features:[],readings:[],unresolved:[]};
+  await assert.rejects(prepareOverview(empty,current,snapshot,storage),/功能目录为空/);
+  assert.deepEqual((await prepareOverview({...empty,unresolved:['只取得了队列实现，未找到对外业务入口。']},current,snapshot,storage)).feature_catalog?.readings,[]);
+  const old=await prepareOverview(value,run,snapshot,storage);
+  assert.equal(Object.hasOwn(old.feature_catalog!,'readings'),false);
 });
 
 test('compact overview rejects paraphrased quote and changed frozen bytes',async t=>{

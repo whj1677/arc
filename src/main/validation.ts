@@ -2,6 +2,7 @@ import Ajv2020 from 'ajv/dist/2020';
 import schema from '../../contracts/analysis-result.schema.json';
 import type { AnalysisResult, Run, Snapshot, SourceEvidence } from '../shared';
 import { readSource, relativePath } from './snapshot';
+import {overviewDiscoveryQuestion} from './architecture-analysis';
 import {validateReadingGuide} from './reading-guide-validation';
 import {validateFunctionWalkthroughs} from './function-walkthrough-validation';
 const ajv = new Ajv2020({allErrors:true,strict:false});
@@ -36,6 +37,8 @@ export async function validateResult(value: unknown, run: Run, snapshot: Snapsho
   refs(result);
   errors.push(...validateReadingGuide(result));
   errors.push(...validateFunctionWalkthroughs(result));
+  const currentOverview=run.question===overviewDiscoveryQuestion;
+  if(currentOverview&&!result.feature_catalog)errors.push('本次工程全貌缺少 feature_catalog 功能目录');
   if(result.feature_catalog){
     const seen=new Set<string>();
     for(const group of result.feature_catalog.groups)for(const id of group.node_ids){
@@ -43,6 +46,23 @@ export async function validateResult(value: unknown, run: Run, snapshot: Snapsho
       if(seen.has(id))errors.push(`功能目录重复节点：${id}`);seen.add(id);
       if(!node||node.kind!=='stage'||node.source_scope||result.architecture?.node_ids.includes(id))errors.push(`功能目录必须引用独立的业务功能节点：${id}`);
       if(!node?.evidence_ids.length||!node?.claim_ids.some((c:string)=>{const claim=groups.claim_ids.get(c);return claim?.status==='source_supported'&&claim.evidence_ids.length&&claim.targets.node_ids.includes(id);}))errors.push(`功能目录缺少对应功能的来源断言：${id}`);
+    }
+    if(currentOverview&&!seen.size&&!result.coverage.unresolved_scope.some(reason=>reason.trim())&&!result.gaps.some(gap=>gap.question.trim())){
+      errors.push('功能目录为空时需要说明实际未覆盖的入口或缺失的来源');
+    }
+    const readings=result.feature_catalog.readings;
+    if(readings){
+      const described=new Set<string>();
+      for(const reading of readings){
+        if(!seen.has(reading.node_id))errors.push(`功能阅读不属于目录：${reading.node_id}`);
+        if(described.has(reading.node_id))errors.push(`功能阅读重复：${reading.node_id}`);
+        described.add(reading.node_id);
+        if(!reading.boundary.trim()||reading.steps.some(step=>!step.text.trim()))errors.push(`功能阅读缺少步骤说明或边界：${reading.node_id}`);
+        if(!reading.steps.length&&(reading.entry.trim()||reading.outcome.trim()))errors.push(`功能阅读的入口或结果缺少有依据的步骤：${reading.node_id}`);
+      }
+      for(const id of seen)if(!described.has(id))errors.push(`功能缺少阅读内容或具体缺口：${id}`);
+    }else if(currentOverview){
+      errors.push('本次工程全貌需要为每个目录功能提供 readings；无实现依据时填写具体缺口');
     }
   }
   if(result.architecture) {
@@ -153,7 +173,7 @@ export function transportSchema(base:object=schema) {
   visit(copy);return copy;
 }
 export function normalizeTransport(value:any,audit:string[]=[] ) {
-  const optional=new Set(['function_walkthroughs','reading_guide','function_details','flow_role','feature_catalog','source_scope','architecture','transfers','parent_node_id','execution_episode_id','related_call_edge_id','condition','symbol_id','runtime_version','external_provider_id','external_session_id','external_thread_id','external_task_id','external_run_id']);
+  const optional=new Set(['function_walkthroughs','reading_guide','function_details','flow_role','feature_catalog','readings','source_scope','architecture','transfers','parent_node_id','execution_episode_id','related_call_edge_id','condition','symbol_id','runtime_version','external_provider_id','external_session_id','external_thread_id','external_task_id','external_run_id']);
   const referenceSets=new Set(['node_ids','edge_ids','io_ids','claim_ids','evidence_ids','related_node_ids']);
   function visit(v:any,where=''){if(!v||typeof v!=='object')return;for(const k of Object.keys(v)){
     if(v[k]===null&&optional.has(k)){delete v[k];audit.push(`${where}/${k}: removed optional null`);}

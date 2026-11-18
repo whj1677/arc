@@ -540,12 +540,20 @@ export interface FunctionWalkthrough {
   }[];
 }
 
+export interface CatalogReading {
+  readonly node_id: Id;
+  readonly entry: string;
+  readonly outcome: string;
+  readonly steps: readonly { readonly text: string; readonly evidence_ids: readonly Id[] }[];
+  readonly boundary: string;
+}
+
 export interface AnalysisResult {
   /** Ordered, source-bound reading paths. Never inferred from graph layout or edge array order. */
   readonly function_walkthroughs?: readonly FunctionWalkthrough[];
   readonly reading_guide?: ReadingGuide;
-  /** 轻量功能目录。节点仅说明功能目的；细节由用户选择后单独分析。 */
-  readonly feature_catalog?: { readonly scope: string; readonly groups: readonly {readonly label:string; readonly node_ids:readonly Id[]}[] };
+  /** 功能节点说明用途，逐项阅读内容绑定本次结果的源码依据。历史目录可能只有节点。 */
+  readonly feature_catalog?: { readonly scope: string; readonly groups: readonly {readonly label:string; readonly node_ids:readonly Id[]}[]; readonly readings?: readonly CatalogReading[] };
   /** 组件和连接必须引用本结果的节点/关系；不由 UI 猜测系统组成。 */
   readonly architecture?: { readonly node_ids: readonly Id[]; readonly edge_ids: readonly Id[] };
   readonly schema_version: '1.0';

@@ -101,3 +101,18 @@
 @media(max-width:650px){.home-guide h3{font-size:1.25rem}.home-guide dl{gap:.5rem .75rem}.home-guide-actions>button{white-space:normal}}
 
 @media(max-width:1150px){.home-returning>aside{order:-1}}
+
+.development-activity{margin:.7rem 0 0;padding:.45rem .8rem;background:var(--surface);border-left:3px solid var(--accent);border-radius:.35rem}
+.development-activity-heading{display:flex;align-items:center;flex-wrap:wrap;gap:.3rem 1rem}
+.development-activity-heading>button{background:transparent;border:0;padding:.2rem 0;font-weight:650}
+.development-activity-heading>span{font-size:.82rem;color:var(--accent)}
+.development-activity time{font-size:.75rem;color:var(--muted)}
+.development-activity-body{max-height:23vh;overflow:auto}
+.development-activity-body p{margin:.3rem 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.development-activity-body ol{padding-left:1.5rem}
+.development-activity-body pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:.2rem 0 .6rem}
+.plan-decision{margin:.5rem 0 0}
+.plan-decision dialog{width:min(42rem,95vw);padding:1rem;background:var(--surface);color:var(--ink)}
+.plan-decision dialog::backdrop{background:#14291f70}
+.plan-decision dialog>header{display:flex;justify-content:space-between;align-items:center;gap:.8rem}
+.plan-decision dialog>header h3{margin:0}

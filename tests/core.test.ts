@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import {shallowOverviewQuestion} from '../src/main/architecture-analysis';
 import {ArcService,overviewQuestion} from '../src/main/service';
 import {capture,readSource,sha,relativePath,safeFile,freshness} from '../src/main/snapshot';
 import {validateResult,normalizeTransport} from '../src/main/validation';
@@ -115,9 +116,18 @@ test('feature discovery requires real references and keeps shallow catalogs comp
  const {service,project}=await context();try{
   const p=await service.openProject(project),scene=service.overview(p.project_id),run=fakeRun(service,scene,p),snap=service.store.get<Snapshot>('snapshot',p.snapshot_id);
   const value:any=resultFor(run,snap);value.nodes[0].kind='stage';value.feature_catalog={scope:'仅测试文件入口，非全工程',groups:[{label:'入口',node_ids:['node']}]};
+  const missingCatalog=structuredClone(value);delete missingCatalog.feature_catalog;
+  assert.match((await validateResult(missingCatalog,run,snap,service.directory)).errors.join(','),/缺少 feature_catalog/);
+  const legacy={...run,question:shallowOverviewQuestion};
+  assert.deepEqual((await validateResult(value,legacy,snap,service.directory)).errors,[]);
+  assert.match((await validateResult(value,run,snap,service.directory)).errors.join(','),/需要为每个目录功能提供 readings/);
+  value.feature_catalog.readings=[{node_id:'node',entry:'输入数字',outcome:'返回计算值',steps:[{text:'对输入加三并返回。',evidence_ids:['ev']}],boundary:'未检查调用入口以外的业务。'}];
   assert.deepEqual((await validateResult(value,run,snap,service.directory)).errors,[]);
-  for(const change of [(v:any)=>v.feature_catalog.groups[0].node_ids=['missing'],(v:any)=>v.feature_catalog.groups.push({label:'重复',node_ids:['node']}),(v:any)=>v.nodes[0].kind='function',(v:any)=>v.claims[0].targets.node_ids=[],(v:any)=>v.architecture={node_ids:['node'],edge_ids:[]}]){const bad=structuredClone(value);change(bad);assert.ok((await validateResult(bad,run,snap,service.directory)).errors.length);}
+  for(const change of [(v:any)=>v.feature_catalog.readings[0].steps[0].evidence_ids=['absent'],(v:any)=>v.feature_catalog.readings[0].node_id='missing',(v:any)=>v.feature_catalog.readings=[],(v:any)=>v.feature_catalog.readings.push(v.feature_catalog.readings[0]),(v:any)=>v.feature_catalog.readings[0].steps=[],(v:any)=>v.feature_catalog.groups[0].node_ids=['missing'],(v:any)=>v.feature_catalog.groups.push({label:'重复',node_ids:['node']}),(v:any)=>v.nodes[0].kind='function',(v:any)=>v.claims[0].targets.node_ids=[],(v:any)=>v.architecture={node_ids:['node'],edge_ids:[]}]){const bad=structuredClone(value);change(bad);assert.ok((await validateResult(bad,run,snap,service.directory)).errors.length);}
+  value.feature_catalog.readings=[{node_id:'node',entry:'',outcome:'',steps:[],boundary:'仅查到声明，未找到实现文件。'}];
+  assert.deepEqual((await validateResult(value,run,snap,service.directory)).errors,[]);
   assert.deepEqual(normalizeTransport({feature_catalog:null}),{});
+  assert.deepEqual(normalizeTransport({feature_catalog:{scope:'历史资料',readings:null}}),{feature_catalog:{scope:'历史资料'}});
  }finally{service.store.close();}
 });
 test('discovery opens only one bound feature; cached results, revision invalidation, archive and snapshot gates',async()=>{
@@ -211,6 +221,9 @@ test('overview defaults request explicit architecture without overwriting a user
   try{
     const p=await service.openProject(project),scene=service.overview(p.project_id);
     assert.equal(scene.question,overviewQuestion);
+    const prior=service.reviseScenario(scene.scenario_id,shallowOverviewQuestion);
+    const upgraded=service.overview(p.project_id);
+    assert.equal(upgraded.question,overviewQuestion);assert.notEqual(upgraded.question_revision_id,prior.question_revision_id);
     const custom=service.reviseScenario(scene.scenario_id,'只分析用户指定的模块边界');
     assert.equal(service.overview(p.project_id).question_revision_id,custom.question_revision_id);
     assert.equal(service.overview(p.project_id).question,'只分析用户指定的模块边界');

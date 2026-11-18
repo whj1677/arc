@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {ArcService} from '../src/main/service';
+import {shallowOverviewQuestion} from '../src/main/architecture-analysis';
 import {prepareOverview} from '../src/main/overview-result';
 import {applyOverviewReview} from '../src/main/overview-review';
 import {linesOf,readSource,sha} from '../src/main/snapshot';
@@ -19,6 +20,10 @@ const overview={
     {id:'store',kind:'resource',label:'内存记录',description:'保存提交的字符串。',inputs:['提交的字符串'],outputs:[],evidence_ids:['source-store']},
   ],
   features:[{label:'记录管理',items:[{id:'save-feature',label:'提交记录',description:'将字符串加入内存记录。',evidence_ids:['source-submit','source-store']}]}],
+  readings:[{node_id:'save-feature',entry:'调用提交入口',outcome:'字符串加入内存记录',steps:[
+    {text:'提交函数将字符串交给存储函数。',evidence_ids:['source-submit']},
+    {text:'存储函数把值加入 records 数组。',evidence_ids:['source-store']},
+  ],boundary:'仅核对内存写入，未证实持久化。'}],
   relations:[{id:'save',kind:'data_publish',source:'submit',target:'store',label:'保存字符串',description:'提交入口调用 save，将值加入 records。',evidence_ids:['source-submit','source-store']}],
   evidence:[
     {id:'source-submit',path:'入口.ts',start:1,end:2,quote:"import {save} from './存储';\nexport function submit(value:string) { save(value); }"},
@@ -74,8 +79,24 @@ test('overview publishes only after two phases complete under the same frozen ru
   const completed=service.store.get<Run>('run',run.binding.run_id),saved=service.data().explanations;
   assert.equal(completed.status,'completed');assert.equal(saved.length,1);
   assert.deepEqual(saved[0].result.binding,run.binding);assert.equal(saved[0].result.binding.source_snapshot_id,project.snapshot_id);
+  assert.deepEqual(saved[0].result.feature_catalog?.readings,overview.readings);
   assert.match(completed.validation!.semantic,/独立 Agent/);assert.equal(service.active.size,0);
   assert.equal(await fs.readFile(run.output_path,'utf8'),JSON.stringify(overview),'the raw compact result stays intact');
+});
+
+test('new overview refuses a response without readings before requesting semantic review',async t=>{
+  const {readings:_,...withoutReadings}=overview;
+  let calls=0;
+  const runner:typeof runCodex=async options=>{
+    calls++;assert.equal(options.phase,undefined);assert.equal(options.shouldStart?.(),true);options.started(active());
+    return phaseReply(options,withoutReadings);
+  };
+  const {service,scenario}=await fixture(t,runner);
+  const run=await service.startRun(scenario.scenario_id,'codex','overview-missing-readings');
+  await Promise.all(service.executing.values());
+  const failed=service.store.get<Run>('run',run.binding.run_id);
+  assert.equal(failed.status,'failed');assert.match(failed.error||'',/readings/);
+  assert.equal(service.data().explanations.length,0);assert.equal(calls,1);
 });
 
 test('cancelling during review preparation rejects its late startup and never publishes the draft',async t=>{
@@ -292,18 +313,20 @@ test('legacy two-phase results retain their original review hash when a later st
     return phaseReply(options,options.phase==='overview_research'?await researchReply(options):reviewReply(options));
   };
   const {service,scenario,project,snapshot}=await fixture(t,runner),created=new Date().toISOString();
-  const previous:Run={binding:{project_id:project.project_id,feature_id:scenario.feature_id,scenario_id:scenario.scenario_id,question_revision_id:scenario.question_revision_id,source_snapshot_id:snapshot.source_snapshot_id,run_id:'legacy-overview-run'},
-    provider_id:'codex',overview_format:'overview-1',status:'completed',runtime_version:'codex-cli legacy-test',question:scenario.question,title:scenario.title,
+  const historical=service.reviseScenario(scenario.scenario_id,shallowOverviewQuestion);
+  const {readings:_,...legacyOverview}=researchOverview;
+  const previous:Run={binding:{project_id:project.project_id,feature_id:scenario.feature_id,scenario_id:scenario.scenario_id,question_revision_id:historical.question_revision_id,source_snapshot_id:snapshot.source_snapshot_id,run_id:'legacy-overview-run'},
+    provider_id:'codex',overview_format:'overview-1',status:'completed',runtime_version:'codex-cli legacy-test',question:historical.question,title:scenario.title,
     created_at:created,ended_at:created,submission_key:'legacy-overview-key',output_path:path.join(service.directory,'runs','legacy-overview-run','result.json')};
   // The old pipeline created its draft from the initial envelope; only the
   // persisted run acquired runtime_version after process startup.
-  const draft=await prepareOverview(researchOverview,{...previous,runtime_version:undefined},snapshot,service.directory);
+  const draft=await prepareOverview(legacyOverview,{...previous,runtime_version:undefined},snapshot,service.directory);
   const review={schema_version:'overview-review-1',run_id:previous.binding.run_id,source_snapshot_id:snapshot.source_snapshot_id,draft_sha256:sha(JSON.stringify(draft)),
     summary:{verdict:'supported',reason:'摘要描述内存保存。'},relations:draft.edges.map(edge=>({edge_id:edge.edge_id,verdict:edge.edge_id==='save'?'contradicted':'supported',reason:'数据库持久化的断言缺乏依据，模块依赖有源码支持。',evidence_ids:edge.evidence_ids}))};
-  assert.notEqual(sha(JSON.stringify(await prepareOverview(researchOverview,previous,snapshot,service.directory))),review.draft_sha256,'rebuilding with the stored runtime version must reproduce the observed mismatch');
+  assert.notEqual(sha(JSON.stringify(await prepareOverview(legacyOverview,previous,snapshot,service.directory))),review.draft_sha256,'rebuilding with the stored runtime version must reproduce the observed mismatch');
   const original={result_id:draft.result_id,scenario_id:scenario.scenario_id,created_at:created,source_status:'current',result:applyOverviewReview(review,draft).result};
   service.store.put('run',previous.binding.run_id,previous);service.store.put('explanation',original.result_id,original);
-  const directory=path.dirname(previous.output_path),reviewPath=path.join(directory,'review','result.json'),raw=JSON.stringify(researchOverview),reviewRaw=JSON.stringify(review);
+  const directory=path.dirname(previous.output_path),reviewPath=path.join(directory,'review','result.json'),raw=JSON.stringify(legacyOverview),reviewRaw=JSON.stringify(review);
   await fs.mkdir(path.dirname(reviewPath),{recursive:true});await fs.writeFile(previous.output_path,raw);await fs.writeFile(reviewPath,reviewRaw);
   const newerAuditFiles=['overview-draft.json','overview-review.json'].map(name=>path.join(directory,name));
   for(const file of newerAuditFiles)await assert.rejects(fs.access(file),{code:'ENOENT'});

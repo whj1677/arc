@@ -1,6 +1,6 @@
 import type {Run} from '../shared';
 
-export const activeStatuses=new Set(['queued','running','validating','cancel_requested']);
+export const activeStatuses=new Set(['queued','waiting_agent','running','validating','cancel_requested']);
 export type ActivityItem={id:string;at:string;kind:'message'|'tool'|'status'|'error';text:string};
 export function runChannel(run:Run){
   if(run.origin==='manual_import')return '本地导入 · 未调用 Agent';
@@ -16,7 +16,7 @@ export function duration(ms:number) {
 export function activity(run:Run,events:any[],now:number) {
   const items=new Map<string,ActivityItem>(),chunks=new Map<string,string>(),files=new Set<string>(),pending=new Set<string>();
   const toolDetails=new Map<string,{title?:string;path?:string}>();
-  let connected=!!run.external_id,output=false,reconnecting=false,overviewStage='',lastTime=Date.parse(run.created_at);
+  let connected=run.status!=='waiting_agent'&&!!run.external_id,output=false,reconnecting=false,overviewStage='',lastTime=Date.parse(run.created_at);
   const add=(id:string,e:any,kind:ActivityItem['kind'],text:string)=>items.set(id,{id,at:e.received_at||run.created_at,kind,text});
   for(const [i,e] of events.entries()){
     const stamp=Date.parse(e.received_at);if(Number.isFinite(stamp))lastTime=Math.max(lastTime,stamp);
@@ -66,7 +66,7 @@ export function activity(run:Run,events:any[],now:number) {
       add(key,e,'error',message);
     }
   }
-  const phases:Record<string,string>={queued:`准备连接 ${run.provider_id==='codex'?'Codex':'Agent'}`,validating:'校验结果与源码依据',completed:'分析完成，说明已保存',failed:'分析失败',cancel_requested:'正在请求停止',cancelled:'任务已停止',unknown:run.origin==='mcp'?'状态未知，需核查原会话':'任务状态未确认，请查看记录或重试',blocked_external:'连接条件缺失'};
+  const phases:Record<string,string>={waiting_agent:'已排队，等待 Agent 领取',queued:`准备连接 ${run.provider_id==='codex'?'Codex':'Agent'}`,validating:'校验结果与源码依据',completed:'分析完成，说明已保存',failed:'分析失败',cancel_requested:'正在请求停止',cancelled:'任务已停止',unknown:run.origin==='mcp'?'状态未知，需核查原会话':'任务状态未确认，请查看记录或重试',blocked_external:'连接条件缺失'};
   const overviewPhases:Record<string,string>={overview_review:'正在核对首轮关系与源码，结果尚未发布',overview_research:'正在自动补查未确认的关系，原阅读位置保留',overview_recheck:'正在复核补查后的关系，结果尚未保存',overview_reviewed:'关系复核已结束，等待本地校验和保存'};
   const processing=['running','validating'].includes(run.status);
   const phase=run.origin==='manual_import'&&run.status==='completed'?'手动导入已校验并保存 · 未调用 Agent':processing&&reconnecting?'连接中断，Agent 正在重连':processing&&overviewStage?overviewPhases[overviewStage]:phases[run.status]||(reconnecting?'连接中断，Agent 正在重连':pending.size?'正在读取源码 / 执行工具':output?'已收到输出，等待校验':connected?'Agent 处理中，等待后续输出':'进程已启动，等待 Agent 会话');

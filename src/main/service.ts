@@ -10,7 +10,7 @@ import {runDshWeb,dshWebSessionUrl,closeDshWebHosts} from './dsh-web';
 import {discoveredFeature} from '../discovered-feature';
 import {buildReadingContext,readingTarget,promptContext} from './prompt-context';
 import {validateReadingAnswer} from './reading-question';
-import {overviewDiscoveryQuestion} from './architecture-analysis';
+import {overviewDiscoveryQuestion,shallowOverviewQuestion} from './architecture-analysis';
 import {prepareOverview} from './overview-result';
 import {makeOverviewReviewPrompt,applyOverviewReview,parseOverviewReview,type OverviewReview} from './overview-review';
 import {makeOverviewResearchPrompt,applyOverviewResearch} from './overview-research';
@@ -73,7 +73,7 @@ export class ArcService {
       let scene=this.store.get<Scenario>('scenario',project.overview_scenario_id);
       // Upgrade only our untouched default when a new overview is explicitly requested.
       // Existing results retain their original question revision.
-      if([oldOverviewQuestion,architectureOverviewQuestion,previousOverviewQuestion].includes(scene.question)){
+      if([oldOverviewQuestion,architectureOverviewQuestion,previousOverviewQuestion,shallowOverviewQuestion].includes(scene.question)){
         scene=this.reviseScenario(scene.scenario_id,overviewQuestion);
         if(scene.title==='工程全貌 · 模块、目录用途与依赖')scene.title='工程全貌 · 系统架构';
         this.store.put('scenario',scene.scenario_id,scene);this.changed();

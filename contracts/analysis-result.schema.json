@@ -74,7 +74,7 @@
     "feature_catalog": {
       "type": "object",
       "additionalProperties": false,
-      "description": "轻量功能发现目录，不是详细流程。按业务分组，引用有来源依据的 stage 节点；节点只含功能名称和一句话用途，输入输出可为空。scope 说明查阅范围和覆盖边界，不得宣称未读工程全部覆盖。",
+      "description": "按业务区域组织有来源的功能节点。readings 保存本次全貌对每个功能已查证的阅读内容或具体缺口，早期结果可省略。",
       "properties": {
         "scope": {
           "type": "string",
@@ -102,6 +102,68 @@
             "required": [
               "label",
               "node_ids"
+            ]
+          }
+        },
+        "readings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "node_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "entry": {
+                "type": "string",
+                "maxLength": 500
+              },
+              "outcome": {
+                "type": "string",
+                "maxLength": 500
+              },
+              "steps": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "evidence_ids": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      }
+                    }
+                  },
+                  "required": [
+                    "text",
+                    "evidence_ids"
+                  ]
+                }
+              },
+              "boundary": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "node_id",
+              "entry",
+              "outcome",
+              "steps",
+              "boundary"
             ]
           }
         }

@@ -56,3 +56,11 @@ test('automatic relation research and recheck display actual phases without clai
   assert.equal(activity({...run,status:'cancel_requested'},events,time).phase,'正在请求停止');
   assert.equal(activity({...run,status:'completed'},events,time).phase,'分析完成，说明已保存');
 });
+
+test('a queued external dispatch remains active without a claimed Agent session',()=>{
+  const waiting=activity({...run,status:'waiting_agent',origin:'mcp'},[],time);
+  assert.equal(waiting.phase,'已排队，等待 Agent 领取');
+  assert.equal(waiting.active,true);
+  assert.equal(waiting.connected,false);
+  assert.equal(waiting.output,false);
+});
