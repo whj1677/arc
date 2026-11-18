@@ -14,6 +14,10 @@ const service=connection?undefined:new ArcService(path.resolve(dataDirectory),ro
 const print=value=>console.log(JSON.stringify(value,null,2));
 const call=(name,callArgs)=>connection?callArcWithOutbox(connection,{name,args:callArgs,client}):bridge.call(name,callArgs,client);
 const readTask=taskId=>call('arc_development_task',{task_id:taskId});
+function reportBinding(task,report){
+  if(task.workflow&&!Number.isInteger(report.expected_version))throw Error('需求包回填请在报告中提供领取或上次保存时的 expected_version。');
+  return {expected_version:report.expected_version??task.version,attempt_id:report.attempt_id};
+}
 async function resumeWaitingRun(runId){if(!service)return;const run=service.store.get('run',runId);if(run.origin!=='mcp'||run.status!=='waiting_agent')throw Error('Only this adapter’s waiting MCP analysis can be resumed');run.status='running';run.mcp_connection_id=bridge.connectionId;service.store.put('run',runId,run);}
 try{
   if(command==='setup'){
@@ -41,11 +45,11 @@ try{
   }else if(command==='finish-development'){
     const [workspace,taskId,submissionKey,reportFile]=args,task=await readTask(taskId),report=JSON.parse(await fs.readFile(reportFile,'utf8'));
     const verification=(report.verification??[]).map(item=>({...item,evidence_id:item.evidence_id??randomUUID(),cwd:path.resolve(workspace),created_at:item.created_at??new Date().toISOString()}));
-    const saved=await call('arc_finish_development',{task_id:taskId,expected_version:task.version,submission_key:submissionKey,status:report.status,summary:report.summary,decisions:report.decisions??[],unresolved:report.unresolved??[],steps:report.steps,verification});if(service)await service.refreshTaskWalkthrough(taskId);print(saved);
+    const saved=await call('arc_finish_development',{task_id:taskId,...reportBinding(task,report),submission_key:submissionKey,status:report.status,summary:report.summary,decisions:report.decisions??[],unresolved:report.unresolved??[],steps:report.steps,proposed_scope:report.proposed_scope,requirement_package:report.requirement_package,verification});if(service)await service.refreshTaskWalkthrough(taskId);print(saved);
   }else if(command==='update-development'){
     const [taskId,submissionKey,reportFile]=args,task=await readTask(taskId),report=JSON.parse(await fs.readFile(reportFile,'utf8'));
     const verification=(report.verification??[]).map(item=>({...item,evidence_id:item.evidence_id??randomUUID(),cwd:task.workspace_path,created_at:item.created_at??new Date().toISOString()}));
-    print(await call('arc_update_development',{task_id:taskId,expected_version:task.version,submission_key:submissionKey,summary:report.summary,decisions:report.decisions,unresolved:report.unresolved,steps:report.steps,verification}));
+    print(await call('arc_update_development',{task_id:taskId,...reportBinding(task,report),submission_key:submissionKey,summary:report.summary,decisions:report.decisions,unresolved:report.unresolved,steps:report.steps,proposed_scope:report.proposed_scope,requirement_package:report.requirement_package,verification}));
   }else throw Error(`Unknown command ${command}`);
 }finally{
   // Only the direct mode closes its Store. A remote MCP host owns its lifecycle.

@@ -30,6 +30,10 @@ export function engineeringDocumentCategory(file:string):EngineeringSectionCateg
   if(/^(?:plan|implementation-plan|development-plan|proposal|方案|实施方案|开发计划)$/.test(name))return 'plan';
   return undefined;
 }
+interface RequirementSubmission {
+  phase:'analysis'|'execution'; expected_version?:number; channel:'codex'|'kimi';
+  checkAvailable:()=>void; onSaved:(task:EngineeringTask)=>void;
+}
 export class EngineeringService {
   private readonly capturing=new Map<string,Promise<CodeState>>();
   private readonly scanning=new Map<string,Promise<void>>();
@@ -355,6 +359,9 @@ export class EngineeringService {
       if(new Set(criteria.map(c=>c.criterion_id)).size!==criteria.length)throw Error('步骤内验收条件 ID 重复');
       if(typeof value.title!=='string'||!value.title.trim())throw Error('步骤 '+stepId+' 缺少 title（步骤标题）');
       const previous=steps.find(step=>step.step_id===stepId),step:DevelopmentStep={step_id:stepId,title:requireText(value.title,300),change:requireText(value.change,6000),status:value.status,progress:requireText(value.progress,6000),criteria,evidence_ids:this.idList(value.evidence_ids),unresolved:(value.unresolved??[]).map(item=>requireText(item,4000)),created_at:previous?.created_at??now(),updated_at:now()};
+      if(task.approval&&(!previous||previous.title!==step.title||previous.change!==step.change||step.status==='superseded'||JSON.stringify(previous.criteria.map(c=>[c.criterion_id,c.text]))!==JSON.stringify(criteria.map(c=>[c.criterion_id,c.text])))){
+        throw Error('执行进展不能替换已批准的步骤或验收条件，需要在原任务修订');
+      }
       if(previous)steps[steps.indexOf(previous)]=step;else steps.push(step);
     }
     task.steps=steps;
@@ -381,24 +388,59 @@ export class EngineeringService {
     readingTarget(explanation.result,input.target,snapshot,feature);
     return {feature_id:feature.feature_id,scenario_id:scenario.scenario_id,result_id:explanation.result_id,source_snapshot_id:snapshot.source_snapshot_id,target:{kind:input.target.kind,id:input.target.id}};
   }
-  async createTask(input:CreateEngineeringTask):Promise<EngineeringTask> {
+  private validatePackage(task:EngineeringTask) {
+    const behaviors=task.requirement_package?.behaviors;
+    if(!Array.isArray(behaviors)||!behaviors.length||behaviors.length>100)throw Error('需求包需要 1–100 项可验收行为');
+    const scope=new Set(task.proposed_scope??[]),steps=new Set((task.steps??[]).filter(step=>step.status!=='superseded').map(step=>step.step_id));
+    const ids=new Set<string>(),coveredFiles=new Set<string>(),coveredSteps=new Set<string>();
+    for(const item of behaviors){
+      const id=requireText(item.id,160);
+      if(ids.has(id))throw Error('需求包行为 ID 重复');ids.add(id);
+      for(const field of [item.behavior,item.design,item.verification])requireText(field,6000);
+      const files=this.idList(item.files),links=this.idList(item.step_ids);
+      if(!files.length||!links.length)throw Error('每项行为需要关联建议文件和含验收条件的实施步骤');
+      for(const file of files){if(!scope.has(relativePath(file)))throw Error('行为引用的文件不在建议范围：'+file);coveredFiles.add(file);}
+      for(const step of links){if(!steps.has(step))throw Error('行为引用的实施步骤无效：'+step);coveredSteps.add(step);}
+    }
+    if(coveredFiles.size!==scope.size||coveredSteps.size!==steps.size)throw Error('建议范围中的文件及实施步骤均需对应需求行为');
+  }
+  private prepareRequirement(task:EngineeringTask,input:CreateEngineeringTask,submission:RequirementSubmission) {
+    submission.checkAvailable();
+    if(input.task_id&&(!Number.isInteger(submission.expected_version)||task.version!==submission.expected_version))throw Error('VERSION_CONFLICT：任务版本已变化，请重新审阅');
+    if(submission.phase==='execution'){
+      if(!input.task_id||task.workflow!=='ready'||task.status!=='pending')throw Error('请先完成只读分析并审阅当前需求包');
+      this.validatePackage(task);
+      if(input.scope?.some(file=>!task.proposed_scope?.includes(file)))throw Error('新增文件需要先修订需求包，再审阅批准');
+      task.approval={reviewed_version:task.version,scope:[...(input.scope??[])]};
+      task.scope=[...task.approval.scope];
+    }else{
+      task.analysis_channel=submission.channel;
+      delete task.approval;delete task.requirement_package;
+      task.scope=[];task.proposed_scope=[];task.steps=[];task.summary='';task.decisions=[];task.unresolved=[];
+      task.verification=[];task.verification_status='not_run';
+    }
+    task.workflow=submission.phase;task.status='pending';
+  }
+  async createTask(input:CreateEngineeringTask,submission?:RequirementSubmission):Promise<EngineeringTask> {
     const workspace=await this.resolve(input),reading=this.validateReading(workspace.project_id,input.reading);
     if(input.task_id){
       const prior=this.task(input.task_id);if(prior.workspace_id!==workspace.workspace_id)throw Error('任务属于另一个工作区');
       if(reading&&prior.reading&&(reading.feature_id!==prior.reading.feature_id||reading.scenario_id!==prior.reading.scenario_id))throw Error('已有任务不能改绑到另一个功能或场景');
       await this.captureState(workspace.project_id,workspace.root_path);const task=this.task(input.task_id),key=this.receiptKey('continue',task.task_id,input.submission_key);if(this.store.maybe('engineering_receipt',key))return task;
-      const text=requireText(input.goal);this.store.transaction(()=>{task.requests??=[];task.requests.push({text,submission_key:input.submission_key,created_at:now()});if(!task.reading&&reading)task.reading=reading;this.saveTask(task);this.store.put('engineering_receipt',key,task);});this.changed();return task;
+      const text=requireText(input.goal);this.store.transaction(()=>{
+        if(submission)this.prepareRequirement(task,input,submission);
+        else if(task.workflow)throw Error('请从原 ARC 需求的审阅或修订入口继续');
+        if(submission?.phase!=='execution'){task.requests??=[];task.requests.push({text,submission_key:input.submission_key,created_at:now()});}
+        if(!task.reading&&reading)task.reading=reading;
+        this.saveTask(task);this.store.put('engineering_receipt',key,task);submission?.onSaved(task);
+      });this.changed();return task;
     }
     const key=this.receiptKey('create',workspace.workspace_id,input.submission_key),existing=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(existing)return this.task(existing.task_id);
     const context=await this.context({project_id:workspace.project_id});
     return this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return this.task(retry.task_id);
       const task:EngineeringTask={task_id:id('task'),project_id:workspace.project_id,workspace_id:workspace.workspace_id,workspace_path:workspace.root_path,...(reading?{reading}:{}),version:0,submission_key:input.submission_key,goal:requireText(input.goal),scope:(input.scope??[]).map(relativePath),status:'pending',baseline:context.code_state,context_version:context.version,summary:'',decisions:[],unresolved:[],changes:[],verification:[],verification_status:'not_run',attempt_ids:[],requests:[],created_at:now(),updated_at:now(),saved:'saved'};
-      this.saveTask(task);this.store.put('engineering_receipt',key,task);this.changed();return task;});
-  }
-  prepareWorkflow(taskId:string,phase:'analysis'|'execution',scope:string[]):EngineeringTask {
-    const task=this.task(taskId);task.workflow=phase;task.scope=scope.map(relativePath);task.status='pending';
-    if(phase==='analysis')task.proposed_scope=[];
-    this.saveTask(task);this.changed();return task;
+      if(submission)this.prepareRequirement(task,input,submission);
+      this.saveTask(task);this.store.put('engineering_receipt',key,task);submission?.onSaved(task);this.changed();return task;});
   }
   saveWalkthrough(taskId:string,update:WalkthroughUpdate,expectedUpdateId?:string):EngineeringTask {
     return this.store.transaction(()=>{const task=this.task(taskId);if(!task.reading)throw Error('任务没有关联的功能走读');if(expectedUpdateId!==undefined&&task.walkthrough?.update_id!==expectedUpdateId)return task;task.walkthrough=update;this.saveTask(task);this.changed();return task;});
@@ -408,8 +450,10 @@ export class EngineeringService {
     return this.store.transaction(()=>{const task=this.task(input.task_id);this.checkUpdate(task,input);
       if(input.summary!==undefined)task.summary=requireText(input.summary);
       if(input.decisions)task.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)task.unresolved=input.unresolved.map(s=>requireText(s));
+      if(input.requirement_package!==undefined)task.requirement_package=input.requirement_package;
       if(input.proposed_scope)task.proposed_scope=input.proposed_scope.map(relativePath);
       if(input.steps)this.mergeSteps(task,input.steps);
+      if(input.requirement_package!==undefined)this.validatePackage(task);
       if(input.verification)for(const evidence of input.verification){this.checkEvidence(task,evidence);if(!task.verification.some(e=>e.evidence_id===evidence.evidence_id))task.verification.push(evidence);}
       this.checkStepEvidence(task);
       if(input.status)task.status=input.status;task.verification_status=this.verificationStatus(task,task.end_state??task.baseline);
@@ -417,6 +461,9 @@ export class EngineeringService {
   }
   private checkUpdate(task:EngineeringTask,input:UpdateEngineeringTask) {
     if(task.version!==input.expected_version)throw Error('VERSION_CONFLICT：任务已有新版本，请重新读取');
+    if(task.workflow==='ready'&&input.status!=='cancelled')throw Error('需求包正在等待用户审阅，请通过原任务修订');
+    if(task.workflow&&task.status!=='running'&&input.status!=='cancelled')throw Error('此需求阶段尚未领取或已经结束');
+    if((input.proposed_scope!==undefined||input.requirement_package!==undefined)&&task.workflow==='execution')throw Error('执行阶段不能改写已批准的需求包或建议范围');
     if(input.attempt_id){const attempt=this.store.get<DevelopmentAttempt>(attemptKind,input.attempt_id);if(attempt.task_id!==task.task_id||task.attempt_ids.at(-1)!==attempt.attempt_id||['cancelled','interrupted'].includes(attempt.status))throw Error('此执行已取消、被替代或不属于此任务，拒绝迟到结果');}
     if(task.status==='cancelled'&&input.status&&input.status!=='cancelled')throw Error('已取消任务不能由迟到结果恢复，请显式重试执行');
   }
@@ -425,6 +472,7 @@ export class EngineeringService {
     const source=this.store.get<Snapshot>('snapshot',e.code_state.snapshot_id);if(source.project_id!==task.project_id||source.fingerprint!==e.code_state.fingerprint)throw Error('验证代码状态不属于此工程');
     if(!['observed','self_reported'].includes(e.origin)||!['passed','failed','blocked','not_run'].includes(e.outcome))throw Error('验证状态无效');
     if(e.outcome==='passed'&&e.exit_code!==0)throw Error('通过的命令必须有零退出码');if(e.log_path)this.checkLogPath(task,e.log_path);
+    if(task.approval&&!(e.step_id&&e.criterion_id)&&!task.steps?.some(step=>step.criteria.some(criterion=>criterion.evidence_ids.includes(e.evidence_id))))throw Error('需求执行的验证证据须关联批准的步骤与验收条件');
     if(e.step_id){const step=task.steps?.find(item=>item.step_id===e.step_id);if(!step)throw Error('验证证据引用了不存在的步骤');if(e.criterion_id&&!step.criteria.some(item=>item.criterion_id===e.criterion_id))throw Error('验证证据引用了不存在的验收条件');}
     else if(e.criterion_id)throw Error('验收条件关联必须同时指定步骤');
   }
@@ -462,12 +510,13 @@ export class EngineeringService {
       .map(p=>({path:p,before_sha256:beforeFiles.get(p)??null,after_sha256:afterFiles.get(p)??null,ownership:comparison.dirty.includes(p)||task.rebind_preexisting_files?.some(f=>f.path===p)?'preexisting_overlap' as const:'task_change' as const,...(assets.has(p)?{text_diff_unavailable:true}:{})}));
     const saved=this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);if(input.decisions)current.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
       if(ownershipUnknown)current.unresolved=[...new Set([...current.unresolved,'无法确认提交完成时与采集时的代码状态一致。报告已保存，差异归属待核查。'])];
+      if(input.requirement_package!==undefined)current.requirement_package=input.requirement_package;
       if(input.proposed_scope)current.proposed_scope=input.proposed_scope.map(relativePath);
       if(input.steps)this.mergeSteps(current,input.steps);
       if(analyzing&&input.status==='completed'){
         const changed=!attemptFiles||ownershipUnknown||[...new Set([...attemptFiles.keys(),...afterFiles.keys()])].some(file=>attemptFiles.get(file)!==afterFiles.get(file));
         if(changed||!current.summary.trim()||!current.steps?.length){current.status='blocked';current.unresolved.push(changed?'只读分析期间代码状态发生变化，需核对后重新分析；未批准执行。':'分析缺少可审阅的摘要或实施步骤。');}
-        else {current.workflow='ready';current.status='pending';}
+        else {this.validatePackage(current);current.workflow='ready';current.status='pending';}
       }
       for(const evidence of input.verification??[]){this.checkEvidence(current,evidence);if(!current.verification.some(e=>e.evidence_id===evidence.evidence_id))current.verification.push(evidence);}
       this.checkStepEvidence(current);
@@ -494,6 +543,7 @@ export class EngineeringService {
     return this.store.transaction(()=>{const task=this.task(taskId);
       const workspace=this.store.get<WorkspaceBinding>(workspaceKind,task.workspace_id);if(workspace.status!=='bound'||!samePath(workspace.root_path,task.workspace_path))throw Error('任务工作区未绑定或已改变');
       this.checkWorkspaceAvailable(workspace);
+      if(task.workflow==='ready'||task.workflow==='analysis'&&input.write_scope?.length||task.workflow==='execution'&&(!task.approval||JSON.stringify(input.write_scope)!==JSON.stringify(task.approval.scope)))throw Error('尝试的写入范围与当前需求阶段不一致');
       const attempt:DevelopmentAttempt={...input,attempt_id:id('attempt'),task_id:taskId,project_id:task.project_id,workspace_id:task.workspace_id,workspace_path:task.workspace_path,status:'starting',started_at:now(),baseline:this.store.maybe<CodeState>('engineering_state',task.workspace_id)??task.baseline,context_version:this.store.get<any>('engineering_context_state',task.project_id).version};if(task.changes_status==='needs_review')task.diff_baseline=attempt.baseline;if(task.reading&&task.workflow!=='analysis')task.walkthrough={status:'pending',previous_result_id:task.walkthrough?.result_id??task.reading.result_id,result_id:task.walkthrough?.result_id,source_snapshot_id:task.walkthrough?.source_snapshot_id,updated_at:now()};task.attempt_ids.push(attempt.attempt_id);task.status='running';this.saveTask(task);this.store.put(attemptKind,attempt.attempt_id,attempt);this.changed();return attempt;});
   }
   updateAttempt(attemptId:string,patch:Partial<DevelopmentAttempt>) {

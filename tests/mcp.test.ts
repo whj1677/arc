@@ -58,7 +58,8 @@ test('dispatch context combines effective project materials with only its own ta
   for(const item of [task,other])await service.engineering.saveEntry({project_id:project.project_id,task_id:item.task_id,category:'plan',key:'task plan',text:item.goal,expected_version:0,submission_key:item.task_id},'user');
   // Protocol fixture: delivery itself is covered by external-dispatch tests;
   // real fresh-session acceptance is performed separately against the live app.
-  const dispatch=bridge.dispatch.enqueue(project.project_id,{task_id:task.task_id,submission_key:'claim-context',scope:['a.ts']});
+  await bridge.queueDevelopment({project_id:project.project_id,task_id:task.task_id,goal:'Check task context',phase:'analysis',expected_version:task.version,submission_key:'claim-context'});
+  const dispatch=bridge.dispatch.items(project.project_id).at(-1)!;
   service.store.put('external_dispatch',dispatch.dispatch_id,{...dispatch,state:'awaiting_claim'});
   const claimed=await bridge.call('arc_claim_dispatch',{dispatch_id:dispatch.dispatch_id});
   for(const category of ['purpose','build','rule','issue','module','interface'])assert.ok(claimed.context.entries.some((e:any)=>e.text===`Project ${category}`));
@@ -71,20 +72,26 @@ test('dispatched tasks can finish without documents or save only a needed design
   await bridge.enable(project.project_id);await service.engineering.connect(project.project_id);
   for(const category of [null,'design'] as const){
    const key=category||'no-documents';
-   const task=await service.engineering.createTask({project_id:project.project_id,goal:'A small scoped change',scope:['a.ts'],submission_key:key});
-   // This is a protocol regression, not a real Codex execution or delivery receipt.
-   const dispatch=bridge.dispatch.enqueue(project.project_id,{task_id:task.task_id,submission_key:key,scope:['a.ts']});
+   const task=await bridge.queueDevelopment({project_id:project.project_id,goal:'A small scoped change',phase:'analysis',submission_key:key});
+   // Only desktop delivery is simulated. The task still follows the review and approval workflow.
+   const analysis=bridge.dispatch.items(project.project_id).at(-1)!;
+   service.store.put('external_dispatch',analysis.dispatch_id,{...analysis,state:'awaiting_claim'});
+   const initial=await bridge.call('arc_claim_dispatch',{dispatch_id:analysis.dispatch_id});
+   const step={step_id:'small',title:'Scoped check',change:'Check the requested behavior',status:'pending',progress:'Ready for review',criteria:[{criterion_id:'scope',text:'No generated documents',evidence_ids:[]}],evidence_ids:[],unresolved:[]};
+   const ready=await bridge.call('arc_finish_development',{task_id:task.task_id,expected_version:initial.task.version,submission_key:key+'-review',status:'completed',summary:'Review the public value.',proposed_scope:['a.ts'],steps:[step],requirement_package:{behaviors:[{id:'value',behavior:'Keep the numeric export.',design:'Keep the export in a.ts.',files:['a.ts'],step_ids:['small'],verification:'Read the export from a.ts.'}]}});
+   await bridge.dispatch.pump();
+   await bridge.queueDevelopment({project_id:project.project_id,task_id:task.task_id,phase:'execution',expected_version:ready.version,goal:'Execute',scope:['a.ts'],submission_key:key+'-approve'});
+   const dispatch=bridge.dispatch.items(project.project_id).at(-1)!;
    service.store.put('external_dispatch',dispatch.dispatch_id,{...dispatch,state:'awaiting_claim'});
    const claimed=await bridge.call('arc_claim_dispatch',{dispatch_id:dispatch.dispatch_id});
    assert.match(claimed.instructions,/均为可选资料/);assert.match(claimed.instructions,/无需时不调用/);
    assert.doesNotMatch(claimed.instructions,/先调用 arc_save_engineering_entry/);
    const read=()=>bridge.call('arc_engineering_context',{workspace_path:source,task_id:task.task_id,view:'strict'});
    assert.deepEqual((await read()).entries,[],'submission and claim must not create documents');
-   const step={step_id:'small',title:'Scoped check',change:'Check the requested behavior',status:'completed',progress:'Protocol check only',criteria:[{criterion_id:'scope',text:'No generated documents',evidence_ids:[]}],evidence_ids:[],unresolved:[]};
-   const updated=await bridge.call('arc_update_development',{task_id:task.task_id,expected_version:claimed.task.version,submission_key:key+'-step',steps:[step]});
+   const updated=await bridge.call('arc_update_development',{task_id:task.task_id,expected_version:claimed.task.version,submission_key:key+'-step',steps:[{...step,status:'completed',progress:'Protocol check only'}]});
    if(category)await bridge.call('arc_save_engineering_entry',{workspace_path:source,task_id:task.task_id,category,key:'Return contract',text:'Keep the exported value as a number; do not change its consumers.',expected_version:0,submission_key:key+'-entry'});
    const finished=await bridge.call('arc_finish_development',{task_id:task.task_id,expected_version:updated.version,submission_key:key+'-finish',status:'completed',summary:'Protocol regression only; no model or code execution.',verification:[]});
-   assert.equal(finished.status,'completed');assert.equal(finished.verification_status,'not_run');
+   assert.equal(finished.status,'completed');assert.equal(finished.verification_status,'not_run');await bridge.dispatch.pump();
    assert.deepEqual((await read()).entries.map((e:any)=>e.category),category?[category]:[],'completion must not fill missing document categories');
   }
  }finally{await bridge.close();await service.shutdown();service.store.close();}
@@ -130,6 +137,7 @@ test('ARC requirement analysis waits for reviewed scope, keeps one task and crea
   const task=await bridge.queueDevelopment({project_id:project.project_id,goal:'Change value after review',phase:'analysis',submission_key:'analysis'});
   assert.equal(task.workflow,'analysis');assert.deepEqual(task.scope,[]);
   assert.equal((await bridge.queueDevelopment({project_id:project.project_id,goal:'retry',phase:'analysis',submission_key:'analysis'})).task_id,task.task_id);
+  await assert.rejects(bridge.queueDevelopment({project_id:project.project_id,goal:'new execution',phase:'execution',scope:['a.ts'],submission_key:'unreviewed'}),/审阅/);
   const dispatch=bridge.dispatch.items(project.project_id).at(-1)!;
   // Only the protocol delivery state is simulated here; real UI/CLI acceptance is separate.
   service.store.put('external_dispatch',dispatch.dispatch_id,{...dispatch,state:'awaiting_claim'});
@@ -138,19 +146,52 @@ test('ARC requirement analysis waits for reviewed scope, keeps one task and crea
   await assert.rejects(bridge.queueDevelopment({project_id:project.project_id,task_id:task.task_id,goal:'premature',phase:'execution',scope:['a.ts'],submission_key:'premature'}));
   await assert.rejects(bridge.call('arc_update_development',{task_id:task.task_id,expected_version:claim.task.version,submission_key:'false-proof',verification:[{}]}),/只读分析/);
   const step={step_id:'change',title:'Change exported value',change:'Change only a.ts; keep the exported name.',status:'pending',progress:'Read a.ts; implementation waits for approval.',criteria:[{criterion_id:'value',text:'Export value is 2.',evidence_ids:[]}],evidence_ids:[],unresolved:[]};
-  const ready=await bridge.call('arc_finish_development',{task_id:task.task_id,expected_version:claim.task.version,submission_key:'analysis-finish',status:'completed',summary:'Read the source and found a single exported value.',proposed_scope:['a.ts'],steps:[step],verification:[]});
+  const design={behaviors:[{id:'value',behavior:'The exported value equals 2.',design:'Change the constant initializer and retain the exported name.',files:['a.ts'],step_ids:['change'],verification:'Import value and assert it equals 2.'}]};
+  const finish={task_id:task.task_id,expected_version:claim.task.version,submission_key:'analysis-finish',status:'completed',summary:'Read the source and found a single exported value.',proposed_scope:['a.ts'],steps:[step],verification:[]};
+  await assert.rejects(bridge.call('arc_finish_development',finish),/需求包/);
+  await assert.rejects(bridge.call('arc_finish_development',{...finish,requirement_package:{behaviors:[{...design.behaviors[0],step_ids:['absent']}]}}),/步骤/);
+  const ready=await bridge.call('arc_finish_development',{...finish,requirement_package:design});
   assert.equal(ready.workflow,'ready');assert.equal(ready.status,'pending');assert.equal(ready.verification_status,'not_run');assert.deepEqual(ready.proposed_scope,['a.ts']);assert.deepEqual(ready.scope,[]);
   assert.equal(await fs.readFile(path.join(source,'a.ts'),'utf8'),'export const value=1;\n');
-  await bridge.dispatch.pump();assert.equal(bridge.dispatch.items(project.project_id).at(-1)!.state,'completed');
+  assert.equal(bridge.dispatch.items(project.project_id).at(-1)!.state,'completed','review can be approved immediately after the finish receipt');
   await assert.rejects(bridge.queueDevelopment({project_id:project.project_id,task_id:task.task_id,expected_version:ready.version-1,goal:'execute',phase:'execution',scope:['a.ts'],submission_key:'old-review'}),/VERSION_CONFLICT/);
+  await assert.rejects(bridge.call('arc_begin_development',{workspace_path:source,task_id:ready.task_id,goal:'Continue',scope:['a.ts'],submission_key:'continue-ready'}),/审阅/);
   const execute=await bridge.queueDevelopment({project_id:project.project_id,task_id:task.task_id,expected_version:ready.version,goal:'execute reviewed scope',phase:'execution',scope:['a.ts'],submission_key:'execute'});
-  assert.equal(execute.task_id,task.task_id);assert.equal(execute.workflow,'execution');
+  assert.equal(execute.task_id,task.task_id);assert.equal(execute.workflow,'execution');assert.deepEqual(execute.approval,{reviewed_version:ready.version,scope:['a.ts']});
   const next=bridge.dispatch.items(project.project_id).at(-1)!;service.store.put('external_dispatch',next.dispatch_id,{...next,state:'awaiting_claim'});
   const executing=await bridge.call('arc_claim_dispatch',{dispatch_id:next.dispatch_id});assert.deepEqual(executing.allowed_files,['a.ts']);
+  await assert.rejects(bridge.call('arc_update_development',{task_id:task.task_id,expected_version:executing.task.version,submission_key:'replace-design',requirement_package:design}),/已批准/);
   await fs.writeFile(path.join(source,'a.ts'),'export const value=2;\n');
-  const done=await bridge.call('arc_finish_development',{task_id:task.task_id,expected_version:executing.task.version,submission_key:'executed',status:'completed',summary:'Changed requested export; protocol regression only.',verification:[]});
+  const {code_state}=await bridge.call('arc_engineering_context',{workspace_path:source,task_id:task.task_id,refresh:true});
+  const evidence={evidence_id:'value-read',command:'Inspect exported value',cwd:source,outcome:'passed',exit_code:0,code_state,created_at:new Date().toISOString()};
+  assert.equal(await fs.readFile(path.join(source,'a.ts'),'utf8'),'export const value=2;\n');
+  await assert.rejects(bridge.call('arc_update_development',{task_id:task.task_id,expected_version:executing.task.version,submission_key:'unlinked-evidence',verification:[evidence]}),/验收条件/);
+  const done=await bridge.call('arc_finish_development',{task_id:task.task_id,expected_version:executing.task.version,submission_key:'executed',status:'completed',summary:'Changed requested export; protocol regression only.',verification:[{...evidence,step_id:'change',criterion_id:'value'}]});
+  assert.equal(done.verification[0].criterion_id,'value');assert.equal(done.verification[0].origin,'self_reported');
+  assert.deepEqual(done.approval,execute.approval);assert.deepEqual(service.engineering.history('task',task.task_id).find(item=>item.version===done.approval.reviewed_version).requirement_package,design);
   assert.equal(done.status,'completed');assert.equal(done.attempt_ids.length,2);assert.equal(done.changes[0].path,'a.ts');
   assert.deepEqual((await bridge.call('arc_engineering_context',{workspace_path:source,task_id:task.task_id,view:'strict'})).entries,[]);
+ }finally{await bridge.close();await service.shutdown();service.store.close();await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('upgrade retains legacy read-only analysis and retires unapproved pending execution without blocking revision',async()=>{
+ const {dir,service,project,bridge}=await setup();try{
+  const eng=service.engineering;
+  const old=await eng.createTask({project_id:project.project_id,goal:'Old request',submission_key:'old-execution'});
+  Object.assign(old,{workflow:'execution',scope:['a.ts']});service.store.put('engineering_task',old.task_id,old);
+  const legacy={dispatch_id:'old-queue',project_id:project.project_id,task_id:old.task_id,phase:'execution',scope:['a.ts'],state:'unknown',created_at:old.created_at};
+  service.store.put('external_dispatch',legacy.dispatch_id,legacy);
+  await bridge.enable(project.project_id);
+  await assert.rejects(bridge.call('arc_claim_dispatch',{dispatch_id:legacy.dispatch_id}),/原任务.*重新分析/);
+  assert.equal(eng.task(old.task_id).attempt_ids.length,0);
+  assert.equal(bridge.dispatch.items(project.project_id).find(i=>i.dispatch_id===legacy.dispatch_id)?.state,'cancelled');
+  const revised=await bridge.queueDevelopment({project_id:project.project_id,task_id:old.task_id,goal:'Review before any changes.',phase:'analysis',expected_version:old.version,submission_key:'renew'});
+  assert.equal(revised.workflow,'analysis');assert.equal(revised.task_id,old.task_id);assert.deepEqual(revised.scope,[]);
+  const pending=bridge.dispatch.items(project.project_id).find(item=>item.submission_key==='renew')!;
+  delete pending.task_version;pending.state='awaiting_claim';service.store.put('external_dispatch',pending.dispatch_id,pending);
+  delete revised.analysis_channel;service.store.put('engineering_task',revised.task_id,revised);
+  const claim=await bridge.call('arc_claim_dispatch',{dispatch_id:pending.dispatch_id});
+  assert.deepEqual(claim.allowed_files,[]);assert.match(claim.instructions,/requirement_package/);assert.equal(claim.task.workflow,'analysis');
  }finally{await bridge.close();await service.shutdown();service.store.close();await fs.rm(dir,{recursive:true,force:true});}
 });
 

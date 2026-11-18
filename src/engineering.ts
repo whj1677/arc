@@ -90,11 +90,17 @@ export interface WalkthroughUpdate {
   previous_result_id:string; source_snapshot_id?:string; run_id?:string; result_id?:string;
   update_id?:string; error?:string; updated_at:string;
 }
+export interface RequirementPackage {
+  behaviors:{id:string;behavior:string;design:string;files:string[];step_ids:string[];verification:string}[];
+}
 export interface EngineeringTask {
   task_id:string; project_id:string; workspace_id:string; workspace_path:string;
   reading?:TaskReadingBinding; walkthrough?:WalkthroughUpdate;
   version:number; submission_key:string; goal:string; scope:string[];
   workflow?:'analysis'|'ready'|'execution'; proposed_scope?:string[];
+  requirement_package?:RequirementPackage;
+  approval?:{reviewed_version:number;scope:string[]};
+  analysis_channel?:'codex'|'kimi';
   status:'pending'|'running'|'blocked'|'completed'|'failed'|'cancelled'|'interrupted';
   baseline:CodeState; end_state?:CodeState; diff_baseline?:CodeState; context_version:number;
   summary:string; decisions:string[]; unresolved:string[]; changes:FileChange[];
@@ -122,7 +128,7 @@ export interface CreateEngineeringTask extends ContextRequest {
 }
 export interface UpdateEngineeringTask {
   task_id:string; expected_version:number; submission_key:string; summary?:string;
-  proposed_scope?:string[];
+  proposed_scope?:string[]; requirement_package?:RequirementPackage;
   decisions?:string[]; unresolved?:string[]; verification?:VerificationEvidence[]; steps?:DevelopmentStep[];
   status?:EngineeringTask['status']; attempt_id?:string;
 }

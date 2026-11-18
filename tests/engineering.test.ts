@@ -26,6 +26,35 @@ async function fixture(git=false) {
   return {directory,root,store,service,cleanup:async()=>{store.close();await fs.rm(directory,{recursive:true,force:true});}};
 }
 
+test('manual Kimi requirement revises one reviewed task, retaining past decisions and preventing stale approval',async()=>{
+  const f=await fixture(),arc=new ArcService(f.store.directory,path.resolve('.')),bridge=new ArcMcpBridge(arc,path.resolve('.'));
+  try{
+    await bridge.start();
+    const input={project_id:'p',goal:'Agree on calculator behavior',submission_key:'requirement'};
+    const initial=await bridge.beginManualRequirement(input);
+    assert.deepEqual(initial.scope,[]);assert.equal(initial.status,'pending');assert.equal(bridge.dispatch.items('p').length,0);
+    const host={configured_provider:'kimi'};
+    const start={workspace_path:f.root,task_id:initial.task_id,goal:initial.goal,submission_key:'read-only-handoff'};
+    const claim=await bridge.call('arc_begin_development',start,host);
+    assert.equal(claim.phase,'analysis');assert.deepEqual(claim.allowed_files,[]);assert.match(claim.instructions,/requirement_package/);
+    assert.equal((await bridge.call('arc_begin_development',start,host)).attempt_ids.length,1);
+    const behavior={id:'sum',behavior:'Add two numbers.',design:'Keep the exported sum signature.',files:['sum.js'],step_ids:['implement'],verification:'Assert sum(1,2) equals 3.'};
+    const ready=await bridge.call('arc_finish_development',{task_id:initial.task_id,expected_version:claim.version,submission_key:'review',status:'completed',summary:'The calculator exposes sum.',proposed_scope:['sum.js'],requirement_package:{behaviors:[behavior]},steps:[{step_id:'implement',title:'Update calculation',change:'Update sum.',progress:'Awaiting review.',status:'pending',criteria:[{criterion_id:'sum-value',text:'sum(1,2) equals 3',evidence_ids:[]}],evidence_ids:[],unresolved:[]}],decisions:['Preserve original export.'],unresolved:['Negative inputs require clarification.']},host);
+    assert.equal(ready.workflow,'ready');
+    const revision={...input,task_id:ready.task_id,expected_version:ready.version,goal:'Also support negative inputs.',submission_key:'revise'};
+    const results=await Promise.allSettled([bridge.beginManualRequirement(revision),bridge.beginManualRequirement({...revision,submission_key:'competing-revision'})]);
+    assert.equal(results.filter(item=>item.status==='fulfilled').length,1);
+    const rejected=results.find(item=>item.status==='rejected');assert.match(String(rejected?.reason),/VERSION_CONFLICT/);
+    const revised=arc.engineering.task(ready.task_id);
+    assert.equal(revised.workflow,'analysis');assert.equal(revised.requirement_package,undefined);assert.deepEqual(revised.steps,[]);assert.deepEqual(revised.decisions,[]);assert.deepEqual(revised.unresolved,[]);
+    assert.equal(revised.goal,initial.goal);assert.equal(revised.requests?.length,1);assert.equal(revised.requests?.[0].text,revision.goal);
+    await assert.rejects(bridge.call('arc_begin_development',start,host),/本轮修订/);
+    const previous=arc.engineering.history('task',ready.task_id).find(item=>item.version===ready.version);assert.deepEqual(previous.requirement_package.behaviors,[behavior]);assert.deepEqual(previous.decisions,['Preserve original export.']);
+    await assert.rejects(bridge.queueDevelopment({...revision,phase:'execution',scope:['sum.js'],submission_key:'late-approval'}),/VERSION_CONFLICT/);
+    assert.equal(bridge.dispatch.items('p').length,0);
+  }finally{await bridge.close();await arc.shutdown();arc.store.close();await f.cleanup();}
+});
+
 test('project materials keep one effective full revision through scans and restart, and execution context excludes other tasks',async()=>{
   const f=await fixture();let reopened:Store|undefined;
   try{

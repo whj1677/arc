@@ -116,3 +116,19 @@
 .plan-decision dialog::backdrop{background:#14291f70}
 .plan-decision dialog>header{display:flex;justify-content:space-between;align-items:center;gap:.8rem}
 .plan-decision dialog>header h3{margin:0}
+
+.plan-decision dialog{width:min(52rem,96vw);max-height:86vh;overflow:auto}
+.plan-decision dialog>header{position:sticky;top:0;padding:.45rem 0;background:var(--surface);z-index:1}
+.requirement-package{line-height:1.6;overflow-wrap:anywhere}
+.requirement-package h3,.requirement-package h4{margin:.9rem 0 .25rem}
+.requirement-package p{margin:.25rem 0;white-space:pre-wrap}
+.requirement-package ul{padding-left:1.35rem;margin:.3rem 0}
+.requirement-package code{white-space:pre-wrap;overflow-wrap:anywhere}
+.requirement-behavior{margin:.6rem 0;padding:.7rem .9rem;border:1px solid var(--border);border-radius:.45rem}
+.requirement-behavior dl{display:grid;grid-template-columns:max-content 1fr;gap:.3rem .7rem}
+.requirement-behavior dt{color:var(--ink);font-weight:600}.requirement-behavior dd{margin:0;min-width:0}
+.requirement-behavior dd code{display:block}
+.requirement-step{border-left:2px solid var(--border);padding-left:.75rem;margin:.6rem 0}
+.saved-requirement-package{padding:.5rem .9rem;background:var(--surface);border:1px solid var(--border);border-radius:.45rem;margin-bottom:.6rem}
+
+.manual-requirement-id{display:flex;align-items:center;flex-wrap:wrap;gap:.5rem 1rem;margin:.5rem 0;font-size:.85rem}.manual-requirement-id label{display:flex;align-items:center;gap:.45rem;margin:0}.manual-requirement-id input{width:min(43ch,70vw);font-family:monospace}

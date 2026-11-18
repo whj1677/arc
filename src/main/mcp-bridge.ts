@@ -24,7 +24,9 @@ const property={type:'string'};
 const strings={type:'array',items:property};
 const stepSchema={type:'object',additionalProperties:false,required:['step_id','title','change','status','progress','criteria','evidence_ids','unresolved'],properties:{step_id:property,title:property,change:property,status:{type:'string',enum:['pending','in_progress','completed','blocked','failed','superseded']},progress:property,criteria:{type:'array',minItems:1,maxItems:20,items:{type:'object',additionalProperties:false,required:['criterion_id','text','evidence_ids'],properties:{criterion_id:property,text:property,evidence_ids:strings}}},evidence_ids:strings,unresolved:strings}};
 const tool=(name:string,description:string,properties:any={},required:string[]=[],read=true)=>({name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},annotations:{readOnlyHint:read,destructiveHint:false,idempotentHint:read,openWorldHint:false}});
-const developmentFields={proposed_scope:strings,task_id:property,expected_version:{type:'integer',minimum:0},submission_key:property,summary:property,decisions:{type:'array',items:property},unresolved:{type:'array',items:property},verification:{type:'array',items:{type:'object'}},steps:{type:'array',maxItems:40,items:stepSchema},attempt_id:property};
+const requirementPackageSchema={type:'object',additionalProperties:false,required:['behaviors'],properties:{behaviors:{type:'array',minItems:1,maxItems:100,items:{type:'object',additionalProperties:false,required:['id','behavior','design','files','step_ids','verification'],properties:{id:property,behavior:property,design:property,files:strings,step_ids:strings,verification:property}}}}};
+const requirementAnalysisInstructions='本次仅做只读需求分析，不修改工程或运行构建测试。按 next_offset 读取有关工程与任务上下文，truncated 条目使用 entry_id 取得全文，再核对当前绑定工作区的有关源码。明确原始需求及补充，核对工程依据，在原任务保存 summary、proposed_scope、steps（含验收 criteria）和 requirement_package.behaviors。每项须含唯一 id、可观察 behavior、实现 design、对应的 files、step_ids 和可实际执行的 verification。步骤和建议文件均须对应行为。decisions 记录取舍，unresolved 记录未确定项。完成分析后回填 status=completed 并停止，等待用户在 ARC 审阅固定版本、确认本次写入范围。';
+const developmentFields={requirement_package:requirementPackageSchema,proposed_scope:strings,task_id:property,expected_version:{type:'integer',minimum:0},submission_key:property,summary:property,decisions:{type:'array',items:property},unresolved:{type:'array',items:property},verification:{type:'array',items:{type:'object'}},steps:{type:'array',maxItems:40,items:stepSchema},attempt_id:property};
 export const bridgeTools=[
   tool('arc_claim_dispatch','领取 ARC 主动发送的持久任务。重试必须使用同一个派发 ID。返回固定分析合同或开发任务，按原任务继续并回填。',{dispatch_id:property},['dispatch_id'],false),
   tool('arc_save_engineering_entry','保存当前授权工作区的工程概述、构建、规则、问题、模块、接口、决策、技术、方案、架构、设计或验证计划正文；不代表开发或验证完成，不强制填写全部栏目。新建 expected_version=0，编辑先读取条目版本；保留稳定 submission_key 防重。来源固定 agent，无来源为待复核。',{task_id:property,project_id:property,workspace_path:property,entry_id:property,expected_version:{type:'integer',minimum:0},submission_key:property,category:{type:'string',enum:engineeringCategories},key:property,text:property,status:{type:'string',enum:['current','needs_review']},sources:{type:'array',items:{type:'object'}}},['workspace_path','expected_version','submission_key','category','key','text'],false),
@@ -56,6 +58,7 @@ export class ArcMcpBridge {
   constructor(readonly service:ArcService,readonly resources:string,externalExecution=false){
     this.connectionFile=path.join(service.directory,'mcp','connection.json');
     this.dispatch=new ExternalDispatch(service.store,()=>service.changed());
+    this.reconcileLegacyDispatches();
     if(externalExecution)service.dispatchRun=run=>{
       run.origin='mcp';run.status='waiting_agent';run.mcp_connection_id=this.connectionId;
       delete run.overview_format;
@@ -64,24 +67,52 @@ export class ArcMcpBridge {
       service.event(run.binding.run_id,{type:'local.stage',stage:'waiting_agent',message:'已保存到外部 Codex 派发队列，等待执行器与领取确认。'});
     };
   }
-  async queueDevelopment(args:any){
+  private reconcileLegacyDispatches(projectId?:string){
+    for(const item of this.dispatch.items(projectId)){
+      if(!item.task_id||item.task_version!==undefined||item.attempt_id||!['queued','sending','awaiting_claim','running','unknown','blocked'].includes(item.state))continue;
+      const task=this.service.engineering.task(item.task_id);
+      if(item.phase==='analysis'&&task.workflow==='analysis'&&task.status==='pending'&&!task.analysis_channel&&!item.scope?.length&&!item.revoked){
+        item.task_version=task.version;
+      }else if(!item.claimed_at||!task.attempt_ids.some(id=>{
+        const attempt=this.service.store.maybe<import('../engineering').DevelopmentAttempt>('development_attempt',id);
+        return attempt&&['starting','running'].includes(attempt.status);
+      })){
+        // There is no live attempt to stop; retire only the obsolete queue record.
+        item.state='cancelled';item.revoked=true;item.error='旧派发缺少已审阅的需求版本。请在原任务补充或修订需求，重新分析后确认。';
+      }else continue; // The user can reconcile a previously claimed, unconfirmed external session.
+      this.service.store.put('external_dispatch',item.dispatch_id,item);this.service.changed();
+    }
+  }
+  queueDevelopment(args:any){return this.submitRequirement(args,'codex');}
+  beginManualRequirement(args:any){return this.submitRequirement({...args,phase:'analysis'},'kimi');}
+  private async submitRequirement(args:any,channel:'codex'|'kimi'){
     const workspace=await this.service.engineering.connect(args.project_id);
-    const prior=this.dispatch.items(args.project_id).find(item=>item.submission_key===args.submission_key);
-    if(prior?.task_id)return this.service.engineering.task(prior.task_id);
-    this.service.engineering.checkWorkspaceAvailable(workspace);
-    if(this.dispatch.items(args.project_id).some(item=>['queued','sending','awaiting_claim','running','unknown'].includes(item.state)))throw Error('已有派发未结束，请先核对原任务状态');
-    const phase=args.phase??'execution';if(!['analysis','execution'].includes(phase))throw Error('开发阶段无效');
-    const existing=args.task_id?this.service.engineering.task(args.task_id):undefined;
-    if(existing&&args.expected_version!==undefined&&existing.version!==args.expected_version)throw Error('VERSION_CONFLICT：任务已更新，请重新核对范围');
-    if(phase==='execution'&&existing?.workflow==='analysis')throw Error('请先完成只读分析并核对方案');
+    this.reconcileLegacyDispatches(workspace.project_id);
+    const phase=args.phase??'analysis';
+    if(phase!=='analysis'&&phase!=='execution')throw Error('开发阶段无效');
+    if(phase==='execution'&&!args.task_id)throw Error('请先提交并审阅需求包');
     const files=phase==='analysis'?[]:await resolveDevelopmentScope(workspace.root_path,args.scope);
     const scope=files.map(file=>path.relative(workspace.root_path,file).split(path.sep).join('/'));
     await this.enable(args.project_id,false);
-    const created=await this.service.engineering.createTask({...args,scope});
-    const task=this.service.engineering.prepareWorkflow(created.task_id,phase,scope);
-    this.dispatch.enqueue(task.project_id,{task_id:task.task_id,submission_key:args.submission_key,request:args.goal,scope,phase});return task;
+    return this.service.engineering.createTask({...args,scope},{
+      phase,expected_version:args.expected_version,channel,
+      checkAvailable:()=>{
+        this.service.engineering.checkWorkspaceAvailable(workspace);
+        if(this.dispatch.items(args.project_id).some(item=>['queued','sending','awaiting_claim','running','unknown'].includes(item.state)))throw Error('已有派发未结束，请先核对原任务状态');
+      },
+      onSaved:task=>{
+        if(channel==='kimi')return;
+        const target={task_id:task.task_id,submission_key:args.submission_key,request:args.goal,scope,phase,task_version:task.version,reviewed_version:task.approval?.reviewed_version};
+        this.dispatch.enqueue(task.project_id,target);
+      },
+    });
   }
-
+  private beginRequirementAttempt(task:EngineeringTask,provider:'codex'|'kimi',writeScope:string[],model?:string){
+    if(task.status!=='pending')throw Error('此需求阶段尚未排队或已领取');
+    const attempt=this.service.engineering.startAttempt(task.task_id,{provider_id:provider,model:model?`宿主自报：${model.slice(0,100)}`:'宿主未上报模型',origin:'agent',write_scope:writeScope});
+    this.service.engineering.updateAttempt(attempt.attempt_id,{status:'running'});
+    return this.service.engineering.task(task.task_id);
+  }
   cancelDispatch(dispatchId:string){
     const item=this.dispatch.cancel(dispatchId);
     if(item.task_id){const task=this.service.engineering.task(item.task_id);this.service.engineering.updateTask({task_id:task.task_id,expected_version:task.version,submission_key:dispatchId+':revoke',status:'cancelled',summary:item.error});}
@@ -170,16 +201,27 @@ export class ArcMcpBridge {
     if(this.closed)throw Error('Arc 正在关闭，请重新打开后建立新任务');
     if(!bridgeTools.some(t=>t.name===name))throw Error('未知 Arc 工具');
     if(name==='arc_claim_dispatch'){
-      const candidate=this.service.store.get<any>('external_dispatch',string(args.dispatch_id,100));
-      this.authorizeDevelopment(candidate.project_id);
+      const dispatchId=string(args.dispatch_id,100);
+      const original=this.service.store.get<any>('external_dispatch',dispatchId);
+      this.authorizeDevelopment(original.project_id);
+      this.reconcileLegacyDispatches(original.project_id);
+      const candidate=this.service.store.get<any>('external_dispatch',dispatchId);
+      if(candidate.revoked)throw Error(candidate.error||'此派发已撤销');
       if(candidate.run_id&&!['waiting_agent','running','unknown'].includes(this.service.store.get<Run>('run',candidate.run_id).status))throw Error('分析已结束或已撤销');
-      const item=this.dispatch.claim(candidate.dispatch_id);
-      if(item.run_id)return this.call('arc_begin_analysis',{request_id:item.dispatch_id,dispatch_run_id:item.run_id},{...client,configured_provider:'codex'});
-      const task=this.service.engineering.task(item.task_id!);
-      const started=await this.call('arc_begin_development',{task_id:task.task_id,workspace_path:task.workspace_path,goal:item.request||task.goal,scope:item.scope||task.scope,submission_key:item.dispatch_id},{...client,configured_provider:'codex',dispatch_phase:item.phase});
-      if(started.attempt_ids?.at(-1))this.dispatch.started(item.dispatch_id,started.attempt_ids.at(-1));
-      if(item.phase==='analysis')return {phase:'analysis',request:item.request||task.goal,allowed_files:[],task:started,context:await this.service.engineering.context({project_id:task.project_id,task_id:task.task_id,view:'execution'}),instructions:'本次仅做只读需求分析，不修改工程文件，不运行会写入产物的构建或测试，不提交推送。先阅读工程级有效资料与本任务资料，按 next_offset 翻页，truncated 条目用 entry_id 读全文，再只读追踪相关源码和已有测试。工程正文/用户约束与源码事实分开，旧验证不是当前证据。用 arc_update_development 保存有实际内容的 summary、必要 steps（含 title/change/status/progress/criteria/evidence_ids/unresolved）和 proposed_scope（建议的工程相对文件路径，建议不授予写权限），说明边界、方案与验收条件。独立方案/设计/验证计划仅确有需要时保存到当前 task_id，禁止整套空模板。分析完成用 arc_finish_development status=completed 回填同一任务，verification 留空；这只代表方案可审阅，ARC 将等待用户确认范围后另行派发执行，本会话必须在此停止。'};
-      return {step_example:{step_id:'implement',title:'修改并验证',change:'说明本次行为变化',status:'in_progress',progress:'准备核对本步骤涉及的源码',criteria:[{criterion_id:'behavior',text:'描述应验证的行为',evidence_ids:[]}],evidence_ids:[],unresolved:[]},request:item.request||task.goal,allowed_files:item.scope||task.scope,task:started,context:await this.service.engineering.context({project_id:task.project_id,task_id:task.task_id,view:'execution'}),instructions:'先阅读 context 中工程级有效资料与当前任务资料；按 next_offset 继续调用 arc_engineering_context（相同 workspace_path/task_id），直到读完相关页；truncated 条目必须以 entry_id 读取全文。工程规则/正文不是源码事实，历史验证不代表当前通过。原始来源与更新建议仅供核对，不取代当前正文。本次仅执行返回的 request；任务中的其他 requests 是历史或后续排队要求，不能提前执行。只修改 allowed_files，遵循原生 Codex 权限。修改前调用 arc_update_development 保存与实际复杂度相称的 steps（小改动可只有一步；每项必须含 title；格式参考 step_example），然后修改授权文件并做必要验证。方案（plan）、设计（design）和验证计划（verification_plan）均为可选资料：仅在用户要求或本任务确需独立记录时，调用 arc_save_engineering_entry 保存有实际内容的所需类别，并归属当前 task_id；无需时不调用，不为每个任务补齐整套文档、空模板或“无需设计”等占位条目。小改动可只保留任务步骤、结果与实际验证证据；验证计划不等于实际执行证据。最后用 arc_finish_development 回填同一个任务，保留公开进展和未验证项。'};
+      if(candidate.run_id){
+        const item=this.dispatch.claim(candidate.dispatch_id);
+        return this.call('arc_begin_analysis',{request_id:item.dispatch_id,dispatch_run_id:item.run_id},{...client,configured_provider:'codex'});
+      }
+      const item=candidate,task=this.service.engineering.task(item.task_id);
+      if(task.project_id!==item.project_id||!item.phase||task.workflow!==item.phase||item.phase==='execution'&&(!task.approval||task.approval.reviewed_version!==item.reviewed_version||JSON.stringify(task.approval.scope)!==JSON.stringify(item.scope)))throw Error('派发与当前批准的版本或文件范围不一致，请回到原任务核对');
+      if(!item.attempt_id&&task.version!==item.task_version)throw Error('VERSION_CONFLICT：排队后任务已更新，请重新审阅');
+      if(item.attempt_id&&(item.attempt_id!==task.attempt_ids.at(-1)||task.status!=='running'))throw Error('此派发的执行已结束或已被替代');
+      this.dispatch.claim(item.dispatch_id);
+      const started=item.attempt_id?task:this.beginRequirementAttempt(task,'codex',item.scope??[],client.model);
+      if(!item.attempt_id)this.dispatch.started(item.dispatch_id,started.attempt_ids.at(-1)!);
+      await this.rememberWorkspace(started);
+      if(item.phase==='analysis')return {phase:'analysis',request:item.request||task.goal,allowed_files:[],task:started,context:await this.service.engineering.context({project_id:task.project_id,task_id:task.task_id,view:'execution'}),instructions:requirementAnalysisInstructions};
+      return {step_example:{step_id:'implement',title:'修改并验证',change:'说明本次行为变化',status:'in_progress',progress:'准备核对本步骤涉及的源码',criteria:[{criterion_id:'behavior',text:'描述应验证的行为',evidence_ids:[]}],evidence_ids:[],unresolved:[]},request:item.request||task.goal,allowed_files:item.scope||task.scope,task:started,context:await this.service.engineering.context({project_id:task.project_id,task_id:task.task_id,view:'execution'}),instructions:'先阅读 context 中工程级有效资料与当前任务资料；按 next_offset 继续调用 arc_engineering_context（相同 workspace_path/task_id），直到读完相关页；truncated 条目必须以 entry_id 读取全文。工程规则/正文不是源码事实，历史验证不代表当前通过。原始来源与更新建议仅供核对，不取代当前正文。本次仅执行返回的 request；任务中的其他 requests 是历史或后续排队要求，不能提前执行。只修改 allowed_files，遵循原生 Codex 权限。修改前调用 arc_update_development 保存与实际复杂度相称的 steps（小改动可只有一步；每项必须含 title；格式参考 step_example），然后修改授权文件并做必要验证。实施按批准版需求包的行为、步骤与验收条件推进；验证记录用 step_id 和 criterion_id 关联，未执行的如实标记。方案（plan）、设计（design）和验证计划（verification_plan）均为可选资料：仅在用户要求或本任务确需独立记录时，调用 arc_save_engineering_entry 保存有实际内容的所需类别，并归属当前 task_id；无需时不调用，不为每个任务补齐整套文档、空模板或“无需设计”等占位条目。小改动可只保留任务步骤、结果与实际验证证据；验证计划不等于实际执行证据。最后用 arc_finish_development 回填同一个任务，保留公开进展和未验证项。'};
     }
     if(name==='arc_sync_development')return this.flushPending();
     if(name==='arc_save_engineering_entry'){
@@ -193,9 +235,20 @@ export class ArcMcpBridge {
       if(name==='arc_engineering_context')return context;
       const provider=client?.configured_provider||'codex';if(!['codex','dsh','workbuddy','kimi'].includes(provider))throw Error('MCP 宿主配置无效');
       const beginKey=`${workspace.workspace_id}:${string(args.submission_key,200)}`;
-      const prior=this.service.store.maybe<{task_id:string;provider:string}>('engineering_mcp_begin',beginKey);
-      if(prior){if(prior.provider!==provider||args.task_id&&args.task_id!==prior.task_id)throw Error('开发提交标识已由其他任务或宿主使用');return this.rememberWorkspace(this.service.engineering.task(prior.task_id));}
+      const prior=this.service.store.maybe<{task_id:string;provider:string;attempt_id?:string}>('engineering_mcp_begin',beginKey);
+      if(prior&&(prior.provider!==provider||args.task_id&&args.task_id!==prior.task_id))throw Error('开发提交标识已由其他任务或宿主使用');
       const existingTask=args.task_id?this.service.engineering.task(string(args.task_id,100)):undefined;
+      if(existingTask?.workflow){
+        if(existingTask.workspace_id!==workspace.workspace_id)throw Error('任务属于另一个工作区');
+        if(existingTask.workflow!=='analysis'||existingTask.analysis_channel!=='kimi'||provider!=='kimi')throw Error('请通过 ARC 审阅和派发，在对应阶段领取原任务');
+        if(args.scope?.length)throw Error('手动需求分析只允许空写入范围');
+        const previous=existingTask.attempt_ids.at(-1),attempt=previous&&this.service.store.maybe<any>('development_attempt',previous);
+        if(prior&&(prior.attempt_id!==previous||existingTask.status!=='running'))throw Error('该提交对应的需求分析已结束，请领取本轮修订');
+        const task=existingTask.status==='running'&&attempt?.provider_id==='kimi'&&attempt.write_scope?.length===0?existingTask:this.beginRequirementAttempt(existingTask,'kimi',[],args.model);
+        this.service.store.put('engineering_mcp_begin',beginKey,{task_id:task.task_id,provider,attempt_id:task.attempt_ids.at(-1)});
+        return {...await this.rememberWorkspace(task),phase:'analysis',allowed_files:[],instructions:requirementAnalysisInstructions};
+      }
+      if(prior)return this.rememberWorkspace(this.service.engineering.task(prior.task_id));
       const knownRequest=existingTask?.submission_key===args.submission_key||existingTask?.requests?.some(request=>request.submission_key===args.submission_key);
       if(existingTask&&existingTask.workspace_id!==workspace.workspace_id)throw Error('任务属于另一个工作区');
       const activeId=existingTask?.attempt_ids.at(-1),active=activeId?this.service.store.maybe<any>('development_attempt',activeId):undefined;
@@ -209,8 +262,7 @@ export class ArcMcpBridge {
       if(!args.task_id&&task.attempt_ids.length&&['completed','failed','cancelled','blocked','interrupted'].includes(task.status))return this.rememberWorkspace(task);
       if(reconnect)this.service.engineering.updateAttempt(active.attempt_id,{connection_status:'connected',error:undefined});
       else {
-        if(task.workflow&&client.dispatch_phase!=='analysis')this.service.engineering.prepareWorkflow(task.task_id,'execution',args.scope??task.scope);
-        const next=this.service.engineering.startAttempt(task.task_id,{provider_id:provider,model:typeof args.model==='string'?`宿主自报：${args.model.slice(0,100)}`:'宿主未上报模型',origin:'agent',write_scope:client.dispatch_phase==='analysis'?[]:args.scope??task.scope});
+        const next=this.service.engineering.startAttempt(task.task_id,{provider_id:provider,model:typeof args.model==='string'?`宿主自报：${args.model.slice(0,100)}`:'宿主未上报模型',origin:'agent',write_scope:args.scope??task.scope});
         this.service.engineering.updateAttempt(next.attempt_id,{status:'running'});
       }
       this.service.store.put('engineering_mcp_begin',beginKey,{task_id:task.task_id,provider});
@@ -227,16 +279,26 @@ export class ArcMcpBridge {
       this.authorizeDevelopment(task.project_id);
       if(name==='arc_development_task')return this.service.engineering.currentTask(task.task_id);
       const lastDispatch=this.dispatch.items(task.project_id).filter(item=>item.task_id===task.task_id).at(-1);
-      if(lastDispatch?.revoked&&(!lastDispatch.attempt_id||lastDispatch.attempt_id===task.attempt_ids.at(-1)))throw Error('此派发已撤销，停止操作；迟到结果不能恢复任务');
+      if((task.workflow!=='analysis'||task.analysis_channel!=='kimi')&&lastDispatch?.revoked&&(!lastDispatch.attempt_id||lastDispatch.attempt_id===task.attempt_ids.at(-1)))throw Error('此派发已撤销，停止操作；迟到结果不能恢复任务');
       if(task.workflow==='analysis'&&args.verification?.length)throw Error('只读分析不接收实际执行验证；执行阶段再提交证据');
       const runningId=task.attempt_ids.at(-1),running=runningId?this.service.store.maybe<any>('development_attempt',runningId):undefined;
       if(running?.origin==='arc'&&['starting','running'].includes(running.status))throw Error('此任务正在 ARC 内执行，不能由外部会话同时回填');
-      const input={proposed_scope:args.proposed_scope,task_id:task.task_id,expected_version:args.expected_version,submission_key:args.submission_key,summary:args.summary,decisions:args.decisions,unresolved:args.unresolved,attempt_id:args.attempt_id,steps:args.steps,verification:args.verification?.map((entry:any)=>({...entry,origin:'self_reported'}))};
+      const input={requirement_package:args.requirement_package,proposed_scope:args.proposed_scope,task_id:task.task_id,expected_version:args.expected_version,submission_key:args.submission_key,summary:args.summary,decisions:args.decisions,unresolved:args.unresolved,attempt_id:args.attempt_id,steps:args.steps,verification:args.verification?.map((entry:any)=>({...entry,origin:'self_reported'}))};
       if(name==='arc_update_development')return this.service.engineering.updateTask(input);
       if(!['completed','failed','blocked','cancelled'].includes(args.status))throw Error('开发结果状态无效');
       const saved=await this.service.engineering.finishTask({...input,status:args.status,completion_binding:completionBinding});
       const attemptId=saved.attempt_ids.at(-1),attempt=attemptId?this.service.store.maybe<any>('development_attempt',attemptId):undefined;
       if(attempt?.origin==='agent'&&['starting','running'].includes(attempt.status))this.service.engineering.updateAttempt(attemptId!,{status:saved.status==='completed'||saved.workflow==='ready'&&saved.status==='pending'?'completed':saved.status==='cancelled'?'cancelled':'failed',ended_at:now()});
+      if(lastDispatch&&attemptId&&lastDispatch.attempt_id===attemptId&&!lastDispatch.revoked){
+        const receipt=this.service.store.get<typeof lastDispatch>('external_dispatch',lastDispatch.dispatch_id);
+        if(!receipt.revoked&&['running','unknown'].includes(receipt.state)){
+          const finished=this.service.store.get<import('../engineering').DevelopmentAttempt>('development_attempt',attemptId);
+          if(['completed','failed','cancelled'].includes(finished.status)){
+            receipt.state=finished.status==='completed'?'completed':'blocked';receipt.error=finished.error;
+            this.service.store.put('external_dispatch',receipt.dispatch_id,receipt);this.service.changed();
+          }
+        }
+      }
       return saved;
     }
     const dispatched=args.dispatch_run_id?this.service.store.get<Run>('run',args.dispatch_run_id):undefined;
