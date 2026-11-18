@@ -52,15 +52,15 @@ export function CatalogFeatureReading({explanation,nodeId,currentSnapshot,source
     </button>);
   return <article className="catalog-reading" aria-label={functionActions?'首轮函数走读线索':'工程分析中的功能说明'}>
     <header><small>{result.binding.source_snapshot_id!==currentSnapshot?'历史工程分析':'工程分析'} · {functionActions?'首轮线索':reading?.steps.length?'首轮走读':'功能线索'}</small>
-      <h2>{functionActions?'从已有线索读函数':node.label}</h2>
-      <p>{functionActions?`以下是工程全貌中「${node.label}」的记录。深入分析可核对函数定义、调用位置与先后关系。`:node.description}</p>
+      <h2>{functionActions?'函数调用图尚未生成':node.label}</h2>
+      <p>{functionActions?`下方保留了工程全貌中「${node.label}」的首轮线索和源码依据。`:node.description}</p>
     </header>
     {functionActions}
     {reading?.entry&&<div className="catalog-reading-fact"><strong>触发入口</strong><span>{reading.entry}</span></div>}
     {!!reading?.steps.length&&<section><h3>{functionActions?'已记录的处理步骤':'处理过程'}</h3><ol className="catalog-reading-steps">{reading.steps.map((step,index)=>
       <li key={index}><p>{step.text}</p><div className="catalog-reading-refs">{references(step.evidence_ids)}</div></li>)}</ol></section>}
     {reading?.outcome&&<div className="catalog-reading-fact"><strong>处理结果</strong><span>{reading.outcome}</span></div>}
-    {reading?.boundary?<p className="catalog-reading-boundary"><strong>覆盖边界</strong> {reading.boundary}</p>:!reading?.steps.length&&<p className="catalog-reading-boundary">这份目录只保存了用途与发现依据。可通过「深入分析功能」补充业务流程和调用细节。</p>}
+    {reading?.boundary?<p className="catalog-reading-boundary"><strong>覆盖边界</strong> {reading.boundary}</p>:!reading?.steps.length&&<p className="catalog-reading-boundary">这份目录只保存了用途与发现依据。</p>}
     <section><h3>功能来源</h3><div className="catalog-reading-refs">{references(node.evidence_ids)}</div></section>
     {selected&&<section className="catalog-reading-source"><button onClick={()=>onSource('')}>收起源码</button><SourceExcerpt key={selected.evidence_id} evidence={selected}/></section>}
   </article>;

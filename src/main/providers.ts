@@ -113,7 +113,7 @@ export async function makePrompt(run:Run,snapshot:Snapshot,storage:string,annota
 工作区只包含所选 UTF-8 文本快照；所有未包含部分均为未知。分析范围和构建配置：${snapshot.build_config || '未指定，条件编译路径不得猜测'}。
 面向希望理解工程的用户组织结果：summary 先解释系统或功能做什么、怎样协作、成功与失败如何处理；节点 label 使用清楚的职责/动作短语，避免只写文件名或函数签名。description 用自然语言解释，变量、类型、函数签名和路径放在技术说明与 evidence 中。准确源码仍是依据；未找到的关系明确未知，不为画流程补造事实。
 ${run.question===overviewDiscoveryQuestion?'本轮将功能阅读条目放入 feature_catalog.readings，不生成完整函数调用图。'+catalogReadingInstructions:functionAnalysisInstructions}
-${featureDetail?'只展开当前功能。省略工程目录 feature_catalog 和系统架构 architecture。work 的两端必须是同一个函数；阶段描述放在阅读步骤里。reading_guide 的 roles.files 只引用 guide.files 已登记的路径，failure_ids 只引用 guide.steps 的步骤 ID。':architectureAnalysisInstructions}
+${featureDetail?'只展开当前功能。一次功能分析同时生成函数调用链和调用时间图：同一份 function_walkthroughs.steps 和函数间 edges 供两个视图使用。按触发入口拆分路径，顺序以真实调用点为准。注册回调与后续事件触发分开，传入回调参数不等于当场执行。优先提供少量完整且自洽的关键路径，定义、调用点和分支引用可复用；缺少依据的边界在 boundary 写清。省略工程目录 feature_catalog 和系统架构 architecture。work 的两端必须是同一个函数；阶段描述放在阅读步骤里。reading_guide 的 roles.files 只引用 guide.files 已登记的路径，failure_ids 只引用 guide.steps 的步骤 ID。':architectureAnalysisInstructions}
 execution_context 是执行路径/线程上下文，不等于组件职责已查证。kind=unknown 时 identity=null、status=unknown；组件职责的来源断言仍可保留在节点 claim_ids 中。source_supported 的执行上下文必须引用对应断言；不能为标注职责已知而捏造运行时任务身份。
 ${run.development_task_id?`这是开发结束后的同功能复核。任务目标和旧说明仅是待核对的历史意图，不是当前实现。必须沿本次快照的真实源码重新核对功能入口、关键条件、每个相关状态或数据的写入点与后续读取点、超时或失败路径和恢复条件；不能只读 diff，也不能只展示局部正确分支。检查通用入口、校验前处理或其他回调中是否存在使局部修复失效的写入；发现矛盾或证据缺口就写入 claims.limitations / gaps，不宣布规则保持不变。不同中断、周期任务、回调和队列入口保持独立，不串成同步调用链。`:''}
 工程问题：${run.question}

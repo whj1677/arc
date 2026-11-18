@@ -8,14 +8,25 @@ import {Diagram,shortLabel} from './ReadingDiagrams';
 
 const stepNames={entry:'入口',call:'调用',callback:'回调内调用',dispatch:'异步派发',return:'返回',work:'处理'};
 type FunctionChainMode='calls'|'time';
-export function FunctionChain({result,selected,select,zoom,search,pathId,onPath,evidence,mode:controlledMode,onModeChange}:{result:AnalysisResult;selected:string;select:(id:string)=>void;zoom:number;search:string;pathId:string;onPath:(id:string,nodeId:string)=>void;evidence:(e:SourceEvidence)=>void;mode?:FunctionChainMode;onModeChange?:(mode:FunctionChainMode)=>void}){
+export function FunctionChain({result,selected,select,zoom,search,pathId,onPath,evidence,mode:controlledMode,onModeChange,graphActions}:{result:AnalysisResult;selected:string;select:(id:string)=>void;zoom:number;search:string;pathId:string;onPath:(id:string,nodeId:string)=>void;evidence:(e:SourceEvidence)=>void;mode?:FunctionChainMode;onModeChange?:(mode:FunctionChainMode)=>void;graphActions?:React.ReactNode}){
   const [internalMode,setInternalMode]=useState<FunctionChainMode>('calls');
   const mode=controlledMode??internalMode;
   const changeMode=(next:FunctionChainMode)=>{if(controlledMode===undefined)setInternalMode(next);onModeChange?.(next);};
   const model=functionSequence(result,pathId),marker='call-'+useId().replace(/:/g,'');
   const paths=result.function_walkthroughs||[];
   if(pathId&&paths.length&&!paths.some(path=>path.id===pathId))return <section className="function-chain function-sequence-empty"><h2>原入口已不在这版结果中</h2><p>选择这版已记录的入口继续阅读，不自动混入其他路径。</p><nav className="function-entry-paths" aria-label="选择函数入口">{paths.map(p=><button key={p.id} onClick={()=>onPath(p.id,p.entry_node_id)}>{p.label}</button>)}</nav></section>;
-  if(!model)return <section className="function-chain function-sequence-empty"><h2>这版说明尚未确认入口与调用先后</h2><p>已有函数和明确调用关系仍可点选查看，不据此推断运行顺序。</p><FunctionCallMap result={result} pathId="" selected={selected} select={select} search={search} zoom={zoom} evidence={evidence}/></section>;
+  if(!model){
+    const ids=new Set(result.nodes.filter(node=>node.kind==='function').map(node=>node.node_id));
+    const links=result.edges.filter(edge=>['sync_call','execution_boundary'].includes(edge.kind)&&ids.has(edge.source_node_id)&&ids.has(edge.target_node_id));
+    const confirmed=links.filter(edge=>edge.status==='source_supported').length;
+    return <section className="function-chain function-sequence-empty">
+      <h2>{links.length?'调用时间图尚未生成':'函数调用图尚未生成'}</h2>
+      <p>{links.length?`已记录 ${links.length} 条函数关系，其中 ${confirmed} 条有源码支持。这版说明尚未确认完整调用顺序。`:
+        ids.size?'当前结果已记录函数，尚未确认函数之间的调用关系。':'这版结果尚未记录此范围内的函数入口和调用关系。'}</p>
+      {graphActions}
+      {ids.size>0&&<FunctionCallMap result={result} pathId="" selected={selected} select={select} search={search} zoom={zoom} evidence={evidence}/>}
+    </section>;
+  }
   const {path,participants}=model,width=Math.max(480,participants.length*200+70),height=154+path.steps.length*68;
   const x=(id:string|null)=>id===null?18:120+participants.findIndex(n=>n.node_id===id)*200;
   const query=search.trim().toLowerCase();

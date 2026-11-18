@@ -97,18 +97,21 @@ test('partial DSH function reading keeps callable steps and records the exact om
     {id:'first',kind:'entry',to_node_id:'a',from_node_id:null},
     {id:'unlinked',kind:'work',from_node_id:'a',to_node_id:'stage'},
     {id:'next',kind:'call',from_node_id:'a',to_node_id:'b'},
+    {id:'dynamic',kind:'dispatch',from_node_id:'a',to_node_id:'stage'},
   ];
   const result={coverage:{covered_scope:[],unresolved_scope:[]},nodes:[
     {node_id:'a',kind:'function'},{node_id:'b',kind:'function'},{node_id:'stage',kind:'stage'},
   ],function_walkthroughs:[{id:'path',label:'启动',boundary:'启动入口',steps}],
     architecture:{node_ids:['stage'],edge_ids:[]},feature_catalog:{groups:[{node_ids:['stage']}]},
     reading_guide:{roles:[{title:'启动',files:['known.c','unknown.c']}],files:[{path:'known.c'}],
-      steps:[{id:'init'}],paths:[{label:'初始化',failure_ids:['decision'],boundary:'已知入口'}]},
+      steps:[{id:'init'}],paths:[{label:'初始化',failure_ids:['decision'],boundary:'已知入口',lanes:[{label:'点击',step_ids:['init'],link_labels:['动态调用']}]}]},
   } as unknown as AnalysisResult;
   const raw=JSON.stringify(result);
   const partial=partialFunctionReading(result)!;
   assert.deepEqual(partial.result.function_walkthroughs[0].steps.map(s=>s.id),['first','next']);
-  assert.match(partial.result.function_walkthroughs[0].boundary,/第 2 步/);
+  assert.match(partial.result.function_walkthroughs[0].boundary,/第 2 步、第 4 步/);
+  assert.deepEqual(partial.result.reading_guide?.paths[0].lanes[0].link_labels,[]);
+  assert.match(partial.omissions.join(' '),/只有一个阅读步骤/);
   assert.deepEqual(partial.result.reading_guide?.roles[0].files,['known.c']);
   assert.match(partial.omissions.join(' '),/unknown.c/);
   assert.match(partial.result.reading_guide!.paths[0].boundary,/decision/);

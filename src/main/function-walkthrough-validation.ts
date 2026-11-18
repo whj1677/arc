@@ -30,7 +30,7 @@ export function partialFunctionReading(result:AnalysisResult){
   const kinds=new Map(result.nodes.map(node=>[node.node_id,node.kind]));
   const omissions:string[]=[];
   const paths=result.function_walkthroughs.map(path=>{
-    const skipped=path.steps.filter(step=>step.kind==='work'&&step.from_node_id!==null&&
+    const skipped=path.steps.filter(step=>(step.kind==='work'||step.kind==='dispatch')&&step.from_node_id!==null&&
       kinds.get(step.from_node_id)==='function'&&kinds.get(step.to_node_id)==='stage');
     if(!skipped.length)return path;
     const labels=skipped.map(step=>`第 ${path.steps.indexOf(step)+1} 步`).join('、');
@@ -52,10 +52,15 @@ export function partialFunctionReading(result:AnalysisResult){
     });
     const guidePaths=guide.paths.map(path=>{
       const missing=path.failure_ids.filter(id=>!steps.has(id));
-      if(!missing.length)return path;
+      const lanes=path.lanes.map(lane=>{
+        if(lane.step_ids.length!==1||!lane.link_labels.length)return lane;
+        omissions.push(`「${lane.label}」只有一个阅读步骤，已略去没有连线的标签。`);
+        return {...lane,link_labels:[]};
+      });
+      if(!missing.length)return {...path,lanes};
       const note=`「${path.label}」的停止分支尚未关联到阅读步骤（${missing.join('、')}）。`;
       omissions.push(note);
-      return {...path,failure_ids:path.failure_ids.filter(id=>steps.has(id)),boundary:path.boundary+' '+note};
+      return {...path,lanes,failure_ids:path.failure_ids.filter(id=>steps.has(id)),boundary:path.boundary+' '+note};
     });
     guide={...guide,roles,paths:guidePaths};
   }
