@@ -119,6 +119,35 @@
 
 .plan-decision dialog{width:min(52rem,96vw);max-height:86vh;overflow:auto}
 .plan-decision dialog>header{position:sticky;top:0;padding:.45rem 0;background:var(--surface);z-index:1}
+.plan-decision dialog>header h3 small{margin-left:.35rem;color:var(--muted);font-size:.85rem;font-weight:400}
+.plan-decision .engineering-approval{padding:0;margin:.65rem 0 0;border:0}
+.plan-decision .approval-overview{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);border:1px solid var(--border);border-radius:.6rem;overflow:hidden}
+.plan-decision .approval-overview>section{min-width:0;padding:.8rem 1rem;overflow-wrap:anywhere}
+.plan-decision .approval-overview>section:nth-child(2n){border-left:1px solid var(--border)}
+.plan-decision .approval-overview>section:nth-child(n+3){border-top:1px solid var(--border)}
+.plan-decision .approval-group-title{display:flex;align-items:baseline;justify-content:space-between;gap:.4rem;margin-bottom:.35rem}
+.plan-decision .approval-group-title span{font-size:.8rem;color:var(--muted);white-space:nowrap}
+.plan-decision .approval-preview[data-expanded=false]{max-height:5.15em;overflow:hidden}
+.plan-decision .approval-overview button.approval-expand{min-height:24px;margin:.25rem 0 0;padding:0 .15rem 0 0;border:0;background:transparent;color:var(--accent);font-size:.85rem;text-decoration:underline;text-underline-offset:.18em}
+.plan-decision .approval-overview h4{margin:0;color:var(--accent);font-size:.86rem}
+.plan-decision .approval-overview ol,.plan-decision .approval-overview ul{padding-inline-start:1.4rem;margin:0}
+.plan-decision .approval-overview li,.plan-decision .approval-overview p{margin:0;line-height:1.6;white-space:pre-wrap}
+.plan-decision .approval-overview li+li{margin-top:.35rem}
+.plan-decision .approval-overview .approval-file-list{list-style:none;padding:0}
+.plan-decision .approval-file-list code{color:var(--ink);font-size:.88rem}
+.plan-decision .approval-questions{background:#fff8ec}
+.plan-decision .approval-questions h4{color:var(--amber)}
+.plan-decision .approval-source{margin:.4rem 0;border-bottom:1px solid var(--border)}
+.plan-decision .approval-source>summary{padding:.6rem 0;font-weight:600}
+.plan-decision .approval-source[open]{padding-bottom:.75rem}
+@media(max-width:650px){
+  .plan-decision .approval-overview{grid-template-columns:minmax(0,1fr)}
+  .plan-decision .approval-preview[data-expanded=false]{max-height:3.55em}
+  .plan-decision .approval-overview>section{padding:.65rem .8rem}
+  .plan-decision .approval-overview>section:nth-child(2n){border-left:0}
+  .plan-decision .approval-overview>section+section{border-top:1px solid var(--border)}
+  .plan-decision .engineering-approval>.row{flex-wrap:wrap}
+}
 .requirement-package{line-height:1.6;overflow-wrap:anywhere}
 .requirement-package h3,.requirement-package h4{margin:.9rem 0 .25rem}
 .requirement-package p{margin:.25rem 0;white-space:pre-wrap}

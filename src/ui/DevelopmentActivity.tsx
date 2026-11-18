@@ -1,4 +1,4 @@
-import React,{useEffect,useRef,useState} from 'react';
+import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import type {DevelopmentAttempt,EngineeringTask} from '../engineering';
 import type {Dispatch} from '../main/external-dispatch';
 
@@ -94,6 +94,49 @@ export function SavedRequirementPackage({task}:{task:EngineeringTask}){
   </details>;
 }
 
+function ApprovalGroup({title,items,format='bullets',empty,attention=false}:{title:string;items:string[];format?:'bullets'|'numbered'|'files';empty?:string;attention?:boolean}){
+  const [expanded,setExpanded]=useState(false),[clipped,setClipped]=useState(false);
+  const preview=useRef<HTMLDivElement>(null);
+  useLayoutEffect(()=>{
+    const box=preview.current;
+    if(expanded||!box)return;
+    const measure=()=>setClipped(box.scrollHeight>box.clientHeight+1);
+    measure();
+    const observer=new ResizeObserver(measure);
+    observer.observe(box);
+    if(box.firstElementChild)observer.observe(box.firstElementChild);
+    return ()=>observer.disconnect();
+  },[expanded,items]);
+  const List=format==='numbered'?'ol':'ul';
+  const filenames=format==='files'?items.map(path=>path.split('/').at(-1)||path):[];
+  const distinctFiles=new Set(filenames).size===filenames.length;
+  const abbreviated=format==='files'&&distinctFiles&&items.some((path,index)=>path!==filenames[index]);
+  return <section className={attention?'approval-questions':''}>
+    <div className="approval-group-title"><h4>{title}</h4><span>{items.length} {format==='files'?'个文件':'项'}</span></div>
+    {items.length?<div ref={preview} className="approval-preview" data-expanded={expanded}>
+      <List className={format==='files'?'approval-file-list':undefined}>{items.map((item,index)=><li key={index}>{format==='files'?<code title={item}>{abbreviated&&!expanded?filenames[index]:item}</code>:item}</li>)}</List>
+    </div>:<p>{empty}</p>}
+    {(clipped||expanded||abbreviated)&&<button type="button" className="approval-expand" aria-label={expanded?'收起'+title:abbreviated?'查看全部'+title+'的完整路径':'查看全部'+title} aria-expanded={expanded} onClick={()=>setExpanded(!expanded)}>{expanded?'收起':abbreviated?'查看完整路径':'查看全部'}</button>}
+  </section>;
+}
+
+function ApprovalOverview({snapshot,scope}:{snapshot:EngineeringTask;scope:string[]}){
+  const pkg=snapshot.requirement_package;
+  if(!pkg)return <p>此版本没有正式需求包。</p>;
+  const stepQuestions=(snapshot.steps??[]).filter(step=>step.status!=='superseded').flatMap(step=>step.unresolved??[]);
+  const questions=[...new Set([...snapshot.unresolved,...stepQuestions].map(text=>text.trim()).filter(Boolean))];
+
+  return <>
+    <section aria-label="批准内容" className="approval-overview">
+      <ApprovalGroup title="行为变化" items={pkg.behaviors.map(item=>item.behavior)} format="numbered"/>
+      <ApprovalGroup title="建议修改文件" items={scope} format="files" empty="未列出建议修改文件。"/>
+      <ApprovalGroup title="验收方式" items={pkg.behaviors.map(item=>item.verification)} format="numbered"/>
+      <ApprovalGroup title="待确认项" items={questions} empty="需求包未列出待确认项。" attention={questions.length>0}/>
+    </section>
+    <details className="approval-source"><summary>查看完整需求包</summary><RequirementPackage task={snapshot}/></details>
+  </>;
+}
+
 export function PlanDecision({task,busy,error,onDecision}:{task:EngineeringTask;busy:boolean;error:string;onDecision:(snapshot:EngineeringTask,revision?:string)=>void}){
   const [snapshot,setSnapshot]=useState(task),[feedback,setFeedback]=useState('');
   const dialog=useRef<HTMLDialogElement>(null);
@@ -102,10 +145,11 @@ export function PlanDecision({task,busy,error,onDecision}:{task:EngineeringTask;
   const scope=snapshot.proposed_scope??snapshot.scope;
   const refresh=()=>{setSnapshot(task);setFeedback('');};
   return <div className="plan-decision"><button type="button" onClick={()=>{refresh();dialog.current?.showModal();}}>审阅待确认方案</button>
-    <dialog ref={dialog} aria-label="确认开发方案"><header><h3>确认开发方案</h3><button type="button" onClick={()=>dialog.current?.close()}>稍后处理</button></header>
-      <div className="engineering-approval"><RequirementPackage task={snapshot}/>
+    <dialog ref={dialog} aria-label="确认开发方案"><header><h3>确认开发方案 <small>v{snapshot.version}</small></h3><button type="button" onClick={()=>dialog.current?.close()}>稍后处理</button></header>
+      <div className="engineering-approval">
         {stale&&<div role="alert">任务已更新至 v{task.version}，当前展示 v{snapshot.version}。<button disabled={busy} onClick={refresh}>查看最新版本</button></div>}
         {error&&<p role="alert">{error}</p>}
+        <ApprovalOverview key={snapshot.version} snapshot={snapshot} scope={scope}/>
         {snapshot.requirement_package?<><label>修订意见<textarea aria-label="修订意见" placeholder="说明要补充的行为、验证方法或需要调整的文件范围" rows={2} value={feedback} onChange={event=>setFeedback(event.target.value)}/></label>
           <div className="row"><button disabled={busy||stale||!feedback.trim()} onClick={()=>onDecision(snapshot,feedback.trim())}>退回补充</button>
           <button className="primary" disabled={busy||stale||!scope.length} onClick={()=>onDecision(snapshot)}>按此方案执行</button></div></>:
