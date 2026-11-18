@@ -5,6 +5,8 @@ import {SourceExcerpt} from './SourceExcerpt';
 import {EngineeringSections,ContextBody,ContextText,ExternalExecutor,type EngineeringSection} from './EngineeringSections';
 import './engineering.css';
 
+import {componentReading,type savedBusinessPath} from './home-reading';
+
 const api=window.arc;
 const stateNames:Record<string,string>={pending:'待执行',starting:'准备执行',running:'执行中',blocked:'需要处理',completed:'执行结束',failed:'执行失败',cancelled:'已取消',interrupted:'上次执行中断',passed:'通过',partial:'部分完成',not_run:'未执行',stale:'代码已变化，需重新验证'};
 const stepStateNames:Record<string,string>={pending:'待开始',in_progress:'进行中',completed:'已完成',blocked:'受阻',failed:'失败',superseded:'已撤回 / 替换'};
@@ -68,7 +70,7 @@ function ContextFacts({context,reload}:{context:EngineeringContext;reload:()=>Pr
 }
 
 /** Content comes from the current analysis and materials; each region answers a different question. */
-export function EngineeringOverview({project,result,hasAnalysis,develop,onMaterials,onWalk,onArchitecture,onFiles,onTask,onAnalyze,analysisLabel,analysisBusy}:{project:Project;result?:AnalysisResult;hasAnalysis:boolean;develop:()=>void;onMaterials:()=>void;onWalk:()=>void;onArchitecture:(objectId?:string)=>void;onFiles:()=>void;onTask:(id:string)=>void;onAnalyze:()=>void;analysisLabel:string;analysisBusy:boolean}){
+export function EngineeringOverview({project,result,hasAnalysis,develop,onMaterials,onWalk,onArchitecture,onFiles,onTask,onAnalyze,analysisLabel,analysisBusy,businessPath,onBusinessStep,resumeLabel,onResume}:{businessPath:ReturnType<typeof savedBusinessPath>;onBusinessStep:(last:boolean,showSource?:boolean)=>void;resumeLabel:string;onResume:()=>void;project:Project;result?:AnalysisResult;hasAnalysis:boolean;develop:()=>void;onMaterials:()=>void;onWalk:()=>void;onArchitecture:(objectId?:string)=>void;onFiles:()=>void;onTask:(id:string)=>void;onAnalyze:()=>void;analysisLabel:string;analysisBusy:boolean}){
   const {context,error}=useContext(project.project_id);
   if(project.fictional)return null;
   const entries=context?.entries.filter(item=>item.status!=='superseded')??[];
@@ -78,36 +80,41 @@ export function EngineeringOverview({project,result,hasAnalysis,develop,onMateri
     const value=item.text.replace(/^#+\s*/gm,'').replace(/[`*_]/g,'').replace(/\s+/g,' ').trim();
     return value.slice(0,limit)+(item.truncated||value.length>limit?'…':'');
   };
-  const components=(result?.architecture?.node_ids??[]).flatMap(id=>result?.nodes.find(n=>n.node_id===id)??[]);
-  const byId=new Map(components.map(node=>[node.node_id,node]));
-  const relations=result?.edges.filter(edge=>result.architecture?.edge_ids.includes(edge.edge_id)&&byId.has(edge.source_node_id)&&byId.has(edge.target_node_id))??[];
-  const relation=relations.find(edge=>edge.status==='source_supported')??relations[0];
+  const focus=componentReading(result);
   const recent=context?.recent_tasks??[];
+  const review=recent.find(task=>task.verification_status==='stale'||task.verification_status==='failed');
   const current=recent.find(task=>task.status==='running'||task.status==='pending'||task.status==='blocked');
   const capability=result?.feature_catalog?.groups.flatMap(group=>group.node_ids).map(id=>result.nodes.find(node=>node.node_id===id)?.label).filter(Boolean);
-  function componentButton(node:AnalysisResult['nodes'][number]){
-    return <button className="home-component" key={node.node_id} onClick={()=>onArchitecture(node.node_id)}>
-      <strong>{node.label}</strong><span>{node.description}</span>
-      <small>{node.evidence_ids.length?node.evidence_ids.length+' 处来源依据':'查看组件职责'} →</small>
-    </button>;
-  }
   return <main className="project-home" aria-label="工程概览">
-    <header className="project-home-hero"><div><h1>{project.name}</h1>{entry('purpose')&&<p>{summary(entry('purpose'))}</p>}<code title={project.root_path}>{project.root_path}</code></div>
+    <header className="project-home-hero"><div><h1>{project.name}</h1>{(result?.summary.text||entry('purpose'))&&<p className="home-purpose">{result?.summary.text||summary(entry('purpose'))}</p>}<code title={project.root_path}>{project.root_path}</code></div>
       <div className="project-home-actions"><button className={hasAnalysis?'':'primary'} disabled={analysisBusy} onClick={onAnalyze}>{analysisLabel}</button><button onClick={develop}>提出新需求</button></div>
     </header>
     {error&&<p role="alert" className="warning">{error}</p>}
-    {current&&<button className="home-resume" onClick={()=>onTask(current.task_id)}><small>{stateNames[current.status]}</small><strong>{current.goal}</strong><span>查看任务 →</span></button>}
-    <div className="project-home-main">
+    <div className={resumeLabel?"project-home-main home-returning":"project-home-main"}>
       <section className="project-home-panel project-home-architecture">
-        <div className="project-home-heading"><div><h2>组件协作</h2><small>{components.length} 个组件 · {relations.length} 条关系</small></div><button onClick={()=>onArchitecture()}>查看系统架构 →</button></div>
-        {relation?<div className="home-relation">
-          {componentButton(byId.get(relation.source_node_id)!)}
-          <button className="home-connection" onClick={()=>onArchitecture(relation.edge_id)}><strong>{relation.label}</strong>{relation.status!=='source_supported'&&<small>待核对</small>}<span aria-hidden="true">⟶</span></button>
-          {componentButton(byId.get(relation.target_node_id)!)}
-        </div>:components.length?<div className="project-home-components">{components.slice(0,3).map(componentButton)}</div>:<p>完成工程全貌分析后，可在这里查看组件之间的调用关系与源码依据。</p>}
+        <div className="project-home-heading"><h2>从这里读起</h2><button onClick={()=>onArchitecture()}>查看系统架构 →</button></div>
+        {businessPath?<div className="home-guide">
+          <h3>{businessPath.path.label}</h3><p>{businessPath.path.intro}</p>
+          <dl><dt>从哪里开始</dt><dd>{businessPath.path.entry}</dd><dt>读到什么结果</dt><dd>{businessPath.last.outcome||'当前走读尚未说明结果'}</dd></dl>
+          <div className="home-guide-actions"><button className="primary" onClick={()=>onBusinessStep(false)}>从「{businessPath.first.title}」开始</button>
+          <button onClick={()=>onBusinessStep(false,true)}>核对起点源码</button>{businessPath.first.id!==businessPath.last.id&&<button onClick={()=>onBusinessStep(true)}>查看结果步骤</button>}</div>
+        </div>:focus?<div className="home-guide">
+          <h3>{focus.node.label}</h3><p>{focus.node.description}</p>
+          <dl><dt>接收什么</dt><dd>{focus.inputs.map(io=>io.name).join('、')||'当前分析尚未说明输入'}</dd>
+          <dt>产出什么</dt><dd>{focus.outputs.map(io=>io.name).join('、')||'当前分析尚未说明产出'}</dd></dl>
+          <button className="home-source" onClick={()=>onArchitecture(focus.node.node_id)}><span>{result?.binding.source_snapshot_id===project.snapshot_id?'核对源码':'核对历史版本源码'}</span><code>{focus.source.path} · L{focus.source.line_start}{focus.source.line_end!==focus.source.line_start?'–'+focus.source.line_end:''}</code></button>
+          {focus.edge&&focus.from&&focus.to&&<div className="home-guide-relation"><small>相关组件</small>
+            <button onClick={()=>onArchitecture(focus.from!.node_id)}>{focus.from.label}</button>
+            <button className="home-edge" onClick={()=>onArchitecture(focus.edge!.edge_id)}>{focus.edge.label} →</button>
+            <button onClick={()=>onArchitecture(focus.to!.node_id)}>{focus.to.label}</button></div>}
+        </div>:<p>{result?'这份分析还没有可定位到源码的阅读起点。可先浏览文件组织，或打开功能目录选一个问题。':'先浏览工程文件，或点击上方分析按钮生成可核对的阅读起点。'}</p>}
         <div className="home-reading-links"><button onClick={onWalk}>功能走读 →</button><button onClick={onFiles}>文件组织 →</button></div>
       </section>
-      <aside className="project-home-panel"><h2>最近开发</h2>{recent.length?<div className="home-task-list">{recent.slice(0,3).map(task=><button key={task.task_id} onClick={()=>onTask(task.task_id)}><strong>{task.goal}</strong><small>{stateNames[task.status]} · {stateNames[task.verification_status]}</small></button>)}</div>:<p className="muted">{context?'暂无开发记录。':'正在读取开发记录…'}</p>}</aside>
+      <aside className="project-home-panel"><h2>继续工作</h2>
+        {resumeLabel&&<button className="home-continue" onClick={onResume}><small>上次阅读</small><strong>{resumeLabel}</strong><span>继续阅读 →</span></button>}
+        {review&&<button className="home-continue review" onClick={()=>onTask(review.task_id)}><small>待复核任务 · {stateNames[review.verification_status]}</small><strong>{review.goal}</strong><span>查看任务 →</span></button>}
+        {current&&current!==review&&<button className="home-continue" onClick={()=>onTask(current.task_id)}><small>{stateNames[current.status]}</small><strong>{current.goal}</strong><span>查看任务 →</span></button>}
+        {recent.some(task=>task!==current&&task!==review)?<div className="home-task-list">{recent.filter(task=>task!==current&&task!==review).slice(0,3).map(task=><button key={task.task_id} onClick={()=>onTask(task.task_id)}><strong>{task.goal}</strong><small>{stateNames[task.status]} · {stateNames[task.verification_status]}</small></button>)}</div>:!current&&!review&&!resumeLabel&&<p className="muted">{context?'阅读组件或功能步骤后，可以从这里继续。':'正在读取开发记录…'}</p>}</aside>
     </div>
     <section className="project-home-section"><div className="project-home-heading"><h2>工程资料</h2><button onClick={onMaterials}>查看全部工程资料 →</button></div>
       <dl className="home-facts"><dt>核心能力</dt><dd>{capability?.slice(0,3).join('、')||'尚未形成功能目录'}</dd>

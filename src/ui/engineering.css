@@ -79,3 +79,25 @@
 .task-review-notice p{margin:.2rem 0 0;color:inherit;font-size:.82rem}
 @media(max-width:1150px){.project-home-main{grid-template-columns:1fr}}
 @media(max-width:650px){.home-relation{grid-template-columns:1fr;gap:.3rem}.home-connection{display:flex;align-items:center;justify-content:center;gap:.5rem}.home-connection span{transform:rotate(90deg)}.home-resume{gap:.5rem}.home-facts dt{padding-right:1rem}.project-home-hero{align-items:start}}
+
+.home-guide{padding:.35rem 0 .75rem}
+.home-guide h3{margin:.25rem 0 .35rem;font-size:1.55rem;line-height:1.35;letter-spacing:-.025em;color:var(--ink)}
+.home-guide>p{margin:.4rem 0 1rem;line-height:1.65;color:var(--muted)}
+.home-guide dl{display:grid;grid-template-columns:max-content minmax(0,1fr);margin:1rem 0;border-left:3px solid var(--accent);background:var(--soft);padding:.65rem .95rem;gap:.45rem 1.25rem}
+.home-guide dt,.home-guide dd{margin:0;align-self:baseline;line-height:1.55}
+.home-guide dt,.home-guide-relation small{font-size:.78rem;color:var(--muted)}
+.home-guide dd{font-size:.95rem;color:var(--ink)}
+.home-guide-actions,.home-guide-relation{display:flex;align-items:center;flex-wrap:wrap;gap:.45rem}
+.home-source{display:inline-flex;flex-wrap:wrap;align-items:baseline;gap:.55rem;max-width:100%;padding:.45rem .65rem;text-align:left}
+.home-source span{color:var(--accent);font-weight:600}
+.home-source code{font-size:.83rem;overflow-wrap:anywhere}
+.home-guide-relation{margin-top:.85rem}
+.home-guide-relation button{min-height:28px;padding:.15rem .4rem;font-size:.78rem}
+.home-guide-relation .home-edge{background:transparent;color:var(--accent);border-color:transparent}
+.home-continue{display:grid;gap:.35rem;text-align:left;width:100%;padding:.8rem 0;border:0;border-bottom:1px solid var(--border);border-radius:0;background:transparent}
+.home-continue small,.home-continue span{color:var(--accent);font-size:.75rem}
+.home-continue.review small{color:#845515}
+.home-continue strong{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+@media(max-width:650px){.home-guide h3{font-size:1.25rem}.home-guide dl{gap:.5rem .75rem}.home-guide-actions>button{white-space:normal}}
+
+@media(max-width:1150px){.home-returning>aside{order:-1}}

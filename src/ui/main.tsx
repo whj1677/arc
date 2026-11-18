@@ -14,7 +14,7 @@ import {ZoomSurface} from './ZoomSurface';
 import {Timeline} from './Timeline';
 import {FeatureReading,FeatureReadingDetail} from './FeatureReading';
 import {FeatureDevelopment,type FeatureDevelopmentDraft} from './FeatureDevelopment';
-import {featureReadingModel,featureReadingPosition,featureViewPosition,featurePathPosition,functionPathPosition,featureViews,guideEvidenceIds,guidePathForStep} from './feature-reading-model';
+import {featureReadingModel,featureReadingPosition,featureViewPosition,featurePathPosition,functionPathPosition,featureViews,guideEvidenceIds,guidePathForStep,guideItemTitle} from './feature-reading-model';
 import {SystemDetail} from './SystemDetail';
 import {StepDetail} from './StepDetail';
 import {timelineModel} from './timeline-model';
@@ -23,6 +23,7 @@ import {FileMap} from './FileMap';
 import {FileSummary} from './FileSummary';
 import {ReadingQuestions} from './ReadingQuestions';
 import {SourceExcerpt} from './SourceExcerpt';
+import {savedBusinessPath} from './home-reading';
 import {EngineeringOverview,EngineeringWorkspace,EngineeringManagement} from './EngineeringWorkspace';
 import {WorkbenchNavigation} from './WorkbenchNavigation';
 import {readingQuestionTarget} from './reading-target';
@@ -43,6 +44,7 @@ const defaults:ReadingState={entrance:'overview',view:'system',scenario_id:'',re
 const statuses:Record<string,string>={validating:'本地校验中',queued:'排队',waiting_agent:'等待 Agent 领取',running:'运行中',cancel_requested:'停止请求中',cancelled:'已停止',completed:'执行完成',failed:'失败',unknown:'状态未知',blocked_external:'外部条件缺失',available:'本机可用 · 待工程验证',auth_required:'需要登录'};
 const short=(s:string)=>s.length>28?s.slice(0,12)+'…'+s.slice(-10):s;
 function closePopovers(except?:Node){for(const menu of document.querySelectorAll<HTMLDetailsElement>('.analysis-options[open],.context-edit-actions[open],.source-options[open],.view-options[open],.canvas-filter[open],.feature-menu[open]'))if(!except||!menu.contains(except))menu.open=false;}
+type HomeBookmark={projectId:string;label:string;position:Pick<ReadingState,'scenario_id'|'result_id'|'source_snapshot_id'|'entrance'|'view'|'selected'|'file'|'evidence_id'|'detail_tab'|'reading_path'|'function_path'|'stage'|'function_mode'>};
 function App(){
   const [data,setData]=useState(initialData),[projectId,setProjectId]=useState(''),[scenarioId,setScenarioId]=useState('');
   const [reading,setReading]=useState<ReadingState>(defaults),[loadedKey,setLoadedKey]=useState(''),[width,setWidth]=useState(window.innerWidth);
@@ -50,6 +52,7 @@ function App(){
   const [formName,setFormName]=useState(''),[formQuestion,setFormQuestion]=useState(''),[search,setSearch]=useState(''),[provider,setProvider]=useState('codex'),[clueDrafts,setClueDrafts]=useState<Record<string,string>>({});
   const [formFeature,setFormFeature]=useState('');
   const [featureDrafts,setFeatureDrafts]=useState<Record<string,FeatureDevelopmentDraft>>({});
+  const [bookmark,setBookmark]=useState<HomeBookmark|null>(null);
   const [focusDevelopment,setFocusDevelopment]=useState(false),[requestedTask,setRequestedTask]=useState('');
   const [indexes,setIndexes]=useState<Record<string,any>>({}),[eventState,setEventState]=useState<{runId:string;items:any[]}>({runId:'',items:[]});
   const [showDetail,setShowDetail]=useState(false),[showCatalog,setShowCatalog]=useState(false),[archiveVisible,setArchiveVisible]=useState(false);
@@ -104,6 +107,25 @@ function App(){
   const sourceSnapshot=data.snapshots.find(s=>s.source_snapshot_id===sourceSnapshotId);
   const selectedEvidence=result?.evidence.find(e=>e.evidence_id===reading.evidence_id);
   const selectedFile=reading.file||selectedEvidence?.path||'';
+  const suggestedPath=React.useMemo(()=>projectHome&&project?savedBusinessPath(project,walkScenes,data.explanations):undefined,[projectHome,project,data.scenarios,data.features,data.explanations]);
+  const bookmarkResult=bookmark?.projectId===projectId&&data.explanations.find(e=>e.result_id===bookmark.position.result_id&&e.scenario_id===bookmark.position.scenario_id&&e.result.binding.project_id===projectId&&e.result.binding.source_snapshot_id===bookmark.position.source_snapshot_id);
+  const canResume=!!bookmarkResult&&(bookmark?.position.scenario_id===project?.overview_scenario_id||walkScenes.some(s=>s.scenario_id===bookmark?.position.scenario_id));
+  const objectLabel=featureReading&&readingGuide?guideItemTitle(readingGuide,reading.selected):activeObject?.label;
+  const bookmarkLabel=architectureReading||featureReading||reading.view==='functions'?objectLabel:reading.view==='files'?reading.file:'';
+  useEffect(()=>{
+    if(!projectHome||!projectId)return;
+    let current=true;
+    void api.invoke<HomeBookmark|null>('reading_get',{key:'home-bookmark/'+projectId}).then(value=>{if(current)setBookmark(value);}).catch(e=>setError(e.message));
+    return()=>{current=false;};
+  },[projectHome,projectId]);
+  useEffect(()=>{
+    if(!bookmarkLabel||!result||!scenario||loadedKey!==readingKey||reading.mode!=='normal'||result.binding.project_id!==projectId||scenario.scenario_id!==result.binding.scenario_id)return;
+    const {view,entrance,selected,file,evidence_id,detail_tab,reading_path,function_path,function_mode,stage}=reading;
+    const position={view,entrance,selected,file,evidence_id,detail_tab,reading_path,function_path,function_mode,stage,
+      scenario_id:scenario.scenario_id,result_id:result.result_id,source_snapshot_id:result.binding.source_snapshot_id};
+    const value:HomeBookmark={projectId,label:bookmarkLabel,position};
+    void api.invoke('reading_save',{key:'home-bookmark/'+projectId,value}).catch(e=>setError(e.message));
+  },[bookmarkLabel,projectId,scenario?.scenario_id,result?.result_id,loadedKey,readingKey,reading.mode,reading.view,reading.entrance,reading.selected,reading.file,reading.evidence_id,reading.detail_tab,reading.reading_path,reading.function_path,reading.function_mode,reading.stage]);
   const latestRun=sceneRuns.at(-1);
   const running=sceneRuns.find(r=>['queued','waiting_agent','running','validating','cancel_requested'].includes(r.status));
   const activityRun=running||latestRun;
@@ -296,6 +318,20 @@ function App(){
   const currentView=[...primaryViews,...extraViews,['files','文件组织']].find(([v])=>v===reading.view)?.[1]||'当前视图';
   function navigateView(view:string){if(featureReading){navigateFeature(view);return;}switchView(view,{mode:'normal',...(view==='modules'?{stage:''}:{}),...(view==='composition'?{files_open:false}:{})});setShowCatalog(false);}
   const viewButton=([v,label]:string[])=><button key={v} className={`nav-view ${reading.view===v?'selected':''}`} aria-current={reading.view===v?'page':undefined} onClick={()=>navigateView(v)}>{label}</button>;
+  function resumeHomeReading(){
+    if(!bookmark||!canResume)return;
+    chooseScenario(bookmark.position.scenario_id,{...bookmark.position,mode:'normal',catalog_hidden:true,pinned:false});
+    setShowDetail(detailDrawer||bookmark.position.entrance==='walk');
+  }
+  function openSuggestedStep(last:boolean,showSource=false){
+    if(!suggestedPath)return;
+    const {saved,path,first,last:finalStep}=suggestedPath;
+    const step=last?finalStep:first;
+    const source=showSource?saved.result.evidence.find(e=>step.evidence_ids.includes(e.evidence_id)):undefined;
+    chooseScenario(saved.scenario_id,{entrance:'walk',view:'timeline',result_id:saved.result_id,source_snapshot_id:saved.result.binding.source_snapshot_id,
+      reading_path:path.id,selected:'step:'+step.id,reading_focus:'',function_path:'',detail_tab:source?'evidence':'details',file:source?.path||'',evidence_id:source?.evidence_id||'',mode:'normal',catalog_hidden:true,pinned:false});
+    setShowDetail(true);
+  }
   function openArchitecture(objectId=''){
     const object=result?.nodes.find(node=>node.node_id===objectId)??result?.edges.find(edge=>edge.edge_id===objectId);
     const firstEvidence=result?.evidence.find(item=>object?.evidence_ids.includes(item.evidence_id));
@@ -368,11 +404,11 @@ function App(){
       {catalogReading&&(projectTasks.length>0||pendingScene)&&<section className="project-task-strip" aria-label="本工程进行中的分析">{projectTasks.map(r=><button key={r.binding.run_id} onClick={()=>openTask(r.binding.scenario_id)}>{r.title} · {statuses[r.status]} · 查看进度 →</button>)}{pendingScene&&!projectTasks.some(r=>r.binding.scenario_id===pendingScene.scenario_id)&&<button onClick={()=>openTask(pendingScene.scenario_id)}>{pendingScene.title} · 等待 Agent 领取 →</button>}</section>}
       {!engineeringReading&&!catalogReading&&waitingMcp&&result&&<div className="result-status">新分析等待 Agent 领取；当前仍显示已保存的说明。<button onClick={showRun}>查看待领取任务</button></div>}
       {!engineeringReading&&!catalogReading&&overviewReviewGaps.length>0&&<div className="result-status" aria-label="关系自动补查"><span>{running?.overview_from_result_id===result?.result_id?'正在补查当前说明的关系，原图保留；完成后可查看新版本。':`${overviewReviewGaps.length} 条关系尚未确认。ARC 可沿用这份说明的冻结源码继续补查，并保存为新版本。`}</span><button disabled={pending||projectTasks.length>0||!!indexes[projectId]||!!project?.fictional} onClick={()=>void researchOverview()}>自动补查关系</button></div>}
-      {!engineeringReading&&!catalogReading&&!waitingMcp&&!running&&completedExplanation&&<div className="result-status"><span>{completedExplanation.result_id===result?.result_id?'正在查看已保存的分析结果':'本次分析已保存；当前仍在阅读旧版'}{explanation?.source_status!=='current'?' · 来源待核对':''}</span><button onClick={viewCompleted}>查看本次分析结果</button></div>}
+      {!engineeringReading&&!catalogReading&&!waitingMcp&&!running&&completedExplanation&&(!architectureReading||completedExplanation.result_id!==result?.result_id||explanation?.source_status!=='current')&&<div className="result-status"><span>{completedExplanation.result_id===result?.result_id?'正在查看已保存的分析结果':'本次分析已保存；当前仍在阅读旧版'}{explanation?.source_status!=='current'?' · 来源待核对':''}</span><button onClick={viewCompleted}>查看本次分析结果</button></div>}
       {!engineeringReading&&!catalogReading&&activityRun&&activityRun.status!=='completed'&&!(reading.detail_tab==='agent'&&reading.mode!=='compare'&&(!detailDrawer||showDetail))&&<RunActivity run={activityRun} events={events} error={eventError} open={showRun} stop={()=>void action(()=>api.invoke('run_cancel',{run_id:activityRun.binding.run_id}))}/>}
       <div className={`workspace ${projectHome?'home-mode catalog-hidden':engineeringReading?'engineering-mode':catalogReading?'catalog-workspace':''} ${reading.mode==='source'?'source-mode':''} ${reading.catalog_hidden?'catalog-hidden':''}`} style={{'--left':`${reading.left_width}px`,'--right':`${Math.min(reading.right_width,reading.mode==='source'?Math.max(280,width-800):600)}px`} as React.CSSProperties}>
         {width>=900&&!projectHome&&!reading.catalog_hidden&&<>{catalog}<Separator side="left_width" value={reading.left_width} change={changeWidth} reset={()=>patch({left_width:220})}/></>}
-        {projectHome?<EngineeringOverview project={project} result={result} hasAnalysis={!!result} analysisLabel={analysisLabel} analysisBusy={pending||!!indexes[projectId]} onAnalyze={beginAnalysis} onArchitecture={openArchitecture} onWalk={()=>setEntrance('walk')} onFiles={()=>navigateView('files')} onMaterials={()=>switchView('materials',{mode:'normal',catalog_hidden:true})} onTask={id=>{setRequestedTask(id);switchView('engineering',{mode:'normal',catalog_hidden:true});}} develop={()=>{setFocusDevelopment(true);switchView('engineering',{mode:'normal',catalog_hidden:true});}}/>:engineeringReading?<EngineeringWorkspace key={project.project_id} project={project} page={reading.view==='materials'?'materials':'records'} requestedTask={requestedTask} onTaskOpened={()=>setRequestedTask('')} onSettings={showMcp} focusGoal={focusDevelopment} onGoalFocused={()=>setFocusDevelopment(false)} back={()=>switchView('system')} onArchitecture={id=>{const saved=data.explanations.find(e=>e.result_id===id);if(saved)chooseScenario(saved.scenario_id,{entrance:'overview',view:'system',result_id:id,source_snapshot_id:saved.result.binding.source_snapshot_id,mode:'normal'});else chooseScenario(project.overview_scenario_id||'',{entrance:'overview',view:'system',result_id:'',source_snapshot_id:project.snapshot_id,mode:'normal',detail_tab:'details',catalog_hidden:false});}} onRestored={id=>void reload().then(workspace=>{const restored=workspace.projects.find(p=>p.project_id===id);if(restored)void chooseProject(restored,workspace);})} onReading={task=>{const resultId=task.walkthrough?.result_id??task.reading!.result_id,next=data.explanations.find(item=>item.result_id===resultId);chooseScenario(task.reading!.scenario_id,{entrance:'walk',view:'timeline',mode:'normal',detail_tab:'details',result_id:next?.result_id??task.reading!.result_id,source_snapshot_id:next?.result.binding.source_snapshot_id??task.reading!.source_snapshot_id,selected:'',reading_path:'',function_path:'',reading_focus:''});}}/>:reading.mode==='compare'?<div className="compare-workspace"><div className="compare-toolbar"><label><input type="checkbox" checked={reading.linked} onChange={e=>patch({linked:e.target.checked})}/>稳定身份联动</label><button onClick={()=>patch({mode:'normal'})}>返回工作区</button></div><Compare explanations={sceneExplanations} oldId={reading.compare_id} newId={result?.result_id||''} linked={reading.linked} selectOld={v=>patch({compare_id:v})}/></div>:<>{canvas}
+        {projectHome?<EngineeringOverview key={project.project_id} businessPath={suggestedPath} onBusinessStep={openSuggestedStep} resumeLabel={canResume&&bookmark?bookmark.label+(bookmark.position.source_snapshot_id!==project.snapshot_id?' · 历史版本':''):''} onResume={resumeHomeReading} project={project} result={result} hasAnalysis={!!result} analysisLabel={analysisLabel} analysisBusy={pending||!!indexes[projectId]} onAnalyze={beginAnalysis} onArchitecture={openArchitecture} onWalk={()=>setEntrance('walk')} onFiles={()=>navigateView('files')} onMaterials={()=>switchView('materials',{mode:'normal',catalog_hidden:true})} onTask={id=>{setRequestedTask(id);switchView('engineering',{mode:'normal',catalog_hidden:true});}} develop={()=>{setFocusDevelopment(true);switchView('engineering',{mode:'normal',catalog_hidden:true});}}/>:engineeringReading?<EngineeringWorkspace key={project.project_id} project={project} page={reading.view==='materials'?'materials':'records'} requestedTask={requestedTask} onTaskOpened={()=>setRequestedTask('')} onSettings={showMcp} focusGoal={focusDevelopment} onGoalFocused={()=>setFocusDevelopment(false)} back={()=>switchView('system')} onArchitecture={id=>{const saved=data.explanations.find(e=>e.result_id===id);if(saved)chooseScenario(saved.scenario_id,{entrance:'overview',view:'system',result_id:id,source_snapshot_id:saved.result.binding.source_snapshot_id,mode:'normal'});else chooseScenario(project.overview_scenario_id||'',{entrance:'overview',view:'system',result_id:'',source_snapshot_id:project.snapshot_id,mode:'normal',detail_tab:'details',catalog_hidden:false});}} onRestored={id=>void reload().then(workspace=>{const restored=workspace.projects.find(p=>p.project_id===id);if(restored)void chooseProject(restored,workspace);})} onReading={task=>{const resultId=task.walkthrough?.result_id??task.reading!.result_id,next=data.explanations.find(item=>item.result_id===resultId);chooseScenario(task.reading!.scenario_id,{entrance:'walk',view:'timeline',mode:'normal',detail_tab:'details',result_id:next?.result_id??task.reading!.result_id,source_snapshot_id:next?.result.binding.source_snapshot_id??task.reading!.source_snapshot_id,selected:'',reading_path:'',function_path:'',reading_focus:''});}}/>:reading.mode==='compare'?<div className="compare-workspace"><div className="compare-toolbar"><label><input type="checkbox" checked={reading.linked} onChange={e=>patch({linked:e.target.checked})}/>稳定身份联动</label><button onClick={()=>patch({mode:'normal'})}>返回工作区</button></div><Compare explanations={sceneExplanations} oldId={reading.compare_id} newId={result?.result_id||''} linked={reading.linked} selectOld={v=>patch({compare_id:v})}/></div>:<>{canvas}
         {!detailDrawer&&!catalogReading&&detailVisible&&<><Separator side="right_width" value={reading.right_width} change={changeWidth} reset={()=>patch({right_width:360})}/>{detail}</>}
         </>}
       </div>
