@@ -7,6 +7,7 @@ import {AcpConnection,resolveDsh,locate,stopTree,redact,type ActiveProcess} from
 import type {Run,Snapshot,ProviderProfile} from '../shared';
 import {schema} from './validation';
 import {now} from './store';
+import {sha} from './snapshot';
 
 // Version-pinned official base composition. Do not apply this patch to the
 // user's shared profiles. Every general-purpose model tool is disabled; only
@@ -76,6 +77,7 @@ export async function runDsh(options:{
   snapshot:Snapshot;storage:string;resources:string;profile:Pick<ProviderProfile,'version'|'path'>;
   prompt:string;event:(event:any)=>void;started:(active:ActiveProcess)=>void;
   timeoutMs?:number;structured?:{schema:object;signal:AbortSignal};
+  review?:(draft:string)=>Promise<string>;
 }) {
   const {run,snapshot,storage,resources,profile,structured}=options;
   structured?.signal.throwIfAborted();
@@ -125,13 +127,30 @@ export async function runDsh(options:{
     promptSent=true;
     // A model turn may legitimately take longer than ten minutes. Keep the
     // handshake deadlines, but wait for this turn's terminal reply or cancel.
-    const final=await client.request('session/prompt',{sessionId,prompt:[{type:'text',text:prompt}]},options.timeoutMs??(structured?300000:null));
+    const promptTimeout=options.timeoutMs??(structured?300000:null);
+    let final=await client.request('session/prompt',{sessionId,prompt:[{type:'text',text:prompt}]},promptTimeout);
     terminalReceived=true;
+    if(options.review&&final.stopReason==='end_turn'&&!cancelling){
+      const draft=dshFinalMessage(messageEvents);
+      await fs.writeFile(path.join(runDir,'walkthrough-draft.txt'),draft);
+      options.event({type:'local.stage',stage:'walkthrough_source_review',message:'已生成走读草稿，正在按冻结源码复核调用先后和分支条件'});
+      const review=await options.review(draft);
+      if(!cancelling){
+        messageEvents.length=0;
+        raw='';
+        terminalReceived=false;
+        final=await client.request('session/prompt',{sessionId,prompt:[{type:'text',text:review}]},promptTimeout);
+        terminalReceived=true;
+      }
+    }
     options.event({type:'provider.finished',session_id:sessionId,stop_reason:final.stopReason});
-    const cancelled=final.stopReason==='cancelled';
+    const cancelled=final.stopReason==='cancelled'||(!!options.review&&cancelling&&final.stopReason==='end_turn');
     if(!structured)await fs.writeFile(path.join(runDir,'transcript.txt'),raw);
     const finalText=cancelled?raw:dshFinalMessage(messageEvents);
-    if(!structured)await fs.writeFile(run.output_path,finalText);
+    if(!structured&&(!options.review||final.stopReason==='end_turn'&&!cancelled)){
+      await fs.writeFile(run.output_path,finalText);
+      if(options.review)options.event({type:'local.walkthrough_reviewed',result_sha256:sha(finalText)});
+    }
     await fs.writeFile(path.join(runDir,'diagnostic.json'),JSON.stringify({stop_reason:final.stopReason,stderr,ended_at:now()},null,2));
     if(!cancelled&&final.stopReason!=='end_turn')throw new Error(`DSH 停止原因 ${final.stopReason}，不能当作分析成功`);
     try{await client.request('session/close',{sessionId},20000);}catch(e){options.event({type:'session.close_failed',session_id:sessionId,error:redact((e as Error).message),terminal_already_received:true});}
