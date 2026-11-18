@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Project, Scenario, Feature, Revision, Annotation, Snapshot, Run, Explanation, ProviderProfile, WorkspaceData, ReadingState, AnalysisResult, ReadingAsk, ReadingQuestion, ReadingAnswer } from '../shared';
+import {hasFunctionGraphs} from '../shared';
 import { Store, id, now } from './store';
 import { capture, readSource, freshness, sha } from './snapshot';
 import { probeProviders, runCodex, makePrompt, redact, stopTree, overviewPhaseDirectory, type OverviewPhase, type ActiveProcess } from './providers';
@@ -33,6 +34,7 @@ export class ArcService {
   readonly indexing=new Map<string,AbortController>();
   readonly executing=new Map<string,Promise<void>>();
   private closing=false;
+  private overviewQueue:Promise<void>=Promise.resolve();
   private asking=new Map<string,Promise<ReadingQuestion>>();
   private checkingCodex?:Promise<ProviderProfile[]>;
   private readonly refreshingTasks=new Map<string,Promise<void>>();
@@ -44,7 +46,10 @@ export class ArcService {
     this.engineering=new EngineeringService(this.store,()=>this.changed());
     this.engineering.onTaskFinished=task=>{void this.refreshTaskWalkthrough(task.task_id);};
     this.development=new DevelopmentService(this.engineering,this.store,resources,event=>this.emit(event));
-    for(const run of this.store.all<Run>('run'))if(!terminal.has(run.status)&&!['unknown','waiting_agent'].includes(run.status)){run.status='unknown';run.error='Arc 上次退出前未记录终态；不会自动重发。请核查原会话，或明确新建关联重试。';this.store.put('run',run.binding.run_id,run);}
+    for(const run of this.store.all<Run>('run'))if(!terminal.has(run.status)&&!['unknown','waiting_agent'].includes(run.status)){
+      if(this.cancelUnstartedOverviewChild(run))continue;
+      run.status='unknown';run.error='Arc 上次退出前未记录终态；不会自动重发。请核查原会话，或明确新建关联重试。';this.store.put('run',run.binding.run_id,run);
+    }
     for(const task of this.store.all<import('../engineering').EngineeringTask>('engineering_task'))if(task.walkthrough?.status==='running'){
       const update=task.walkthrough,run=update.run_id?this.store.maybe<Run>('run',update.run_id):null,explanation=run&&this.store.all<Explanation>('explanation').find(e=>e.result.binding.run_id===run.binding.run_id);
       this.engineering.saveWalkthrough(task.task_id,run?.status==='completed'&&explanation?{...update,status:'completed',result_id:explanation.result_id,updated_at:now()}:{...update,status:'failed',error:'ARC 重启前走读更新未保存终态；旧说明和开发成果保留，可重试。',updated_at:now()},update.update_id);
@@ -88,25 +93,39 @@ export class ArcService {
     this.changed();return scenario;
   }
   addFeature(projectId:string,name:string,question?:string,discovery?:Feature['discovery']) {
+    const created=this.store.transaction(()=>this.insertFeature(projectId,name,question,discovery));
+    this.changed();return created;
+  }
+  private insertFeature(projectId:string,name:string,question?:string,discovery?:Feature['discovery']) {
     this.store.get('project',projectId);
     const feature:Feature={feature_id:id('feature'),project_id:projectId,name:text(name,300),archived:false,sort_order:this.store.all('feature').length};
-    return this.store.transaction(()=>{
-      if(discovery)feature.discovery=discovery;
-      this.store.put('feature',feature.feature_id,feature);
-      const scenario=this.addScenario(feature.feature_id,question?.trim()||`整体走读「${feature.name}」：关键职责、调用、输入输出、依据和未确认范围。`);
-      if(discovery||!question?.trim()){scenario.kind='feature_overview';scenario.title=`${feature.name} · 整体走读`;this.store.put('scenario',scenario.scenario_id,scenario);}
-      this.changed();return {feature,scenario};
-    });
+    if(discovery)feature.discovery=discovery;
+    this.store.put('feature',feature.feature_id,feature);
+    const scenario=this.insertScenario(feature.feature_id,question?.trim()||`整体走读「${feature.name}」：关键职责、调用、输入输出、依据和未确认范围。`);
+    if(discovery||!question?.trim()){scenario.kind='feature_overview';scenario.title=`${feature.name} · 整体走读`;this.store.put('scenario',scenario.scenario_id,scenario);}
+    return {feature,scenario};
   }
   openDiscoveredFeature(projectId:string,resultId:string,nodeId:string,requestMcp=false) {
     const project=this.store.get<Project>('project',projectId),explanation=this.store.get<Explanation>('explanation',resultId);
     if(explanation.scenario_id!==project.overview_scenario_id||explanation.result.binding.project_id!==projectId)throw Error('功能目录不属于本工程全貌');
     const result=explanation.result,node=result.nodes.find(n=>n.node_id===nodeId);
     if(!node||!result.feature_catalog?.groups.some(g=>g.node_ids.includes(nodeId)))throw Error('此功能不在已发现目录中');
+    const target=this.store.transaction(()=>this.discoveredTarget(project,result,node));
+    if(!target)throw Error('功能已归档，请先恢复后再展开');
+    const {feature,scenario:scene}=target;
+    const matches=this.store.all<Explanation>('explanation').filter(e=>e.scenario_id===scene.scenario_id&&e.result.binding.question_revision_id===scene.question_revision_id&&e.result.binding.source_snapshot_id===project.snapshot_id);
+    const cached=matches.findLast(e=>e.source_status==='current'&&hasFunctionGraphs(e.result))??matches.at(-1);
+    const active=this.store.all<Run>('run').find(r=>!r.reading_question_id&&r.binding.scenario_id===scene.scenario_id&&!terminal.has(r.status)&&r.status!=='unknown');
+    if(requestMcp&&!cached&&!active)this.store.put('setting','mcp-requested-analysis',{project_id:projectId,scenario_id:scene.scenario_id,source_snapshot_id:this.analysisSnapshot(scene),question_revision_id:scene.question_revision_id,created_at:now()});
+    else if(requestMcp)this.store.put('setting','mcp-requested-analysis',null);
+    this.changed();return {feature,scenario:scene,result_id:cached?.result_id,run_id:active?.binding.run_id};
+  }
+  private discoveredTarget(project:Project,result:AnalysisResult,node:AnalysisResult['nodes'][number],features=this.store.all<Feature>('feature'),explanations=this.store.all<Explanation>('explanation'),scenes=this.store.all<Scenario>('scenario')) {
+    const projectId=project.project_id,resultId=result.result_id,nodeId=node.node_id;
     // Identity comes from the bound discovery, never from a possibly edited name.
-    let feature=discoveredFeature(this.store.all<Feature>('feature'),this.store.all<Explanation>('explanation'),result,nodeId,project.snapshot_id);
-    let scene=feature&&this.store.all<Scenario>('scenario').find(s=>s.feature_id===feature!.feature_id&&s.kind==='feature_overview');
-    if(feature?.archived||scene?.archived)throw Error('功能已归档，请先恢复后再展开');
+    let feature=discoveredFeature(features,explanations,result,nodeId,project.snapshot_id);
+    let scene=feature&&scenes.find(s=>s.feature_id===feature!.feature_id&&s.kind==='feature_overview');
+    if(feature?.archived||scene?.archived)return;
     if(feature&&scene&&feature.discovery?.source_snapshot_id!==project.snapshot_id&&result.binding.source_snapshot_id===project.snapshot_id){
       feature.discovery={result_id:resultId,node_id:nodeId,source_snapshot_id:project.snapshot_id};
       this.store.put('feature',feature.feature_id,feature);
@@ -115,14 +134,10 @@ export class ArcService {
       if(result.binding.source_snapshot_id!==project.snapshot_id)throw Error('功能目录来自旧快照，请更新工程功能目录后再展开');
       const refs=result.evidence.filter(e=>node.evidence_ids.includes(e.evidence_id)).map(e=>`${e.path}:${e.line_start}-${e.line_end}`).join('，');
       const question=`只深入功能「${node.label}」：${node.description}。功能发现依据：${refs}。目录来源 ${resultId} / ${nodeId}。先检查该功能的真实入口和实现，再以业务时间线说明触发条件、主要步骤、输入输出和失败处理；不分析其他功能的内部细节。清楚区分来源事实与未知，不根据目录标题编造流程。`;
-      const created=this.addFeature(projectId,node.label,question,{result_id:resultId,node_id:nodeId,source_snapshot_id:result.binding.source_snapshot_id});
+      const created=this.insertFeature(projectId,node.label.slice(0,300),question.slice(0,20000),{result_id:resultId,node_id:nodeId,source_snapshot_id:result.binding.source_snapshot_id});
       feature=created.feature;scene=created.scenario;
     }
-    const cached=this.store.all<Explanation>('explanation').filter(e=>e.scenario_id===scene!.scenario_id&&e.result.binding.question_revision_id===scene!.question_revision_id&&e.result.binding.source_snapshot_id===project.snapshot_id).at(-1);
-    const active=this.store.all<Run>('run').find(r=>!r.reading_question_id&&r.binding.scenario_id===scene!.scenario_id&&!terminal.has(r.status)&&r.status!=='unknown');
-    if(requestMcp&&!cached&&!active)this.store.put('setting','mcp-requested-analysis',{project_id:projectId,scenario_id:scene!.scenario_id,source_snapshot_id:this.analysisSnapshot(scene!),question_revision_id:scene!.question_revision_id,created_at:now()});
-    else if(requestMcp)this.store.put('setting','mcp-requested-analysis',null); // Opening saved/running work must not leave another feature as the requested target.
-    this.changed();return {feature:feature!,scenario:scene!,result_id:cached?.result_id,run_id:active?.binding.run_id};
+    return {feature,scenario:scene};
   }
   analysisSnapshot(scene:Scenario) {
     const project=this.store.get<Project>('project',scene.project_id),feature=this.store.get<Feature>('feature',scene.feature_id);
@@ -135,18 +150,22 @@ export class ArcService {
     }
     return project.snapshot_id;
   }
-  prepareAnalysis(scenarioId:string,developmentTaskId?:string){
+  prepareAnalysis(scenarioId:string,developmentTaskId?:string,projectAnalysis=false){
     const scene=this.store.get<Scenario>('scenario',scenarioId),project=this.store.get<Project>('project',scene.project_id),feature=this.store.get<Feature>('feature',scene.feature_id);
     if(project.fictional)throw Error('演示工程不派发真实分析');
     if(scene.archived||feature.archived)throw Error('请先恢复已归档功能或场景');
     if(developmentTaskId){const task=this.engineering.task(developmentTaskId);if(task.project_id!==scene.project_id||task.reading?.scenario_id!==scenarioId)throw Error('开发任务与待领取场景归属不一致');}
     const source=this.analysisSnapshot(scene);
-    const active=this.store.all<Run>('run').find(r=>!r.reading_question_id&&r.binding.scenario_id===scenarioId&&['queued','running','validating','cancel_requested'].includes(r.status));
+    const active=this.store.all<Run>('run').find(r=>!r.reading_question_id&&r.binding.scenario_id===scenarioId&&['queued','waiting_agent','running','validating','cancel_requested'].includes(r.status));
     if(active)return {run_id:active.binding.run_id};
-    this.store.put('setting','mcp-requested-analysis',{project_id:scene.project_id,scenario_id:scenarioId,source_snapshot_id:source,question_revision_id:scene.question_revision_id,created_at:now(),...(developmentTaskId?{development_task_id:developmentTaskId}:{})});
+    this.store.put('setting','mcp-requested-analysis',{project_id:scene.project_id,scenario_id:scenarioId,source_snapshot_id:source,question_revision_id:scene.question_revision_id,created_at:now(),...(projectAnalysis&&!developmentTaskId&&project.overview_scenario_id===scenarioId?{project_analysis:true}:{}),...(developmentTaskId?{development_task_id:developmentTaskId}:{})});
     this.changed();return {scenario_id:scenarioId,...(developmentTaskId?{development_task_id:developmentTaskId}:{})};
   }
   addScenario(featureId:string,question:string) {
+    const scene=this.insertScenario(featureId,question);
+    this.changed();return scene;
+  }
+  private insertScenario(featureId:string,question:string) {
     const feature=this.store.get<Feature>('feature',featureId),q=text(question);
     if(feature.archived)throw new Error('请先恢复已归档功能，再添加场景');
     const project=this.store.get<Project>('project',feature.project_id);
@@ -154,7 +173,7 @@ export class ArcService {
     const scenario:Scenario={scenario_id:id('scenario'),feature_id:featureId,project_id:feature.project_id,title:q.slice(0,100),question:q,question_revision_id:id('question'),archived:false,sort_order:this.store.all('scenario').length};
     this.store.put('scenario',scenario.scenario_id,scenario);
     this.store.put('revision',scenario.question_revision_id,{question_revision_id:scenario.question_revision_id,scenario_id:scenario.scenario_id,question:q,created_at:now()} satisfies Revision);
-    this.changed();return scenario;
+    return scenario;
   }
   reviseScenario(scenarioId:string,question:string) {
     const s=this.store.get<Scenario>('scenario',scenarioId),q=text(question);
@@ -290,7 +309,7 @@ export class ArcService {
     const previous=this.store.all<Explanation>('explanation').filter(e=>e.scenario_id===run.binding.scenario_id).at(-1);
     return promptContext(snapshot,annotations,previous?{result_id:previous.result_id,binding:previous.result.binding,summary:previous.result.summary}:undefined);
   }
-  async startRun(scenarioId:string,providerId:string,submissionKey:string,previousRunId?:string,options:{sourceSnapshotId?:string;developmentTaskId?:string;refreshFromResultId?:string}={}) {
+  async startRun(scenarioId:string,providerId:string,submissionKey:string,previousRunId?:string,options:{sourceSnapshotId?:string;developmentTaskId?:string;refreshFromResultId?:string;projectAnalysis?:boolean}={}) {
     if(this.closing)throw new Error('Arc 正在退出，未派发新任务');
     if(!['codex','dsh','workbuddy'].includes(providerId))throw new Error('请选择真实 Provider；演示单独装载');
     if(!/^[\w-]{8,100}$/.test(submissionKey))throw new Error('提交幂等键无效');
@@ -298,7 +317,7 @@ export class ArcService {
     if(existing){if(existing.binding.scenario_id!==scenarioId||existing.provider_id!==providerId||existing.development_task_id!==options.developmentTaskId)throw new Error('幂等键归属冲突');return existing;}
     const scenario=this.store.get<Scenario>('scenario',scenarioId),project=this.store.get<Project>('project',scenario.project_id);
     if(project.fictional)throw new Error('演示工程不调用真实 Provider；请打开实际工程或测试源码目录');
-    const busy=this.store.all<Run>('run').find(r=>!r.reading_question_id&&r.binding.scenario_id===scenarioId&&r.provider_id===providerId&&!terminal.has(r.status)&&r.status!=='unknown');
+    const busy=this.store.all<Run>('run').find(r=>!r.reading_question_id&&r.binding.scenario_id===scenarioId&&(r.provider_id===providerId||r.overview_parent_run_id&&r.binding.source_snapshot_id===project.snapshot_id&&r.binding.question_revision_id===scenario.question_revision_id)&&!terminal.has(r.status)&&r.status!=='unknown');
     if(busy)throw new Error('该场景同一 Provider 已有进行中的运行；请先等待或停止');
     if(previousRunId){const previous=this.store.get<Run>('run',previousRunId);if(previous.binding.scenario_id!==scenarioId)throw new Error('前次运行不属于此场景');}
     const sourceSnapshotId=options.sourceSnapshotId??this.analysisSnapshot(scenario),source=this.store.get<Snapshot>('snapshot',sourceSnapshotId);
@@ -307,6 +326,7 @@ export class ArcService {
     // Freeze synchronously before yielding; UI changes cannot change this envelope.
     const runId=id('run');
     const run:Run={binding:{project_id:project.project_id,feature_id:scenario.feature_id,scenario_id:scenarioId,question_revision_id:scenario.question_revision_id,source_snapshot_id:sourceSnapshotId,run_id:runId},provider_id:providerId as Run['provider_id'],status:'queued',question:scenario.question,title:options.developmentTaskId?`${scenario.title} · 开发后复核`:scenario.title,created_at:now(),submission_key:submissionKey,previous_run_id:previousRunId,output_path:path.join(this.directory,'runs',runId,'result.json'),...(options.developmentTaskId?{development_task_id:options.developmentTaskId,refresh_from_result_id:options.refreshFromResultId}:{})};
+    if(options.projectAnalysis&&!options.developmentTaskId&&project.overview_scenario_id===scenarioId)run.overview_followup_mode=providerId==='codex'&&this.dispatchRun?'dispatch':'direct';
     if(providerId==='codex'&&scenario.question===overviewQuestion)run.overview_format='overview-1';
     this.store.put('run',runId,run);this.changed();
     this.event(runId,{type:'local.stage',stage:'queued',message:options.developmentTaskId?'开发结果已保存；正在按新代码重新核对同一功能，旧说明保留':'任务与源码快照已绑定，正在准备 Agent 连接'});
@@ -396,7 +416,78 @@ export class ArcService {
     if(event.native_ui==='dsh-web')run.native_ui='dsh-web';
     this.store.put('run',runId,run);this.emit({type:'run_event',run_id:runId,event:clean});
   }
+  private prepareOverviewChildren(parent:Run,explanation:Explanation,project:Project):Run[] {
+    const mode=parent.overview_followup_mode,result=explanation.result;
+    if(!mode||this.closing||project.fictional||result.fictional||parent.origin==='manual_import'||parent.development_task_id||parent.overview_from_result_id||
+        parent.overview_parent_run_id||explanation.source_status!=='current'||!result.feature_catalog||project.snapshot_id!==parent.binding.source_snapshot_id||
+        project.overview_scenario_id!==parent.binding.scenario_id)return [];
+    const scene=this.store.get<Scenario>('scenario',parent.binding.scenario_id);
+    if(scene.archived||scene.question_revision_id!==parent.binding.question_revision_id||this.store.get<Feature>('feature',scene.feature_id).archived)return [];
+    const features=this.store.all<Feature>('feature'),scenes=this.store.all<Scenario>('scenario');
+    const explanations=this.store.all<Explanation>('explanation'),runs=this.store.all<Run>('run'),children:Run[]=[];
+    const ids=new Set(result.feature_catalog.groups.flatMap(group=>group.node_ids));
+    for(const node of result.nodes){
+      if(!ids.has(node.node_id)||!node.label.trim())continue;
+      const target=this.discoveredTarget(project,result,node,features,explanations,scenes);
+      if(!target)continue;
+      const {feature,scenario}=target;
+      const sameBinding=(binding:Run['binding'])=>binding.project_id===project.project_id&&binding.feature_id===feature.feature_id&&binding.scenario_id===scenario.scenario_id&&binding.question_revision_id===scenario.question_revision_id&&binding.source_snapshot_id===project.snapshot_id;
+      if(explanations.some(item=>item.source_status==='current'&&!item.result.fictional&&sameBinding(item.result.binding)&&hasFunctionGraphs(item.result)))continue;
+      if(runs.some(run=>!run.reading_question_id&&sameBinding(run.binding)&&!terminal.has(run.status)&&run.status!=='unknown'))continue;
+      const runId=id('run');
+      const child:Run={binding:{...parent.binding,feature_id:feature.feature_id,scenario_id:scenario.scenario_id,question_revision_id:scenario.question_revision_id,run_id:runId},
+        provider_id:parent.provider_id,overview_parent_run_id:parent.binding.run_id,status:mode==='manual'?'waiting_agent':'queued',
+        question:scenario.question,title:scenario.title,created_at:now(),submission_key:'overview-child-'+sha([parent.binding.run_id,scenario.scenario_id,scenario.question_revision_id].join('/')).slice(0,40),
+        output_path:path.join(this.directory,'runs',runId,'result.json'),...(mode==='manual'?{origin:'mcp',mcp_connection_id:parent.mcp_connection_id}:{})};
+      this.store.put('run',runId,child);
+      children.push(child);
+    }
+    return children;
+  }
+  private cancelUnstartedOverviewChild(run:Run) {
+    if(run.status!=='queued'||!run.overview_parent_run_id||this.store.maybe<Run>('run',run.overview_parent_run_id)?.overview_followup_mode!=='direct')return false;
+    // execute() persists this checkpoint before any local model process can start.
+    if(this.store.events(run.binding.run_id).some(event=>event.type==='local.stage'&&event.stage==='launching'))return false;
+    run.status='cancelled';run.ended_at=now();run.error='ARC 已退出，此项走读尚未启动模型。重新分析工程可继续补齐。';
+    this.store.put('run',run.binding.run_id,run);return true;
+  }
+  checkOverviewChild(run:Run) {
+    if(!run.overview_parent_run_id)return;
+    const project=this.store.get<Project>('project',run.binding.project_id),scene=this.store.get<Scenario>('scenario',run.binding.scenario_id);
+    const parent=this.store.get<Run>('run',run.overview_parent_run_id),parentScene=this.store.get<Scenario>('scenario',parent.binding.scenario_id);
+    if(project.fictional||project.snapshot_id!==run.binding.source_snapshot_id||parent.binding.project_id!==project.project_id||parent.binding.source_snapshot_id!==run.binding.source_snapshot_id||
+        scene.project_id!==project.project_id||scene.feature_id!==run.binding.feature_id||parent.status!=='completed'||project.overview_scenario_id!==parent.binding.scenario_id||
+        parentScene.archived||parentScene.question_revision_id!==parent.binding.question_revision_id||this.store.get<Feature>('feature',parentScene.feature_id).archived||
+        scene.archived||scene.question_revision_id!==run.binding.question_revision_id||this.store.get<Feature>('feature',scene.feature_id).archived)
+      throw Error('工程快照、问题版本或功能状态已变化，本次自动走读已停止。');
+  }
+  private launchOverviewChildren(parent:Run,children:Run[]) {
+    if(!children.length||parent.overview_followup_mode==='manual')return;
+    if(parent.overview_followup_mode==='dispatch'){
+      for(const child of children){
+        if(this.store.get<Run>('run',child.binding.run_id).status!=='queued')continue;
+        try {
+          this.checkOverviewChild(child);
+          if(!this.dispatchRun)throw Error('原外部派发通道不可用。');
+          this.dispatchRun(child);
+        } catch(error){this.fail(child.binding.run_id,error);}
+      }
+      return;
+    }
+    this.overviewQueue=this.overviewQueue.then(async()=>{
+      for(const child of children){
+        if(this.closing)return;
+        const runId=child.binding.run_id;
+        if(this.store.get<Run>('run',runId).status!=='queued')continue;
+        const work=this.execute(child).catch(error=>this.fail(runId,error)).finally(()=>this.executing.delete(runId));
+        this.executing.set(runId,work);
+        await work;
+      }
+    });
+  }
+
   private async execute(initial:Run) {
+    this.checkOverviewChild(initial);
     const runId=initial.binding.run_id;
     let profile=this.store.maybe<ProviderProfile>('provider',initial.provider_id);
     const profileAge=Date.now()-Date.parse(profile?.checked_at||'');
@@ -422,9 +513,10 @@ export class ArcService {
     const prompt=development
       ?this.dshWalkthroughPrompt(initial,snapshot,development)
       :await makePrompt(initial,snapshot,this.directory,annotations,previous?{result_id:previous.result_id,binding:previous.result.binding,summary:previous.result.summary}:undefined,
-        initial.provider_id==='dsh'&&this.store.get<Scenario>('scenario',initial.binding.scenario_id).kind==='feature_overview');
+        !!initial.overview_parent_run_id||initial.provider_id==='dsh'&&this.store.get<Scenario>('scenario',initial.binding.scenario_id).kind==='feature_overview');
     this.event(runId,{type:'local.stage',stage:'launching',message:`只读任务已准备，正在启动 ${initial.provider_id} 官方后端`});
     if(this.store.get<Run>('run',runId).status==='cancelled'||this.closing)return;
+    this.checkOverviewChild(initial);
     const runner=initial.provider_id==='dsh'?(initial.development_task_id?runDsh:runDshWeb):this.codexRunner;
     const result=await runner({run:initial,snapshot,storage:this.directory,resources:this.resources,profile,prompt,...(development?{
       timeoutMs:240000,
@@ -557,7 +649,7 @@ export class ArcService {
     return {result:checked.result,semantic};
   }
 
-  async acceptResult(runId:string,value:unknown,semanticReview?:string) {
+  async acceptResult(runId:string,value:unknown,semanticReview?:string,allowFollowups=true) {
     const run=this.store.get<Run>('run',runId),snapshot=this.store.get<Snapshot>('snapshot',run.binding.source_snapshot_id);
     if(run.overview_format&&!semanticReview)throw new Error('首轮工程图尚未完成独立关系复核，不能发布');
     if(['cancel_requested','cancelled','failed'].includes(run.status))throw new Error('终止后的迟到结果保留为原始材料，不发布为新说明');
@@ -585,7 +677,9 @@ export class ArcService {
       }
     }
     if(semanticReview)report.semantic=semanticReview;
-    if(['cancel_requested','cancelled','failed'].includes(this.store.get<Run>('run',runId).status))throw new Error('校验期间收到停止请求，迟到结果不发布');
+    const afterValidation=this.store.get<Run>('run',runId);
+    if(afterValidation.status==='completed')return afterValidation;
+    if(['cancel_requested','cancelled','failed'].includes(afterValidation.status))throw new Error('校验期间收到停止请求，迟到结果不发布');
     run.validation=report;
     if(report.errors.length){run.status='failed';run.error=`结果校验失败：${report.errors.slice(0,5).join('；')}`;run.ended_at=now();this.store.put('run',runId,run);this.changed();return run;}
     if(run.reading_question_id){
@@ -597,13 +691,18 @@ export class ArcService {
     }
     const result=value as AnalysisResult;
     const existing=this.store.maybe<Explanation>('explanation',result.result_id);
-    if(existing){if(existing.result.binding.run_id===runId)return run;throw new Error('结果 ID 与另一个运行冲突');}
-    const project=this.store.get<Project>('project',run.binding.project_id);
-    const current=this.store.get<Snapshot>('snapshot',project.snapshot_id);
+    if(existing){if(existing.result.binding.run_id===runId)return this.store.get<Run>('run',runId);throw new Error('结果 ID 与另一个运行冲突');}
     let changed=true;try{changed=(await freshness(snapshot)).length>0;}catch{/* Missing workspace remains reviewable only as history. */}
-    if(['cancel_requested','cancelled','failed'].includes(this.store.get<Run>('run',runId).status))throw new Error('来源复核期间收到停止请求，迟到结果不发布');
+    const latest=this.store.get<Run>('run',runId);
+    if(latest.status==='completed')return latest;
+    if(['cancel_requested','cancelled','failed'].includes(latest.status))throw new Error('来源复核期间收到停止请求，迟到结果不发布');
+    const project=this.store.get<Project>('project',run.binding.project_id),current=this.store.get<Snapshot>('snapshot',project.snapshot_id);
     const explanation:Explanation={result_id:result.result_id,scenario_id:run.binding.scenario_id,created_at:now(),source_status:!changed&&current.fingerprint===snapshot.fingerprint?'current':'needs_review',result};
-    this.store.transaction(()=>{run.status='completed';run.ended_at=now();this.store.put('explanation',result.result_id,explanation);this.store.put('run',runId,run);});
+    const children=this.store.transaction(()=>{
+      run.status='completed';run.ended_at=now();this.store.put('explanation',result.result_id,explanation);this.store.put('run',runId,run);
+      return allowFollowups?this.prepareOverviewChildren(run,explanation,project):[];
+    });
+    this.launchOverviewChildren(run,children);
     this.changed();return run;
   }
   async revalidate(runId:string){
@@ -618,7 +717,7 @@ export class ArcService {
     const audit:string[]=[],parsed=normalizeTransport(parseProviderText(raw,run.provider_id),audit);
     this.event(runId,{type:'local.revalidation',reason:'只重新解析已保存原文，未派发外部请求',previous_error:run.error,format_normalization:audit});
     run.status='validating';run.error=undefined;this.store.put('run',runId,run);
-    try{return await this.acceptResult(runId,parsed);}catch(e){this.fail(runId,e);throw e;}
+    try{return await this.acceptResult(runId,parsed,undefined,false);}catch(e){this.fail(runId,e);throw e;}
   }
   async cancel(runId:string) {
     const run=this.store.get<Run>('run',runId);
@@ -674,6 +773,7 @@ export class ArcService {
   }
   async shutdown(){
     this.closing=true;
+    for(const run of this.store.all<Run>('run'))this.cancelUnstartedOverviewChild(run);
     await this.development.shutdown();
     for(const controller of this.indexing.values())controller.abort();
     await Promise.allSettled([...this.executing.keys()].map(k=>this.cancel(k)));
@@ -683,7 +783,7 @@ export class ArcService {
       this.event(runId,{type:'shutdown.local_disconnect',reason:'退出等待超过 12 秒；关闭自有子进程，远端终态以协议记录为准'});
       void stopTree(active.child).catch(()=>{});
     }},12000);
-    await pending;clearTimeout(timer);
+    await pending;await this.overviewQueue;clearTimeout(timer);
     await Promise.allSettled([...this.externalWalkthroughs.keys()].map(runId=>this.cancel(runId)));
     await Promise.allSettled([...this.refreshingTasks.values()]);
     await closeDshWebHosts();

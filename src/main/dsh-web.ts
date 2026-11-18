@@ -50,11 +50,11 @@ export class DshRemote {
   return {cursor:state.asOfSeq,events,values:state.values};
  }
 }
-type Host={child:ChildProcessWithoutNullStreams;client:DshRemote;sessionId?:string};
+type Host={child:ChildProcessWithoutNullStreams;client:DshRemote;sessionId?:string;opened?:boolean;closing?:Promise<void>};
 const hosts=new Map<string,Host>(),pending=new Map<string,Promise<Host>>();
 type Options={run:Run;snapshot:Snapshot;storage:string;resources:string;profile:ProviderProfile;prompt:string;event:(event:any)=>void;started:(active:ActiveProcess)=>void};
 async function hostFor(options:Pick<Options,'run'|'storage'|'resources'|'profile'>):Promise<Host>{
- const {run,storage,resources,profile}=options,key=run.output_path;const existing=hosts.get(key);if(existing&&existing.child.exitCode===null)return existing;if(pending.has(key))return pending.get(key)!;
+ const {run,storage,resources,profile}=options,key=run.output_path;const existing=hosts.get(key);if(existing?.closing){await existing.closing;return hostFor(options);}if(existing&&existing.child.exitCode===null)return existing;if(pending.has(key))return pending.get(key)!;
  const creation=(async()=>{
   if(profile.version!=='0.2.1-rc.2')throw Error('DSH Web 版本不在已验证组合内');
   const dir=path.dirname(run.output_path),home=path.join(dir,'dsh-web-home');
@@ -80,7 +80,7 @@ async function hostFor(options:Pick<Options,'run'|'storage'|'resources'|'profile
 }
 export async function dshWebSessionUrl(options:Pick<Options,'run'|'storage'|'resources'|'profile'>){
  const {run}=options;if(run.native_ui!=='dsh-web'||!run.external_id)throw Error('该运行没有可核验的 DSH 图形会话');
- const host=await hostFor(options);const state=await host.client.snapshot(run.external_id);
+ const host=await hostFor(options);host.opened=true;const state=await host.client.snapshot(run.external_id);
  if(!state.events.some(e=>e.type==='user/message'))throw Error('DSH 对应会话没有任务消息，拒绝打开空白对话');
  const url=new URL(host.client.url);url.hash=`arc-session=${encodeURIComponent(run.external_id)}`;return url.href;
 }
@@ -119,7 +119,15 @@ export async function runDshWeb(options:Options){
     const cancelled=['aborted','interrupted'].includes(terminal.data?.reason?.kind);if(terminal.data?.reason?.kind!=='completed'&&!cancelled)throw Error(`DSH 本轮未成功：${terminal.data?.reason?.kind}`);
     const raw=events.filter(e=>e.type==='assistant/message'&&e.data?.turn===ownTurn).map(e=>textOf(e.data.message)).filter(Boolean).at(-1)||'';
     if(Buffer.byteLength(raw)>2*1024*1024)throw Error('DSH 输出超过 2 MiB');await fs.writeFile(run.output_path,raw);
-    event({type:'provider.finished',session_id:sessionId,stop_reason:terminal.data.reason.kind});return {code:0,raw,stderr:'',cancelled};
+    event({type:'provider.finished',session_id:sessionId,stop_reason:terminal.data.reason.kind});
+    if(run.overview_parent_run_id&&!host.opened){
+      host.closing=stopTree(host.child).then(()=>{hosts.delete(run.output_path);}).catch(error=>{
+        host.closing=undefined;
+        event({type:'local.stage',stage:'cleanup',message:'后台会话暂未关闭：'+cleanDshLog(String(error))});
+      });
+      await host.closing;
+    }
+    return {code:0,raw,stderr:'',cancelled};
    }
    if(!seen&&Date.now()-admitted>45000)throw Error('DSH 消息已提交，但未观察到对应轮次；禁止自动重发');
    if(cancelling&&Date.now()-cancelAt>30000)throw Error('DSH 停止未得到终态确认');

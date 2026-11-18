@@ -3,12 +3,13 @@ import React,{useState,useEffect,useRef,useCallback} from 'react';
 import {createRoot} from 'react-dom/client';
 import type {EngineeringTask} from '../engineering';
 import type {WorkspaceData,ReadingState,Project,Scenario,Explanation,SourceEvidence,Run,AnalysisResult} from '../shared';
+import {hasFunctionGraphs} from '../shared';
 import {FunctionChain,FunctionDetail,FunctionStepDetail} from './FunctionChain';
 import {functionCallMap} from './function-call-map';
 import {selectedCallStep} from './function-sequence-model';
 import {Graph,edgeNames,claimNames,nodeNames} from './Graph';
 import {discoveredFeature} from '../discovered-feature';
-import {AnalysisModePicker,FeatureCatalog,CatalogFeatureReading} from './FeatureCatalog';
+import {AnalysisModePicker,FeatureCatalog,CatalogFeatureReading,catalogGraphState} from './FeatureCatalog';
 import {analysisModes,isAnalysisMode,waitingForAgent,type AnalysisMode} from './discovery-state';
 import {projectLabel} from './project-label';
 import {Architecture} from './Architecture';
@@ -47,6 +48,9 @@ const statuses:Record<string,string>={validating:'本地校验中',queued:'排�
 const short=(s:string)=>s.length>28?s.slice(0,12)+'…'+s.slice(-10):s;
 function closePopovers(except?:Node){for(const menu of document.querySelectorAll<HTMLDetailsElement>('.analysis-options[open],.context-edit-actions[open],.source-options[open],.view-options[open],.canvas-filter[open],.feature-menu[open]'))if(!except||!menu.contains(except))menu.open=false;}
 type HomeBookmark={projectId:string;label:string;catalogNodeId?:string;position:Pick<ReadingState,'scenario_id'|'result_id'|'source_snapshot_id'|'entrance'|'view'|'selected'|'file'|'evidence_id'|'detail_tab'|'reading_path'|'function_path'|'stage'|'function_mode'>};
+function firstGraphPath(result:AnalysisResult){
+  return result.function_walkthroughs?.find(path=>hasFunctionGraphs({...result,function_walkthroughs:[path]}))?.id||'';
+}
 function App(){
   const [data,setData]=useState(initialData),[projectId,setProjectId]=useState(''),[scenarioId,setScenarioId]=useState('');
   const [reading,setReading]=useState<ReadingState>(defaults),[loadedKey,setLoadedKey]=useState(''),[width,setWidth]=useState(window.innerWidth);
@@ -125,10 +129,10 @@ function App(){
     :undefined;
   const preview=featureSource&&!catalogReading&&!engineeringReading&&project&&discovery;
   const functionPreview=!!preview&&reading.view==='functions';
-  const matchesPreview=(binding:Run['binding'])=>binding.project_id===projectId&&binding.scenario_id===scenarioId
-    &&binding.question_revision_id===scenario?.question_revision_id&&binding.source_snapshot_id===featureSource?.result.binding.source_snapshot_id;
-  const previewRun=functionPreview?sceneRuns.filter(run=>matchesPreview(run.binding)).at(-1):undefined;
-  const previewExplanation=functionPreview?sceneExplanations.filter(item=>matchesPreview(item.result.binding)).at(-1):undefined;
+  const previewGraphs=functionPreview&&featureSource&&discovery?catalogGraphState(data,featureSource,discovery.node_id):undefined;
+  const previewRun=previewGraphs?.run;
+  const automaticRun=previewRun?.overview_parent_run_id;
+  const previewExplanation=previewGraphs?.ready??(!automaticRun?previewGraphs?.latest:undefined);
   const bookmarkResult=bookmark?.projectId===projectId&&data.explanations.find(e=>e.result_id===bookmark.position.result_id&&e.result.binding.project_id===projectId&&e.result.binding.source_snapshot_id===bookmark.position.source_snapshot_id);
   const bookmarkScene=walkScenes.find(s=>s.scenario_id===bookmark?.position.scenario_id);
   const sameBookmarkScope=bookmarkResult&&(bookmarkResult.scenario_id===bookmark?.position.scenario_id||!!bookmarkScene&&!!bookmark?.catalogNodeId&&discoveredFeature(data.features,data.explanations,bookmarkResult.result,bookmark.catalogNodeId,project?.snapshot_id||'')?.feature_id===bookmarkScene.feature_id);
@@ -152,9 +156,10 @@ function App(){
   },[bookmarkLabel,projectId,scenario?.scenario_id,bookmarkSource?.result_id,loadedKey,readingKey,reading.mode,reading.view,reading.entrance,reading.selected,reading.file,reading.evidence_id,reading.detail_tab,reading.reading_path,reading.function_path,reading.function_mode,reading.stage]);
   const latestRun=sceneRuns.at(-1);
   const running=sceneRuns.find(r=>['queued','waiting_agent','running','validating','cancel_requested'].includes(r.status));
-  const activityRun=running||latestRun;
+  const activityRun=functionPreview?previewRun:running||latestRun;
   const completedExplanation=data.explanations.find(e=>e.result.binding.run_id===activityRun?.binding.run_id);
   const projectTasks=data.runs.filter(r=>!r.reading_question_id&&r.binding.project_id===projectId&&['queued','waiting_agent','running','validating','cancel_requested'].includes(r.status));
+  const otherProjectTasks=projectTasks.filter(r=>!r.overview_parent_run_id);
   const pendingScene=data.scenarios.find(s=>s.project_id===projectId&&waitingForAgent(data,s.scenario_id));
   const featureTask=(data.development_tasks??[]).filter(task=>task.reading?.scenario_id===scenarioId).sort((a,b)=>b.updated_at.localeCompare(a.updated_at))[0];
   const featureDraft=featureDrafts[scenarioId]??{editing:false,request:'',mode:'codex' as const};
@@ -168,7 +173,7 @@ function App(){
   useEffect(()=>{
     if(!previewExplanation||loadedKey!==readingKey)return;
     patch({result_id:previewExplanation.result_id,source_snapshot_id:previewExplanation.result.binding.source_snapshot_id,
-      selected:'',file:'',evidence_id:'',reading_path:'',function_path:'',reading_focus:'',detail_tab:'details',mode:'normal'});
+      selected:'',file:'',evidence_id:'',reading_path:'',function_path:firstGraphPath(previewExplanation.result),function_mode:'calls',reading_focus:'',detail_tab:'details',mode:'normal'});
     setShowDetail(false);
   },[previewExplanation?.result_id,loadedKey,readingKey,patch]);
   function switchView(view:string,overrides:Partial<ReadingState>={}){
@@ -371,16 +376,23 @@ function App(){
   const canRevalidate=previewRun?.status==='failed'&&!previewRun.overview_format;
   const needsFunctionGraphs=reading.entrance==='walk'&&reading.view==='functions'&&(functionPreview||!!result&&!result.function_walkthroughs?.length);
   const generateLabel=expandMode==='mcp'?'准备调用图任务':`用 ${expandMode==='dsh'?'DSH':'Codex'} 生成调用图`;
+  const graphPending=activityRun&&['queued','waiting_agent','running','validating','cancel_requested'].includes(activityRun.status);
+  const graphWaiting=functionPreview?previewGraphs?.status==='等待领取':waitingMcp;
+  const manualGraphActions=<>
+    {canRevalidate&&<div><p>上次功能分析失败。可先在本地校验已收到的原文。</p>
+      <button disabled={pending||!!running} onClick={()=>void revalidateFunctionRun(previewRun)}>重新校验已收原文</button></div>}
+    {(featureSource?.result||result)?.binding.source_snapshot_id!==project?.snapshot_id&&<p>新分析将使用当前工程的冻结快照。</p>}
+    <button className="primary analysis-start" disabled={pending||!!running||project?.fictional||!!indexes[projectId]} onClick={()=>void requestAnalysis()}>{pending?'正在提交…':generateLabel}</button>
+  </>;
   const graphActions=needsFunctionGraphs&&<section aria-label="当前功能的深入分析">
-    <p>一次功能分析同时生成调用链和调用时间图。调用链展示谁调用谁，时间图按源码确认的先后排列步骤。</p>
-    {running||waitingMcp?<div className="row"><span role="status">{running?(statuses[running.status]||running.status):'等待 Agent 领取'}</span>
-      <button onClick={showRun}>{running?.status==='waiting_agent'||!running?'查看待领取任务':'查看当前功能分析进度'}</button>
-      {!running&&waitingMcp&&expandMode!=='mcp'&&<button disabled={pending||project?.fictional||!!indexes[projectId]} onClick={()=>void requestAnalysis()}>{generateLabel}</button>}</div>:<>
-      {canRevalidate&&<div><p>上次功能分析失败。可先在本地校验已收到的原文。</p>
-        <button disabled={pending} onClick={()=>void revalidateFunctionRun(previewRun)}>重新校验已收原文</button></div>}
-      {(featureSource?.result||result)?.binding.source_snapshot_id!==project?.snapshot_id&&<p>新分析将使用当前工程的冻结快照。</p>}
-      <button className="primary analysis-start" disabled={pending||project?.fictional||!!indexes[projectId]} onClick={()=>void requestAnalysis()}>{pending?'正在提交…':generateLabel}</button>
-    </>}
+    {automaticRun?<p role="status">本轮工程分析已包含此功能 · {previewGraphs?.status||'已结束'}。</p>:
+      <p>一次功能分析可生成调用链和调用时间图。调用链展示谁调用谁，时间图按源码确认的先后排列步骤。</p>}
+    {graphPending||graphWaiting?<div className="row">
+      {!automaticRun&&<span role="status">{graphPending&&activityRun?(statuses[activityRun.status]||activityRun.status):'等待 Agent 领取'}</span>}
+      <button onClick={showRun}>{activityRun?.status==='waiting_agent'||!graphPending?'查看待领取任务':'查看当前功能分析进度'}</button>
+      {!running&&waitingMcp&&expandMode!=='mcp'&&!automaticRun&&<button disabled={pending||project?.fictional||!!indexes[projectId]} onClick={()=>void requestAnalysis()}>{generateLabel}</button>}</div>:
+      automaticRun?<details><summary>手动补查或重试</summary>{manualGraphActions}</details>:manualGraphActions}
+    {automaticRun&&previewGraphs?.latest&&!previewGraphs.ready&&<button onClick={()=>viewFeatureResult(previewGraphs.latest!.result_id)}>查看已有分析依据</button>}
   </section>;
   const analysisButton=!needsFunctionGraphs&&<button className="primary analysis-start" disabled={pending||project?.fictional||!!indexes[projectId]} onClick={beginAnalysis}>{analysisLabel}</button>;
   const analysisMenu=<details className="analysis-options"><summary>分析方式 · {analysisMode.name}</summary>
@@ -398,11 +410,14 @@ function App(){
     try{await action(async()=>{
       const requestedProject=projectSwitch.current;
       const opened=await api.invoke('feature_open',{project_id:projectId,result_id:catalogExplanation.result_id,node_id:nodeId,request_mcp:false});
-      await reload();
+      const workspace=await reload();
       if(requestedProject!==projectSwitch.current)return;
+      const graph=catalogGraphState(workspace,catalogExplanation,nodeId);
+      const automatic=!!graph.run?.overview_parent_run_id;
+      const report=graph.ready??(!automatic?graph.latest:undefined);
       emptyEntrance.current='walk';
-      chooseScenario(opened.scenario.scenario_id,{entrance:'walk',view:'timeline',mode:'normal',
-        result_id:opened.result_id||catalogExplanation.result_id,selected:'',file:'',evidence_id:'',reading_path:'',function_path:'',reading_focus:'',
+      chooseScenario(opened.scenario.scenario_id,{entrance:'walk',view:graph.ready||automatic?'functions':'timeline',mode:'normal',
+        result_id:report?.result_id||catalogExplanation.result_id,selected:'',file:'',evidence_id:'',reading_path:'',function_path:graph.ready?firstGraphPath(graph.ready.result):'',function_mode:'calls',reading_focus:'',
         source_snapshot_id:catalogExplanation.result.binding.source_snapshot_id,detail_tab:'details',catalog_hidden:true,pinned:false});
     });}finally{starting.current=false;setPending(false);}
   }
@@ -500,7 +515,7 @@ function App(){
       {!engineeringReading&&!projectHome&&<div className="context"><div><div className="breadcrumb" title={project.root_path}>{projectLabel(project)} / {reading.entrance==='overview'?'工程全貌':data.features.find(f=>f.feature_id===scenario?.feature_id)?.name||'功能走读'}<span className="breadcrumb-kind"> · {currentView}</span>{project.fictional&&<span className="tag amber">演示数据</span>}</div><h1 title={scenario?.title}>{engineeringReading?'开发与工程记录':catalogReading?'功能总览':reading.entrance==='overview'&&reading.view==='functions'?'工程全貌 · 函数走读':(featureReading||(reading.entrance==='walk'&&reading.view==='functions'))?`${currentFeature?.name||scenario?.title||'当前功能'} · ${currentView}`:reading.view==='files'?'文件结构与用途':compactTitle(scenario?.title||(reading.entrance==='overview'?'系统架构与工程组成':'选择要理解的功能'),40)}</h1><div className="scope-hint"><span className="tag">{analysisScope}</span><span>{reading.entrance==='overview'?'系统组成、技术栈与组件关系':scenario?.kind==='feature_overview'?'这个功能的职责、关键调用与输入输出':'围绕当前问题核对调用、阶段和源码依据'}</span></div></div><div className="context-actions">{!engineeringReading&&<><div className="analysis-controls">{reading.view==='files'&&!featureReading?<button className="primary" onClick={askHere}>解释当前文件 / 目录</button>:analysisButton}{analysisMenu}</div><details className="context-edit-actions"><summary>更多操作</summary><div className="popover-content"><button onClick={()=>openModal('feature')}>＋ 功能</button><button disabled={!userFeatures.length} title={!userFeatures.length?'先添加一个功能，再建立具体场景':'选择所属功能并添加一个具体问题'} onClick={()=>openModal('scenario')}>＋ 场景</button>{scenario&&<><button onClick={()=>{setFormName(scenario.title);setModal('rename');}}>改标题</button><button onClick={()=>{setFormQuestion(scenario.question);setModal('revise');}}>编辑问题</button></>}</div></details></>}</div></div>}
       <div className="workspace-bar"><div className="row"><button className="icon" aria-label={width>=900&&!reading.catalog_hidden?'隐藏目录':'显示目录'} aria-expanded={width>=900?!reading.catalog_hidden:showCatalog} aria-controls="workspace-navigation" title={width>=900&&!reading.catalog_hidden?'隐藏导航':'显示导航'} onClick={()=>{if(width>=900)patch({catalog_hidden:!reading.catalog_hidden});else{patch({catalog_hidden:false});setShowCatalog(!showCatalog);}}}>☰</button>
         {reading.entrance==='walk'&&!catalogReading&&<button className="back-to-catalog" onClick={()=>setEntrance('walk')}>← 返回功能总览</button>}{featureTabs?<nav className="feature-view-tabs" aria-label="功能阅读视图">{featureTabs.map(([view,label])=><button key={view} type="button" className={view==='functions'?'feature-functions-tab':undefined} aria-current={reading.view===view?'page':undefined} onClick={()=>{if(reading.view!==view){if(preview)patch({view});else navigateFeature(view);}}}>{label}</button>)}</nav>:<span className="current-view">{catalogReading?'功能总览':currentView}</span>}{!engineeringReading&&activityRun?.status==='completed'&&<button className="saved-analysis" onClick={showRun}>已保存说明 · 查看真实过程</button>}</div>{!engineeringReading&&<div className="row"><details className="source-options"><summary>资料与来源</summary><div className="popover-content"><span className="source-badge" title={result?.binding.source_snapshot_id||project.snapshot_id}>来源 {short(result?.binding.source_snapshot_id||project.snapshot_id)}</span><button onClick={()=>void action(()=>api.invoke('refresh',{project_id:projectId}),'已冻结新快照；历史说明保留原来源')}>刷新来源</button></div></details>{!catalogReading&&<><button className="primary workspace-question" onClick={askHere}>提问</button><button className="workspace-detail-toggle" onClick={()=>{setShowDetail(true);patch({detail_tab:'details'});}}>详情</button></>}</div>}</div>
-      {catalogReading&&(projectTasks.length>0||pendingScene)&&<section className="project-task-strip" aria-label="本工程进行中的分析">{projectTasks.map(r=><button key={r.binding.run_id} onClick={()=>openTask(r.binding.scenario_id)}>{r.title} · {statuses[r.status]} · 查看进度 →</button>)}{pendingScene&&!projectTasks.some(r=>r.binding.scenario_id===pendingScene.scenario_id)&&<button onClick={()=>openTask(pendingScene.scenario_id)}>{pendingScene.title} · 等待 Agent 领取 →</button>}</section>}
+      {catalogReading&&(otherProjectTasks.length>0||pendingScene)&&<section className="project-task-strip" aria-label="本工程进行中的分析">{otherProjectTasks.map(r=><button key={r.binding.run_id} onClick={()=>openTask(r.binding.scenario_id)}>{r.title} · {statuses[r.status]} · 查看进度 →</button>)}{pendingScene&&!projectTasks.some(r=>r.binding.scenario_id===pendingScene.scenario_id)&&<button onClick={()=>openTask(pendingScene.scenario_id)}>{pendingScene.title} · 等待 Agent 领取 →</button>}</section>}
       {!engineeringReading&&!catalogReading&&waitingMcp&&result&&<div className="result-status">新分析等待 Agent 领取；当前仍显示已保存的说明。<button onClick={showRun}>查看待领取任务</button></div>}
       {!engineeringReading&&!catalogReading&&overviewReviewGaps.length>0&&<div className="result-status" aria-label="关系自动补查"><span>{running?.overview_from_result_id===result?.result_id?'正在补查当前说明的关系，原图保留；完成后可查看新版本。':`${overviewReviewGaps.length} 条关系尚未确认。ARC 可沿用这份说明的冻结源码继续补查，并保存为新版本。`}</span><button disabled={pending||projectTasks.length>0||!!indexes[projectId]||!!project?.fictional} onClick={()=>void researchOverview()}>自动补查关系</button></div>}
       {!engineeringReading&&!catalogReading&&!waitingMcp&&!running&&completedExplanation&&(!architectureReading||completedExplanation.result_id!==result?.result_id||explanation?.source_status!=='current')&&<div className="result-status"><span>{completedExplanation.result_id===result?.result_id?'正在查看已保存的分析结果':'本次分析已保存；当前仍在阅读旧版'}{explanation?.source_status!=='current'?' · 来源待核对':''}</span><button onClick={viewCompleted}>查看本次分析结果</button></div>}

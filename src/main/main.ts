@@ -16,7 +16,7 @@ app.whenReady().then(async()=>{
   const resources=app.getAppPath();
   try{service=new ArcService(app.getPath('userData'),resources,event=>{
     window?.webContents.send('arc:event',event);
-    if(event.type==='run_event'&&event.event?.type==='dsh.session_ready')void service.providerSessionUrl(event.run_id).then(url=>shell.openExternal(url)).then(()=>service.event(event.run_id,{type:'local.stage',stage:'native_opened',message:'已请求浏览器打开对应 DSH 会话；任务继续分析并自动写回'})).catch(e=>service.event(event.run_id,{type:'local.stage',stage:'native_open_failed',message:'打开 DSH 对话失败：'+redact((e as Error).message)}));
+    if(event.type==='run_event'&&event.event?.type==='dsh.session_ready'&&!service.store.get('run',event.run_id).overview_parent_run_id)void service.providerSessionUrl(event.run_id).then(url=>shell.openExternal(url)).then(()=>service.event(event.run_id,{type:'local.stage',stage:'native_opened',message:'已请求浏览器打开对应 DSH 会话；任务继续分析并自动写回'})).catch(e=>service.event(event.run_id,{type:'local.stage',stage:'native_open_failed',message:'打开 DSH 对话失败：'+redact((e as Error).message)}));
   });}
   catch(e){dialog.showErrorBox('Arc 无法打开数据',(e as Error).message);app.quit();return;}
   bridge=new ArcMcpBridge(service,resources,true);await bridge.start();
@@ -90,7 +90,7 @@ app.whenReady().then(async()=>{
         case 'overview_create':value=service.overview(args.project_id);break;
         case 'import_result':{const picked=await dialog.showOpenDialog(window!,{properties:['openFile'],filters:[{name:'Arc 分析结果',extensions:['json']}]});if(!picked.canceled)value=await service.importResult(args.scenario_id,picked.filePaths[0]);break;}
         case 'feature_open':value=service.openDiscoveredFeature(args.project_id,args.result_id,args.node_id,args.request_mcp===true);break;
-        case 'analysis_prepare':value=service.prepareAnalysis(args.scenario_id);break;
+        case 'analysis_prepare':value=service.prepareAnalysis(args.scenario_id,undefined,true);break;
         case 'feature_add':value=service.addFeature(args.project_id,args.name,args.question);break;
         case 'scenario_add':value=service.store.transaction(()=>service.addScenario(args.feature_id,args.question));break;
         case 'scenario_revise':value=service.reviseScenario(args.scenario_id,args.question);break;
@@ -104,7 +104,7 @@ app.whenReady().then(async()=>{
         case 'providers_probe':value=await service.probe(args.config);break;
         case 'run_start':{
           if(args.provider_id==='codex')await bridge.enable(service.store.get('scenario',args.scenario_id).project_id,false);
-          value=await service.startRun(args.scenario_id,args.provider_id,args.submission_key,args.previous_run_id);break;
+          value=await service.startRun(args.scenario_id,args.provider_id,args.submission_key,args.previous_run_id,{projectAnalysis:true});break;
         }
         case 'overview_research':value=await service.researchOverview(args.result_id,args.submission_key);break;
         case 'reading_ask':await bridge.enable(args.project_id,false);value=await service.askReading(args);break;

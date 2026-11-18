@@ -47,8 +47,18 @@ export interface Run {
   reading_context?:ReadingContext;
   overview_format?:'overview-1';
   overview_from_result_id?:string;
+  overview_parent_run_id?:string;
+  overview_followup_mode?:'direct'|'dispatch'|'manual';
   development_task_id?:string;
   refresh_from_result_id?:string;
+}
+export function hasFunctionGraphs(result:AnalysisResult):boolean {
+  const functions=new Set(result.nodes.filter(node=>node.kind==='function').map(node=>node.node_id));
+  return !!result.function_walkthroughs?.some(path=>path.steps.some(step=>{
+    if(!['call','callback','dispatch'].includes(step.kind)||!step.from_node_id||!step.to_node_id||!functions.has(step.from_node_id)||!functions.has(step.to_node_id))return false;
+    const kind=step.kind==='call'?'sync_call':'execution_boundary';
+    return result.edges.some(edge=>edge.kind===kind&&edge.status==='source_supported'&&edge.source_node_id===step.from_node_id&&edge.target_node_id===step.to_node_id);
+  }));
 }
 export interface Explanation { result_id: string; scenario_id: string; created_at: string; source_status: string; result: AnalysisResult }
 export interface ProviderProfile { provider_id: ProviderId; requested_name: string; product: string; status: string; version?: string; path?: string; reason: string; transport: string; auth: string; capabilities: Record<string,string>; checked_at: string }
@@ -70,7 +80,7 @@ export interface ReadingState {
   reading_focus?: string;
   feature_reading_version?: number;
 }
-export interface AnalysisRequest { project_id:string; scenario_id:string; source_snapshot_id:string; question_revision_id?:string; created_at?:string; development_task_id?:string }
+export interface AnalysisRequest { project_analysis?:true; project_id:string; scenario_id:string; source_snapshot_id:string; question_revision_id?:string; created_at?:string; development_task_id?:string }
 export interface WorkspaceData { projects: Project[]; features: Feature[]; scenarios: Scenario[]; revisions: Revision[]; annotations: Annotation[]; runs: Run[]; explanations: Explanation[]; providers: ProviderProfile[]; snapshots: Snapshot[]; requested_analysis?:AnalysisRequest; questions?:ReadingQuestion[]; development_tasks?:import('./engineering').EngineeringTask[] }
 export interface ArcApi {
   invoke<T = any>(operation: string, args?: unknown): Promise<T>;
