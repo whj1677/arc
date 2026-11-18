@@ -84,6 +84,7 @@ export interface VerificationEvidence {
 export interface TaskReadingBinding {
   feature_id:string; scenario_id:string; result_id:string; source_snapshot_id:string;
   target:ReadingTarget;
+  evidence?:{evidence_id:string;path:string;line_start:number;line_end:number};
 }
 export interface WalkthroughUpdate {
   status:'pending'|'running'|'completed'|'failed';
@@ -100,7 +101,7 @@ export interface EngineeringTask {
   workflow?:'analysis'|'ready'|'execution'; proposed_scope?:string[];
   requirement_package?:RequirementPackage;
   approval?:{reviewed_version:number;scope:string[]};
-  analysis_channel?:'codex'|'kimi';
+  analysis_channel?:'codex'|'kimi'|'dsh';
   status:'pending'|'running'|'blocked'|'completed'|'failed'|'cancelled'|'interrupted';
   baseline:CodeState; end_state?:CodeState; diff_baseline?:CodeState; context_version:number;
   summary:string; decisions:string[]; unresolved:string[]; changes:FileChange[];

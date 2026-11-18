@@ -31,7 +31,7 @@ export function engineeringDocumentCategory(file:string):EngineeringSectionCateg
   return undefined;
 }
 interface RequirementSubmission {
-  phase:'analysis'|'execution'; expected_version?:number; channel:'codex'|'kimi';
+  phase:'analysis'|'execution'; expected_version?:number; channel:'codex'|'kimi'|'dsh';
   checkAvailable:()=>void; onSaved:(task:EngineeringTask)=>void;
 }
 export class EngineeringService {
@@ -386,7 +386,19 @@ export class EngineeringService {
     if(feature.project_id!==projectId||scenario.project_id!==projectId||scenario.feature_id!==feature.feature_id||explanation.scenario_id!==scenario.scenario_id)throw Error('功能、场景与任务归属不一致');
     if(explanation.result.binding.feature_id!==feature.feature_id||explanation.result.binding.scenario_id!==scenario.scenario_id||explanation.result.binding.source_snapshot_id!==snapshot.source_snapshot_id||snapshot.project_id!==projectId)throw Error('走读结果与冻结来源归属不一致');
     readingTarget(explanation.result,input.target,snapshot,feature);
-    return {feature_id:feature.feature_id,scenario_id:scenario.scenario_id,result_id:explanation.result_id,source_snapshot_id:snapshot.source_snapshot_id,target:{kind:input.target.kind,id:input.target.id}};
+    const anchor=input.evidence;
+    const evidence=anchor&&explanation.result.evidence.find(item=>item.evidence_id===anchor.evidence_id&&item.source_snapshot_id===snapshot.source_snapshot_id&&item.path===anchor.path&&item.line_start===anchor.line_start&&item.line_end===anchor.line_end);
+    const cited=evidence&&snapshot.files.find(file=>file.path===evidence.path);
+    if(anchor&&(!evidence||!cited||cited.content_sha256!==evidence.content_sha256||evidence.line_start<1||evidence.line_end<evidence.line_start||evidence.line_end>cited.line_count))throw Error('选中的源码行与走读证据不一致，请重新选择来源');
+    return {feature_id:feature.feature_id,scenario_id:scenario.scenario_id,result_id:explanation.result_id,source_snapshot_id:snapshot.source_snapshot_id,
+      target:{kind:input.target.kind,id:input.target.id},...(evidence?{evidence:{evidence_id:evidence.evidence_id,path:evidence.path,line_start:evidence.line_start,line_end:evidence.line_end}}:{})};
+  }
+  validateProposedRequirement(task:EngineeringTask,input:Pick<UpdateEngineeringTask,'proposed_scope'|'steps'|'requirement_package'>) {
+    const draft=structuredClone(task);
+    draft.proposed_scope=(input.proposed_scope??[]).map(relativePath);
+    draft.requirement_package=input.requirement_package;
+    this.mergeSteps(draft,input.steps??[]);
+    this.validatePackage(draft);
   }
   private validatePackage(task:EngineeringTask) {
     const behaviors=task.requirement_package?.behaviors;

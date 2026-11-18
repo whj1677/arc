@@ -18,7 +18,12 @@ import {ownedArcRegistration,writeConnection,adoptConnection} from './mcp-regist
 import {listFrozenFiles} from './prompt-context';
 import {readingAnswerSchema,readingInstructions} from './reading-question';
 import {flushDevelopmentWrites,pendingDevelopmentWrites,rememberDevelopmentWorkspace} from './development-outbox';
-import {engineeringCategories,type CompletionBinding,type EngineeringTask} from '../engineering';
+import {engineeringCategories,type CodeState,type CompletionBinding,type DevelopmentAttempt,type EngineeringTask,type FinishEngineeringTask} from '../engineering';
+import {applyDshEdits,runDshRequirement} from './dsh-development';
+
+function sameDshCodeState(a:CodeState,b:CodeState) {
+  return !!a.workspace_fingerprint&&a.workspace_fingerprint===b.workspace_fingerprint&&a.head===b.head&&a.branch===b.branch&&a.git_common_dir===b.git_common_dir;
+}
 const exec=promisify(execFile);
 const property={type:'string'};
 const strings={type:'array',items:property};
@@ -55,7 +60,9 @@ export class ArcMcpBridge {
   readonly connectionFile:string;
   private inFlight=new Map<string,{digest:string;task:Promise<unknown>}>();
   readonly dispatch:ExternalDispatch;
-  constructor(readonly service:ArcService,readonly resources:string,externalExecution=false){
+  private dshRuns=new Map<string,{controller:AbortController;work:Promise<void>}>();
+  private dshStarting=new Set<string>();
+  constructor(readonly service:ArcService,readonly resources:string,externalExecution=false,private runDshDevelopment=runDshRequirement){
     this.connectionFile=path.join(service.directory,'mcp','connection.json');
     this.dispatch=new ExternalDispatch(service.store,()=>service.changed());
     this.reconcileLegacyDispatches();
@@ -83,9 +90,13 @@ export class ArcMcpBridge {
       this.service.store.put('external_dispatch',item.dispatch_id,item);this.service.changed();
     }
   }
-  queueDevelopment(args:any){return this.submitRequirement(args,'codex');}
+  queueDevelopment(args:any){
+    const original=args.task_id?this.service.engineering.task(args.task_id):undefined;
+    const channel=(args.phase==='execution'?original?.analysis_channel==='dsh':args.channel==='dsh')?'dsh':'codex';
+    return this.submitRequirement(args,channel);
+  }
   beginManualRequirement(args:any){return this.submitRequirement({...args,phase:'analysis'},'kimi');}
-  private async submitRequirement(args:any,channel:'codex'|'kimi'){
+  private async submitRequirement(args:any,channel:'codex'|'kimi'|'dsh'){
     const workspace=await this.service.engineering.connect(args.project_id);
     this.reconcileLegacyDispatches(workspace.project_id);
     const phase=args.phase??'analysis';
@@ -93,20 +104,109 @@ export class ArcMcpBridge {
     if(phase==='execution'&&!args.task_id)throw Error('请先提交并审阅需求包');
     const files=phase==='analysis'?[]:await resolveDevelopmentScope(workspace.root_path,args.scope);
     const scope=files.map(file=>path.relative(workspace.root_path,file).split(path.sep).join('/'));
-    await this.enable(args.project_id,false);
-    return this.service.engineering.createTask({...args,scope},{
+    if(channel!=='dsh')await this.enable(args.project_id,false);
+    let startDsh=false;
+    const saved=await this.service.engineering.createTask({...args,scope},{
       phase,expected_version:args.expected_version,channel,
       checkAvailable:()=>{
         this.service.engineering.checkWorkspaceAvailable(workspace);
+        if(this.dshStarting.has(workspace.workspace_id))throw Error('此工作区正在启动 DeepSeek Harness，请稍后重试');
         if(this.dispatch.items(args.project_id).some(item=>['queued','sending','awaiting_claim','running','unknown'].includes(item.state)))throw Error('已有派发未结束，请先核对原任务状态');
       },
       onSaved:task=>{
         if(channel==='kimi')return;
+        if(channel==='dsh'){startDsh=true;this.dshStarting.add(workspace.workspace_id);return;}
         const target={task_id:task.task_id,submission_key:args.submission_key,request:args.goal,scope,phase,task_version:task.version,reviewed_version:task.approval?.reviewed_version};
         this.dispatch.enqueue(task.project_id,target);
       },
     });
+    if(!startDsh)return saved;
+    try{return this.startDshRequirement(saved);}finally{this.dshStarting.delete(workspace.workspace_id);}
   }
+  private startDshRequirement(task:EngineeringTask) {
+    if(task.status!=='pending'||this.dshRuns.has(task.task_id))throw Error('此需求阶段已经领取');
+    const scope=task.workflow==='execution'?[...(task.approval?.scope??[])]:[];
+    const attempt=this.service.engineering.startAttempt(task.task_id,{provider_id:'dsh',model:'DeepSeek Harness',origin:'arc',write_scope:scope});
+    const controller=new AbortController();
+    const work=this.executeDshRequirement(task,attempt,controller.signal).finally(()=>this.dshRuns.delete(task.task_id));
+    this.dshRuns.set(task.task_id,{controller,work});
+    return this.service.engineering.task(task.task_id);
+  }
+
+  async cancelDshRequirement(taskId:string) {
+    const active=this.dshRuns.get(taskId);
+    if(!active)return this.service.engineering.task(taskId);
+    active.controller.abort();
+    await active.work;
+    return this.service.engineering.task(taskId);
+  }
+
+  private async executeDshRequirement(task:EngineeringTask,attempt:DevelopmentAttempt,signal:AbortSignal) {
+    const {engineering,store}=this.service;
+    const key=attempt.attempt_id;
+    const stage=(message:string)=>engineering.appendAttemptEvent(key,{type:'local.stage',message:redact(message)});
+    let applying=false;
+    const finish=(fields:Pick<FinishEngineeringTask,'status'|'summary'|'decisions'|'unresolved'|'steps'|'proposed_scope'|'requirement_package'|'completion_binding'>)=>{
+      const current=engineering.task(task.task_id);
+      return engineering.finishTask({task_id:task.task_id,attempt_id:key,expected_version:current.version,submission_key:key+':'+fields.status,...fields});
+    };
+    try {
+      engineering.updateAttempt(key,{status:'running'});
+      const current=engineering.task(task.task_id);
+      const executing=task.workflow==='execution';
+      stage(executing?'已确认当前需求包与文件范围，正在准备 DeepSeek Harness 执行。':'正在准备 DeepSeek Harness 只读分析。');
+      const baseline=attempt.baseline;
+      if(!baseline?.workspace_fingerprint)throw Error('未取得可复核的工作区状态');
+      if(executing&&(!task.approval||!task.end_state||!sameDshCodeState(baseline,task.end_state)))throw Error('工作区已与审阅时不同，请在原任务重新分析后确认');
+      const snapshot=store.get<Snapshot>('snapshot',baseline.snapshot_id);
+      const reference=task.reading?.evidence;
+      let selectedSource:string|undefined;
+      if(reference&&task.reading) {
+        const previous=store.get<Snapshot>('snapshot',task.reading.source_snapshot_id);
+        const file=await readSource(store.directory,previous,reference.path);
+        const lines=linesOf(file.text).slice(reference.line_start-1,reference.line_end);
+        selectedSource=`${reference.path}:${reference.line_start}–${reference.line_end}（原走读证据）\n${lines.join('\n').slice(0,12000)}`;
+      }
+      signal.throwIfAborted();
+      const result=await this.runDshDevelopment({task:current,snapshot,storage:store.directory,resources:this.resources,configured:await this.service.dshBinary(),signal,selectedSource,
+        event:event=>{
+          if(event.type==='dsh.session'&&typeof event.session_id==='string')engineering.updateAttempt(key,{session_id:event.session_id,runtime_version:'0.2.1-rc.2'});
+          engineering.appendAttemptEvent(key,JSON.parse(redact(JSON.stringify(event))));
+        },
+        validatePlan:async plan=>{
+          engineering.validateProposedRequirement(current,plan);
+          await resolveDevelopmentScope(task.workspace_path,plan.proposed_scope);
+        }});
+      signal.throwIfAborted();
+      if(executing) {
+        const live=await engineering.captureState(task.project_id,task.workspace_path);
+        if(!sameDshCodeState(baseline,live)||engineering.task(task.task_id).version!==current.version)throw Error('工作区或需求版本已变化，拒绝写入，请重新分析');
+        signal.throwIfAborted();
+        applying=true;
+        await applyDshEdits(task.workspace_path,attempt.write_scope??[],snapshot,result.edits??[],signal);
+        const saved=await finish({status:'completed',summary:result.summary,unresolved:[...(result.unresolved??[]),'实施差异已保存，需求包中的业务验证尚未执行。']});
+        stage(saved.changes.length?'已保存本次实际差异，正在更新同一功能的走读。':'执行已回填，工作区没有新增差异。');
+        engineering.updateAttempt(key,{status:'completed'});
+      } else {
+        const saved=await finish({status:'completed',summary:result.summary,decisions:result.decisions,unresolved:result.unresolved,steps:result.steps,proposed_scope:result.proposed_scope,requirement_package:result.requirement_package});
+        engineering.updateAttempt(key,{status:saved.workflow==='ready'?'completed':'failed'});
+        stage(saved.workflow==='ready'?'需求包已保存，等待用户审阅确认。':saved.unresolved.at(-1)||'只读分析未进入审阅状态。');
+      }
+    } catch(error) {
+      const message=signal.aborted?'已停止本次 DeepSeek Harness 任务。':redact((error as Error).message);
+      const status=signal.aborted?'cancelled':'blocked';
+      let unresolved=[message];
+      if(applying) {
+        try{await finish({status,summary:message,unresolved,completion_binding:null});}
+        catch(captureError){unresolved=[message,redact((captureError as Error).message)];}
+      }
+      const current=engineering.task(task.task_id);
+      if(current.status==='running')engineering.updateTask({task_id:task.task_id,attempt_id:key,expected_version:current.version,submission_key:key+':diagnostic',status,summary:message,unresolved});
+      engineering.updateAttempt(key,{status:signal.aborted?'cancelled':'failed',error:message});
+      engineering.appendAttemptEvent(key,{type:'error',message});
+    }
+  }
+
   private beginRequirementAttempt(task:EngineeringTask,provider:'codex'|'kimi',writeScope:string[],model?:string){
     if(task.status!=='pending')throw Error('此需求阶段尚未排队或已领取');
     const attempt=this.service.engineering.startAttempt(task.task_id,{provider_id:provider,model:model?`宿主自报：${model.slice(0,100)}`:'宿主未上报模型',origin:'agent',write_scope:writeScope});
@@ -391,7 +491,7 @@ export class ArcMcpBridge {
       try{return await task;}catch(e){const latest=this.service.store.get<Run>('run',run.binding.run_id);if(['running','validating'].includes(latest.status)){latest.status='failed';latest.ended_at=now();latest.error=redact((e as Error).message);this.service.store.put('run',run.binding.run_id,latest);this.recordDevelopmentWalkthrough(run,latest);this.service.changed();}throw e;}finally{this.inFlight.delete(run.binding.run_id);this.service.finishExternalWalkthrough(run.binding.run_id);}
     }
   }
-  async close(){this.dispatch.close();this.closed=true;this.revokeRuns();await Promise.allSettled([...this.inFlight.values()].map(x=>x.task));if(this.server)await new Promise<void>(resolve=>this.server!.close(()=>resolve()));}
+  async close(){this.dispatch.close();this.closed=true;this.revokeRuns();for(const run of this.dshRuns.values())run.controller.abort();await Promise.allSettled([...this.inFlight.values()].map(x=>x.task).concat([...this.dshRuns.values()].map(x=>x.work)));if(this.server)await new Promise<void>(resolve=>this.server!.close(()=>resolve()));}
 }
 
 const developmentAnalysisInstructions=' 这是开发结束后的同功能复核。任务目标和旧说明只是历史意图；沿本次冻结源码重新核对入口、条件、所有相关状态写入与读取点、失败或超时和恢复，不只看 diff 或局部正确分支。检查通用入口和校验前写入是否抵消局部修复；矛盾与证据不足明确写入 claims.limitations / gaps。不同中断、回调、周期任务和队列入口不得串成同步调用链。';

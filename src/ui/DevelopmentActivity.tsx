@@ -30,7 +30,7 @@ export function DevelopmentActivity({task,attempt,dispatch,events,onSettings}:{t
   const message=dispatch?.error||attempt?.error||(backfilled?task.summary:'')||(stepIsLatest?step.progress:latest?.text)||'尚未收到本轮的公开输出。';
   return <section className="development-activity" aria-label="执行动态">
     <div className="development-activity-heading"><button type="button" aria-expanded={expanded} onClick={()=>setExpanded(!expanded)}>执行动态 {expanded?'▴':'▾'}</button>
-      <span role="status">{receipt}{task.workflow==='ready'?' · 方案待确认':''}</span>
+      <span role="status">{attempt?.provider_id==='dsh'?'DeepSeek Harness · ':''}{receipt}{task.workflow==='ready'?' · 方案待确认':''}</span>
       {at&&<time dateTime={at} title={new Date(at).toLocaleString()}>最近记录 {new Date(at).toLocaleTimeString()}</time>}
     </div>
     {expanded&&<div className="development-activity-body"><p>{message.length>240?message.slice(0,240)+'…':message}</p>

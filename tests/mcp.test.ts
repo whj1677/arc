@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {ArcService} from '../src/main/service';
 import {ArcMcpBridge,bridgeTools} from '../src/main/mcp-bridge';
 import {activity} from '../src/ui/activity';
-async function setup(){const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-mcp-'));const source=path.join(dir,'source');await fs.mkdir(source);await fs.writeFile(path.join(source,'a.ts'),'export const value=1;\n');const service=new ArcService(path.join(dir,'data'),path.resolve('.'));const project=await service.openProject(source);const bridge=new ArcMcpBridge(service,path.resolve('.'));await bridge.start();return {dir,source,service,project,bridge};}
+async function setup(runner?:ConstructorParameters<typeof ArcMcpBridge>[3]){const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-mcp-'));const source=path.join(dir,'source');await fs.mkdir(source);await fs.writeFile(path.join(source,'a.ts'),'export const value=1;\n');const service=new ArcService(path.join(dir,'data'),path.resolve('.'));const project=await service.openProject(source);const bridge=new ArcMcpBridge(service,path.resolve('.'),false,runner);await bridge.start();return {dir,source,service,project,bridge};}
 test('MCP authenticated stdio round trip, scoped frozen reads, progress, revoke and idempotence',async()=>{
  const {source,service,project,bridge}=await setup();let child:ReturnType<typeof spawn>|undefined;
  try{
@@ -131,6 +131,65 @@ test('long event histories retain final messages and monotonic sequence beyond 2
  const {service,bridge}=await setup();try{for(let n=1;n<=2002;n++)service.store.event('long',String(n),n,{sequence:n,type:'test'});assert.equal(service.store.nextSequence('long'),2003);assert.equal(service.store.events('long').at(-1).sequence,2002);}finally{await bridge.close();service.store.close();}
 });
 
+
+test('DeepSeek uses the in-process approval route and writes only after the current version is approved',async()=>{
+ const file='a.ts';
+ const steps=[{step_id:'value',title:'Update the value',change:'Edit the exported constant',status:'pending' as const,progress:'Awaiting review',criteria:[{criterion_id:'value-two',text:'Export value is 2',evidence_ids:[]}],evidence_ids:[],unresolved:[],created_at:'',updated_at:''}];
+ const packageData={behaviors:[{id:'value',behavior:'Export 2',design:'Change constant declaration',files:[file],step_ids:['value'],verification:'Import value and assert 2'}]};
+ const received:string[]=[];
+ const {dir,source,service,project,bridge}=await setup(async options=>{
+   received.push(options.task.workflow!);
+   if(options.task.workflow==='analysis'){
+     const proposal={summary:'Read the existing exported constant.',steps,proposed_scope:[file],requirement_package:packageData};
+     await options.validatePlan?.(proposal);return proposal;
+   }
+   assert.deepEqual(options.task.approval?.scope,[file]);
+   return {summary:'Changed the approved constant.',edits:[{path:file,content:'export const value=2;\n'}]};
+ });
+ const wait=async(taskId:string,done:(task:import('../src/engineering').EngineeringTask)=>boolean)=>{
+   for(let n=0;n<250;n++){const task=service.engineering.task(taskId);if(done(task))return task;await new Promise(r=>setTimeout(r,25));}
+   throw Error('DeepSeek task did not reach the expected state');
+ };
+ try{
+   const original=await bridge.queueDevelopment({project_id:project.project_id,goal:'Change the value after review',phase:'analysis',channel:'dsh',submission_key:'dsh-req'});
+   const ready=await wait(original.task_id,task=>task.workflow==='ready'||task.status==='blocked');
+   assert.equal(ready.workflow,'ready',ready.unresolved.join(' '));assert.deepEqual(ready.scope,[]);
+   assert.equal(await fs.readFile(path.join(source,file),'utf8'),'export const value=1;\n');
+   await assert.rejects(bridge.queueDevelopment({project_id:project.project_id,task_id:ready.task_id,expected_version:ready.version-1,phase:'execution',scope:[file],goal:'Approve stale',submission_key:'dsh-stale'}),/VERSION_CONFLICT/);
+   await bridge.queueDevelopment({project_id:project.project_id,task_id:ready.task_id,expected_version:ready.version,phase:'execution',scope:[file],goal:'Approve current',submission_key:'dsh-approve'});
+   const done=await wait(ready.task_id,task=>task.status==='completed'||task.status==='blocked');
+   assert.equal(done.status,'completed',done.unresolved.join(' '));assert.deepEqual(done.changes.map(f=>f.path),[file]);assert.deepEqual(received,['analysis','execution']);
+   assert.equal(await fs.readFile(path.join(source,file),'utf8'),'export const value=2;\n');
+   assert.equal(bridge.dispatch.items(project.project_id).length,0);
+   assert.deepEqual(service.development.events(done.task_id).attempts.map(item=>[item.provider_id,item.write_scope]),[['dsh',[]],['dsh',[file]]]);
+
+   const next=await bridge.queueDevelopment({project_id:project.project_id,goal:'Review the next change',channel:'dsh',submission_key:'dsh-new-review'});
+   const nextReady=await wait(next.task_id,task=>task.workflow==='ready');
+   await fs.writeFile(path.join(source,'notes.txt'),'Written independently while reviewing.\n');
+   await bridge.queueDevelopment({project_id:project.project_id,task_id:next.task_id,expected_version:nextReady.version,phase:'execution',scope:[file],goal:'Approve after an unrelated edit',submission_key:'dsh-drift'});
+   const blocked=await wait(next.task_id,task=>task.status==='blocked');
+   assert.match(blocked.summary,/审阅时不同/);
+   assert.equal(blocked.changes.length,0);
+   assert.deepEqual(received,['analysis','execution','analysis']);
+   assert.equal(await fs.readFile(path.join(source,file),'utf8'),'export const value=2;\n');
+ }finally{await bridge.close();await service.shutdown();service.store.close();await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('feature development saves exact frozen evidence and rejects a mismatched line',async()=>{
+ const {dir,source,service,project,bridge}=await setup();
+ try{
+   const {feature,scenario}=service.addFeature(project.project_id,'Value','Review the value');
+   const snapshot=service.store.get<import('../src/shared').Snapshot>('snapshot',project.snapshot_id);
+   const evidence={evidence_id:'value-evidence',path:'a.ts',line_start:1,line_end:1,source_snapshot_id:snapshot.source_snapshot_id,content_sha256:snapshot.files[0].content_sha256};
+   const resultId='source-proof';
+   service.store.put('explanation',resultId,{result_id:resultId,scenario_id:scenario.scenario_id,result:{binding:{project_id:project.project_id,feature_id:feature.feature_id,scenario_id:scenario.scenario_id,source_snapshot_id:snapshot.source_snapshot_id},summary:{text:'The existing declaration.',claim_ids:[]},nodes:[],evidence:[evidence]}});
+   const reading={feature_id:feature.feature_id,scenario_id:scenario.scenario_id,result_id:resultId,source_snapshot_id:snapshot.source_snapshot_id,target:{kind:'file' as const,id:'a.ts'},evidence:{evidence_id:evidence.evidence_id,path:evidence.path,line_start:1,line_end:1}};
+   await assert.rejects(service.engineering.createTask({project_id:project.project_id,goal:'Wrong line',submission_key:'wrong-line',reading:{...reading,evidence:{...reading.evidence,line_end:2}}}),/走读证据不一致/);
+   const saved=await service.engineering.createTask({project_id:project.project_id,goal:'Retain anchor',submission_key:'good-line',reading});
+   assert.deepEqual(saved.reading?.evidence,reading.evidence);
+   assert.equal(await fs.readFile(path.join(source,'a.ts'),'utf8'),'export const value=1;\n');
+ }finally{await bridge.close();await service.shutdown();service.store.close();await fs.rm(dir,{recursive:true,force:true});}
+});
 
 test('ARC requirement analysis waits for reviewed scope, keeps one task and creates no document suite',async()=>{
  const {dir,source,service,project,bridge}=await setup();try{

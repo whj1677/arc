@@ -55,7 +55,12 @@ app.whenReady().then(async()=>{
         case 'executor_acknowledge_stop':value=bridge.acknowledgeStop(args.dispatch_id);break;
         case 'executor_verify_stopped':value=await bridge.verifyStopped(args.dispatch_id);break;
         case 'development_begin_kimi':value=await bridge.beginManualRequirement(args);break;
-        case 'development_cancel':{const item=bridge.dispatch.items().filter(item=>item.task_id===args.task_id).at(-1);value=item?bridge.cancelDispatch(item.dispatch_id):await service.development.cancel(args.task_id);break;}
+        case 'development_cancel':{
+          const task=service.engineering.task(args.task_id);
+          if(task.analysis_channel==='dsh')value=await bridge.cancelDshRequirement(task.task_id);
+          else {const item=bridge.dispatch.items().filter(item=>item.task_id===task.task_id).at(-1);value=item?bridge.cancelDispatch(item.dispatch_id):await service.development.cancel(task.task_id);}
+          break;
+        }
         case 'development_events':value=service.development.events(args.task_id);break;
         case 'walkthrough_retry':void service.refreshTaskWalkthrough(args.task_id,args.submission_key);value=service.engineering.task(args.task_id);break;
         case 'engineering_connect':{
