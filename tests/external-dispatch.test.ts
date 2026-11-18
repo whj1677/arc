@@ -45,8 +45,15 @@ test('missing daemon saves a blocked unsent task and rejects a different workspa
   };
   const dispatch=new ExternalDispatch(store,()=>{},metadata,command as any);
   try{
-    await assert.rejects(dispatch.bind('p',path.dirname(directory),process.execPath,'t'),/工作目录/);
-    await dispatch.bind('p',directory,process.execPath,'t');
+    let authorized=0;
+    const configure=async(program:string)=>{assert.equal(program,process.execPath);authorized++;};
+    await assert.rejects(dispatch.bind('p',path.dirname(directory),process.execPath,'t',configure),/工作目录/);
+    assert.equal(authorized,0);
+    assert.equal(dispatch.binding('p'),null);
+    await assert.rejects(dispatch.bind('p',directory,process.execPath,'t',async()=>{throw Error('注册失败');}),/注册失败/);
+    assert.equal(dispatch.binding('p'),null);
+    await dispatch.bind('p',directory,process.execPath,'t',configure);
+    assert.equal(authorized,1);
     const item=dispatch.enqueue('p',{run_id:'r'});await new Promise(resolve=>setTimeout(resolve,20));
     const saved=store.get<any>('external_dispatch',item.dispatch_id);
     assert.equal(saved.state,'blocked');assert.equal(saved.sent_at,undefined);
@@ -92,4 +99,30 @@ test('external analysis budget preserves unknown stop state and never releases a
     await queue.pump();assert.equal(store.get<any>('run','r').status,'blocked_external');assert.equal(store.get<any>('external_dispatch',item.dispatch_id).state,'unknown');assert.throws(()=>queue.claim(item.dispatch_id),/撤销/);
     await queue.pump();assert.equal(store.get<any>('external_dispatch',item.dispatch_id).state,'unknown');await assert.rejects(queue.retry(item.dispatch_id),/不能重发/);
   }finally{queue.close();store.close();await fs.rm(directory,{recursive:true});}
+});
+
+test('revoked authority holds queued dispatches and is checked after the daemon probe',async()=>{
+  const directory=await fs.mkdtemp(path.resolve('.test-data/dispatch-'));
+  const store=new Store(directory);
+  let allowed=false,revokeAtProbe=true,sends=0;
+  const metadata=async()=>({thread:{id:'t',cwd:directory}});
+  const command=async(_program:string,args:string[])=>{
+    if(args[0]==='app-server'&&revokeAtProbe)allowed=false;
+    if(args.includes('--message'))sends++;
+    return {stdout:args[0]==='--version'?'codex-cli test':'--resume',stderr:''};
+  };
+  const dispatch=new ExternalDispatch(store,()=>{},metadata,command as any,()=>allowed);
+  try{
+    await dispatch.bind('p',directory,process.execPath,'t');
+    const item=dispatch.enqueue('p',{run_id:'r'});
+    assert.match(store.get<any>('external_dispatch',item.dispatch_id).error,/重新授权/);
+    allowed=true;
+    await dispatch.pump();
+    assert.equal(sends,0);
+    assert.equal(store.get<any>('external_dispatch',item.dispatch_id).state,'queued');
+    allowed=true;revokeAtProbe=false;
+    await dispatch.pump();
+    assert.equal(sends,1);
+    assert.equal(store.get<any>('external_dispatch',item.dispatch_id).state,'awaiting_claim');
+  }finally{dispatch.close();store.close();await fs.rm(directory,{recursive:true});}
 });

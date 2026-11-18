@@ -1,27 +1,149 @@
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import type {ContextEntry,EngineeringContext,EngineeringSectionCategory,EngineeringTask} from '../engineering';
 import {SourceExcerpt} from './SourceExcerpt';
+import type {Dispatch,ExecutorBinding} from '../main/external-dispatch';
+import type {ProviderProfile} from '../shared';
 
 export type EngineeringSection=EngineeringSectionCategory|'tasks';
 const sections:[EngineeringSection,string,string][]=[['plan','影响与方案','现状、取舍、范围与实施步骤'],['architecture','架构','模块、边界与协作'],['design','设计','接口、数据与实现设计'],['tasks','任务与变更','目标、实际修改与执行记录'],['verification_plan','验证与证据','验收条件、实际结果与遗留']];
 const origins={source:'源码 / 配置',document:'文档声明',user:'用户补充',agent:'Agent 归纳'};
 const outcomeNames:Record<string,string>={passed:'通过',failed:'失败',blocked:'受阻',not_run:'未执行',partial:'部分完成',stale:'代码已变，待重验'};
 const api=window.arc;
-export function ExternalExecutor({projectId,programHint=''}:{projectId:string;programHint?:string}){
-  const [program,setProgram]=useState(programHint),[thread,setThread]=useState(''),[sessions,setSessions]=useState<{id:string;name:string;model:string;source:string}[]>([]);
-  const [state,setState]=useState<any>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
-  const labels:Record<string,string>={queued:'等待派发',sending:'正在发送',awaiting_claim:'等待领取确认',running:'已领取，执行中',completed:'已完成',blocked:'受阻',unknown:'执行状态待核对',cancelled:'已取消'};
-  useEffect(()=>{let alive=true;async function read(){try{const value=await api.invoke<any>('executor_status',{project_id:projectId});if(alive){setState(value);if(value.binding){setProgram(old=>old||value.binding.program);setThread(old=>old||value.binding.thread_id);}}}catch(e){if(alive)setError((e as Error).message);}}void read();const timer=setInterval(()=>void read(),5000);return()=>{alive=false;clearInterval(timer);};},[projectId]);
-  async function discover(){setBusy(true);setError('');try{const value=await api.invoke('executor_sessions',{project_id:projectId,program});setProgram(value.program);setSessions(value.sessions);if(!value.sessions.length)setError('此工程尚无本机会话。请在 Codex 桌面端打开相同工程目录，创建并发送一条消息，然后刷新会话列表。');}catch(e){setError('读取桌面会话失败：'+(e as Error).message);}finally{setBusy(false);}}
-  async function act(operation:string,args:object){setBusy(true);setError('');try{await api.invoke(operation,args);setState(await api.invoke('executor_status',{project_id:projectId}));}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
-  return <section className="engineering-section-entry" aria-label="外部 Codex 执行器"><h3>连接 Codex 桌面会话</h3><p>在 Codex 桌面端打开此工程、选择模型，然后在这里选择会话。ARC 自动派发，完整对话与权限处理保留在 Codex 桌面端。</p>
-    {state?.binding&&<p>已绑定：{state.binding.name||state.binding.thread_id}<br/>会话配置模型 {state.binding.model||'未取得'} · 推理强度 {state.binding.reasoning_effort||'沿用会话默认'}<br/><button onClick={()=>void act('executor_open',{project_id:projectId})}>在 Codex 桌面端打开对话</button></p>}
-    <button disabled={busy} onClick={()=>void discover()}>{busy?'正在检查…':'查找此工程的 Codex 会话'}</button>
-    {!!sessions.length&&<label>选择会话<select aria-label="Codex 桌面会话" value={thread} onChange={e=>setThread(e.target.value)}><option value="">请选择</option>{sessions.map(session=><option value={session.id} key={session.id}>{session.name} · {session.model||'模型未取得'} · {session.source}</option>)}</select></label>}
-    <button disabled={busy||!thread.trim()} onClick={()=>void act('executor_bind',{project_id:projectId,program,thread_id:thread})}>连接选中的会话</button>
-    <details><summary>连接诊断与手动指定</summary><p>后台通过本机官方 Codex 会话服务派发，无需打开命令行窗口。换电脑需安装 Codex、登录并提供可用后台服务和 Node.js；会话 ID 不会随工程迁移。</p><label>Codex 程序路径<input aria-label="外部 Codex CLI 路径" value={program} onChange={e=>setProgram(e.target.value)}/></label><label>会话 ID<input aria-label="外部 Codex 会话 ID" value={thread} onChange={e=>setThread(e.target.value)}/></label>{state?.binding&&<small>{state.binding.version} · 配置核对时间 {new Date(state.binding.checked_at).toLocaleString()}；此模型信息是会话配置，不等于逐轮执行遥测。</small>}</details>
+interface ExecutorSession {id:string;name:string;model?:string|null}
+interface ExecutorSessions {program:string;sessions:ExecutorSession[];has_more:boolean}
+interface ExecutorState {binding?:ExecutorBinding|null;authorized:boolean;workspace_matches:boolean;queue:Dispatch[]}
+const dispatchLabels:Record<Dispatch['state'],string>={queued:'等待派发',sending:'正在发送',awaiting_claim:'等待领取确认',running:'已领取，执行中',completed:'已完成',blocked:'受阻',unknown:'执行状态待核对',cancelled:'已取消'};
+
+export function ExternalExecutor({projectId,projectPath,programHint='',onBound}:{projectId:string;projectPath:string;programHint?:string;onBound:()=>void}){
+  const [program,setProgram]=useState(programHint),[thread,setThread]=useState(''),[manualThread,setManualThread]=useState('');
+  const [lookup,setLookup]=useState<ExecutorSessions|null>(null),[state,setState]=useState<ExecutorState|null>(null);
+  const [error,setError]=useState(''),[feedback,setFeedback]=useState('');
+  const [busy,setBusy]=useState<'status'|'search'|'bind'|'task'|''>('status'),[switching,setSwitching]=useState(false);
+  const binding=state?.authorized&&state.workspace_matches?state.binding:undefined;
+  const choosing=!binding||switching;
+  const selected=lookup?.sessions.find(session=>session.id===thread);
+  const waitingTasks=state?.queue.some(item=>item.state==='queued');
+
+  async function discover(executable:string,active=()=>true){
+    setBusy('search');setLookup(null);setError('');setFeedback('');
+    try{
+      const next=await api.invoke<ExecutorSessions>('executor_sessions',{project_id:projectId,program:executable.trim()});
+      if(!active())return;
+      setLookup(next);setProgram(next.program);
+      setThread(current=>next.sessions.some(session=>session.id===current)?current:
+        next.sessions.length===1?next.sessions[0].id:'');
+    }catch(e){if(active())setError('查找 Codex 会话失败：'+(e as Error).message);}
+    finally{if(active())setBusy('');}
+  }
+
+  useEffect(()=>{
+    let active=true;
+    const status=()=>api.invoke<ExecutorState>('executor_status',{project_id:projectId});
+    void status().then(value=>{
+      if(!active)return;
+      setState(value);
+      if(value.binding&&value.authorized&&value.workspace_matches){setProgram(value.binding.program);setBusy('');}
+      else{setThread(value.workspace_matches?value.binding?.thread_id||'':'');void discover(value.binding?.program||programHint,()=>active);}
+    }).catch(e=>{if(active){setError('读取连接状态失败：'+(e as Error).message);setBusy('');}});
+    const timer=setInterval(()=>void status().then(value=>{if(active)setState(value);}).catch(()=>{}),5000);
+    return()=>{active=false;clearInterval(timer);};
+  },[projectId]);
+
+  async function bind(threadId:string,executable:string){
+    setBusy('bind');setError('');setFeedback('');
+    try{
+      const next=await api.invoke<ExecutorBinding>('executor_bind',{project_id:projectId,program:executable.trim(),thread_id:threadId.trim()});
+      setState(current=>({binding:next,authorized:true,workspace_matches:true,queue:current?.queue??[]}));
+      setSwitching(false);setProgram(next.program);setManualThread('');
+      setFeedback('已连接。可以回到工程发起分析或开发任务。');onBound();
+    }catch(e){setError('连接失败：'+(e as Error).message);}
+    finally{setBusy('');}
+  }
+
+  async function act(operation:string,args:object){
+    setBusy('task');setError('');
+    try{await api.invoke(operation,args);setState(await api.invoke<ExecutorState>('executor_status',{project_id:projectId}));}
+    catch(e){setError((e as Error).message);}
+    finally{setBusy('');}
+  }
+
+  async function copyPath(){
+    setFeedback('');setError('');
+    try{await api.invoke('executor_copy_workspace',{project_id:projectId});setFeedback('工程路径已复制。');}
+    catch(e){setError('无法复制工程路径：'+(e as Error).message);}
+  }
+
+  const status=busy==='status'?'正在读取状态':busy==='search'?'正在查找会话':busy==='bind'?'正在核对并连接':
+    binding?'已连接':error?'需要检查':state?.binding?(state.workspace_matches?'需重新授权':'需重新绑定'):lookup?(lookup.sessions.length?'选择会话':'未找到匹配会话'):'待连接';
+
+  return <section className="agent-connection-card" aria-label="Codex 桌面端">
+    <header className="row between"><h3>Codex 桌面端</h3><span role="status" className={binding?'agent-state ready':'agent-state'}>{status}</span></header>
+    <p>把当前工程的分析和开发任务派给一个 Codex 对话。</p>
+    {binding&&<div className="agent-connection-state"><strong>{binding.name||binding.thread_id}</strong>
+      {binding.model&&<small>{binding.model}{binding.reasoning_effort?' · '+binding.reasoning_effort:''}</small>}
+      <div className="row"><button disabled={!!busy} onClick={()=>void act('executor_open',{project_id:projectId})}>在 Codex 中打开会话</button>
+        {!switching&&<button disabled={!!busy} onClick={()=>{setSwitching(true);void discover(program);}}>更换会话</button>}</div></div>}
+    {choosing&&<>
+      {state?.binding&&<p>{state.workspace_matches?'这条会话的工程授权已撤销。选择会话后可重新授权。':'工程目录已更新。请连接使用当前目录的会话。'}</p>}
+      <div className="agent-workspace"><div><small>Codex 会话须使用此工程目录</small><code>{projectPath}</code></div>
+        <button type="button" onClick={()=>void copyPath()}>复制工程路径</button></div>
+      {lookup&&!lookup.sessions.length&&<ol className="agent-connection-steps">
+        <li>在 Codex 桌面端打开上面的工程目录。</li>
+        <li>在该工程中新建会话，并发送一句「准备接收 ARC 任务」。</li>
+        <li>回到这里刷新会话列表。</li>
+      </ol>}
+      {lookup&&lookup.sessions.length>0&&<><label>选择要接收 ARC 任务的会话
+        <select aria-label="Codex 桌面会话" value={thread} disabled={!!busy} onChange={e=>setThread(e.target.value)}>
+          <option value="">请选择会话</option>{lookup.sessions.map(session=><option value={session.id} key={session.id}>{session.name}{session.model?' · '+session.model:''}</option>)}
+        </select></label>
+        <p className="muted">连接会授权 Codex 读取此工程的冻结源码。{waitingTasks?'现有的待派发任务会在连接后继续。':''}</p>
+        {lookup.has_more&&<p className="muted">这里显示最近的匹配会话，也可在下方指定会话 ID。</p>}
+      </>}
+      <div className="row">
+        {selected&&lookup&&<button className="primary" disabled={!!busy} onClick={()=>void bind(selected.id,lookup.program)}>授权并连接此会话</button>}
+        <button disabled={!!busy} onClick={()=>void discover(program)}>刷新会话列表</button>
+        {switching&&<button disabled={!!busy} onClick={()=>{setSwitching(false);setError('');}}>保留当前连接</button>}
+      </div>
+    </>}
+    {feedback&&<p className="agent-feedback" role="status">{feedback}</p>}
     {error&&<p role="alert" className="warning">{error}</p>}
-    {state?.queue?.map((item:any)=><article className="engineering-verification" key={item.dispatch_id}><strong>{labels[item.state]}</strong><small>{item.run_id||item.task_id}</small>{item.error&&<p>{item.error}</p>}{['queued','blocked'].includes(item.state)&&!item.sent_at&&<button disabled={busy} onClick={()=>void act('executor_retry',{dispatch_id:item.dispatch_id})}>检查连接并重试派发</button>}{['queued','sending','awaiting_claim','running'].includes(item.state)&&<button disabled={busy} onClick={()=>void act('executor_cancel',{dispatch_id:item.dispatch_id})}>撤销此任务</button>}{item.state==='unknown'&&<div><p>请在绑定的 Codex 会话核对任务。接续时使用派发 ID {item.dispatch_id}。需要换会话时，先在原会话停止此任务。</p><button disabled={busy} onClick={()=>void act('executor_verify_stopped',{dispatch_id:item.dispatch_id})}>检查原会话是否结束</button><button disabled={busy} onClick={()=>void act('executor_acknowledge_stop',{dispatch_id:item.dispatch_id})}>我已在原会话确认此任务停止</button></div>}</article>)}
+    <details className="agent-connection-secondary"><summary>诊断与手动指定</summary>
+      <label>Codex 程序路径<input aria-label="外部 Codex CLI 路径" placeholder="自动检测" value={program} onChange={e=>setProgram(e.target.value)}/></label>
+      <label>会话 ID<input aria-label="外部 Codex 会话 ID" value={manualThread} onChange={e=>setManualThread(e.target.value)}/></label>
+      <button disabled={!!busy||!manualThread.trim()} onClick={()=>void bind(manualThread,program)}>授权并连接指定会话</button>
+      {binding&&<p className="muted">{binding.version} · {new Date(binding.checked_at).toLocaleString()}</p>}
+    </details>
+    {!!state?.queue.length&&<details className="agent-connection-secondary"><summary>本工程的派发记录（{state.queue.length}）</summary>
+      {state.queue.map(item=><article className="engineering-verification" key={item.dispatch_id}><strong>{dispatchLabels[item.state]}</strong><small>{item.run_id||item.task_id}</small>{item.error&&<p>{item.error}</p>}
+        {['queued','blocked'].includes(item.state)&&!item.sent_at&&<button disabled={!!busy||!binding} onClick={()=>void act('executor_retry',{dispatch_id:item.dispatch_id})}>检查连接并重试派发</button>}
+        {['queued','sending','awaiting_claim','running'].includes(item.state)&&<button disabled={!!busy} onClick={()=>void act('executor_cancel',{dispatch_id:item.dispatch_id})}>撤销此任务</button>}
+        {item.state==='unknown'&&<><p>先在原 Codex 会话核对任务终态。接续时使用派发 ID {item.dispatch_id}。</p>
+          <button disabled={!!busy} onClick={()=>void act('executor_verify_stopped',{dispatch_id:item.dispatch_id})}>检查原会话是否结束</button>{' '}
+          <button disabled={!!busy} onClick={()=>void act('executor_acknowledge_stop',{dispatch_id:item.dispatch_id})}>我已在原会话确认此任务停止</button></>}
+      </article>)}
+    </details>}
+  </section>;
+}
+
+export function DeepSeekConnection({profile}:{profile:ProviderProfile|undefined}){
+  const [busy,setBusy]=useState(false),[error,setError]=useState('');
+  async function check(){
+    setBusy(true);setError('');
+    try{await api.invoke('providers_probe');}
+    catch(e){setError((e as Error).message);}
+    finally{setBusy(false);}
+  }
+  const status=busy?'正在检测':error?'检测失败':!profile?'未检测':
+    profile.status==='available'?'本机已就绪':profile.status==='auth_required'?'需配置凭据':'需检查';
+  return <section className="agent-connection-card" aria-label="DeepSeek Harness">
+    <header className="row between"><h3>DeepSeek Harness</h3><span role="status" className={profile?.status==='available'&&!busy&&!error?'agent-state ready':'agent-state'}>{status}</span></header>
+    <p>从「功能走读」提出需求并选择 DeepSeek Harness，ARC 会调用本机程序。确认方案后再执行。</p>
+    {profile?.status==='auth_required'&&!busy&&<p>请先在本机 DeepSeek Harness 配置 API 凭据，再重新检测。</p>}
+    <button disabled={busy} onClick={()=>void check()}>检测本机 Harness</button>
+    {error&&<p role="alert" className="warning">{error}</p>}
+    {profile&&<details className="agent-connection-secondary"><summary>检测详情</summary>
+      <p>{profile.reason}</p>{profile.version&&<p className="muted">程序版本 {profile.version}</p>}
+    </details>}
   </section>;
 }
 type Draft={key:string;text:string;entry?:ContextEntry};

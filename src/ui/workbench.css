@@ -74,3 +74,23 @@ dialog,.modal-heading,.provider-card,.drawer{background:#fff;color:var(--ink);bo
 @media(max-width:720px){.workbench-brand{grid-column:1;grid-row:1}.workbench-project-block{grid-column:2;grid-row:1}.workbench-side-actions{grid-column:3;grid-row:1}.workbench-primary-nav{grid-column:1/-1;grid-row:2}}
 @media(min-width:1280px){.workspace-question,.workspace-detail-toggle{display:none}}
 @media(prefers-reduced-motion:reduce){.arc-workbench *{scroll-behavior:auto!important}}
+
+.agent-connection-card{display:grid;gap:10px;padding:16px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.agent-connection-card+.agent-connection-card{margin-top:12px}
+.agent-connection-card h3,.agent-connection-card p,.agent-connection-card label{margin:0}
+.agent-connection-card p,.agent-connection-steps{font-size:13px;line-height:1.65}
+.agent-connection-card>button,.agent-connection-secondary>button{justify-self:start}
+.agent-connection-card select,.agent-connection-card input{width:100%}
+.agent-state{max-width:100%;border-radius:20px;padding:3px 9px;font-size:12px;line-height:1.5;color:var(--muted);background:var(--bg)}
+.agent-state.ready,.agent-feedback{color:var(--green);background:var(--soft)}
+.agent-feedback{padding:6px 9px;border-radius:6px}
+.agent-workspace,.agent-connection-state{display:grid;gap:8px;padding:10px 12px;border-radius:7px;background:var(--bg);min-width:0}
+.agent-workspace{grid-template-columns:minmax(0,1fr) auto;align-items:center}
+.agent-workspace code,.agent-workspace small{display:block;overflow-wrap:anywhere}
+.agent-workspace small,.agent-connection-state small{color:var(--muted)}
+.agent-connection-steps{margin:0;padding-left:22px}
+.agent-connection-secondary{border-top:1px solid var(--border)}
+.agent-connection-secondary label,.agent-connection-secondary p,.agent-connection-secondary article{margin-bottom:9px}
+.agent-settings-advanced{margin-top:12px}
+.agent-settings-advanced>.engineering-section-entry{margin-top:0}
+@media(max-width:500px){.agent-workspace{grid-template-columns:1fr}.agent-workspace>button{justify-self:start}}

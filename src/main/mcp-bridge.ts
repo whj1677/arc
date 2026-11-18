@@ -64,7 +64,8 @@ export class ArcMcpBridge {
   private dshStarting=new Set<string>();
   constructor(readonly service:ArcService,readonly resources:string,externalExecution=false,private runDshDevelopment=runDshRequirement){
     this.connectionFile=path.join(service.directory,'mcp','connection.json');
-    this.dispatch=new ExternalDispatch(service.store,()=>service.changed());
+    this.dispatch=new ExternalDispatch(service.store,()=>service.changed(),undefined,undefined,
+      (projectId,workspace)=>this.developmentGrants().includes(projectId)&&this.matchesExecutorWorkspace(projectId,workspace));
     this.reconcileLegacyDispatches();
     if(externalExecution)service.dispatchRun=run=>{
       run.origin='mcp';run.status='waiting_agent';run.mcp_connection_id=this.connectionId;
@@ -90,6 +91,16 @@ export class ArcMcpBridge {
       this.service.store.put('external_dispatch',item.dispatch_id,item);this.service.changed();
     }
   }
+  private matchesExecutorWorkspace(projectId:string,workspace:string){
+    const project=this.service.store.maybe<Project>('project',projectId);
+    return !!project&&!project.fictional&&path.resolve(project.root_path).toLowerCase()===path.resolve(workspace).toLowerCase();
+  }
+  executorStatus(projectId:string){
+    const binding=this.dispatch.binding(projectId);
+    return {binding,authorized:this.developmentGrants().includes(projectId),
+      workspace_matches:!!binding&&this.matchesExecutorWorkspace(projectId,binding.workspace_path),
+      queue:this.dispatch.items(projectId)};
+  }
   queueDevelopment(args:any){
     const original=args.task_id?this.service.engineering.task(args.task_id):undefined;
     const channel=(args.phase==='execution'?original?.analysis_channel==='dsh':args.channel==='dsh')?'dsh':'codex';
@@ -104,7 +115,6 @@ export class ArcMcpBridge {
     if(phase==='execution'&&!args.task_id)throw Error('请先提交并审阅需求包');
     const files=phase==='analysis'?[]:await resolveDevelopmentScope(workspace.root_path,args.scope);
     const scope=files.map(file=>path.relative(workspace.root_path,file).split(path.sep).join('/'));
-    if(channel!=='dsh')await this.enable(args.project_id,false);
     let startDsh=false;
     const saved=await this.service.engineering.createTask({...args,scope},{
       phase,expected_version:args.expected_version,channel,
@@ -120,7 +130,13 @@ export class ArcMcpBridge {
         this.dispatch.enqueue(task.project_id,target);
       },
     });
-    if(!startDsh)return saved;
+    if(!startDsh){
+      if(channel!=='dsh'){
+        await this.enable(args.project_id,false);
+        if(channel==='codex')void this.dispatch.pump();
+      }
+      return saved;
+    }
     try{return this.startDshRequirement(saved);}finally{this.dshStarting.delete(workspace.workspace_id);}
   }
   private startDshRequirement(task:EngineeringTask) {
@@ -254,18 +270,13 @@ export class ArcMcpBridge {
   private connectionFiles(){return [...new Set([this.connectionFile,...(this.service.store.maybe<string[]>('setting','mcp-connection-aliases')||[])])];}
   async pendingWrites(){const values=[];for(const file of this.connectionFiles())values.push(...(await pendingDevelopmentWrites(file)).map(({value})=>({task_id:value.args.task_id,submission_key:value.args.submission_key,created_at:value.created_at,saved:'pending_sync',error:value.error})));return values;}
   async flushPending(){const values=[];for(const file of this.connectionFiles())values.push(...await flushDevelopmentWrites(file,request=>this.call(request.name,request.args,request.client,request.completion_binding??null)));this.service.changed();return values;}
-  async enable(projectId:string,register=false){
+  async enable(projectId:string,register=false,program?:string){
     const project=this.service.store.get<Project>('project',projectId);
     if(project.fictional)throw Error('演示工程不向真实 Agent 授权');
-    const previous=this.service.store.maybe<any>('setting','mcp-access');// Project selection does not revoke other explicitly authorized project queues.
-    const grant={project_id:projectId,enabled:true,registered:!!previous?.registered};
-    this.service.store.put('setting','mcp-access',grant);
-    this.service.store.put('setting','mcp-development-access',[...new Set([...this.developmentGrants(),projectId])]);
-    try{
     if(register){
       const configured=this.service.store.maybe<any>('settings','providers')||{};
       const profile=this.service.store.maybe<any>('provider','codex');
-      const codex=await locate('codex',configured.codex_path||profile?.path);
+      const codex=await locate('codex',program||configured.codex_path||profile?.path);
       const version=(await exec(codex,['--version'],{windowsHide:true,timeout:8000})).stdout;
       if(!version.startsWith('codex-cli '))throw Error('未找到官方 Codex CLI；请先在连接设置中指定路径');
       const node=await locate('node'),script=path.join(this.resources,'dist','arc-mcp.cjs');
@@ -278,13 +289,21 @@ export class ArcMcpBridge {
         this.service.store.put('setting','mcp-connection-aliases',[...new Set([...aliases,previousFile])]);
       }
       await exec(codex,['mcp','add','arc','--',node,script,this.connectionFile],{windowsHide:true,timeout:10000});
-      grant.registered=true;this.service.store.put('setting','mcp-access',grant);
     }
+    this.service.store.transaction(()=>{
+      const previous=this.service.store.maybe<any>('setting','mcp-access');
+      const authorized=this.developmentGrants();
+      this.service.store.put('setting','mcp-access',{project_id:projectId,enabled:true,registered:register||!!previous?.registered});
+      this.service.store.put('setting','mcp-development-access',[...new Set([...authorized,projectId])]);
+    });
+    this.service.changed();
     return this.status();
-    }finally{this.service.changed();}
   }
-  private revokeRuns(){for(const run of this.service.store.all<Run>('run'))if(run.origin==='mcp'&&run.mcp_connection_id===this.connectionId&&['running','validating'].includes(run.status))void this.service.cancel(run.binding.run_id);}
-  disable(){this.revokeRuns();const current=this.status();this.service.store.put('setting','mcp-development-access',this.developmentGrants().filter(project=>project!==current.project_id));this.service.store.put('setting','mcp-access',{...current,enabled:false});this.service.changed();return this.status();}
+  private revokeRuns(projectId?:string){
+    for(const run of this.service.store.all<Run>('run'))if((!projectId||run.binding.project_id===projectId)&&
+      run.origin==='mcp'&&run.mcp_connection_id===this.connectionId&&['running','validating'].includes(run.status))void this.service.cancel(run.binding.run_id);
+  }
+  disable(){const current=this.status();if(current.project_id)this.revokeRuns(current.project_id);this.service.store.put('setting','mcp-development-access',this.developmentGrants().filter(project=>project!==current.project_id));this.service.store.put('setting','mcp-access',{...current,enabled:false});this.service.changed();return this.status();}
   private developmentGrants():string[]{const stored=this.service.store.maybe<string[]>('setting','mcp-development-access');if(stored)return stored;const grant=this.service.store.maybe<any>('setting','mcp-access');return grant?.enabled?[grant.project_id]:[];}
   private authorizeDevelopment(projectId:string){if(!this.developmentGrants().includes(projectId))throw Error('请先在 ARC 中授权此实际工作区给 Agent；界面选择不会授权其他工程');}
   private grant(){const grant=this.service.store.maybe<any>('setting','mcp-access');if(!grant?.enabled)throw Error('请先在 Arc 中授权当前工程给 Agent MCP');return grant;}

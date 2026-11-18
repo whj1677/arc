@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, clipboard } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {ArcMcpBridge} from './mcp-bridge';
@@ -46,10 +46,15 @@ app.whenReady().then(async()=>{
         case 'engineering_log':value=await service.engineering.readLog(args.task_id,args.path);break;
         case 'engineering_diff':value=await service.engineering.taskDiff(args.task_id,args.path);break;
         case 'development_start':value=await bridge.queueDevelopment(args);break;
-        case 'executor_sessions':{const workspace=await service.engineering.connect(args.project_id);value=await bridge.dispatch.sessions(workspace.root_path,args.program);break;}
+        case 'executor_sessions':{const workspace=await service.engineering.resolve({project_id:args.project_id});value=await bridge.dispatch.sessions(workspace.root_path,args.program);break;}
+        case 'executor_copy_workspace':{const workspace=await service.engineering.resolve({project_id:args.project_id});await clipboard.writeText(workspace.root_path);break;}
         case 'executor_open':{const binding=bridge.dispatch.binding(args.project_id);if(!binding)throw Error('请先选择并绑定会话');await shell.openExternal('codex://threads/'+encodeURIComponent(binding.thread_id));value={opened:true};break;}
-        case 'executor_status':value={binding:bridge.dispatch.binding(args.project_id),queue:bridge.dispatch.items(args.project_id)};break;
-        case 'executor_bind':{await bridge.enable(args.project_id,true);const workspace=await service.engineering.connect(args.project_id);value=await bridge.dispatch.bind(args.project_id,workspace.root_path,args.program,args.thread_id);break;}
+        case 'executor_status':value=bridge.executorStatus(args.project_id);break;
+        case 'executor_bind':{
+          const workspace=await service.engineering.resolve({project_id:args.project_id});
+          value=await bridge.dispatch.bind(args.project_id,workspace.root_path,args.program,args.thread_id,
+            program=>bridge.enable(args.project_id,true,program));break;
+        }
         case 'executor_retry':value=await bridge.dispatch.retry(args.dispatch_id);break;
         case 'executor_cancel':value=bridge.cancelDispatch(args.dispatch_id);break;
         case 'executor_acknowledge_stop':value=bridge.acknowledgeStop(args.dispatch_id);break;

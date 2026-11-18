@@ -53,7 +53,7 @@ export function WorkbenchNavigation({projects,projectId,active,onProject,onOpen,
     </nav>
     <div className="workbench-side-actions">
       <button type="button" title="打开工程" aria-label="打开工程" onClick={onOpen}><NavIcon name="open"/><span className="workbench-nav-label">打开工程</span></button>
-      <button type="button" title="连接与设置" aria-label="连接与设置" onClick={onSettings}><NavIcon name="settings"/><span className="workbench-nav-label">连接与设置</span></button>
+      <button type="button" title="连接 Agent" aria-label="连接 Agent" onClick={onSettings}><NavIcon name="settings"/><span className="workbench-nav-label">连接 Agent</span></button>
     </div>
     <div className="workbench-local-status"><i aria-hidden="true"/><span>数据保存在本机</span></div>
   </aside>;

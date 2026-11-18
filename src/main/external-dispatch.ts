@@ -46,7 +46,8 @@ export class ExternalDispatch {
   private timer?:ReturnType<typeof setInterval>;
   constructor(readonly store:Store,readonly changed:()=>void,
     private readonly metadata=codexMetadata,
-    private readonly command=exec){
+    private readonly command=exec,
+    private readonly canSend: (projectId:string,workspace:string)=>boolean=()=>true){
     for(const item of this.items())if(['sending','awaiting_claim','running'].includes(item.state)){
       item.state='unknown';item.error='ARC 重启前未确认执行终态。保留原任务，先核对外部会话，禁止自动重发。';this.save(item);
     }
@@ -60,7 +61,7 @@ export class ExternalDispatch {
     const value=await this.metadata(executable,workspace,'thread/list',{cwd:workspace,limit:100,sortKey:'updated_at',sourceKinds:['vscode','exec','cli','appServer'],useStateDbOnly:true});
     return {program:executable,sessions:value.data.filter((thread:any)=>path.resolve(thread.cwd).toLowerCase()===path.resolve(workspace).toLowerCase()).map((thread:any)=>({id:thread.id,name:thread.name||thread.preview?.slice(0,80)||thread.id,model:thread.model,reasoning_effort:thread.reasoningEffort,source:thread.originator||thread.source,updated_at:thread.updatedAt})),has_more:!!value.nextCursor};
   }
-  async bind(projectId:string,workspace:string,program:string,threadId:string){
+  async bind(projectId:string,workspace:string,program:string,threadId:string,configure?:(resolvedProgram:string)=>Promise<unknown>){
     program=await locate('codex',program||undefined);
     if(!path.isAbsolute(program)||!threadId.trim())throw Error('请填写官方 CLI 绝对路径和外部会话 ID');
     const [{stdout:version},{stdout:help},value]=await Promise.all([
@@ -71,7 +72,11 @@ export class ExternalDispatch {
     if(!String(version).startsWith('codex-cli ')||!String(help).includes('--resume'))throw Error('此 CLI 缺少已要求的 queue --resume 能力');
     const thread=value.thread;
     if(!thread||thread.id!==threadId||path.resolve(thread.cwd).toLowerCase()!==path.resolve(workspace).toLowerCase())throw Error('Codex 会话的实际工作目录与当前工程不一致');
-    if(this.items(projectId).some(item=>['sending','awaiting_claim','running','unknown'].includes(item.state)))throw Error('原执行存在未确认任务，请先核对原会话终态后再更换绑定');
+    const requireIdle=()=>{
+      if(this.items(projectId).some(item=>['sending','awaiting_claim','running','unknown'].includes(item.state)))throw Error('原执行存在未确认任务，请先核对原会话终态后再更换绑定');
+    };
+    requireIdle();
+    if(configure){await configure(program);requireIdle();}
     const binding:ExecutorBinding={project_id:projectId,workspace_path:workspace,program,thread_id:threadId,name:thread.name||thread.preview?.slice(0,80),model:thread.model??null,reasoning_effort:thread.reasoningEffort??null,version:String(version).trim(),checked_at:now()};
     this.store.put('external_executor',projectId,binding);this.changed();void this.pump();return binding;
   }
@@ -133,13 +138,21 @@ export class ExternalDispatch {
         if(item.state==='awaiting_claim'&&item.sent_at&&Date.now()-Date.parse(item.sent_at)>60000){item.state='unknown';item.error='已发送超过 60 秒，尚无领取回执。可能等待权限或外部会话离线，请核对原会话；不会自动重发。';this.save(item);continue;}
         if(item.state!=='queued')continue;
         const binding=this.binding(item.project_id);
-        if(!binding){if(!item.error){item.error='等待绑定已登录的本机 Codex 会话';this.save(item);}continue;}
+        if(!binding||!this.canSend(item.project_id,binding.workspace_path)){
+          const reason=binding?'等待在「连接 Agent」重新授权或核对工程目录':'等待绑定已登录的本机 Codex 会话';
+          if(item.error!==reason){item.error=reason;this.save(item);}
+          continue;
+        }
         if(this.items().some(other=>other.dispatch_id!==item.dispatch_id&&other.thread_id===binding.thread_id&&['sending','awaiting_claim','running','unknown'].includes(other.state)))continue;
         try{
           const current=await this.metadata(binding.program,binding.workspace_path,'thread/read',{threadId:binding.thread_id,includeTurns:false});
           if(path.resolve(current.thread.cwd).toLowerCase()!==path.resolve(binding.workspace_path).toLowerCase())throw Error('外部会话工作区已改变');
-          binding.model=current.thread.model??null;binding.reasoning_effort=current.thread.reasoningEffort??null;binding.checked_at=now();this.store.put('external_executor',binding.project_id,binding);
           await this.command(binding.program,['app-server','daemon','version'],{windowsHide:true,timeout:10000});
+          const latestQueued=this.store.get<Dispatch>('external_dispatch',item.dispatch_id),activeBinding=this.binding(item.project_id);
+          if(latestQueued.state!=='queued'||latestQueued.revoked||!this.canSend(item.project_id,binding.workspace_path)||
+            activeBinding?.thread_id!==binding.thread_id||activeBinding.program!==binding.program)continue;
+          binding.model=current.thread.model??null;binding.reasoning_effort=current.thread.reasoningEffort??null;binding.checked_at=now();
+          this.store.put('external_executor',binding.project_id,binding);
           item.thread_id=binding.thread_id;item.state='sending';item.sent_at=now();item.error=undefined;this.save(item);
           const message=`ARC 派发 ${item.dispatch_id}。先调用 arc_claim_dispatch，dispatch_id=${item.dispatch_id}，按返回的固定任务、上下文与权限执行。仅操作 ${binding.workspace_path}。如已领取，继续同一任务，禁止新建重复修改。${item.task_id?`${item.phase==='analysis'?'本次是只读需求分析，禁止修改工程或运行构建测试；按领取合同在 ARC 保存 AEC 需求包、实施步骤和建议范围；完成分析后停止，等待用户确认。':'执行已批准的需求包版本和文件范围，按批准的步骤关联验证证据并回填结果。'}使用会话原生只读文件或命令工具核对当前工作区源码；arc_read_source 仅适用于工程分析运行，不接受开发 task_id。`:'工程分析只读本次运行的冻结源码，按领取返回的 run_id 使用 arc_list_files 和 arc_read_source。'}`;
           const response=await this.command(binding.program,['queue','--thread',binding.thread_id,'--message',message,'--resume'],{cwd:binding.workspace_path,windowsHide:true,timeout:20000});
@@ -147,7 +160,7 @@ export class ExternalDispatch {
           if(latest.state==='sending'){latest.state='awaiting_claim';latest.error=String(response.stderr).trim()?redact(String(response.stderr).trim()):'已排入 Codex，等待实际领取确认';this.save(latest);}
         }catch(error){
           const latest=this.store.get<Dispatch>('external_dispatch',item.dispatch_id);
-          if(latest.state!=='running'){latest.state=latest.sent_at?'unknown':'blocked';latest.error=redact((error as Error).message);this.save(latest);}
+          if(!latest.revoked&&latest.state!=='running'){latest.state=latest.sent_at?'unknown':'blocked';latest.error=redact((error as Error).message);this.save(latest);}
         }
       }
     }finally{this.pumping=false;}
