@@ -72,7 +72,7 @@ function ContextFacts({context,reload}:{context:EngineeringContext;reload:()=>Pr
 }
 
 /** Content comes from the current analysis and materials; each region answers a different question. */
-export function EngineeringOverview({project,result,hasAnalysis,develop,onMaterials,onWalk,onArchitecture,onFiles,onTask,onAnalyze,analysisLabel,analysisBusy,businessPath,onBusinessStep,resumeLabel,onResume}:{businessPath:ReturnType<typeof savedBusinessPath>;onBusinessStep:(last:boolean,showSource?:boolean)=>void;resumeLabel:string;onResume:()=>void;project:Project;result?:AnalysisResult;hasAnalysis:boolean;develop:()=>void;onMaterials:()=>void;onWalk:()=>void;onArchitecture:(objectId?:string)=>void;onFiles:()=>void;onTask:(id:string)=>void;onAnalyze:()=>void;analysisLabel:string;analysisBusy:boolean}){
+export function EngineeringOverview({project,result,hasAnalysis,develop,onMaterials,onWalk,onArchitecture,onFiles,onTask,onAnalyze,analysisLabel,analysisBusy,analysisMenu,businessPath,onBusinessStep,resumeLabel,onResume}:{businessPath:ReturnType<typeof savedBusinessPath>;onBusinessStep:(last:boolean,showSource?:boolean)=>void;resumeLabel:string;onResume:()=>void;project:Project;result?:AnalysisResult;hasAnalysis:boolean;develop:()=>void;onMaterials:()=>void;onWalk:()=>void;onArchitecture:(objectId?:string)=>void;onFiles:()=>void;onTask:(id:string)=>void;onAnalyze:()=>void;analysisLabel:string;analysisBusy:boolean;analysisMenu:React.ReactNode}){
   const {context,error}=useContext(project.project_id);
   if(project.fictional)return null;
   const entries=context?.entries.filter(item=>item.status!=='superseded')??[];
@@ -89,7 +89,7 @@ export function EngineeringOverview({project,result,hasAnalysis,develop,onMateri
   const capability=result?.feature_catalog?.groups.flatMap(group=>group.node_ids).map(id=>result.nodes.find(node=>node.node_id===id)?.label).filter(Boolean);
   return <main className="project-home" aria-label="工程概览">
     <header className="project-home-hero"><div><h1>{project.name}</h1>{(result?.summary.text||entry('purpose'))&&<p className="home-purpose">{result?.summary.text||summary(entry('purpose'))}</p>}<code title={project.root_path}>{project.root_path}</code></div>
-      <div className="project-home-actions"><button className={hasAnalysis?'':'primary'} disabled={analysisBusy} onClick={onAnalyze}>{analysisLabel}</button><button onClick={develop}>提出新需求</button></div>
+      <div className="project-home-actions"><button className={hasAnalysis?'':'primary'} disabled={analysisBusy} onClick={onAnalyze}>{analysisLabel}</button>{analysisMenu}<button onClick={develop}>提出新需求</button></div>
     </header>
     {error&&<p role="alert" className="warning">{error}</p>}
     <div className={resumeLabel?"project-home-main home-returning":"project-home-main"}>

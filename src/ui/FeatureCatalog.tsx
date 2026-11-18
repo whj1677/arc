@@ -2,9 +2,14 @@ import React,{useState,useEffect} from 'react';
 import type {Explanation,WorkspaceData} from '../shared';
 import './feature-catalog.css';
 import {SourceExcerpt} from './SourceExcerpt';
-import {waitingForAgent} from './discovery-state';
+import {analysisModes,isAnalysisMode,waitingForAgent,type AnalysisMode} from './discovery-state';
 import {discoveredFeature} from '../discovered-feature';
-export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mode,setMode,provider}:{explanation?:Explanation;data:WorkspaceData;projectId:string;busy:boolean;open:(id:string)=>void;discover:()=>void;mode:string;setMode:(mode:string)=>void;provider:string}){
+export function AnalysisModePicker({label,ariaLabel=label,mode,setMode}:{label:string;ariaLabel?:string;mode:AnalysisMode;setMode:(mode:AnalysisMode)=>void}){
+  return <label>{label}<select aria-label={ariaLabel} value={mode} onChange={event=>{
+    const next=event.target.value;if(isAnalysisMode(next))setMode(next);
+  }}>{Object.entries(analysisModes).map(([id,item])=><option value={id} key={id}>{item.option}</option>)}</select></label>;
+}
+export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mode,setMode}:{explanation?:Explanation;data:WorkspaceData;projectId:string;busy:boolean;open:(id:string)=>void;discover:()=>void;mode:AnalysisMode;setMode:(mode:AnalysisMode)=>void}){
   const result=explanation?.result,catalog=result?.feature_catalog;
   const [search,setSearch]=useState('');
   useEffect(()=>setSearch(''),[projectId]);
@@ -14,9 +19,9 @@ export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mo
   const readyCount=catalog?.groups.flatMap(g=>g.node_ids).filter(id=>readings.get(id)?.steps.length).length??0;
   const count=catalog?.groups.reduce((sum,g)=>sum+g.node_ids.length,0)||0;
   return <section className="feature-catalog" aria-label="已发现的功能目录">
-    <div className="feature-catalog-heading"><div><span className="eyebrow">先看全貌 · 按需深入</span><h2>系统有哪些功能</h2><p>打开功能即可阅读工程分析已查明的内容，并核对对应源码。</p></div>{!catalog&&<button disabled={busy} onClick={discover}>{mode==='codex'?'在 ARC 内发现功能':'准备功能发现任务'}</button>}</div>
+    <div className="feature-catalog-heading"><div><span className="eyebrow">先看全貌 · 按需深入</span><h2>系统有哪些功能</h2><p>打开功能即可阅读工程分析已查明的内容，并核对对应源码。</p></div>{!catalog&&<button disabled={busy} onClick={discover}>{mode==='mcp'?'准备功能发现任务':'在 ARC 内发现功能'}</button>}</div>
     {catalog?<><div className="discovery-coverage"><strong>已发现 {count} 项功能 · {readyCount} 项已保存首轮步骤</strong><details><summary>查看目录来源与覆盖范围</summary><p>{catalog.scope}</p></details>{explanation?.source_status!=='current'&&<small className="warning">来源已有变化：这是已保存的目录，详细分析仍须核对绑定快照。</small>}</div>
-    <div className="discovery-mode"><label>深入分析方式 <select aria-label="功能展开方式" value={mode} onChange={e=>setMode(e.target.value)}><option value="codex">Codex · 派发到绑定会话</option><option value="mcp">外部 Agent · MCP 待领取</option></select></label><small>{mode==='codex'?'主动选择深入分析时，派发到绑定的 Codex 会话。':'主动选择深入分析时，由已接入 MCP 的 Agent 领取。'}</small></div>
+    <div className="discovery-mode"><AnalysisModePicker label="深入分析方式" ariaLabel="功能展开方式" mode={mode} setMode={setMode}/><small>{analysisModes[mode].description}</small></div>
     <div className="catalog-search"><input type="search" aria-label="搜索工程功能" placeholder="按功能名称或用途查找…" value={search} onChange={e=>setSearch(e.target.value)}/>{search&&<button onClick={()=>setSearch('')}>清除搜索</button>}<small>{query?`找到 ${groups.reduce((n,g)=>n+g.node_ids.length,0)} 项功能`:'点击功能卡片即可继续'}</small></div>
     {!groups.length&&(count?<p role="status">没有匹配的功能，试试用途关键词或清除搜索。</p>:<section className="discovery-empty"><h3>本轮尚未确认功能入口</h3><p>{catalog.scope}</p>{Array.from(new Set([...result!.coverage.unresolved_scope,...result!.gaps.map(gap=>gap.question)])).filter(Boolean).map(reason=><p key={reason}>{reason}</p>)}</section>)}
     <div className="capability-groups">{groups.map((group,i)=><section className="capability-group" key={i}><h3>{group.label}<small>{group.node_ids.length}</small></h3>{group.node_ids.map(id=>{

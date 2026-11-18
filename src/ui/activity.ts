@@ -13,6 +13,12 @@ export function duration(ms:number) {
   const seconds=Math.max(0,Math.floor(ms/1000));
   return seconds>=60?`${Math.floor(seconds/60)} 分 ${seconds%60} 秒`:`${seconds} 秒`;
 }
+function toolInputPath(args:unknown){
+  if(typeof args==='string'){
+    try{args=JSON.parse(args);}catch{return undefined;}
+  }
+  return args&&typeof args==='object'&&'path'in args&&typeof args.path==='string'?args.path:undefined;
+}
 export function activity(run:Run,events:any[],now:number) {
   const items=new Map<string,ActivityItem>(),chunks=new Map<string,string>(),files=new Set<string>(),pending=new Set<string>();
   const toolDetails=new Map<string,{title?:string;path?:string}>();
@@ -53,7 +59,7 @@ export function activity(run:Run,events:any[],now:number) {
     if(['tool_call','tool_call_update'].includes(u?.sessionUpdate)){
       reconnecting=false;
       const id=`tool:${u.toolCallId}`,prior=toolDetails.get(id),finished=['completed','failed'].includes(u.status);
-      const title=u.title||prior?.title||u.toolCallId,file=u.rawInput?.path??prior?.path;
+      const title=u.title||prior?.title||u.toolCallId,file=toolInputPath(u.rawInput)??prior?.path;
       toolDetails.set(id,{title,path:file});
       if(finished)pending.delete(id);else pending.add(id);
       if(u.status==='completed'&&typeof file==='string'&&/(?:^|__)arc_read_source$/.test(title))files.add(file);

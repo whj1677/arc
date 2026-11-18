@@ -102,7 +102,10 @@ app.whenReady().then(async()=>{
         case 'reading_get':value=service.reading(args.key);break;
         case 'reading_save':value=service.reading(args.key,args.value);break;
         case 'providers_probe':value=await service.probe(args.config);break;
-        case 'run_start':await bridge.enable(service.store.get('scenario',args.scenario_id).project_id,false);value=await service.startRun(args.scenario_id,args.provider_id,args.submission_key,args.previous_run_id);break;
+        case 'run_start':{
+          if(args.provider_id==='codex')await bridge.enable(service.store.get('scenario',args.scenario_id).project_id,false);
+          value=await service.startRun(args.scenario_id,args.provider_id,args.submission_key,args.previous_run_id);break;
+        }
         case 'overview_research':value=await service.researchOverview(args.result_id,args.submission_key);break;
         case 'reading_ask':await bridge.enable(args.project_id,false);value=await service.askReading(args);break;
         case 'reading_retry':value=service.retryReading(args.question_id,args.mode,args.submission_key);break;
