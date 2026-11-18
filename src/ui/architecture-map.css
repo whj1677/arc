@@ -7,3 +7,13 @@
 .architecture-map-node:hover{filter:brightness(1.15)}.architecture-map-node[aria-pressed=true]{border-color:#98f1d1!important;box-shadow:0 0 0 2px #98f1d133,0 8px 20px #0003}.architecture-map-node:focus-visible{outline:3px solid #b3f7df;outline-offset:-4px}
 .architecture-link{cursor:pointer;outline:none}.architecture-link-line{fill:none;stroke:#648f9c;stroke-width:1.8}.architecture-link-hit{fill:none;stroke:transparent;stroke-width:18}.architecture-link.uncertain .architecture-link-line{stroke-dasharray:6 4}.architecture-link.selected .architecture-link-line,.architecture-link:hover .architecture-link-line,.architecture-link:focus-visible .architecture-link-line{stroke:#9af3d3;stroke-width:2.8}.architecture-link-label{font-size:11px;fill:#bad2dc;paint-order:stroke;stroke:#101f28;stroke-width:5px;stroke-linejoin:round;pointer-events:none}.architecture-link.selected .architecture-link-label,.architecture-link:focus-visible .architecture-link-label{fill:#a5f1d8}
 .architecture-map-footer{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin:20px 6px 8px;color:#9fb7c3;font-size:11px}.architecture-map-note{font-size:11px;color:#9fb7c3;margin:12px 6px 0}.architecture-selected-links{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:18px 4px 0;padding:12px;border:1px solid #38585c;border-radius:10px;background:#162b30}.architecture-selected-links>span{font-size:12px;color:#c0d5d7}.architecture-selected-links button{font-size:12px;white-space:normal}.architecture-selected-links button[aria-pressed=true]{background:#255247;border-color:#80ceb0}.architecture-deeper{margin:12px 6px 0;background:transparent;color:#9ce7cc;font-size:12px}
+
+.architecture-map .architecture-map-heading{margin:0 0 12px;padding:0}
+.architecture-map .architecture-map-heading h2{margin:0;font-size:1.3rem}
+.architecture-map .architecture-map-heading p{margin:.2rem 0 0;color:var(--muted)}
+.architecture-viewport{overflow:auto;max-width:100%;border:1px solid var(--border);border-radius:10px;background-color:var(--surface);background-image:radial-gradient(var(--border) .8px,transparent .8px);background-size:16px 16px}
+.architecture-viewport .architecture-map-canvas{margin-inline:auto}
+.architecture-viewport .architecture-link-label{font-size:12px}
+.architecture-map .architecture-map-footer{margin:.6rem 0}
+.architecture-scope{border-top:1px solid var(--border);margin-top:1rem}
+.architecture-scope summary,.architecture-scope p{font-size:.82rem;color:var(--muted)}

@@ -10,11 +10,11 @@ export function Architecture({result,selected,select,inspect,modules,zoom,search
  useEffect(()=>{if(!root.current)return;const observer=new ResizeObserver(entries=>setWidth(entries[0].contentRect.width));observer.observe(root.current);return()=>observer.disconnect();},[result.result_id,model.nodes.length>0]);
  if(!result.architecture)return <div className="empty compact"><h2>系统协作尚未分析</h2><p>需要 Agent 明确系统组件和通信关系，不能按文件名猜测架构。</p><button onClick={modules}>查看已有模块说明</button></div>;
  if(!model.nodes.length)return <div className="empty compact"><h2>没有匹配组件</h2><p>清除搜索查看完整系统。</p></div>;
- const scale=Math.min(1,Math.max(360,width)/model.width)*zoom;
+ const scale=Math.min(1,Math.max(760,width)/model.width)*zoom;
  const selectedPair=model.pairs.find(pair=>pair.some(e=>e.edge_id===selected));
  return <section ref={root} className="architecture-map" aria-label="系统协作导图">
-  <header className="architecture-map-heading"><div><span className="eyebrow">SYSTEM MAP</span><h2>一张图，看清系统</h2></div><p>点组件看职责<br/>点连线看传递</p></header>
-  <div className="architecture-content-summary"><p>{result.summary.text}</p><div><span>{result.coverage.covered_scope.length} 项已覆盖</span><span>{result.coverage.unresolved_scope.length} 项未覆盖</span>{result.gaps.length>0&&<span>{result.gaps.length} 个待确认问题</span>}</div>{result.coverage.unresolved_scope[0]&&<small>边界：{result.coverage.unresolved_scope[0]}</small>}</div>
+  <header className="architecture-map-heading"><div><h2>组件协作关系</h2><p>{model.nodes.length} 个组件 · {model.edges.length} 条关系</p></div></header>
+  <div className="architecture-viewport" tabIndex={0} role="region" aria-label="系统架构图，可横向滚动">
   <svg className="architecture-map-canvas" data-zoom-surface width={model.width*scale} height={model.height*scale} viewBox={`0 0 ${model.width} ${model.height}`} role="group" aria-label="系统架构图">
    <defs><marker id={marker} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto-start-reverse"><path d="M0 0 L7 3.5 L0 7" fill="context-stroke"/></marker></defs>
    {model.boundaries.map(b=><rect key={b.id} className="architecture-container" x={b.x} y={b.y} width={b.width} height={b.height} rx="24"><title>包含明确归属的内部模块</title></rect>)}
@@ -35,9 +35,13 @@ export function Architecture({result,selected,select,inspect,modules,zoom,search
      <button className={`architecture-map-node architecture-node ${model.hub===n.node_id?'hub':''} ${parent?'internal':''} ${n.kind==='execution_boundary'?'external':''}`} aria-pressed={selected===n.node_id} onClick={()=>select(n.node_id)} title={n.description}><span className="architecture-node-dot" aria-hidden="true"/><strong>{parts[0]}</strong><small>{parts.slice(1).join(' · ')||'组件'}{parent&&!parts.slice(1).join('').includes('内部')?' · 内部模块':''}</small></button>
     </foreignObject>;})}
   </svg>
-  <div className="architecture-map-footer"><span>↗ 箭头表示关系方向　·　边框表示所属模块</span><span>{model.nodes.length} 个组件 · {model.edges.length} 条关系</span></div>
+  </div>
+  <div className="architecture-map-footer"><span>↗ 箭头表示关系方向　·　边框表示所属模块</span><span>选择组件或连线查看详情</span></div>
   {selectedPair&&<div className="architecture-selected-links" aria-label="当前连线的关系"><span>查看这条连线</span>{selectedPair.map(e=><button key={e.edge_id} aria-pressed={selected===e.edge_id} onClick={()=>select(e.edge_id)}>{e.label}</button>)}</div>}
   {model.nodes.some(n=>n.node_id===selected&&result.nodes.some(child=>child.parent_node_id===n.node_id))&&<button className="architecture-deeper" onClick={()=>inspect(selected)}>展开所选组件的内部模块 →</button>}
-  <p className="architecture-map-note">只画已分析的关系；布局不代表执行先后。完整说明在右侧。</p>
+  <details className="architecture-scope"><summary>覆盖边界 · {result.coverage.covered_scope.length} 项已覆盖，{result.coverage.unresolved_scope.length} 项未覆盖</summary>
+    <p>关系图仅显示已分析的连接，节点位置不表示执行顺序。</p>
+    {result.coverage.unresolved_scope.map((item,index)=><p key={index}>{item}</p>)}
+  </details>
  </section>;
 }

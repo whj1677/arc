@@ -68,29 +68,54 @@ function ContextFacts({context,reload}:{context:EngineeringContext;reload:()=>Pr
 }
 
 /** Content comes from the current analysis and materials; each region answers a different question. */
-export function EngineeringOverview({project,result,hasAnalysis,develop,onMaterials,onWalk,onArchitecture,onFiles,onTask,onAnalyze,analysisLabel,analysisBusy}:{project:Project;result?:AnalysisResult;hasAnalysis:boolean;develop:()=>void;onMaterials:()=>void;onWalk:()=>void;onArchitecture:()=>void;onFiles:()=>void;onTask:(id:string)=>void;onAnalyze:()=>void;analysisLabel:string;analysisBusy:boolean}){
+export function EngineeringOverview({project,result,hasAnalysis,develop,onMaterials,onWalk,onArchitecture,onFiles,onTask,onAnalyze,analysisLabel,analysisBusy}:{project:Project;result?:AnalysisResult;hasAnalysis:boolean;develop:()=>void;onMaterials:()=>void;onWalk:()=>void;onArchitecture:(objectId?:string)=>void;onFiles:()=>void;onTask:(id:string)=>void;onAnalyze:()=>void;analysisLabel:string;analysisBusy:boolean}){
   const {context,error}=useContext(project.project_id);
   if(project.fictional)return null;
-  const entries=(category:ContextEntry['category'])=>context?.entries.filter(item=>item.category===category&&item.status!=='superseded')??[];
-  const entry=(category:ContextEntry['category'])=>entries(category)[0];
-  const purpose=entry('purpose'),build=entry('build'),issues=entries('issue');
-  const components=(result?.architecture?.node_ids??[]).flatMap(id=>{const node=result?.nodes.find(item=>item.node_id===id);return node?[node]:[];});
-  const capabilities=(result?.feature_catalog?.groups??[]).flatMap(group=>group.node_ids.flatMap(id=>{const node=result?.nodes.find(item=>item.node_id===id);return node?[node]:[];}));
-  const summary=(value?:ContextEntry,limit=220)=>{if(!value)return context?'尚未形成有效资料。':'正在读取当前有效资料…';const text=value.text.replace(/^#+\s*/gm,'').replace(/[`*_]/g,'').replace(/\s+/g,' ').trim();return text.slice(0,limit)+(value.truncated||text.length>limit?'…':'');};
+  const entries=context?.entries.filter(item=>item.status!=='superseded')??[];
+  const entry=(category:ContextEntry['category'])=>entries.find(item=>item.category===category);
+  const summary=(item?:ContextEntry,limit=200)=>{
+    if(!item)return '';
+    const value=item.text.replace(/^#+\s*/gm,'').replace(/[`*_]/g,'').replace(/\s+/g,' ').trim();
+    return value.slice(0,limit)+(item.truncated||value.length>limit?'…':'');
+  };
+  const components=(result?.architecture?.node_ids??[]).flatMap(id=>result?.nodes.find(n=>n.node_id===id)??[]);
+  const byId=new Map(components.map(node=>[node.node_id,node]));
+  const relations=result?.edges.filter(edge=>result.architecture?.edge_ids.includes(edge.edge_id)&&byId.has(edge.source_node_id)&&byId.has(edge.target_node_id))??[];
+  const relation=relations.find(edge=>edge.status==='source_supported')??relations[0];
+  const recent=context?.recent_tasks??[];
+  const current=recent.find(task=>task.status==='running'||task.status==='pending'||task.status==='blocked');
+  const capability=result?.feature_catalog?.groups.flatMap(group=>group.node_ids).map(id=>result.nodes.find(node=>node.node_id===id)?.label).filter(Boolean);
+  function componentButton(node:AnalysisResult['nodes'][number]){
+    return <button className="home-component" key={node.node_id} onClick={()=>onArchitecture(node.node_id)}>
+      <strong>{node.label}</strong><span>{node.description}</span>
+      <small>{node.evidence_ids.length?node.evidence_ids.length+' 处来源依据':'查看组件职责'} →</small>
+    </button>;
+  }
   return <main className="project-home" aria-label="工程概览">
-    <header className="project-home-hero"><div><span className="eyebrow">工程概览 · 从认识到动手</span><h1>{project.name}</h1><p>{summary(purpose,320)}</p><code>{project.root_path}</code></div><div className="project-home-actions"><button className="primary" disabled={analysisBusy} onClick={onAnalyze}>{analysisLabel}</button><button onClick={develop}>提出新需求</button></div></header>
+    <header className="project-home-hero"><div><h1>{project.name}</h1>{entry('purpose')&&<p>{summary(entry('purpose'))}</p>}<code title={project.root_path}>{project.root_path}</code></div>
+      <div className="project-home-actions"><button className={hasAnalysis?'':'primary'} disabled={analysisBusy} onClick={onAnalyze}>{analysisLabel}</button><button onClick={develop}>提出新需求</button></div>
+    </header>
     {error&&<p role="alert" className="warning">{error}</p>}
-    <section className="project-home-section" aria-labelledby="home-orientation"><div className="project-home-heading"><div><span className="eyebrow">01 / 建立基本认识</span><h2 id="home-orientation">先看清系统、能力、运行方式与风险</h2></div><button onClick={onMaterials}>查看全部工程资料 →</button></div><div className="project-home-questions">
-      <article><span>由什么组成</span><h3>系统组件</h3><p>{components.length?`${components.length} 个已分析组件：${components.slice(0,3).map(node=>node.label).join('、')}`:'尚未取得组件分析；不会按文件名猜测架构。'}</p></article>
-      <article><span>能做什么</span><h3>核心能力</h3><p>{capabilities.length?`${capabilities.length} 项已发现能力：${capabilities.slice(0,3).map(node=>node.label).join('、')}`:'尚未发现功能目录，可在功能走读中按需生成。'}</p></article>
-      <article><span>怎么运行</span><h3>构建与验证</h3><p>{summary(build)}</p></article>
-      <article><span>哪里不确定</span><h3>风险与缺口</h3><p>{issues.length?summary(issues[0]):result?.gaps.length?`${result.gaps.length} 项待确认：${result.gaps[0].question}`:'当前已加载资料没有单独的风险记录；不代表不存在风险。'}</p></article>
-    </div></section>
+    {current&&<button className="home-resume" onClick={()=>onTask(current.task_id)}><small>{stateNames[current.status]}</small><strong>{current.goal}</strong><span>查看任务 →</span></button>}
     <div className="project-home-main">
-      <section className="project-home-panel project-home-architecture"><div className="project-home-heading"><div><span className="eyebrow">02 / 理解实现</span><h2>从组件进入真实协作关系</h2></div><span className="tag">{hasAnalysis?`${components.length} 组件 · ${result?.architecture?.edge_ids.length??0} 关系`:'等待分析'}</span></div>{components.length?<div className="project-home-components">{components.slice(0,3).map(node=><button key={node.node_id} onClick={onArchitecture}><strong>{node.label}</strong><span>{node.description}</span><small>{node.evidence_ids.length} 处来源依据 →</small></button>)}</div>:<p>完成工程全貌分析后，这里直接展示组件职责和来源，而不只是一段分析摘要。</p>}<div className="project-home-deep-links"><button onClick={onArchitecture}><strong>系统架构</strong><span>组件、边界与协作关系 →</span></button><button onClick={onWalk}><strong>功能走读</strong><span>业务流程、输入输出与异常 →</span></button><button onClick={onFiles}><strong>文件组织</strong><span>目录职责与实现位置 →</span></button></div></section>
-      <aside className="project-home-side"><section><span className="eyebrow">覆盖与边界</span><h3>{result?`${result.coverage.covered_scope.length} 项已覆盖 · ${result.coverage.unresolved_scope.length} 项未覆盖`:'尚未形成分析覆盖'}</h3><p>{result?.coverage.unresolved_scope[0]||'工程分析会同时保存已覆盖和未覆盖范围，避免把局部理解当作全量事实。'}</p></section><section><span className="eyebrow">来源可信度</span><h3>{context?.workspace.status==='bound'?'工作区已绑定':'工作区待绑定'}</h3><p>{context?`${context.code_state.branch||'非 Git 工程'} · ${context.code_state.head?.slice(0,8)||'无提交标识'}。工程资料和分析结果分别保留来源版本。`:'正在读取代码状态…'}</p></section></aside>
+      <section className="project-home-panel project-home-architecture">
+        <div className="project-home-heading"><div><h2>组件协作</h2><small>{components.length} 个组件 · {relations.length} 条关系</small></div><button onClick={()=>onArchitecture()}>查看系统架构 →</button></div>
+        {relation?<div className="home-relation">
+          {componentButton(byId.get(relation.source_node_id)!)}
+          <button className="home-connection" onClick={()=>onArchitecture(relation.edge_id)}><strong>{relation.label}</strong>{relation.status!=='source_supported'&&<small>待核对</small>}<span aria-hidden="true">⟶</span></button>
+          {componentButton(byId.get(relation.target_node_id)!)}
+        </div>:components.length?<div className="project-home-components">{components.slice(0,3).map(componentButton)}</div>:<p>完成工程全貌分析后，可在这里查看组件之间的调用关系与源码依据。</p>}
+        <div className="home-reading-links"><button onClick={onWalk}>功能走读 →</button><button onClick={onFiles}>文件组织 →</button></div>
+      </section>
+      <aside className="project-home-panel"><h2>最近开发</h2>{recent.length?<div className="home-task-list">{recent.slice(0,3).map(task=><button key={task.task_id} onClick={()=>onTask(task.task_id)}><strong>{task.goal}</strong><small>{stateNames[task.status]} · {stateNames[task.verification_status]}</small></button>)}</div>:<p className="muted">{context?'暂无开发记录。':'正在读取开发记录…'}</p>}</aside>
     </div>
-    <section className="project-home-section project-home-recent"><div className="project-home-heading"><div><span className="eyebrow">03 / 继续工作</span><h2>最近开发</h2></div><button onClick={develop}>描述一个新需求 →</button></div>{context?.recent_tasks.length?<div className="project-home-tasks">{context.recent_tasks.slice(0,3).map(task=><button key={task.task_id} onClick={()=>onTask(task.task_id)}><strong>{task.goal}</strong><span>{stateNames[task.status]} · 验证{stateNames[task.verification_status]}</span><small>{when(task.updated_at)} · v{task.version}</small></button>)}</div>:<p className="muted">还没有开发记录。可以从一个明确、可验证的小需求开始。</p>}</section>
+    <section className="project-home-section"><div className="project-home-heading"><h2>工程资料</h2><button onClick={onMaterials}>查看全部工程资料 →</button></div>
+      <dl className="home-facts"><dt>核心能力</dt><dd>{capability?.slice(0,3).join('、')||'尚未形成功能目录'}</dd>
+      <dt>构建与验证</dt><dd>{summary(entry('build'))||(context?'暂无构建资料':'正在读取资料…')}</dd>
+      <dt>风险与缺口</dt><dd>{summary(entry('issue'))||result?.gaps[0]?.question||'暂无已记录问题'}</dd>
+      <dt>分析覆盖</dt><dd>{result?`${result.coverage.covered_scope.length} 项已覆盖 · ${result.coverage.unresolved_scope.length} 项未覆盖`:'待分析'}{result?.coverage.unresolved_scope[0]&&' · '+result.coverage.unresolved_scope[0]}</dd>
+      <dt>来源版本</dt><dd>{context?[context.workspace.status==='bound'?'工作区已绑定':'工作区待绑定',context.code_state.branch,context.code_state.head?.slice(0,8)].filter(Boolean).join(' · '):'正在读取代码状态…'}</dd></dl>
+    </section>
   </main>;
 }
 
@@ -168,8 +193,11 @@ export function EngineeringWorkspace({project,page,requestedTask,onTaskOpened,on
 
         {history.length>0&&<label className="engineering-version-picker">查看记录版本<select aria-label="工程任务版本" value={historical?.version??''} onChange={e=>setHistorical(history.find(item=>item.version===Number(e.target.value))||null)}><option value="">当前版本</option>{history.map(item=><option key={item.version} value={item.version}>v{item.version} · {stateNames[item.status]} · {when(item.updated_at)}</option>)}</select></label>}
         {task.origin==='legacy_import'&&<p className="warning">AEC 历史任务 · 待复核。原文与来源已保存，旧验证声明不视为本次真实执行。</p>}
-        <div className="task-result-summary" aria-label="任务交付摘要"><span><strong>{task.changes.length}</strong> 个变更文件</span><span>验证 <strong>{stateNames[task.verification_status]}</strong></span><span><strong>{task.unresolved.length}</strong> 项遗留</span><button onClick={()=>document.getElementById(`${task.task_id}-verification`)?.scrollIntoView({block:'start'})}>查看交付结果 →</button></div>
-        {ended&&<section className="task-outcome" aria-label="本次交付结果"><div className="row between"><h3>本次交付结果</h3><span className={`tag verification-${task.verification_status}`}>{stateNames[task.status]}</span></div><ContextText text={task.summary||'任务已结束，但尚未回填结果摘要。'}/><div className="row"><button onClick={()=>document.getElementById(`${task.task_id}-changes`)?.scrollIntoView({block:'start'})}>查看实际变更</button><button onClick={()=>document.getElementById(`${task.task_id}-verification`)?.scrollIntoView({block:'start'})}>核对验证与遗留</button></div></section>}
+        {task.verification_status==='stale'?<section className="task-review-notice" aria-label="验证需要复核">
+          <div><h3>代码已变化，需重新验证</h3><p>上次验证对应较早的代码版本。</p></div>
+          <div className="row"><button onClick={()=>document.getElementById(`${task.task_id}-changes`)?.scrollIntoView({block:'start'})}>查看实际变更</button><button onClick={()=>document.getElementById(`${task.task_id}-verification`)?.scrollIntoView({block:'start'})}>核对验证与遗留</button></div>
+        </section>:<div className="task-result-summary" aria-label="任务交付摘要"><span><strong>{task.changes.length}</strong> 个变更文件</span><span>验证 <strong>{stateNames[task.verification_status]}</strong></span><span><strong>{task.unresolved.length}</strong> 项遗留</span><button onClick={()=>document.getElementById(`${task.task_id}-verification`)?.scrollIntoView({block:'start'})}>查看交付结果 →</button></div>}
+        {ended&&<section className="task-outcome" aria-label="本次交付结果"><div className="row between"><h3>本次交付结果</h3><span className={`tag verification-${task.verification_status}`}>{stateNames[task.status]}</span></div><ContextText text={task.summary||'任务已结束，但尚未回填结果摘要。'}/>{task.verification_status!=='stale'&&<div className="row"><button onClick={()=>document.getElementById(`${task.task_id}-changes`)?.scrollIntoView({block:'start'})}>查看实际变更</button><button onClick={()=>document.getElementById(`${task.task_id}-verification`)?.scrollIntoView({block:'start'})}>核对验证与遗留</button></div>}</section>}
         {inProgress&&<section className="task-current-focus" aria-label="当前执行重点"><span className="eyebrow">正在进行</span><h3>{currentStep?.title||'Agent 正在处理当前任务'}</h3><p>{currentStep?.progress||latestAttempt?.error||latestEvent?.message||latestEvent?.item?.text||'已收到运行状态，等待下一条实际活动。'}</p></section>}
         <section id={`${task.task_id}-goal`} className="task-model-section task-model-goal"><header><span>01</span><div><h3>目标与验收</h3><p>验收条件从实施步骤汇集，并连接实际证据。</p></div></header><details><summary>原始要求与接续记录 · {task.workflow?'从 ARC 发起':'沿用 Agent / 原有任务入口'}</summary>{task.requests?.map(item=><p key={item.submission_key}>{item.text}</p>)}<small>任务 {task.task_id}</small></details><h4>验收条件</h4>{acceptance.length?<ul className="task-acceptance-list">{acceptance.map((item,index)=><li key={`${index}:${item.criterion_id}`} data-criterion-id={item.criterion_id}><strong>{item.text}</strong><small>{item.step} · {item.evidence_ids.length?`${item.evidence_ids.length} 条关联证据`:'尚无关联证据'}</small></li>)}</ul>:<p className="muted">尚未形成明确的验收条件；实施步骤补充后会汇集到这里。</p>}</section>
         <section id={`${task.task_id}-context`} className="task-model-section"><header><span>02</span><div><h3>现状与依据</h3><p>核对任务摘要、开始时的代码身份和已有改动，避免把旧说明当作当前事实。</p></div></header>{task.summary&&!ended?<div className="engineering-summary"><ContextText text={task.summary}/></div>:ended?<p className="muted">交付结果已在上方前置展示；这里继续核对开始基线、已有改动与关联来源。</p>:<p className="muted">Agent 尚未回填现状分析或结果摘要。</p>}<details className="task-technical-details"><summary>工作区、代码基线与关联走读</summary><dl className="engineering-metadata"><dt>工作区</dt><dd>{task.workspace_path}</dd><dt>开始基线</dt><dd>{task.baseline.head||'非 Git 工程'}{task.baseline.branch?` · ${task.baseline.branch}`:''}<br/><small>{task.baseline.fingerprint}</small></dd><dt>开始前已有改动</dt><dd>{task.baseline.dirty.length?task.baseline.dirty.join('、'):'无已识别的未提交改动'}</dd><dt>上下文版本</dt><dd>{task.context_version}</dd>{task.reading&&<><dt>功能走读</dt><dd>原说明 {task.reading.result_id}<br/><small>原快照 {task.reading.source_snapshot_id} · 选中 {task.reading.target.kind}:{task.reading.target.id}</small><br/>{task.walkthrough?`走读更新：${({pending:'等待更新',running:'正在更新',completed:'新版已保存',failed:'更新失败'} as const)[task.walkthrough.status]}`:'尚未触发走读更新'}{task.walkthrough?.error&&<p className="warning">{task.walkthrough.error}</p>}</dd></>}<dt>差异覆盖</dt><dd>{task.changes_status==='needs_review'?'差异归属待核查':task.baseline.workspace_fingerprint?'工作区文件内容。二进制和超限文件记录哈希，忽略目录与凭据排除。':'历史基线仅覆盖阅读快照的文本文件。'}</dd></dl></details></section>
