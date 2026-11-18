@@ -5,6 +5,7 @@ import { Store, id, now } from './store';
 import { capture, readSource, freshness, sha } from './snapshot';
 import { probeProviders, runCodex, makePrompt, redact, stopTree, overviewPhaseDirectory, type OverviewPhase, type ActiveProcess } from './providers';
 import { normalizeTransport, validateResult } from './validation';
+import {partialFunctionReading} from './function-walkthrough-validation';
 import {probeDsh,runDsh,dshFinalMessage,parseProviderText} from './dsh';
 import {makeDshWalkthroughReview, dshWalkthroughReviewSummary} from './dsh-walkthrough';
 import {runDshWeb,dshWebSessionUrl,closeDshWebHosts} from './dsh-web';
@@ -420,7 +421,8 @@ export class ArcService {
     const development=initial.provider_id==='dsh'&&initial.development_task_id?this.engineering.task(initial.development_task_id):undefined;
     const prompt=development
       ?this.dshWalkthroughPrompt(initial,snapshot,development)
-      :await makePrompt(initial,snapshot,this.directory,annotations,previous?{result_id:previous.result_id,binding:previous.result.binding,summary:previous.result.summary}:undefined);
+      :await makePrompt(initial,snapshot,this.directory,annotations,previous?{result_id:previous.result_id,binding:previous.result.binding,summary:previous.result.summary}:undefined,
+        initial.provider_id==='dsh'&&this.store.get<Scenario>('scenario',initial.binding.scenario_id).kind==='feature_overview');
     this.event(runId,{type:'local.stage',stage:'launching',message:`只读任务已准备，正在启动 ${initial.provider_id} 官方后端`});
     if(this.store.get<Run>('run',runId).status==='cancelled'||this.closing)return;
     const runner=initial.provider_id==='dsh'?(initial.development_task_id?runDsh:runDshWeb):this.codexRunner;
@@ -567,7 +569,21 @@ export class ArcService {
     }
     run.status='validating';this.store.put('run',runId,run);
     this.event(runId,{type:'local.stage',stage:'validating',message:'完整结果已收到，正在校验结构、任务绑定和源码行号'});this.changed();
-    const report=run.reading_question_id?await validateReadingAnswer(value,run,snapshot,this.directory):await validateResult(value,run,snapshot,this.directory);
+    let report=run.reading_question_id?await validateReadingAnswer(value,run,snapshot,this.directory):await validateResult(value,run,snapshot,this.directory);
+
+    if(report.errors.length&&report.structure==='passed'&&run.provider_id==='dsh'&&run.native_ui==='dsh-web'&&
+        !run.development_task_id&&!run.reading_question_id&&this.store.get<Scenario>('scenario',run.binding.scenario_id).kind==='feature_overview'){
+      const candidate=partialFunctionReading(value as AnalysisResult);
+      if(candidate){
+        const checked=await validateResult(candidate.result,run,snapshot,this.directory);
+        if(!checked.errors.length){
+          const originalErrors=report.errors;
+          value=candidate.result;
+          report={...checked,semantic:'已展示可校验的函数走读。'+candidate.omissions.join(' ')+' '+checked.semantic};
+          this.event(runId,{type:'local.function_reading_partial',omissions:candidate.omissions,original_errors:originalErrors});
+        }
+      }
+    }
     if(semanticReview)report.semantic=semanticReview;
     if(['cancel_requested','cancelled','failed'].includes(this.store.get<Run>('run',runId).status))throw new Error('校验期间收到停止请求，迟到结果不发布');
     run.validation=report;

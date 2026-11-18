@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type {Snapshot} from '../src/shared';
+import {partialFunctionReading} from '../src/main/function-walkthrough-validation';
+import type {Snapshot,AnalysisResult} from '../src/shared';
 import {makeDshWalkthroughReview} from '../src/main/dsh-walkthrough';
 import {sha} from '../src/main/snapshot';
 import {runDsh} from '../src/main/dsh';
@@ -89,4 +90,29 @@ test('DSH saves only the reviewed turn, with the draft kept separately',async t=
   assert.equal(cancelled.cancelled,true);
   await assert.rejects(fs.access(cancelledPath),{code:'ENOENT'});
   assert.ok(!cancelledEvents.includes('local.walkthrough_reviewed'));
+});
+
+test('partial DSH function reading keeps callable steps and records the exact omissions without changing the reply',()=>{
+  const steps=[
+    {id:'first',kind:'entry',to_node_id:'a',from_node_id:null},
+    {id:'unlinked',kind:'work',from_node_id:'a',to_node_id:'stage'},
+    {id:'next',kind:'call',from_node_id:'a',to_node_id:'b'},
+  ];
+  const result={coverage:{covered_scope:[],unresolved_scope:[]},nodes:[
+    {node_id:'a',kind:'function'},{node_id:'b',kind:'function'},{node_id:'stage',kind:'stage'},
+  ],function_walkthroughs:[{id:'path',label:'启动',boundary:'启动入口',steps}],
+    architecture:{node_ids:['stage'],edge_ids:[]},feature_catalog:{groups:[{node_ids:['stage']}]},
+    reading_guide:{roles:[{title:'启动',files:['known.c','unknown.c']}],files:[{path:'known.c'}],
+      steps:[{id:'init'}],paths:[{label:'初始化',failure_ids:['decision'],boundary:'已知入口'}]},
+  } as unknown as AnalysisResult;
+  const raw=JSON.stringify(result);
+  const partial=partialFunctionReading(result)!;
+  assert.deepEqual(partial.result.function_walkthroughs[0].steps.map(s=>s.id),['first','next']);
+  assert.match(partial.result.function_walkthroughs[0].boundary,/第 2 步/);
+  assert.deepEqual(partial.result.reading_guide?.roles[0].files,['known.c']);
+  assert.match(partial.omissions.join(' '),/unknown.c/);
+  assert.match(partial.result.reading_guide!.paths[0].boundary,/decision/);
+  assert.equal(partial.result.feature_catalog,undefined);
+  assert.equal(JSON.stringify(result),raw);
+  assert.equal(partialFunctionReading({...result,function_walkthroughs:[]}),undefined);
 });

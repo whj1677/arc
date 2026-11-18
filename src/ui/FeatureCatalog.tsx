@@ -38,21 +38,26 @@ export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mo
 }
 
 
-export function CatalogFeatureReading({explanation,nodeId,currentSnapshot,sourceId,onSource}:{explanation:Explanation;nodeId:string;currentSnapshot:string;sourceId:string;onSource:(id:string)=>void}){
+export function CatalogFeatureReading({explanation,nodeId,currentSnapshot,sourceId,onSource,functionActions}:{explanation:Explanation;nodeId:string;currentSnapshot:string;sourceId:string;onSource:(id:string)=>void;functionActions?:React.ReactNode}){
   const result=explanation.result;
   const node=result.nodes.find(n=>n.node_id===nodeId);
   const reading=result.feature_catalog?.readings?.find(item=>item.node_id===nodeId);
   if(!node)return null;
-  const sources=result.evidence.filter(e=>e.source_snapshot_id===result.binding.source_snapshot_id);
+  const evidenceIds=new Set([...node.evidence_ids,...(reading?.steps.flatMap(step=>step.evidence_ids)??[])]);
+  const sources=result.evidence.filter(e=>e.source_snapshot_id===result.binding.source_snapshot_id&&evidenceIds.has(e.evidence_id));
   const selected=sources.find(e=>e.evidence_id===sourceId);
   const references=(ids:readonly string[])=>sources.filter(e=>ids.includes(e.evidence_id)).map(e=>
     <button key={e.evidence_id} aria-pressed={sourceId===e.evidence_id} onClick={()=>onSource(e.evidence_id)}>
       {e.path} · L{e.line_start}{e.line_end!==e.line_start?'–'+e.line_end:''}
     </button>);
-  return <article className="catalog-reading" aria-label="工程分析中的功能说明">
-    <header><small>{result.binding.source_snapshot_id!==currentSnapshot?'历史工程分析':'工程分析'} · {reading?.steps.length?'首轮走读':'功能线索'}</small><h2>{node.label}</h2><p>{node.description}</p></header>
+  return <article className="catalog-reading" aria-label={functionActions?'首轮函数走读线索':'工程分析中的功能说明'}>
+    <header><small>{result.binding.source_snapshot_id!==currentSnapshot?'历史工程分析':'工程分析'} · {functionActions?'首轮线索':reading?.steps.length?'首轮走读':'功能线索'}</small>
+      <h2>{functionActions?'从已有线索读函数':node.label}</h2>
+      <p>{functionActions?`以下是工程全貌中「${node.label}」的记录。深入分析可核对函数定义、调用位置与先后关系。`:node.description}</p>
+    </header>
+    {functionActions}
     {reading?.entry&&<div className="catalog-reading-fact"><strong>触发入口</strong><span>{reading.entry}</span></div>}
-    {!!reading?.steps.length&&<section><h3>处理过程</h3><ol className="catalog-reading-steps">{reading.steps.map((step,index)=>
+    {!!reading?.steps.length&&<section><h3>{functionActions?'已记录的处理步骤':'处理过程'}</h3><ol className="catalog-reading-steps">{reading.steps.map((step,index)=>
       <li key={index}><p>{step.text}</p><div className="catalog-reading-refs">{references(step.evidence_ids)}</div></li>)}</ol></section>}
     {reading?.outcome&&<div className="catalog-reading-fact"><strong>处理结果</strong><span>{reading.outcome}</span></div>}
     {reading?.boundary?<p className="catalog-reading-boundary"><strong>覆盖边界</strong> {reading.boundary}</p>:!reading?.steps.length&&<p className="catalog-reading-boundary">这份目录只保存了用途与发现依据。可通过「深入分析功能」补充业务流程和调用细节。</p>}

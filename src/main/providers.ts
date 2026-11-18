@@ -104,7 +104,7 @@ export function readingWatchdog(run:Pick<Run,'reading_question_id'|'overview_for
     void stop().catch(stopFailed);
   },Math.max(1,5*60*1000-elapsed));
 }
-export async function makePrompt(run:Run,snapshot:Snapshot,storage:string,annotations:Annotation[],previous?:unknown) {
+export async function makePrompt(run:Run,snapshot:Snapshot,storage:string,annotations:Annotation[],previous?:unknown,featureDetail=false) {
   if(run.question.length>16000||snapshot.build_config.length>8000)throw new Error('问题或构建条件过长，请缩短后重新分析；尚未调用 Agent');
   if(run.reading_context)return readingPrompt(run,snapshot);
   const context=promptContext(snapshot,annotations,previous);
@@ -113,16 +113,16 @@ export async function makePrompt(run:Run,snapshot:Snapshot,storage:string,annota
 工作区只包含所选 UTF-8 文本快照；所有未包含部分均为未知。分析范围和构建配置：${snapshot.build_config || '未指定，条件编译路径不得猜测'}。
 面向希望理解工程的用户组织结果：summary 先解释系统或功能做什么、怎样协作、成功与失败如何处理；节点 label 使用清楚的职责/动作短语，避免只写文件名或函数签名。description 用自然语言解释，变量、类型、函数签名和路径放在技术说明与 evidence 中。准确源码仍是依据；未找到的关系明确未知，不为画流程补造事实。
 ${run.question===overviewDiscoveryQuestion?'本轮将功能阅读条目放入 feature_catalog.readings，不生成完整函数调用图。'+catalogReadingInstructions:functionAnalysisInstructions}
-${architectureAnalysisInstructions}
+${featureDetail?'只展开当前功能。省略工程目录 feature_catalog 和系统架构 architecture。work 的两端必须是同一个函数；阶段描述放在阅读步骤里。reading_guide 的 roles.files 只引用 guide.files 已登记的路径，failure_ids 只引用 guide.steps 的步骤 ID。':architectureAnalysisInstructions}
 execution_context 是执行路径/线程上下文，不等于组件职责已查证。kind=unknown 时 identity=null、status=unknown；组件职责的来源断言仍可保留在节点 claim_ids 中。source_supported 的执行上下文必须引用对应断言；不能为标注职责已知而捏造运行时任务身份。
 ${run.development_task_id?`这是开发结束后的同功能复核。任务目标和旧说明仅是待核对的历史意图，不是当前实现。必须沿本次快照的真实源码重新核对功能入口、关键条件、每个相关状态或数据的写入点与后续读取点、超时或失败路径和恢复条件；不能只读 diff，也不能只展示局部正确分支。检查通用入口、校验前处理或其他回调中是否存在使局部修复失效的写入；发现矛盾或证据缺口就写入 claims.limitations / gaps，不宣布规则保持不变。不同中断、周期任务、回调和队列入口保持独立，不串成同步调用链。`:''}
 工程问题：${run.question}
 请求的不可变绑定：${JSON.stringify(run.binding)}
 provider 必须为 ${JSON.stringify({provider_id:run.provider_id,connection_id:`local-${run.provider_id}`,adapter_version:'0.1.0'})}。fictional=false，schema_version="1.0"，result_id 自行生成一个唯一字符串。
-输出完整 Arc JSON。关系类型 edges.kind 仅允许 ${schema.$defs.edge.properties.kind.enum.join("、")}；不存在 data_write，数据写入/发布使用有依据的 data_publish。关键函数/阶段用 nodes，真实关系用 edges；source_supported 只表示有来源。缺失实现/入口/trace 保留 gaps；不得猜测实际线程时序/耗时。同步返回用 related_call_edge_id 配对。feature_catalog.groups 引用有名称、一句话用途及依据的独立 stage 节点，scope 说明覆盖边界。目录节点数量按查证结果，不受下述流程节点建议限制。其他详细流程保持精简，优先 4–8 个关键节点，标题尽量 6–14 字，description 一两句说明职责；每节点明确输入输出，不在多处重复整段说明。功能/场景的已证实失败需用对应步骤的条件 control_flow 边和异常目标节点表达，关系必须用 flow_role 明确 main（连续正常主线）、alternative（正常条件分支）或 exception（异常），不能靠最长路径或错误名称猜主线；不仅把错误放入 outputs；正常复用或跳过是条件分支，不能标作失败。恢复建议与源码已实现行为分别标注。信息不明用 unknown/null。所有 IDs 唯一，所有引用必须存在。每项 source_supported 断言至少一个精确源码依据。source_snapshot_id 必须一致，证据哈希使用 arc_read_source 返回的原始文件完整哈希，行号从 1 开始。
+输出完整 Arc JSON。关系类型 edges.kind 仅允许 ${schema.$defs.edge.properties.kind.enum.join("、")}；不存在 data_write，数据写入/发布使用有依据的 data_publish。关键函数/阶段用 nodes，真实关系用 edges；source_supported 只表示有来源。缺失实现/入口/trace 保留 gaps；不得猜测实际线程时序/耗时。同步返回用 related_call_edge_id 配对。${featureDetail?'':'feature_catalog.groups 引用有名称、一句话用途及依据的独立 stage 节点，scope 说明覆盖边界。目录节点数量按查证结果，不受下述流程节点建议限制。'}其他详细流程保持精简，优先 4–8 个关键节点，标题尽量 6–14 字，description 一两句说明职责；每节点明确输入输出，不在多处重复整段说明。功能/场景的已证实失败需用对应步骤的条件 control_flow 边和异常目标节点表达，关系必须用 flow_role 明确 main（连续正常主线）、alternative（正常条件分支）或 exception（异常），不能靠最长路径或错误名称猜主线；不仅把错误放入 outputs；正常复用或跳过是条件分支，不能标作失败。恢复建议与源码已实现行为分别标注。信息不明用 unknown/null。所有 IDs 唯一，所有引用必须存在。每项 source_supported 断言至少一个精确源码依据。source_snapshot_id 必须一致，证据哈希使用 arc_read_source 返回的原始文件完整哈希，行号从 1 开始。
 若明确查证某输出被下一节点作为输入接收，在 edges.transfers 中以 source_output_id、target_input_id 绑定对应 I/O，并用 6–14 字业务短语 label 标出传递内容；claim_ids/evidence_ids 必须支持该映射，来源断言 targets 同时引用关系及两个 I/O。仅条件或顺序关系不强行填 transfers，不能把相邻节点的所有输入输出拼成传递。未知映射留空或省略。
 需要整文件或文件夹用途说明时，用 kind=resource 的节点，并以 source_scope={kind:file或folder,path:冻结快照相对路径} 明确标注范围。description 写该范围整体负责什么、主要内容及协作边界，证据和对应断言必须支持该范围。局部函数引用不能冒充文件级摘要；未读范围保持未知。
-architecture 只用于系统架构，不是函数调用图。首屏优先展示少量主要协作角色；架构节点 label 只写 6–16 字职责名称，可用“ · ”附简短技术栈；description 限一句业务职责。版本未知、路径、函数名、调用参数、证据不足的解释放到 claims.limitations / gaps / evidence，不堆进首屏标题和正文。内部工具或子模块通过 parent_node_id 放到次级，不把每个实现模块都平铺为系统组件。不能为了简化而伪造组件边界。功能走读没有高层系统组件时省略该可选字段（传输 Schema 要求时填 null）。提供 architecture 时，node_ids 只能引用 kind 为 stage、resource 或 execution_boundary 的真实系统组件，不能引用 function 或 decision；edge_ids 的两端必须都在 architecture.node_ids 中。内部函数保留在 nodes 中用 parent_node_id 关联，不能为满足架构字段伪造组件。
+${featureDetail?'':'architecture 只用于系统架构，不是函数调用图。首屏优先展示少量主要协作角色；架构节点 label 只写 6–16 字职责名称，可用“ · ”附简短技术栈；description 限一句业务职责。版本未知、路径、函数名、调用参数、证据不足的解释放到 claims.limitations / gaps / evidence，不堆进首屏标题和正文。内部工具或子模块通过 parent_node_id 放到次级，不把每个实现模块都平铺为系统组件。不能为了简化而伪造组件边界。功能走读没有高层系统组件时省略该可选字段（传输 Schema 要求时填 null）。提供 architecture 时，node_ids 只能引用 kind 为 stage、resource 或 execution_boundary 的真实系统组件，不能引用 function 或 decision；edge_ids 的两端必须都在 architecture.node_ids 中。内部函数保留在 nodes 中用 parent_node_id 关联，不能为满足架构字段伪造组件。'}
 用户线索节选（不是事实，省略部分未分析）：${JSON.stringify(context.clues)}
 先前说明节选（有来源上下文，不是原生会话续接）：${JSON.stringify(context.previous)}
 源码范围概览（仅帮助定位，不是完整清单）：${JSON.stringify(context.inventory)}
