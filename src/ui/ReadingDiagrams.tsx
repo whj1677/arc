@@ -32,22 +32,34 @@ export function BusinessDiagram({result,guide:g,path,selected,search,zoom,onSele
 }
 
 export function CollaborationDiagram({guide:g,path,selected,search,zoom,onSelect}:Common){
-  const marker='handoff-'+useId().replace(/:/g,''),{roles,handoffs}=readingCollaboration(g,path),query=search.toLowerCase();
+  const {roles,handoffs}=readingCollaboration(g,path);
   if(!roles.length)return <p className="fr-empty">本分析尚未明确参与方。</p>;
-  // Place each role once. Vertical placement is spatial grouping, not time.
-  const cols=roles.length<3?roles.length:3,width=760,rowHeight=290,height=Math.max(350,Math.ceil(roles.length/3)*rowHeight+30);
-  const positions=new Map(roles.map((r,i)=>[r.id,{x:28+(i%cols)*(700/cols),y:roles.length===3&&i===1?215:30+Math.floor(i/cols)*rowHeight,w:190,h:112}]));
-  return <Diagram width={width} height={height} zoom={zoom} label="参与方职责与交接图"><Arrow id={marker}/>
-    {handoffs.map((h,i)=>{const a=positions.get(h.from)!,b=positions.get(h.to)!,same=a===b,down=b.y>a.y,up=b.y<a.y;
-      const sx=a.x+a.w/2,sy=a.y+a.h,tx=b.x+b.w/2,ty=down?b.y:up?b.y+b.h:b.y+b.h;
-      const startY=up?a.y:sy,bend=down||up?(startY+ty)/2:Math.max(sy,ty)+60+i*38;
-      const d=same?`M${a.x+a.w} ${a.y+30} c65 -40 65 95 0 60`:down||up?`M${sx} ${down?sy:a.y} C${sx} ${bend} ${tx} ${bend} ${tx} ${ty}`:`M${sx} ${sy} C${sx} ${bend} ${tx} ${bend} ${tx} ${ty}`;
-      const lx=same?a.x+a.w+12:(sx+tx)/2,ly=down||up?(startY+ty)/2:sy+(bend-sy)*.75;
+  const query=search.trim().toLowerCase();
+  const roleById=new Map(roles.map(role=>[role.id,role]));
+  const connected=new Set(handoffs.flatMap(handoff=>[handoff.from,handoff.to]));
+  const roleCard=(role:ReadingGuide['roles'][number])=>
+    <button key={role.id} type="button" data-zoom-anchor className={`diagram-node role-node ${selected==='role:'+role.id?'selected':''} ${query&&!(role.title+role.duty).toLowerCase().includes(query)?'diagram-dim':''}`}
+      onClick={()=>onSelect('role:'+role.id)} aria-pressed={selected==='role:'+role.id}>
+      <small>参与方</small><strong>{role.title}</strong><span>{role.duty}</span>
+    </button>;
+  return <div data-zoom-surface className="collaboration-map" style={{zoom}} role="group" aria-label="参与方职责与交接图">
+    {handoffs.map(h=>{
+      const from=roleById.get(h.from)!,to=roleById.get(h.to)!;
       const dim=query&&![h.label,h.send,h.receive,h.detail].join(' ').toLowerCase().includes(query);
-      return <g key={h.id} className={`handoff-connection ${selected==='handoff:'+h.id?'selected':''} ${dim?'diagram-dim':''}`} role="button" tabIndex={0} onClick={()=>onSelect('handoff:'+h.id)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();onSelect('handoff:'+h.id);}}} aria-label={`${roles.find(r=>r.id===h.from)?.title} → ${roles.find(r=>r.id===h.to)?.title}：${h.label}`}><title>{[h.label,h.send,h.receive,h.detail].filter(Boolean).join('\n')}</title><path className="diagram-hit" d={d}/><path className="diagram-link" d={d} markerEnd={`url(#${marker})`}/><foreignObject x={lx-88} y={ly-26} width="176" height="55"><div className="handoff-label"><strong>{shortLabel(h.label,15)}</strong><small>{shortLabel(h.send,18)}</small></div></foreignObject></g>;
+      return <div className="collaboration-route" key={h.id}>
+        {roleCard(from)}
+        <span className="handoff-arrow" aria-hidden="true"/>
+        <button type="button" data-zoom-anchor className={`handoff-connection handoff-label ${dim?'diagram-dim':''}`}
+          aria-label={`${from.title} → ${to.title}：${h.label}`} aria-pressed={selected==='handoff:'+h.id}
+          onClick={()=>onSelect('handoff:'+h.id)}>
+          <strong>{h.label}</strong><small>{h.send}</small>
+        </button>
+        <span className="handoff-arrow" aria-hidden="true"/>
+        {roleCard(to)}
+      </div>;
     })}
-    {roles.map(r=>{const b=positions.get(r.id)!;return <foreignObject key={r.id} data-zoom-anchor x={b.x} y={b.y} width={b.w} height={b.h}><button className={`diagram-node role-node ${selected==='role:'+r.id?'selected':''} ${query&&!(r.title+r.duty).toLowerCase().includes(query)?'diagram-dim':''}`} onClick={()=>onSelect('role:'+r.id)} title={r.duty}><small>参与方</small><strong>{r.title}</strong><span>{shortLabel(r.duty,32)}</span></button></foreignObject>;})}
-  </Diagram>;
+    {roles.some(role=>!connected.has(role.id))&&<div className="collaboration-roles">{roles.filter(role=>!connected.has(role.id)).map(roleCard)}</div>}
+  </div>;
 }
 
 export function FilesDiagram({files,label,selected,zoom,onSelect}:{files:ReadingGuide['files'];label:string;selected:string;zoom:number;onSelect:(key:string)=>void}){
