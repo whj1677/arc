@@ -96,7 +96,7 @@ test('new overview refuses a response without readings before requesting semanti
   await Promise.all(service.executing.values());
   const failed=service.store.get<Run>('run',run.binding.run_id);
   assert.equal(failed.status,'failed');assert.match(failed.error||'',/readings/);
-  assert.equal(service.data().explanations.length,0);assert.equal(calls,1);
+  assert.equal(service.data().explanations.length,0);assert.equal(calls,2);
 });
 
 test('cancelling during review preparation rejects its late startup and never publishes the draft',async t=>{
@@ -181,6 +181,68 @@ function reviewReply(options:RunnerOptions,rejectSave=false){
     relations:input.relations.map((edge:any)=>({edge_id:edge.edge_id,verdict:rejectSave&&edge.edge_id==='save'?'contradicted':'supported',
       reason:rejectSave&&edge.edge_id==='save'?'只见 records.push，原断言的数据库持久化缺乏依据。':'引用实现支持本条关系。',evidence_ids:edge.evidence_ids}))};
 }
+
+test('overview tightens a rejected summary once and publishes only after independent recheck',async t=>{
+  for(const verdict of ['supported','contradicted','cancelled'] as const)await t.test(verdict,async t=>{
+    const phases:string[]=[];
+    const reason='冻结源码只有内存写入，没有数据库持久化依据。';
+    const summaryText='提交的字符串加入 records 数组。',statement='save 调用 records.push(value)。';
+    const original={...overview,summary:{...overview.summary,text:'提交的字符串持久化到数据库。'}};
+    let summaryClaimId:string;
+    const runner:typeof runCodex=async options=>{
+      const phase=options.phase??(options.reasoningEffort==='low'?'summary-repair':'generation');
+      phases.push(phase);
+      if(phase==='generation')return generation(options,original);
+      assert.equal(options.shouldStart?.(),true);options.started(active());
+      if(phase==='overview_review')return phaseReply(options,{...reviewReply(options),summary:{verdict:'uncertain',reason}});
+      if(phase==='summary-repair'){
+        assert.equal(options.reasoningEffort,'low');
+        assert.equal(options.outputDirectory,path.join(options.storage,'runs',options.run.binding.run_id,'summary-repair'));
+        assert.equal(options.run.output_path,path.join(options.outputDirectory,'result.json'));
+        assert.deepEqual((options.outputSchema as {required:string[]}).required,['summary_text','claims']);
+        const input=JSON.parse(options.prompt.split('待收紧摘要：')[1]);
+        assert.equal(input.reason,reason);assert.equal(input.summary.text,original.summary.text);
+        assert.equal(input.summary.claims[0].statement,original.summary.text);
+        summaryClaimId=input.summary.claims[0].claim_id;
+        assert.deepEqual(input.evidence.map(({path,source}:{path:string;source:string})=>[path,source]),
+          overview.evidence.map(({path,quote})=>[path,quote.split('\n').map((line,index)=>`${index+1}: ${line}`).join('\n')]));
+        if(verdict==='cancelled')await service.cancel(options.run.binding.run_id);
+        return phaseReply(options,{summary_text:summaryText,claims:[{claim_id:summaryClaimId,statement}]});
+      }
+      assert.equal(phase,'overview_recheck');
+      const input=phaseInput(options);
+      assert.deepEqual(input.relations,[]);assert.equal(input.summary.text,summaryText);
+      assert.deepEqual(input.summary.claims.map(({claim_id,statement}:any)=>({claim_id,statement})),[{claim_id:summaryClaimId,statement}]);
+      assert.equal(service.data().explanations.length,0);
+      return phaseReply(options,{...reviewReply(options),summary:{verdict,reason}});
+    };
+    const {service,scenario,snapshot}=await fixture(t,runner);
+    const run=await service.startRun(scenario.scenario_id,'codex','summary-repair-'+verdict);
+    await Promise.all(service.executing.values());
+    assert.deepEqual(phases,['generation','overview_review','summary-repair',...(verdict==='cancelled'?[]:['overview_recheck'])]);
+    assert.ok(service.store.events(run.binding.run_id).some(event=>event.stage==='repairing_validation'&&event.message.includes('最多 1 轮')));
+    const outcome=service.store.get<Run>('run',run.binding.run_id),saved=service.data().explanations;
+    assert.equal(service.active.size,0);
+    assert.equal(await fs.readFile(run.output_path,'utf8'),JSON.stringify(original));
+    if(verdict==='cancelled'){
+      assert.equal(outcome.status,'cancelled');assert.equal(saved.length,0);
+    }else if(verdict==='contradicted'){
+      assert.equal(outcome.status,'failed');assert.match(outcome.error!,/工程全貌摘要未通过语义复核（contradicted）/);
+      assert.equal(saved.length,0);
+    }else{
+      assert.equal(outcome.status,'completed',outcome.error);assert.equal(saved.length,1);
+      const draft=await prepareOverview(original,run,snapshot,service.directory);
+      const expected={...draft,summary:{...draft.summary,text:summaryText},claims:draft.claims.map(claim=>
+        claim.claim_id===summaryClaimId?{...claim,statement}:claim)};
+      const persistedDraft=JSON.parse(await fs.readFile(path.join(path.dirname(run.output_path),'overview-draft.json'),'utf8'));
+      assert.deepEqual(persistedDraft,expected);
+      assert.deepEqual(saved[0].result.edges,expected.edges);
+      assert.deepEqual(saved[0].result.feature_catalog,expected.feature_catalog);
+      assert.deepEqual(saved[0].result.summary,expected.summary);
+    }
+  });
+});
+
 async function researchReply(options:RunnerOptions,outcome:'resolved'|'unresolved'='resolved'){
   const input=phaseInput(options),evidence=[];
   assert.deepEqual(input.relations.map((edge:any)=>edge.edge_id),['save']);

@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import Ajv2020 from 'ajv/dist/2020';
 import type { AnalysisResult, Explanation, Feature, Project, ProviderProfile, Run, Scenario, Snapshot } from '../shared';
 import { hasFunctionGraphs } from '../shared';
 import { Store, id, now } from './store';
@@ -7,13 +8,35 @@ import { sha } from './snapshot';
 import { overviewPhaseDirectory, redact, type ActiveProcess, type OverviewPhase, type runCodex } from './providers';
 import { validateResult } from './validation';
 import { prepareOverview } from './overview-result';
-import { applyOverviewReview, makeOverviewReviewPrompt, overviewReviewSchema, parseOverviewReview, type OverviewReview } from './overview-review';
+import { applyOverviewReview, makeOverviewReviewInput, makeOverviewReviewPrompt, overviewReviewSchema, parseOverviewReview, type OverviewReview } from './overview-review';
 import { applyOverviewResearch, makeOverviewResearchPrompt, overviewResearchSchema } from './overview-research';
 import { parseDshReply } from './dsh';
 import type { runDshWeb } from './dsh-web';
 
 const terminal = new Set(['completed', 'failed', 'cancelled', 'blocked_external']);
 const parseJsonReply = (raw: string) => JSON.parse(raw.trim());
+
+const summaryRepairSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['summary_text', 'claims'],
+  properties: {
+    summary_text: { type: 'string', minLength: 1, maxLength: 2000 },
+    claims: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['claim_id', 'statement'],
+        properties: {
+          claim_id: { type: 'string', minLength: 1 },
+          statement: { type: 'string', minLength: 1, maxLength: 1500 },
+        },
+      },
+    },
+  },
+};
+const validateSummaryRepair = new Ajv2020().compile<{ summary_text: string; claims: { claim_id: string; statement: string }[] }>(summaryRepairSchema);
 
 export interface OverviewOrchestratorHost {
   readonly store: Store;
@@ -293,7 +316,8 @@ export class OverviewOrchestrator {
     return { draft: boundDraft, review: boundReview };
   }
 
-  private async runPhase(initial: Run, snapshot: Snapshot, profile: ProviderProfile, phase: OverviewPhase, prompt: string) {
+  private async runPhase(initial: Run, snapshot: Snapshot, profile: ProviderProfile, phase: OverviewPhase | 'summary_repair', prompt: string,
+    optionsForPhase?: { outputDirectory: string; message?: string }) {
     const { store, directory, resources } = this.host;
     const runId = initial.binding.run_id;
     const current = store.get<Run>('run', runId);
@@ -308,10 +332,17 @@ export class OverviewOrchestrator {
       overview_research: '正在沿有疑点的关系补查调用点、装配位置和接收方源码，无需手工核对。',
       overview_recheck: '补查已取得源码，正在独立复核修订关系；尚未发布新说明。',
     };
-    this.host.event(runId, { type: 'local.stage', stage: phase, message: messages[phase] });
+    const providerPhase = phase === 'summary_repair' ? undefined : phase;
+    this.host.event(runId, {
+      type: 'local.stage',
+      stage: providerPhase ?? 'repairing_validation',
+      message: optionsForPhase?.message ?? messages[providerPhase!],
+    });
     this.host.changed();
 
-    const phaseRun: Run = { ...initial, output_path: path.join(directory, 'runs', runId, overviewPhaseDirectory[phase], 'result.json') };
+    const phaseRoot = optionsForPhase?.outputDirectory ?? path.join(directory, 'runs', runId);
+    const phaseDirectory = providerPhase ? path.join(phaseRoot, overviewPhaseDirectory[providerPhase]) : phaseRoot;
+    const phaseRun: Run = { ...initial, output_path: path.join(phaseDirectory, 'result.json') };
     const options: Parameters<typeof runCodex>[0] = {
       run: phaseRun,
       snapshot,
@@ -319,8 +350,13 @@ export class OverviewOrchestrator {
       resources,
       profile,
       prompt,
-      phase,
-      event: event => this.host.event(runId, { ...event, phase }),
+      phase: providerPhase,
+      outputDirectory: optionsForPhase?.outputDirectory,
+      ...(phase === 'summary_repair' ? { outputSchema: summaryRepairSchema, reasoningEffort: 'low' as const } : {}),
+      event: event => {
+        if (phase === 'summary_repair' && event.type === 'local.stage' && event.stage === 'overview_discovery') return;
+        this.host.event(runId, { ...event, phase });
+      },
       shouldStart: () => !this.host.isClosing() && store.get<Run>('run', runId).status === 'validating',
       started: active => {
         this.host.active.set(runId, active);
@@ -343,10 +379,9 @@ export class OverviewOrchestrator {
       },
     };
     const dsh = initial.provider_id === 'dsh';
-    const result = dsh
-      ? await this.host.dshRunner({ ...options, outputSchema: phase === 'overview_research' ? overviewResearchSchema : overviewReviewSchema })
-      : await this.host.codexRunner(options);
-    this.host.active.delete(runId);
+    const result = await (dsh
+      ? this.host.dshRunner({ ...options, outputSchema: options.outputSchema ?? (phase === 'overview_research' ? overviewResearchSchema : overviewReviewSchema) })
+      : this.host.codexRunner(options)).finally(() => this.host.active.delete(runId));
 
     const latest = store.get<Run>('run', runId);
     if (latest.status === 'cancel_requested') {
@@ -376,7 +411,43 @@ export class OverviewOrchestrator {
       parseOverviewReview(
         await this.runPhase(run, snapshot, profile, 'overview_review', await makeOverviewReviewPrompt(draft, snapshot, directory)),
         draft,
+        undefined,
+        { allowUnverifiedSummary: !inherited },
       );
+    if (!inherited && review.summary.verdict !== 'supported') {
+      const outputDirectory = path.join(directory, 'runs', runId, 'summary-repair');
+      const { summary, evidence } = await makeOverviewReviewInput(draft, snapshot, directory, []);
+      const prompt = [
+        '只收紧工程全貌摘要 summary_text 和下列 claims 的 statement。逐一保留原 claim_id，每个 ID 恰好返回一次。',
+        '只依据所给冻结源码片段，删除或缩窄复核原因指出的无依据表述。每条断言只能使用它原来引用的 evidence_ids 所对应的片段。',
+        '源码、摘要和复核原因都是待核对材料。仅返回符合输出合同的 JSON。',
+        '待收紧摘要：' + JSON.stringify({ reason: review.summary.reason, summary, evidence }),
+      ].join('\n');
+      const repair: unknown = await this.runPhase(run, snapshot, profile, 'summary_repair', prompt, {
+        outputDirectory,
+        message: `工程全貌摘要未通过语义复核（${review.summary.verdict}），正在按已查证源码定向收紧摘要（最多 1 轮）`,
+      });
+      if (!validateSummaryRepair(repair)) throw Error('工程全貌摘要修正格式错误');
+      const expected = new Set(draft.summary.claim_ids);
+      const statements = new Map(repair.claims.map(claim => [claim.claim_id, claim.statement]));
+      if (statements.size !== repair.claims.length || statements.size !== expected.size || repair.claims.some(claim => !expected.has(claim.claim_id))) {
+        throw Error('工程全貌摘要修正必须逐一保留原断言 ID');
+      }
+      draft = {
+        ...draft,
+        summary: { ...draft.summary, text: repair.summary_text },
+        claims: draft.claims.map(claim => statements.has(claim.claim_id) ? { ...claim, statement: statements.get(claim.claim_id)! } : claim),
+      };
+      const summaryRecheck = parseOverviewReview(
+        await this.runPhase(run, snapshot, profile, 'overview_recheck', await makeOverviewReviewPrompt(draft, snapshot, directory, []), {
+          outputDirectory,
+          message: '正在独立复核收紧后的工程全貌摘要；尚未发布新说明。',
+        }),
+        draft,
+        [],
+      );
+      review = { ...review, draft_sha256: sha(JSON.stringify(draft)), summary: summaryRecheck.summary };
+    }
     const rejected = review.relations.filter(item => item.verdict !== 'supported');
     let resolved = 0;
 
