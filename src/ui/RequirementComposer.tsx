@@ -41,6 +41,7 @@ export function RequirementComposer({context,defaultEngine,onEngineChange,engine
   const addButton=useRef<HTMLButtonElement>(null);
   const commands=commandLabels.filter(([key])=>environment?.effective_commands[key]);
   const bound=context?.workspace.status==='bound';
+  const activeStarter=starters.find(([,starter])=>goal===starter)?.[0];
 
   function closeEditor(){
     setAdding(false);setValue('');setBoundaryError('');
@@ -80,8 +81,11 @@ export function RequirementComposer({context,defaultEngine,onEngineChange,engine
           if(e.ctrlKey&&e.key==='Enter'&&!e.nativeEvent.isComposing){e.preventDefault();if(!disabled)e.currentTarget.form?.requestSubmit();}
         }}/>
       <div className="composer-starters" role="group" aria-label="需求起草模板">{starters.map(([label,starter,addition])=>
-        <button type="button" key={label} disabled={busy} onClick={()=>{
-          onGoalChange(goal.trim()?goal+(goal.endsWith('\n')?'':'\n')+addition:starter);
+        <button type="button" key={label} disabled={busy} aria-pressed={activeStarter===label} onClick={()=>{
+          if(!goal.trim())onGoalChange(starter);
+          else if(activeStarter===label)onGoalChange('');
+          else if(activeStarter)onGoalChange(starter);
+          else if(!goal.includes(addition))onGoalChange(goal+(goal.endsWith('\n')?'':'\n')+addition);
           goalInput.current?.focus();
         }}>{label}</button>
       )}</div>
