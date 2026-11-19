@@ -6,6 +6,9 @@ import {dump} from 'js-yaml';
 import {dshRuntime,disabledDshTools} from './dsh';
 import {locate,redact,stopTree,type ActiveProcess} from './providers';
 import {schema} from './validation';
+import {overviewSchema} from './overview-result';
+import {functionSchema} from './function-result';
+import {evidenceRepairSchema} from './evidence-repair';
 import type {Run,Snapshot,ProviderProfile} from '../shared';
 
 const pause=(ms:number)=>new Promise<void>(resolve=>setTimeout(resolve,ms));
@@ -52,7 +55,7 @@ export class DshRemote {
 }
 type Host={child:ChildProcessWithoutNullStreams;client:DshRemote;sessionId?:string;opened?:boolean;closing?:Promise<void>};
 const hosts=new Map<string,Host>(),pending=new Map<string,Promise<Host>>();
-type Options={run:Run;snapshot:Snapshot;storage:string;resources:string;profile:ProviderProfile;prompt:string;event:(event:any)=>void;started:(active:ActiveProcess)=>void};
+type Options={run:Run;snapshot:Snapshot;storage:string;resources:string;profile:ProviderProfile;prompt:string;repairAttempt?:number;evidencePatch?:boolean;event:(event:any)=>void;started:(active:ActiveProcess)=>void};
 async function hostFor(options:Pick<Options,'run'|'storage'|'resources'|'profile'>):Promise<Host>{
  const {run,storage,resources,profile}=options,key=run.output_path;const existing=hosts.get(key);if(existing?.closing){await existing.closing;return hostFor(options);}if(existing&&existing.child.exitCode===null)return existing;if(pending.has(key))return pending.get(key)!;
  const creation=(async()=>{
@@ -85,10 +88,15 @@ export async function dshWebSessionUrl(options:Pick<Options,'run'|'storage'|'res
  const url=new URL(host.client.url);url.hash=`arc-session=${encodeURIComponent(run.external_id)}`;return url.href;
 }
 export async function closeDshWebHosts(){await Promise.allSettled([...hosts.values()].map(h=>stopTree(h.child)));hosts.clear();}
+export function dshWaitTimeout(lastProgress:number,now:number){
+ if(now-lastProgress>=12*60_000)return '连续 12 分钟未收到 DSH 原生事件';
+}
 // Durable event identity, turn matching and transport state are never inferred
 // from an open browser window or from an arbitrary last assistant response.
 export async function runDshWeb(options:Options){
  const {run,snapshot,storage,resources,event}=options,dir=path.dirname(run.output_path);await fs.mkdir(dir,{recursive:true});
+ const replyDir=options.repairAttempt?path.join(dir,'repair-'+options.repairAttempt):dir;
+ await fs.mkdir(replyDir,{recursive:true});
  await fs.writeFile(path.join(dir,'source-context.json'),JSON.stringify({storage,snapshot}));await fs.copyFile(path.join(resources,'dist','context-server.cjs'),path.join(dir,'context-server.cjs'));
  const host=await hostFor(options);let sessionId='',submitted=false,cancelling=false,cancelAt=0,cursor=-1,ownTurn:any,seen=false,announced=false;const events:any[]=[];
  options.started({child:host.child,cancel:async()=>{cancelling=true;cancelAt=Date.now();if(sessionId)await host.client.rpc('session/cancel',{sessionId});}});
@@ -97,15 +105,17 @@ export async function runDshWeb(options:Options){
   if(typeof sessionId!=='string'||!sessionId)throw Error('DSH 未返回会话 ID');host.sessionId=sessionId;
   await host.client.rpc('session/rename',{sessionId,title:`Arc · ${run.title}`});
   event({type:'session.started',thread_id:sessionId,native_ui:'dsh-web'});
-  const prompt=options.prompt+'\n请先用一两句公开进度说明分析范围和下一步，再读取源码。最终回复仅为 JSON，遵循合同：'+JSON.stringify(schema);
-  const requestId=randomUUID();await fs.writeFile(path.join(dir,'prompt.txt'),prompt);await fs.writeFile(path.join(dir,'request.json'),JSON.stringify({binding:run.binding,provider:'dsh',transport:'web-remote-v2',session_id:sessionId,request_id:requestId,source_fingerprint:snapshot.fingerprint},null,2));
+  const contract=options.evidencePatch?evidenceRepairSchema:run.dsh_function_format?functionSchema:run.dsh_overview_format?overviewSchema:schema;
+  const prompt=options.prompt+'\n最终回复只含一个符合以下合同的 JSON 对象，不附说明或 Markdown。\n'+JSON.stringify(contract);
+  const requestId=randomUUID();await fs.writeFile(path.join(replyDir,'prompt.txt'),prompt);await fs.writeFile(path.join(replyDir,'request.json'),JSON.stringify({binding:run.binding,provider:'dsh',transport:'web-remote-v2',session_id:sessionId,request_id:requestId,source_fingerprint:snapshot.fingerprint},null,2));
   if(cancelling)return {code:0,raw:'',stderr:'',cancelled:true};
   submitted=true;const receipt=await host.client.rpc('session/prompt',{sessionId,requestId,mode:'queue',content:[{type:'text',text:prompt}],clientTimeZone:'Asia/Shanghai'});
   if(receipt?.accepted!==true)throw Error('DSH 未确认消息接收，禁止自动重发');
-  const admitted=Date.now();
+  const admitted=Date.now();let lastProgress=admitted,timeoutReason:string|undefined;
   while(true){
    if(host.child.exitCode!==null)throw Error('DSH Web 已退出，未获得本轮终态');
    const state=await host.client.snapshot(sessionId,cursor);cursor=state.cursor;
+   if(state.events.length)lastProgress=Date.now();
    for(const e of state.events){events.push(e);
     if(e.type==='user/message'&&e.data?.source?.rpcId===requestId){seen=true;ownTurn=events.slice().reverse().find(p=>p.seq<e.seq&&p.type==='turn/start')?.data?.turn;if(ownTurn===undefined)throw Error('DSH 消息无法绑定轮次');}
     event({type:'dsh.native_event',session_id:sessionId,native_sequence:e.seq,native_type:e.type,data:e.data});
@@ -118,7 +128,7 @@ export async function runDshWeb(options:Options){
    if(terminal){
     const cancelled=['aborted','interrupted'].includes(terminal.data?.reason?.kind);if(terminal.data?.reason?.kind!=='completed'&&!cancelled)throw Error(`DSH 本轮未成功：${terminal.data?.reason?.kind}`);
     const raw=events.filter(e=>e.type==='assistant/message'&&e.data?.turn===ownTurn).map(e=>textOf(e.data.message)).filter(Boolean).at(-1)||'';
-    if(Buffer.byteLength(raw)>2*1024*1024)throw Error('DSH 输出超过 2 MiB');await fs.writeFile(run.output_path,raw);
+    if(Buffer.byteLength(raw)>2*1024*1024)throw Error('DSH 输出超过 2 MiB');await fs.writeFile(path.join(replyDir,'result.json'),raw);
     event({type:'provider.finished',session_id:sessionId,stop_reason:terminal.data.reason.kind});
     if(run.overview_parent_run_id&&!host.opened){
       host.closing=stopTree(host.child).then(()=>{hosts.delete(run.output_path);}).catch(error=>{
@@ -127,11 +137,17 @@ export async function runDshWeb(options:Options){
       });
       await host.closing;
     }
+    if(timeoutReason&&cancelled)return {code:1,raw,stderr:timeoutReason+'，已收到 DSH 取消回执。',cancelled:false};
     return {code:0,raw,stderr:'',cancelled};
    }
    if(!seen&&Date.now()-admitted>45000)throw Error('DSH 消息已提交，但未观察到对应轮次；禁止自动重发');
+   if(seen&&!cancelling&&(timeoutReason=dshWaitTimeout(lastProgress,Date.now()))){
+    cancelling=true;cancelAt=Date.now();
+    event({type:'local.stage',stage:'timeout',message:timeoutReason+'，已请求停止并等待原生回执。'});
+    await host.client.rpc('session/cancel',{sessionId});
+   }
    if(cancelling&&Date.now()-cancelAt>30000)throw Error('DSH 停止未得到终态确认');
    await pause(1000);
   }
- }catch(e){await fs.writeFile(path.join(dir,'diagnostic.json'),JSON.stringify({error:cleanDshLog((e as Error).message),session_id:sessionId,remote_unknown:submitted},null,2));if(submitted)Object.assign(e as Error,{remoteUnknown:true});throw e;}
+ }catch(e){await fs.writeFile(path.join(replyDir,'diagnostic.json'),JSON.stringify({error:cleanDshLog((e as Error).message),session_id:sessionId,remote_unknown:submitted},null,2));if(submitted)Object.assign(e as Error,{remoteUnknown:true});throw e;}
 }

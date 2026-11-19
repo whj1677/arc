@@ -110,6 +110,7 @@ app.whenReady().then(async()=>{
         case 'reading_ask':await bridge.enable(args.project_id,false);value=await service.askReading(args);break;
         case 'reading_retry':value=service.retryReading(args.question_id,args.mode,args.submission_key);break;
         case 'run_cancel':{const item=bridge.dispatch.items().find(item=>item.run_id===args.run_id);value=item?bridge.cancelDispatch(item.dispatch_id):await service.cancel(args.run_id);break;}
+        case 'run_repair':value=await service.repairRun(args.run_id,args.submission_key);break;
         case 'run_revalidate':value=await service.revalidate(args.run_id);break;
         case 'run_events':service.store.get('run',args.run_id);value=service.store.events(args.run_id);break;
         case 'run_open_provider':await shell.openExternal(await service.providerSessionUrl(args.run_id));value={opened:true};break;

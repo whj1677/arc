@@ -64,3 +64,12 @@ test('a queued external dispatch remains active without a claimed Agent session'
   assert.equal(waiting.connected,false);
   assert.equal(waiting.output,false);
 });
+
+test('a rejected DSH reply shows the failed check while its correction is running',()=>{
+  const progress=activity({...run,provider_id:'dsh'},[
+    {type:'local.return_rejected',attempt:0,errors:['入口引用超出文件行数']},
+    {type:'local.stage',stage:'repairing',message:'修复该条引用'},
+  ],time);
+  assert.match(progress.phase,/修复/);
+  assert.ok(progress.items.some(item=>item.kind==='error'&&item.text.includes('入口引用超出文件行数')));
+});

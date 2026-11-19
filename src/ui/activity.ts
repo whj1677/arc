@@ -30,9 +30,13 @@ export function activity(run:Run,events:any[],now:number) {
     if(['thread.started','session.started'].includes(e.type)){connected=true;add(key,e,'status','已建立真实 Agent 会话');}
     if(e.type==='local.stage'){
       if(e.stage==='mcp_connected')connected=true;
-      if(['overview_review','overview_research','overview_recheck','overview_reviewed'].includes(e.stage)){overviewStage=e.stage;if(e.stage!=='overview_reviewed')output=false;}
+      if(['overview_review','overview_research','overview_recheck','overview_reviewed','repairing'].includes(e.stage)){overviewStage=e.stage;if(e.stage!=='overview_reviewed')output=false;}
       if(e.stage==='validating')overviewStage='';
       add(key,e,'status',e.message);
+    }
+    if(e.type==='local.return_rejected'){
+      const label=e.attempt===0?'首轮返回':`第 ${e.attempt} 次修复`;
+      add(key,e,'error',`${label}校验未通过 · ${e.errors.join('\n')}`);
     }
     if(item?.type==='mcp_tool_call'){
       reconnecting=false;
@@ -73,7 +77,7 @@ export function activity(run:Run,events:any[],now:number) {
     }
   }
   const phases:Record<string,string>={waiting_agent:'已排队，等待 Agent 领取',queued:`准备连接 ${run.provider_id==='codex'?'Codex':'Agent'}`,validating:'校验结果与源码依据',completed:'分析完成，说明已保存',failed:'分析失败',cancel_requested:'正在请求停止',cancelled:'任务已停止',unknown:run.origin==='mcp'?'状态未知，需核查原会话':'任务状态未确认，请查看记录或重试',blocked_external:'连接条件缺失'};
-  const overviewPhases:Record<string,string>={overview_review:'正在核对首轮关系与源码，结果尚未发布',overview_research:'正在自动补查未确认的关系，原阅读位置保留',overview_recheck:'正在复核补查后的关系，结果尚未保存',overview_reviewed:'关系复核已结束，等待本地校验和保存'};
+  const overviewPhases:Record<string,string>={repairing:'DSH 正在按校验错误修复本次返回',overview_review:'正在核对首轮关系与源码，结果尚未发布',overview_research:'正在自动补查未确认的关系，原阅读位置保留',overview_recheck:'正在复核补查后的关系，结果尚未保存',overview_reviewed:'关系复核已结束，等待本地校验和保存'};
   const processing=['running','validating'].includes(run.status);
   const phase=run.origin==='manual_import'&&run.status==='completed'?'手动导入已校验并保存 · 未调用 Agent':processing&&reconnecting?'连接中断，Agent 正在重连':processing&&overviewStage?overviewPhases[overviewStage]:phases[run.status]||(reconnecting?'连接中断，Agent 正在重连':pending.size?'正在读取源码 / 执行工具':output?'已收到输出，等待校验':connected?'Agent 处理中，等待后续输出':'进程已启动，等待 Agent 会话');
   const active=activeStatuses.has(run.status),end=Date.parse(run.ended_at||'');

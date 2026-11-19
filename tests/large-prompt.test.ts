@@ -35,6 +35,18 @@ test('large project prompt remains small while every manifest entry can be disco
 test('oversized user question fails before dispatch rather than being silently changed',async()=>{
   await assert.rejects(makePrompt({question:'x'.repeat(16001)} as Run,snapshot,'unused',[]),/尚未调用 Agent/);
 });
+test('fresh DSH project and its graph jobs exclude historical result and annotation text',async()=>{
+  const annotations=[{text:'上次模型校验问题',source_snapshot_id:'旧快照'}] as Annotation[];
+  const previous={summary:{text:'旧版结论'}};
+  const source={...snapshot,build_config:'只查测试入口'};
+  const project={question:overviewDiscoveryQuestion,provider_id:'dsh',binding:{run_id:'fresh',source_snapshot_id:snapshot.source_snapshot_id},dsh_overview_format:'overview-1'} as Run;
+  const prompt=await makePrompt(project,source,'unused',annotations,previous);
+  assert.match(prompt,/紧凑 overview-1 JSON/);assert.match(prompt,/只查测试入口/);assert.match(prompt,/arc_read_source/);
+  assert.doesNotMatch(prompt,/上次模型校验问题|旧快照|旧版结论|用户线索节选|先前说明节选/);
+  const child=await makePrompt({...project,dsh_overview_format:undefined,overview_parent_run_id:'fresh',question:'从本轮定位的上传入口查看处理步骤'},source,'unused',annotations,previous,true);
+  assert.match(child,/函数调用链和调用时间图/);assert.match(child,/本轮定位的上传入口/);
+  assert.doesNotMatch(child,/上次模型校验问题|旧版结论|旧快照/);
+});
 test('input limit diagnostic has a readable explanation',()=>{
   const message=analysisErrorMessage('Input exceeds the maximum length of 1048576 characters input_too_large');
   assert.match(message,/读取源码前/);assert.ok(!message.includes('1048576'));

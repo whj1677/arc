@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {capture} from '../src/main/snapshot';
-import {overviewSchema,prepareOverview,overviewPrompt} from '../src/main/overview-result';
+import {overviewSchema,prepareOverview,overviewPrompt,OverviewValidationError} from '../src/main/overview-result';
 import {overviewDiscoveryQuestion} from '../src/main/architecture-analysis';
 import {promptContext} from '../src/main/prompt-context';
 import type {Run} from '../src/shared';
@@ -33,6 +33,20 @@ async function fixture(t:TestContext){
   ]};
   return {value,run,snapshot,storage};
 }
+
+test('one repair receives all bad source anchors while snapshot storage errors stay distinct',async t=>{
+  const {value,run,snapshot,storage}=await fixture(t);
+  value.evidence[0].end=11;value.evidence[1].quote='missing source text';value.evidence[2].path='missing.ts';
+  await assert.rejects(prepareOverview(value,run,snapshot,storage),error=>{
+    assert.ok(error instanceof OverviewValidationError);
+    assert.deepEqual(error.evidenceIds,['e-state','e-send','e-receive']);
+    assert.match(error.message,/e-state \(main.ts:1-11.*?文件共 10 行/s);
+    assert.match(error.message,/e-send \(main.ts:3-5.*?引用原文不在指定源码片段内/s);
+    assert.match(error.message,/e-receive \(missing.ts:6-10.*?文件不在本次授权快照内/s);
+    return true;
+  });
+  await assert.rejects(prepareOverview(value,run,snapshot,path.join(storage,'missing')),error=>!(error instanceof OverviewValidationError));
+});
 
 test('compact overview verifies exact source and maps facts to the existing result without inventing IO or execution context',async t=>{
   const {value,run,snapshot,storage}=await fixture(t),original=structuredClone(value);
