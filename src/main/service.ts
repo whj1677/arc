@@ -852,12 +852,12 @@ export class ArcService {
     const reviewedWalkthrough=run.provider_id==='dsh'&&!!run.development_task_id;
     const reviewedHash=reviewedWalkthrough?this.store.events(runId).find(event=>event.type==='local.walkthrough_reviewed')?.result_sha256:undefined;
     if(reviewedWalkthrough&&!reviewedHash)throw Error('原始结果未完成源码顺序复核，请从原任务重新生成走读。');
-    const raw=run.provider_id==='dsh'&&!run.native_ui&&!reviewedWalkthrough?dshFinalMessage(this.store.events(runId)):await fs.readFile(replyPath(run),'utf8');
+    const raw=run.provider_id==='dsh'&&!run.native_ui&&!reviewedWalkthrough?dshFinalMessage(this.store.events(runId)):await fs.readFile(run.output_path,'utf8');
     if(reviewedHash&&sha(raw)!==reviewedHash)throw Error('结果原文与走读复核回执不一致，请从原任务重新生成走读。');
     const audit:string[]=[],returned=parseProviderText(raw,run.provider_id);
-    const base=run.dsh_overview_format||run.dsh_function_format?await readRepairBase(replyPath(run),'input'):undefined;
+    const base=run.dsh_overview_format||run.dsh_function_format?await readRepairBase(run.output_path,'input'):undefined;
     const parsed=await this.expandDshReply(base?applyEvidenceRepair(base,returned):returned,run,this.store.get('snapshot',run.binding.source_snapshot_id),audit);
-    this.event(runId,{type:'local.revalidation',reason:'只重新解析已保存原文，未派发外部请求',previous_error:run.error,format_normalization:audit});
+    this.event(runId,{type:'local.revalidation',reason:'重新校验首轮已保存原文，未派发外部请求',attempt:0,reply_sha256:sha(raw),previous_error:run.error,format_normalization:audit});
     run.status='validating';run.error=undefined;this.store.put('run',runId,run);
     try{return await this.acceptResult(runId,parsed,undefined,false);}catch(e){this.fail(runId,e);throw e;}
   }
