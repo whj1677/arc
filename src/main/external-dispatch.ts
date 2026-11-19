@@ -112,7 +112,13 @@ export class ExternalDispatch {
   async verifyStopped(dispatchId:string){
     const item=this.store.get<Dispatch>('external_dispatch',dispatchId),binding=this.binding(item.project_id);
     if(item.state!=='unknown'||!binding||!item.thread_id)throw Error('没有待核对的外部执行');
-    const {thread}=await this.metadata(binding.program,binding.workspace_path,'thread/read',{threadId:item.thread_id,includeTurns:true});
+    const resolvedProgram=await locate('codex',binding.program);
+    const {thread}=await this.metadata(resolvedProgram,binding.workspace_path,'thread/read',{threadId:item.thread_id,includeTurns:true});
+    const activeBinding=this.binding(item.project_id);
+    if(resolvedProgram!==binding.program&&activeBinding?.thread_id===binding.thread_id&&
+      activeBinding.workspace_path===binding.workspace_path&&activeBinding.program===binding.program){
+      this.store.put('external_executor',binding.project_id,{...activeBinding,program:resolvedProgram});
+    }
     const turns=thread?.turns??[];
     const matching=turns.filter((turn:any)=>turn.items?.some((entry:any)=>entry.type==='userMessage'&&entry.content?.some((content:any)=>content.type==='text'&&content.text?.includes('ARC 派发 '+item.dispatch_id+'。'))));
     if(!matching.length||turns.some((turn:any)=>!['completed','failed','interrupted'].includes(turn.status)))throw Error('未找到对应派发的已结束回合，或会话仍在执行；保持未知状态，不重新发送。');
@@ -145,19 +151,22 @@ export class ExternalDispatch {
         }
         if(this.items().some(other=>other.dispatch_id!==item.dispatch_id&&other.thread_id===binding.thread_id&&['sending','awaiting_claim','running','unknown'].includes(other.state)))continue;
         try{
+          const resolvedProgram=await locate('codex',binding.program);
           const [current]=await Promise.all([
-            this.metadata(binding.program,binding.workspace_path,'thread/read',{threadId:binding.thread_id,includeTurns:false}),
-            this.command(binding.program,['app-server','daemon','version'],{windowsHide:true,timeout:10000}),
+            this.metadata(resolvedProgram,binding.workspace_path,'thread/read',{threadId:binding.thread_id,includeTurns:false}),
+            this.command(resolvedProgram,['app-server','daemon','version'],{windowsHide:true,timeout:10000}),
           ]);
           if(path.resolve(current.thread.cwd).toLowerCase()!==path.resolve(binding.workspace_path).toLowerCase())throw Error('外部会话工作区已改变');
           const latestQueued=this.store.get<Dispatch>('external_dispatch',item.dispatch_id),activeBinding=this.binding(item.project_id);
           if(latestQueued.state!=='queued'||latestQueued.revoked||!this.canSend(item.project_id,binding.workspace_path)||
-            activeBinding?.thread_id!==binding.thread_id||activeBinding.program!==binding.program)continue;
+            activeBinding?.thread_id!==binding.thread_id||activeBinding.workspace_path!==binding.workspace_path||
+            activeBinding.program!==binding.program)continue;
+          binding.program=resolvedProgram;
           binding.model=current.thread.model??null;binding.reasoning_effort=current.thread.reasoningEffort??null;binding.checked_at=now();
           this.store.put('external_executor',binding.project_id,binding);
           item.thread_id=binding.thread_id;item.state='sending';item.sent_at=now();item.error=undefined;this.save(item);
           const message=`ARC 派发 ${item.dispatch_id}。先调用 arc_claim_dispatch，dispatch_id=${item.dispatch_id}，按返回的固定任务、上下文与权限执行。仅操作 ${binding.workspace_path}。如已领取，继续同一任务，禁止新建重复修改。${item.task_id?`${item.phase==='analysis'?'本次是只读需求分析，禁止修改工程或运行构建测试；按领取合同在 ARC 保存 AEC 需求包、实施步骤和建议范围；完成分析后停止，等待用户确认。':'执行已批准的需求包版本和文件范围，按批准的步骤关联验证证据并回填结果。'}使用会话原生只读文件或命令工具核对当前工作区源码；arc_read_source 仅适用于工程分析运行，不接受开发 task_id。`:'工程分析只读本次运行的冻结源码，按领取返回的 run_id 使用 arc_list_files 和 arc_read_source。'}`;
-          const response=await this.command(binding.program,['queue','--thread',binding.thread_id,'--message',message,'--resume'],{cwd:binding.workspace_path,windowsHide:true,timeout:20000});
+          const response=await this.command(resolvedProgram,['queue','--thread',binding.thread_id,'--message',message,'--resume'],{cwd:binding.workspace_path,windowsHide:true,timeout:20000});
           const latest=this.store.get<Dispatch>('external_dispatch',item.dispatch_id);
           if(latest.state==='sending'){latest.state='awaiting_claim';latest.error=String(response.stderr).trim()?redact(String(response.stderr).trim()):'已排入 Codex，等待实际领取确认';this.save(latest);}
         }catch(error){

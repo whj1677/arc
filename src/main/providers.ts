@@ -78,44 +78,90 @@ export const redact = (text:string) =>
     .replace(/("(?:api[_-]?key|access_token|refresh_token|client_secret|authorization)"\s*:\s*")[^"]+/gi,'$1[REDACTED]');
 
 let cachedNodePath:string|undefined;
+let cachedCodexPath:string|undefined;
+
+function npmNativeCodexCandidates(npmDir:string):string[] {
+  const modules=path.join(npmDir,'node_modules');
+  const architecture=process.arch==='arm64'?'arm64':'x64';
+  const target=architecture==='arm64'?'aarch64':'x86_64';
+  return [path.join(modules,'@openai','codex','node_modules'),modules].flatMap(base=>
+    ['bin','codex'].map(layout=>path.join(base,'@openai',`codex-win32-${architecture}`,'vendor',`${target}-pc-windows-msvc`,layout,'codex.exe')));
+}
+
+async function isFile(file:string) {
+  try { return (await fs.stat(file)).isFile(); } catch { return false; }
+}
 
 export async function locate(name:string, configured?:string) {
+  const windows=process.platform==='win32';
+  const windowsCodex=windows&&name==='codex';
   if(configured) {
     if(!path.isAbsolute(configured))throw new Error('程序路径必须是绝对路径');
-    try {
-      await fs.access(configured);
-    } catch {
-      throw new Error(`指定的程序路径不存在或无法访问：${configured}`);
+    if(windowsCodex&&!/\.exe$/i.test(configured)&&/^codex(?:\.cmd|\.ps1)?$/i.test(path.basename(configured))) {
+      for(const nativeExe of npmNativeCodexCandidates(path.dirname(configured))) {
+        if(await isFile(nativeExe))return nativeExe;
+      }
     }
-    return configured;
+    if(await isFile(configured)) {
+      if(!windows||/\.exe$/i.test(configured))return configured;
+      throw new Error(`Windows 下需指定 .exe 可执行文件（不能直接执行脚本包装器）：${configured}`);
+    }
+    const staleStore=windowsCodex&&/\\WindowsApps\\OpenAI\.Codex_[^\\]+\\app\\resources\\codex\.exe$/i.test(path.normalize(configured));
+    if(!staleStore)throw new Error(`指定的程序路径不存在或无法访问：${configured}`);
   }
   if(name==='node'&&cachedNodePath)return cachedNodePath;
+  if(windowsCodex&&cachedCodexPath) {
+    if(await isFile(cachedCodexPath))return cachedCodexPath;
+    cachedCodexPath=undefined;
+  }
+  if(windowsCodex) {
+    // Prefer the installed Codex Desktop MSIX binary so daemon/session protocol matches the desktop app.
+    try {
+      const powershell=path.join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
+      const {stdout}=await exec(powershell,['-NoProfile','-NonInteractive','-Command',
+        '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation',
+      ],{windowsHide:true,timeout:5000});
+      const installPath=stdout.trim();
+      if(path.isAbsolute(installPath)) {
+        const executable=path.join(installPath,'app','resources','codex.exe');
+        if(await isFile(executable))return cachedCodexPath=executable;
+      }
+    } catch {}
+  }
   try {
-    const {stdout}=await exec(process.platform==='win32'?'where.exe':'which',[name],{windowsHide:true,timeout:5000});
+    const {stdout}=await exec(windows?'where.exe':'which',[name],{windowsHide:true,timeout:5000});
     const candidates=stdout.trim().split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
-    if(candidates.length) {
-      // Windows desktop bundles can put a Unix launcher before their native binary.
-      const resolved=(process.platform==='win32'?candidates.find(file=>/\.exe$/i.test(file)):undefined)??candidates[0];
-      if(name==='node')cachedNodePath=resolved;
-      return resolved;
+    // On Windows, spawn/execFile without shell only executes native .exe binaries (never extensionless sh or .cmd).
+    for(const candidate of candidates) {
+      if(windows&&(!/\.exe$/i.test(candidate)||!await isFile(candidate)))continue;
+      if(name==='node')cachedNodePath=candidate;
+      if(windowsCodex)cachedCodexPath=candidate;
+      return candidate;
+    }
+    if(windowsCodex) {
+      for(const npmDir of new Set(candidates.filter(file=>path.isAbsolute(file)).map(file=>path.dirname(file)))) {
+        for(const nativeExe of npmNativeCodexCandidates(npmDir)) {
+          if(await isFile(nativeExe))return cachedCodexPath=nativeExe;
+        }
+      }
     }
   } catch {
     // Avoid surfacing raw GBK-encoded Windows where.exe stderr as UTF-8 mojibake.
   }
-  if(process.platform==='win32') {
+  if(windows) {
     const appData=process.env.APPDATA, localAppData=process.env.LOCALAPPDATA, home=os.homedir();
     const fallbacks=[
+      ...(name==='codex'&&appData?npmNativeCodexCandidates(path.join(appData,'npm')):[]),
       appData&&path.join(appData,'npm',`${name}.exe`),
-      appData&&path.join(appData,'npm',`${name}.cmd`),
       localAppData&&path.join(localAppData,'Programs',name,`${name}.exe`),
       home&&path.join(home,'.local','bin',`${name}.exe`),
     ].filter((item):item is string=>Boolean(item));
     for(const candidate of fallbacks) {
-      try {
-        await fs.access(candidate);
+      if(await isFile(candidate)) {
         if(name==='node')cachedNodePath=candidate;
+        if(name==='codex')cachedCodexPath=candidate;
         return candidate;
-      } catch {}
+      }
     }
   }
   throw new Error(`本机 PATH 中未找到「${name}」程序。请先确认已安装，或在下方「诊断与手动指定」中填写完整路径。`);
