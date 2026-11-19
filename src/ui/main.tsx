@@ -1865,6 +1865,8 @@ function App() {
                   onTaskOpened={() => setRequestedTask('')}
                   onSettings={showMcp}
                   defaultEngine={expandMode}
+                  onEngineChange={setAnalysisMode}
+                  enginePending={pending}
                   focusGoal={focusDevelopment}
                   onGoalFocused={() => setFocusDevelopment(false)}
                   back={() => switchView('system')}

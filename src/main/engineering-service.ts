@@ -27,6 +27,9 @@ function boundaryList(value:unknown):string[] {
   if(!Array.isArray(value)||value.length>40)throw Error('每组边界最多可保存 40 项');
   return [...new Set(value.map(item=>requireText(item,6000)))];
 }
+function normalizeTaskBoundaries(input:NonNullable<EngineeringTask['boundaries']>) {
+  return {non_goals:boundaryList(input.non_goals),revoked:boundaryList(input.revoked)};
+}
 // Explicit document names only; README/purpose is not a completed plan.
 export function engineeringDocumentCategory(file:string):EngineeringSectionCategory|undefined {
   const name=path.posix.basename(file).replace(/\.(?:md|txt|json)$/i,'').toLowerCase().replace(/[_ ]/g,'-').replace(/^\d+-/,'');
@@ -387,7 +390,7 @@ export class EngineeringService {
   private receiptKey(operation:string,objectId:string,key:string){return sha(`${operation}\0${objectId}\0${requireText(key,300)}`);}
   private saveTask(task:EngineeringTask){task.version++;task.updated_at=now();task.saved='saved';this.store.putVersion(taskKind,task.task_id,task.version,task);}
   updateBoundaries(input:{task_id:string;non_goals:string[];revoked:string[];expected_version?:number}):EngineeringTask {
-    const boundaries={non_goals:boundaryList(input.non_goals),revoked:boundaryList(input.revoked)};
+    const boundaries=normalizeTaskBoundaries(input);
     const saved=this.store.transaction(()=>{
       const task=this.task(input.task_id),previous=task.version;
       if(input.expected_version!==undefined&&input.expected_version!==previous)throw Error('VERSION_CONFLICT：边界已有新版本，请重新核对');
@@ -526,6 +529,7 @@ export class EngineeringService {
     const context=await this.context({project_id:workspace.project_id});
     return this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return this.task(retry.task_id);
       const task:EngineeringTask={task_id:id('task'),project_id:workspace.project_id,workspace_id:workspace.workspace_id,workspace_path:workspace.root_path,...(reading?{reading}:{}),version:0,submission_key:input.submission_key,goal:requireText(input.goal),scope:(input.scope??[]).map(relativePath),status:'pending',baseline:context.code_state,context_version:context.version,summary:'',decisions:[],unresolved:[],changes:[],verification:[],verification_status:'not_run',attempt_ids:[],requests:[],created_at:now(),updated_at:now(),saved:'saved'};
+      if(input.boundaries!==undefined)task.boundaries=normalizeTaskBoundaries(input.boundaries);
       if(submission)this.prepareRequirement(task,input,submission);
       this.saveTask(task);this.store.put('engineering_receipt',key,task);submission?.onSaved(task);this.changed();return task;});
   }

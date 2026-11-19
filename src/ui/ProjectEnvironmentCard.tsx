@@ -1,24 +1,17 @@
-import React,{useEffect,useState} from 'react';
+import React,{useState} from 'react';
+import type {WorkspaceBinding} from '../engineering';
 import type {EffectiveCommands,ProjectEnvironment,ToolProbeStatus} from '../main/env-probe';
+import {rememberEnvironment,useProjectEnvironment} from './project-environment-store';
 import './project-environment.css';
 
 const fields=[['build','构建命令'],['test','测试命令'],['typecheck','类型检查']] as const;
 const statusLabels:Record<ToolProbeStatus,string>={available:'可用',missing:'本机未发现',unverifiable:'未能确认',declared:'项目声明需要'};
-const lastEnvironment=new Map<string,ProjectEnvironment>();
-
-export function ProjectEnvironmentCard({projectId}:{projectId:string}){
-  const [environment,setEnvironment]=useState<ProjectEnvironment|null>(()=>lastEnvironment.get(projectId)??null);
+export function ProjectEnvironmentCard({workspace}:{workspace:WorkspaceBinding}){
+  const projectId=workspace.project_id;
+  const {environment,error:loadError}=useProjectEnvironment(workspace);
   const [draft,setDraft]=useState<EffectiveCommands|null>(null);
-  const [busy,setBusy]=useState(true),[error,setError]=useState('');
-  useEffect(()=>{
-    let active=true;
-    setBusy(true);setEnvironment(lastEnvironment.get(projectId)??null);setDraft(null);setError('');
-    void window.arc.invoke<ProjectEnvironment>('project_environment',{project_id:projectId})
-      .then(env=>{if(active){lastEnvironment.set(projectId,env);setEnvironment(env);}})
-      .catch(e=>{if(active)setError(e.message);})
-      .finally(()=>{if(active)setBusy(false);});
-    return ()=>{active=false;};
-  },[projectId]);
+  const [updating,setBusy]=useState(false),[error,setError]=useState('');
+  const busy=updating||(!environment&&!loadError);
   async function update(action:'refresh'|'save'){
     setBusy(true);setError('');
     try {
@@ -27,7 +20,7 @@ export function ProjectEnvironmentCard({projectId}:{projectId:string}){
       const env=action==='refresh'
         ?await window.arc.invoke<ProjectEnvironment>('project_environment',{project_id:projectId,refresh:true})
         :await window.arc.invoke<ProjectEnvironment>('project_environment_save',{project_id:projectId,effective_commands:overrides});
-      lastEnvironment.set(projectId,env);setEnvironment(env);setDraft(null);
+      rememberEnvironment(workspace,env);setDraft(null);
     }catch(e){setError((e as Error).message);}
     finally{setBusy(false);}
   }
@@ -36,7 +29,7 @@ export function ProjectEnvironmentCard({projectId}:{projectId:string}){
     <header className="project-home-heading"><div><h2>本机环境与有效命令</h2><small>自动实测本机工具链，派活时直接注入给 Codex / DSH</small></div>
       <button disabled={busy||!!draft} onClick={()=>void update('refresh')}>{busy&&!draft?'探测中…':'重新探测'}</button>
     </header>
-    {error&&<p className="warning" role="alert">{error}</p>}
+    {(error||(!environment&&loadError))&&<p className="warning" role="alert">{error||loadError}</p>}
     {environment&&<>
       <ul className="env-tools" aria-label="工具状态">{environment.tools.map(tool=><li key={tool.id} className={'env-tool '+tool.status} title={[tool.required_by,tool.detail].filter(Boolean).join(' · ')}>
         <i aria-hidden="true"/>{tool.label}{tool.version&&' '+tool.version} · {statusLabels[tool.status]}

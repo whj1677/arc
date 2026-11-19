@@ -8,6 +8,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {Store} from '../src/main/store';
 import {capture,readSource,workspaceGitDirectory} from '../src/main/snapshot';
 import {EngineeringService} from '../src/main/engineering-service';
+import {requirementPrompt} from '../src/main/dsh-development';
 import {scanAecLegacy} from '../src/main/aec-migration';
 import type {VerificationEvidence} from '../src/engineering';
 import {ArcService} from '../src/main/service';
@@ -100,6 +101,31 @@ test('cached project pages reuse both SQLite records and a fresh check still rea
     f.store.db.prepare('DELETE FROM objects WHERE kind=? AND id=?').run('engineering_context_state','p');
     await f.service.context({project_id:'p',cached:true});
     assert.equal(capture.mock.callCount(),2);assert.equal(scan.mock.callCount(),2);
+  }finally{await f.cleanup();}
+});
+
+test('initial boundaries are normalized, persisted and included in the first analysis prompt',async()=>{
+  const f=await fixture();
+  try{
+    const task=await f.service.createTask({
+      project_id:'p',goal:'改进计算',submission_key:'initial',
+      boundaries:{non_goals:[' 保留登录界面 ','保留登录界面'],revoked:[' 撤销旧导出 ']},
+    },{phase:'analysis',channel:'codex',checkAvailable:()=>{},onSaved:()=>{}});
+    const saved=f.service.task(task.task_id);
+    assert.equal(saved.workflow,'analysis');
+    assert.deepEqual(saved.boundaries,{non_goals:['保留登录界面'],revoked:['撤销旧导出']});
+    const prompt=requirementPrompt(saved,await f.service.context({project_id:'p',task_id:task.task_id}));
+    assert.ok(prompt.includes(JSON.stringify(saved.boundaries)));
+  }finally{await f.cleanup();}
+});
+
+test('initial boundaries enforce the edit limits before saving a task',async()=>{
+  const f=await fixture();
+  try{
+    const input={project_id:'p',goal:'改进计算',submission_key:'invalid'};
+    await assert.rejects(f.service.createTask({...input,boundaries:{non_goals:Array(41).fill('范围'),revoked:[]}}),/40/);
+    await assert.rejects(f.service.createTask({...input,boundaries:{non_goals:[],revoked:['长'.repeat(6001)]}}),/6000/);
+    assert.deepEqual(f.service.tasks({project_id:'p'}),[]);
   }finally{await f.cleanup();}
 });
 

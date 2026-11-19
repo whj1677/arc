@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type {CreateEngineeringTask,EngineeringContext,EngineeringTask,DevelopmentAttempt,VerificationEvidence,CodeState,TaskReadingBinding} from '../engineering';
+import type {CreateEngineeringTask,EngineeringContext,EngineeringTask,DevelopmentAttempt,VerificationEvidence,CodeState} from '../engineering';
 import type {ProviderProfile,Run,Snapshot} from '../shared';
 import {inspectVerificationOutput} from '../delivery-audit';
 import {EngineeringService,sameVerificationState} from './engineering-service';
@@ -43,7 +43,7 @@ export class DevelopmentService {
   constructor(readonly engineering:EngineeringService,readonly store:Store,readonly resources:string,readonly emit:(event:any)=>void,private readonly runner=runDevelopmentCodex,private readonly probe=probeProviders,private readonly configuration=readCodexConfiguration,private readonly codexAnalysis=runCodex,private readonly dshWeb=runDshWeb){}
   private event(attemptId:string,value:any){this.engineering.appendAttemptEvent(attemptId,JSON.parse(redact(JSON.stringify(value))));this.emit({type:'development_event',attempt_id:attemptId});}
   events(taskId:string){const task=this.engineering.task(taskId),attempts=task.attempt_ids.map(key=>this.store.get<DevelopmentAttempt>('development_attempt',key));return {attempts,events:attempts.flatMap(attempt=>this.engineering.attemptEvents(attempt.attempt_id).map((item:any)=>({...item.event,received_at:item.at,attempt_id:attempt.attempt_id})))};}
-  async start(input:{project_id:string;goal:string;submission_key:string;task_id?:string;scope:string[];reading?:TaskReadingBinding}):Promise<EngineeringTask>{
+  async start(input:CreateEngineeringTask&{project_id:string;scope:string[]}):Promise<EngineeringTask>{
     const workspace=await this.engineering.resolve({project_id:input.project_id});
     const receipt=this.store.maybe<{task_id:string}>('development_submission',input.submission_key);
     if(receipt){const prior=this.engineering.task(receipt.task_id);if(prior.project_id!==input.project_id)throw Error('开发请求标识属于另一个工程');return prior;}

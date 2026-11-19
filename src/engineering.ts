@@ -133,6 +133,7 @@ export interface DevelopmentAttempt {
 export interface ContextRequest {view?:'strict'|'execution';task_id?:string;project_id?:string; workspace_path?:string; cached?:boolean;refresh?:boolean;query?:string;entry_id?:string;result_id?:string;category?:ContextEntry['category'];offset?:number;limit?:number}
 export interface CreateEngineeringTask extends ContextRequest {
   goal:string; submission_key:string; task_id?:string; scope?:string[]; reading?:TaskReadingBinding;
+  boundaries?:EngineeringTask['boundaries'];
 }
 export interface UpdateEngineeringTask {
   task_id:string; expected_version:number; submission_key:string; summary?:string;
