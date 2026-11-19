@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {ArcService} from '../src/main/service';
 import {ArcMcpBridge,bridgeTools} from '../src/main/mcp-bridge';
 import {activity} from '../src/ui/activity';
-async function setup(runner?:ConstructorParameters<typeof ArcMcpBridge>[3]){const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-mcp-'));const source=path.join(dir,'source');await fs.mkdir(source);await fs.writeFile(path.join(source,'a.ts'),'export const value=1;\n');const service=new ArcService(path.join(dir,'data'),path.resolve('.'));const project=await service.openProject(source);const bridge=new ArcMcpBridge(service,path.resolve('.'),false,runner);await bridge.start();return {dir,source,service,project,bridge};}
+async function setup(){const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-mcp-'));const source=path.join(dir,'source');await fs.mkdir(source);await fs.writeFile(path.join(source,'a.ts'),'export const value=1;\n');const service=new ArcService(path.join(dir,'data'),path.resolve('.'));const project=await service.openProject(source);const bridge=new ArcMcpBridge(service,path.resolve('.'),false);await bridge.start();return {dir,source,service,project,bridge};}
 test('MCP authenticated stdio round trip, scoped frozen reads, progress, revoke and idempotence',async()=>{
  const {source,service,project,bridge}=await setup();let child:ReturnType<typeof spawn>|undefined;
  try{
@@ -30,18 +30,17 @@ test('MCP authenticated stdio round trip, scoped frozen reads, progress, revoke 
  bridge.disable();await assert.rejects(bridge.call('arc_read_source',{run_id,path:'a.ts'}),/授权/);assert.equal(service.store.get('run',run_id).status,'cancelled');
  }finally{child?.kill();await bridge.close();await service.shutdown();service.store.close();}
 });
-test('MCP host configuration labels WorkBuddy without claiming verified identity',async()=>{
+test('MCP host configuration accepts Codex and rejects unsupported hosts',async()=>{
  const {service,project,bridge}=await setup();try{
   await bridge.enable(project.project_id);
-  const task=await bridge.call('arc_begin_analysis',{request_id:'wb'},{name:'WorkBuddy',configured_provider:'workbuddy'});
-  assert.equal(task.provider.provider_id,'workbuddy');assert.equal(task.provider.connection_id,'local-workbuddy');
-  assert.equal(service.store.get('run',task.binding.run_id).provider_id,'workbuddy');
+  const task=await bridge.call('arc_begin_analysis',{request_id:'codex-host'},{name:'Codex Desktop',configured_provider:'codex'});
+  assert.equal(task.provider.provider_id,'codex');assert.equal(task.provider.connection_id,'local-codex');
+  assert.equal(service.store.get('run',task.binding.run_id).provider_id,'codex');
   assert.match(service.store.events(task.binding.run_id)[0].message,/未由 Arc 核验/);
-  assert.deepEqual((await bridge.call('arc_begin_analysis',{request_id:'wb'},{configured_provider:'workbuddy'})).binding,task.binding);
-  await assert.rejects(bridge.call('arc_begin_analysis',{request_id:'wb'}),/其他宿主/);
-  await assert.rejects(bridge.call('arc_begin_analysis',{request_id:'bad-host'},{configured_provider:'unknown'}),/宿主配置无效/);
+  await assert.rejects(bridge.call('arc_begin_analysis',{request_id:'bad-host'},{configured_provider:'unknown'}),/仅支持 Codex/);
+  await assert.rejects(bridge.call('arc_begin_analysis',{request_id:'wb'},{name:'WorkBuddy',configured_provider:'workbuddy'}),/仅支持 Codex/);
   const legacy=await bridge.call('arc_begin_analysis',{request_id:'legacy'},{name:'WorkBuddy'});
-  assert.equal(legacy.provider.provider_id,'codex','a self-reported client name must not silently choose a provider');
+  assert.equal(legacy.provider.provider_id,'codex','a self-reported client name must not silently choose another provider');
  }finally{await bridge.close();await service.shutdown();service.store.close();}
 });
 
@@ -129,50 +128,6 @@ test('manual import activity cannot claim a completed Agent analysis',()=>{
 });
 test('long event histories retain final messages and monotonic sequence beyond 2000',async()=>{
  const {service,bridge}=await setup();try{for(let n=1;n<=2002;n++)service.store.event('long',String(n),n,{sequence:n,type:'test'});assert.equal(service.store.nextSequence('long'),2003);assert.equal(service.store.events('long').at(-1).sequence,2002);}finally{await bridge.close();service.store.close();}
-});
-
-
-test('DeepSeek uses the in-process approval route and writes only after the current version is approved',async()=>{
- const file='a.ts';
- const steps=[{step_id:'value',title:'Update the value',change:'Edit the exported constant',status:'pending' as const,progress:'Awaiting review',criteria:[{criterion_id:'value-two',text:'Export value is 2',evidence_ids:[]}],evidence_ids:[],unresolved:[],created_at:'',updated_at:''}];
- const packageData={behaviors:[{id:'value',behavior:'Export 2',design:'Change constant declaration',files:[file],step_ids:['value'],verification:'Import value and assert 2'}]};
- const received:string[]=[];
- const {dir,source,service,project,bridge}=await setup(async options=>{
-   received.push(options.task.workflow!);
-   if(options.task.workflow==='analysis'){
-     const proposal={summary:'Read the existing exported constant.',steps,proposed_scope:[file],requirement_package:packageData};
-     await options.validatePlan?.(proposal);return proposal;
-   }
-   assert.deepEqual(options.task.approval?.scope,[file]);
-   return {summary:'Changed the approved constant.',edits:[{path:file,content:'export const value=2;\n'}]};
- });
- const wait=async(taskId:string,done:(task:import('../src/engineering').EngineeringTask)=>boolean)=>{
-   for(let n=0;n<250;n++){const task=service.engineering.task(taskId);if(done(task))return task;await new Promise(r=>setTimeout(r,25));}
-   throw Error('DeepSeek task did not reach the expected state');
- };
- try{
-   const original=await bridge.queueDevelopment({project_id:project.project_id,goal:'Change the value after review',phase:'analysis',channel:'dsh',submission_key:'dsh-req'});
-   const ready=await wait(original.task_id,task=>task.workflow==='ready'||task.status==='blocked');
-   assert.equal(ready.workflow,'ready',ready.unresolved.join(' '));assert.deepEqual(ready.scope,[]);
-   assert.equal(await fs.readFile(path.join(source,file),'utf8'),'export const value=1;\n');
-   await assert.rejects(bridge.queueDevelopment({project_id:project.project_id,task_id:ready.task_id,expected_version:ready.version-1,phase:'execution',scope:[file],goal:'Approve stale',submission_key:'dsh-stale'}),/VERSION_CONFLICT/);
-   await bridge.queueDevelopment({project_id:project.project_id,task_id:ready.task_id,expected_version:ready.version,phase:'execution',scope:[file],goal:'Approve current',submission_key:'dsh-approve'});
-   const done=await wait(ready.task_id,task=>task.status==='completed'||task.status==='blocked');
-   assert.equal(done.status,'completed',done.unresolved.join(' '));assert.deepEqual(done.changes.map(f=>f.path),[file]);assert.deepEqual(received,['analysis','execution']);
-   assert.equal(await fs.readFile(path.join(source,file),'utf8'),'export const value=2;\n');
-   assert.equal(bridge.dispatch.items(project.project_id).length,0);
-   assert.deepEqual(service.development.events(done.task_id).attempts.map(item=>[item.provider_id,item.write_scope]),[['dsh',[]],['dsh',[file]]]);
-
-   const next=await bridge.queueDevelopment({project_id:project.project_id,goal:'Review the next change',channel:'dsh',submission_key:'dsh-new-review'});
-   const nextReady=await wait(next.task_id,task=>task.workflow==='ready');
-   await fs.writeFile(path.join(source,'notes.txt'),'Written independently while reviewing.\n');
-   await bridge.queueDevelopment({project_id:project.project_id,task_id:next.task_id,expected_version:nextReady.version,phase:'execution',scope:[file],goal:'Approve after an unrelated edit',submission_key:'dsh-drift'});
-   const blocked=await wait(next.task_id,task=>task.status==='blocked');
-   assert.match(blocked.summary,/审阅时不同/);
-   assert.equal(blocked.changes.length,0);
-   assert.deepEqual(received,['analysis','execution','analysis']);
-   assert.equal(await fs.readFile(path.join(source,file),'utf8'),'export const value=2;\n');
- }finally{await bridge.close();await service.shutdown();service.store.close();await fs.rm(dir,{recursive:true,force:true});}
 });
 
 test('feature development saves exact frozen evidence and rejects a mismatched line',async()=>{

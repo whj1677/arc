@@ -125,27 +125,6 @@ export function ExternalExecutor({projectId,projectPath,programHint='',onBound}:
   </section>;
 }
 
-export function DeepSeekConnection({profile}:{profile:ProviderProfile|undefined}){
-  const [busy,setBusy]=useState(false),[error,setError]=useState('');
-  async function check(){
-    setBusy(true);setError('');
-    try{await api.invoke('providers_probe');}
-    catch(e){setError((e as Error).message);}
-    finally{setBusy(false);}
-  }
-  const status=busy?'正在检测':error?'检测失败':!profile?'未检测':
-    profile.status==='available'?'本机已就绪':profile.status==='auth_required'?'需配置凭据':'需检查';
-  return <section className="agent-connection-card" aria-label="DeepSeek Harness">
-    <header className="row between"><h3>DeepSeek Harness</h3><span role="status" className={profile?.status==='available'&&!busy&&!error?'agent-state ready':'agent-state'}>{status}</span></header>
-    <p>从「功能走读」提出需求并选择 DeepSeek Harness，ARC 会调用本机程序。确认方案后再执行。</p>
-    {profile?.status==='auth_required'&&!busy&&<p>请先在本机 DeepSeek Harness 配置 API 凭据，再重新检测。</p>}
-    <button disabled={busy} onClick={()=>void check()}>检测本机 Harness</button>
-    {error&&<p role="alert" className="warning">{error}</p>}
-    {profile&&<details className="agent-connection-secondary"><summary>检测详情</summary>
-      <p>{profile.reason}</p>{profile.version&&<p className="muted">程序版本 {profile.version}</p>}
-    </details>}
-  </section>;
-}
 type Draft={key:string;text:string;entry?:ContextEntry};
 
 /** Render local text as React nodes. Raw HTML is always displayed as text. */

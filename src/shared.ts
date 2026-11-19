@@ -57,11 +57,6 @@ export interface Run {
   development_task_id?:string;
   refresh_from_result_id?:string;
 }
-/** Only a confirmed model reply rejected by ARC can be submitted for correction. */
-export function canRepairDshReturn(run:Run):boolean {
-  return run.provider_id==='dsh'&&run.native_ui==='dsh-web'&&run.status==='failed'&&!run.origin&&!run.development_task_id&&!run.reading_question_id&&
-    (!!run.dsh_return_errors?.length||/^真实返回不是合法 JSON|^结果校验失败/u.test(run.error||''));
-}
 export function hasFunctionGraphs(result:AnalysisResult):boolean {
   const functions=new Set(result.nodes.filter(node=>node.kind==='function').map(node=>node.node_id));
   return !!result.function_walkthroughs?.some(path=>path.steps.some(step=>{

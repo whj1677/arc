@@ -1,9 +1,9 @@
-import {DeepSeekConnection,ExternalExecutor} from './EngineeringSections';
+import {ExternalExecutor} from './EngineeringSections';
 import React,{useState,useEffect,useRef,useCallback} from 'react';
 import {createRoot} from 'react-dom/client';
 import type {EngineeringTask} from '../engineering';
 import type {WorkspaceData,ReadingState,Project,Scenario,Explanation,SourceEvidence,Run,AnalysisResult} from '../shared';
-import {canRepairDshReturn,hasFunctionGraphs} from '../shared';
+import {hasFunctionGraphs} from '../shared';
 import {FunctionChain,FunctionDetail,FunctionStepDetail} from './FunctionChain';
 import {functionCallMap} from './function-call-map';
 import {selectedCallStep} from './function-sequence-model';
@@ -312,14 +312,10 @@ function App(){
       }
       let target=scenarioId;
       if(overview){
-        if(expandMode==='dsh'){
-          const changes=await api.invoke<string[]>('check_freshness',{project_id:projectId});
-          if(changes.length)await api.invoke('refresh',{project_id:projectId});
-        }
         target=(await api.invoke<Scenario>('overview_create',{project_id:projectId})).scenario_id;
       }
       if(expandMode==='mcp')await api.invoke('analysis_prepare',{scenario_id:target});
-      else await api.invoke('run_start',{scenario_id:target,provider_id:expandMode,submission_key:crypto.randomUUID()});
+      else await api.invoke('run_start',{scenario_id:target,provider_id:'codex',submission_key:crypto.randomUUID()});
       await reload();
       if(activeReadingKey.current!==readingAtStart)return;
       chooseScenario(target,{entrance:overview?'overview':'walk',view:overview?'system':keepFunctions?'functions':'timeline',detail_tab:expandMode==='codex'?'details':'agent',mode:'normal'});
@@ -385,23 +381,14 @@ function App(){
     try{await action(()=>api.invoke('run_revalidate',{run_id:run.binding.run_id}));await reload();}
     finally{starting.current=false;setPending(false);}
   }
-  async function repairReturn(run:Run){
-    if(starting.current||pending||running)return;
-    starting.current=true;setPending(true);
-    try{
-      const repaired=await action(()=>api.invoke<Run>('run_repair',{run_id:run.binding.run_id,submission_key:crypto.randomUUID()}));
-      if(repaired){await reload();showRun();}
-    }finally{starting.current=false;setPending(false);}
-  }
-  const repairButton=(run:Run)=>canRepairDshReturn(run)&&<button disabled={pending||!!running} onClick={()=>void repairReturn(run)}>修复上次返回</button>;
   const canRevalidate=previewRun?.status==='failed'&&!previewRun.overview_format;
   const needsFunctionGraphs=reading.entrance==='walk'&&reading.view==='functions'&&(functionPreview||!!result&&!result.function_walkthroughs?.length);
-  const generateLabel=expandMode==='mcp'?'准备调用图任务':`用 ${expandMode==='dsh'?'DSH':'Codex'} 生成调用图`;
+  const generateLabel=expandMode==='mcp'?'准备调用图任务':'用 Codex 生成调用图';
   const graphPending=activityRun&&['queued','waiting_agent','running','validating','cancel_requested'].includes(activityRun.status);
   const graphWaiting=functionPreview?previewGraphs?.status==='等待领取':waitingMcp;
   const manualGraphActions=<>
-    {canRevalidate&&<div><p>上次功能分析未通过校验。{canRepairDshReturn(previewRun)&&'可让 DSH 根据具体错误修复这次返回。'}</p>
-      <button disabled={pending||!!running} onClick={()=>void revalidateFunctionRun(previewRun)}>{previewRun.dsh_return_attempt?'重新校验首轮原文':'重新校验已收原文'}</button>{repairButton(previewRun)}</div>}
+    {canRevalidate&&<div><p>上次功能分析未通过校验。</p>
+      <button disabled={pending||!!running} onClick={()=>void revalidateFunctionRun(previewRun)}>重新校验已收原文</button></div>}
     {(featureSource?.result||result)?.binding.source_snapshot_id!==project?.snapshot_id&&<p>新分析将使用当前工程的冻结快照。</p>}
     <button className="primary analysis-start" disabled={pending||!!running||project?.fictional||!!indexes[projectId]} onClick={()=>void requestAnalysis()}>{pending?'正在提交…':generateLabel}</button>
   </>;
@@ -514,7 +501,7 @@ function App(){
       {project&&<div hidden={reading.detail_tab!=='questions'}><ReadingQuestions data={data} projectId={projectId} scenarioId={scenarioId} resultId={result?.result_id||null} target={questionLocation.target} targetLabel={questionLocation.label} featureId={currentFeature?.feature_id||projectId} featureLabel={reading.entrance==='overview'?'当前工程整体':`${currentFeature?.name||scenario?.title||'当前功能'} · 整体`} snapshotId={result?.binding.source_snapshot_id||project.snapshot_id} disabled={project.fictional} reload={reload} settings={showMcp}/></div>}
       {reading.detail_tab==='evidence'&&<><h2>{architectureReading&&activeObject?activeObject.label+' · 来源依据':'来源与覆盖'}</h2>{selectedEvidence&&<article className="scope-box evidence-location" aria-label="所选来源依据"><strong>{selectedEvidence.path}</strong><p>{selectedEvidence.note}</p><span>位置：第 {selectedEvidence.line_start}–{selectedEvidence.line_end} 行</span><span>版本：{selectedEvidence.source_snapshot_id}</span><small>SHA-256：{selectedEvidence.content_sha256}</small><SourceExcerpt evidence={selectedEvidence}/></article>}{developmentEvidence&&development}<p className="warning">结构、引用和哈希校验不等于语义已核实。</p><dl><dt>说明</dt><dd>{result?.result_id||'暂无'}</dd><dt>来源版本</dt><dd>{result?.binding.source_snapshot_id||project?.snapshot_id}</dd><dt>问题修订</dt><dd>{result?.binding.question_revision_id||scenario?.question_revision_id}</dd><dt>构建条件</dt><dd>{data.snapshots.find(s=>s.source_snapshot_id===(result?.binding.source_snapshot_id||project?.snapshot_id))?.build_config||'未知；没有指定宏、目标和包含路径'}</dd></dl>{(architectureReading&&activeObject?result?.evidence.filter(item=>activeObject.evidence_ids.includes(item.evidence_id)):readingEvidence)?.map(e=><EvidenceButton key={e.evidence_id} evidence={e} open={evidence}/>)}<h3>尚未覆盖</h3>{result?.gaps.map(g=><article className="gap" key={g.gap_id}><strong>{g.question}</strong><p>{g.impact}</p><small>{overviewReviewGaps.some(gap=>gap.gap_id===g.gap_id)?'ARC 可自动补查这条关系的原冻结源码，并对修订后的关系再次复核。':g.suggested_action}</small></article>)}{!result&&<p>尚未有分析结果。</p>}</>}
       {reading.detail_tab==='agent'&&<>{activityRun&&!waitingMcp&&<RunActivity run={activityRun} events={events} error={eventError} detailed stop={()=>void action(()=>api.invoke('run_cancel',{run_id:activityRun.binding.run_id}))}/>} {completedExplanation&&!waitingMcp&&<button className="primary full view-completed" onClick={viewCompleted}>查看本次分析结果</button>}{waitingMcp&&<div className="waiting-summary"><h3>等待 Agent 对话领取</h3><p>所选功能已准备，尚未开始模型调用。请在已接入 Arc 的 Agent 对话中领取。</p></div>}<details className="run-start-options" open={!activityRun&&!waitingMcp||undefined}><summary>{activityRun?'再次分析':'分析执行方式'}</summary><button className="secondary full" onClick={showMcp}>连接 Agent</button><p>{analysisMode.description}</p><h2>分析：{analysisScope}</h2><p>{featurePurpose||scenario?.title||'先添加或选择一个场景。'}</p><details><summary>查看完整分析问题</summary><p>{scenario?.question}</p></details><div className="scope-box"><strong>本次来源</strong><span>{short(project?.snapshot_id||'')}</span><small>本地冻结源码；Agent 的模型服务将接收所选工程内容。原工程只读。</small></div>{!needsFunctionGraphs&&<button className="primary full" disabled={!scenario||project?.fictional||pending||!!running||!!indexes[projectId]} onClick={()=>void requestAnalysis(reading.entrance==='overview')}>{running?'分析进行中':analysisMode.start}</button>}{project?.fictional&&<p className="warning">当前是演示，不派发真实任务。</p>}</details>
-      <details className="run-history"><summary>历史运行与恢复操作 · {sceneRuns.length}</summary>{sceneRuns.slice().reverse().map(run=><article className="run" key={run.binding.run_id}><div className="row between"><strong>{run.origin==='manual_import'?'手动导入 · 非联调':run.origin==='mcp'?'MCP · Agent 主动写回':run.provider_id}</strong><span className="tag">{statuses[run.status]||run.status}</span></div><small>{short(run.binding.run_id)}</small><small>问题 {short(run.binding.question_revision_id)}</small><small>来源 {short(run.binding.source_snapshot_id)}</small>{run.previous_run_id&&<small className="retry-origin">{run.repair_from_run_id?'修复来源':'关联原运行'}：{run.previous_run_id}</small>}{run.external_id&&<p className="path">原生会话：{run.external_id}</p>}{run.error&&<AnalysisError error={run.error}/>}{repairButton(run)}{run.status==='failed'&&!run.overview_format&&<button onClick={()=>void action(()=>api.invoke('run_revalidate',{run_id:run.binding.run_id}))}>{run.dsh_return_attempt?'重新校验首轮原文':'重新校验已收原文'}（不调用 Agent）</button>}{run.validation&&<small>结构 {run.validation.structure} / 锚点 {run.validation.anchors}<br/>{run.validation.semantic}</small>}
+      <details className="run-history"><summary>历史运行与恢复操作 · {sceneRuns.length}</summary>{sceneRuns.slice().reverse().map(run=><article className="run" key={run.binding.run_id}><div className="row between"><strong>{run.origin==='manual_import'?'手动导入 · 非联调':run.origin==='mcp'?'MCP · Agent 主动写回':run.provider_id}</strong><span className="tag">{statuses[run.status]||run.status}</span></div><small>{short(run.binding.run_id)}</small><small>问题 {short(run.binding.question_revision_id)}</small><small>来源 {short(run.binding.source_snapshot_id)}</small>{run.previous_run_id&&<small className="retry-origin">{run.repair_from_run_id?'修复来源':'关联原运行'}：{run.previous_run_id}</small>}{run.external_id&&<p className="path">原生会话：{run.external_id}</p>}{run.error&&<AnalysisError error={run.error}/>}{run.status==='failed'&&!run.overview_format&&<button onClick={()=>void action(()=>api.invoke('run_revalidate',{run_id:run.binding.run_id}))}>重新校验已收原文（不调用 Agent）</button>}{run.validation&&<small>结构 {run.validation.structure} / 锚点 {run.validation.anchors}<br/>{run.validation.semantic}</small>}
       {run.origin==='mcp'?<small>MCP 任务请在原 Agent 对话继续；撤销只关闭 Arc 的读写权限。</small>:['running','queued','cancel_requested'].includes(run.status)?<button disabled={run.status==='cancel_requested'} onClick={()=>void action(()=>api.invoke('run_cancel',{run_id:run.binding.run_id}))}>请求停止</button>:<button onClick={()=>void requestAnalysis(reading.entrance==='overview')} disabled={project?.fictional||pending||!!running}>{analysisMode.retry}</button>}</article>)}
       </details><details><summary>最近运行的真实事件（{events.length}）</summary><div className="events">{events.slice(-60).map((e,i)=><pre key={i}>{JSON.stringify(e,null,2)}</pre>)}</div></details></>}
       {reading.detail_tab==='history'&&<><h2>解释历史</h2><p>新分析保存为新版本，不覆盖历史源码。当前查看的历史不会被新返回切走。</p>{sceneExplanations.slice().reverse().map(e=><button key={e.result_id} className={`history-row ${e.result_id===result?.result_id?'selected':''}`} onClick={()=>patch({result_id:e.result_id,selected:'',file:'',evidence_id:'',reading_path:'',function_path:'',reading_focus:'',source_snapshot_id:e.result.binding.source_snapshot_id})}><strong>{e.result.summary.text.slice(0,100)}</strong><small>{new Date(e.created_at).toLocaleString('zh-CN')} · {e.result.provider.provider_id}</small><small>{short(e.result.binding.source_snapshot_id)}</small><small>{e.result.binding.question_revision_id===scenario?.question_revision_id?'当前问题':'历史问题'} · {e.source_status==='current'?'来源可核对':'来源待复核'}</small></button>)}<button className="secondary full" disabled={sceneExplanations.length<2} onClick={()=>patch({mode:'compare',compare_id:sceneExplanations.at(-2)?.result_id||''})}>旧版｜新版 并排比较</button></>}
@@ -561,7 +548,6 @@ function App(){
           ?<ExternalExecutor key={projectId} projectId={projectId} projectPath={project.root_path}
               programHint={data.providers.find(p=>p.provider_id==='codex')?.path||''} onBound={refreshMcp}/>
           :<p className="scope-box">打开一个实际工程，即可查找并连接该工程的 Codex 会话。</p>}
-        <DeepSeekConnection profile={data.providers.find(p=>p.provider_id==='dsh')}/>
         <details className="provider-card agent-settings-advanced">
           <summary>外部 Agent 自行领取 · MCP</summary>
           <p>让已接入 MCP 的对话来 ARC 领取你准备的分析任务。</p>

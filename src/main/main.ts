@@ -16,7 +16,6 @@ app.whenReady().then(async()=>{
   const resources=app.getAppPath();
   try{service=new ArcService(app.getPath('userData'),resources,event=>{
     window?.webContents.send('arc:event',event);
-    if(event.type==='run_event'&&event.event?.type==='dsh.session_ready'&&!service.store.get('run',event.run_id).overview_parent_run_id)void service.providerSessionUrl(event.run_id).then(url=>shell.openExternal(url)).then(()=>service.event(event.run_id,{type:'local.stage',stage:'native_opened',message:'已请求浏览器打开对应 DSH 会话；任务继续分析并自动写回'})).catch(e=>service.event(event.run_id,{type:'local.stage',stage:'native_open_failed',message:'打开 DSH 对话失败：'+redact((e as Error).message)}));
   });}
   catch(e){dialog.showErrorBox('Arc 无法打开数据',(e as Error).message);app.quit();return;}
   bridge=new ArcMcpBridge(service,resources,true);await bridge.start();
@@ -59,11 +58,10 @@ app.whenReady().then(async()=>{
         case 'executor_cancel':value=bridge.cancelDispatch(args.dispatch_id);break;
         case 'executor_acknowledge_stop':value=bridge.acknowledgeStop(args.dispatch_id);break;
         case 'executor_verify_stopped':value=await bridge.verifyStopped(args.dispatch_id);break;
-        case 'development_begin_kimi':value=await bridge.beginManualRequirement(args);break;
         case 'development_cancel':{
           const task=service.engineering.task(args.task_id);
-          if(task.analysis_channel==='dsh')value=await bridge.cancelDshRequirement(task.task_id);
-          else {const item=bridge.dispatch.items().filter(item=>item.task_id===task.task_id).at(-1);value=item?bridge.cancelDispatch(item.dispatch_id):await service.development.cancel(task.task_id);}
+          const item=bridge.dispatch.items().filter(item=>item.task_id===task.task_id).at(-1);
+          value=item?bridge.cancelDispatch(item.dispatch_id):await service.development.cancel(task.task_id);
           break;
         }
         case 'development_events':value=service.development.events(args.task_id);break;
@@ -103,17 +101,15 @@ app.whenReady().then(async()=>{
         case 'reading_save':value=service.reading(args.key,args.value);break;
         case 'providers_probe':value=await service.probe(args.config);break;
         case 'run_start':{
-          if(args.provider_id==='codex')await bridge.enable(service.store.get('scenario',args.scenario_id).project_id,false);
-          value=await service.startRun(args.scenario_id,args.provider_id,args.submission_key,args.previous_run_id,{projectAnalysis:true});break;
+          await bridge.enable(service.store.get('scenario',args.scenario_id).project_id,false);
+          value=await service.startRun(args.scenario_id,'codex',args.submission_key,args.previous_run_id,{projectAnalysis:true});break;
         }
         case 'overview_research':value=await service.researchOverview(args.result_id,args.submission_key);break;
         case 'reading_ask':await bridge.enable(args.project_id,false);value=await service.askReading(args);break;
         case 'reading_retry':value=service.retryReading(args.question_id,args.mode,args.submission_key);break;
         case 'run_cancel':{const item=bridge.dispatch.items().find(item=>item.run_id===args.run_id);value=item?bridge.cancelDispatch(item.dispatch_id):await service.cancel(args.run_id);break;}
-        case 'run_repair':value=await service.repairRun(args.run_id,args.submission_key);break;
         case 'run_revalidate':value=await service.revalidate(args.run_id);break;
         case 'run_events':service.store.get('run',args.run_id);value=service.store.events(args.run_id);break;
-        case 'run_open_provider':await shell.openExternal(await service.providerSessionUrl(args.run_id));value={opened:true};break;
         case 'index_cancel':service.cancelIndex(args.project_id);break;
         case 'settings':value={data_directory:service.directory,version:app.getVersion(),platform:process.platform};break;
         case 'export_project':{const dest=await dialog.showSaveDialog(window!,{title:'导出理解资料和快照（本地文件）',defaultPath:'Arc-工程理解.json',filters:[{name:'Arc JSON',extensions:['json']}]});if(dest.filePath)value=await service.exportProject(args.project_id,dest.filePath);break;}

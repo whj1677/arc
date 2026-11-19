@@ -71,7 +71,6 @@ test('connection handshake retains its finite deadline',async t=>{
   const rejected=assert.rejects(client.request('initialize',{}),/initialize 超时；不能据此重发任务/);
   t.mock.timers.tick(20001);await rejected;
 });
-import {dshFinalMessage,parseProviderText} from '../src/main/dsh';
 import {normalizeTransport,schema,transportSchema} from '../src/main/validation';
 import Ajv2020 from 'ajv/dist/2020';
 test('Codex transport rejects contradictory unknown or unsupported execution contexts before generation',()=>{
@@ -102,16 +101,6 @@ test('ACP malformed frames poison the connection; no fake retry or plaintext suc
   child.stdout.write('{"jsonrpc":"wrong","id":1,"result":{}}\n');
   await assert.rejects(pending,/JSON-RPC/);
   await assert.rejects(client.request('session/new',{}),/JSON-RPC/);
-});
-test('ACP commentary and final message separated by real messageId; only outer fence removal',()=>{
-  const events=[
-    {update:{sessionUpdate:'agent_message_chunk',messageId:'commentary',content:{type:'text',text:'前置说明，不属于 JSON'}}},
-    {update:{sessionUpdate:'agent_message_chunk',messageId:'final',content:{type:'text',text:'```json\n{"a":'}}},
-    {update:{sessionUpdate:'agent_message_chunk',messageId:'final',content:{type:'text',text:'1}\n```'}}}
-  ];
-  assert.deepEqual(parseProviderText(dshFinalMessage(events),'dsh'),{a:1});
-  assert.throws(()=>parseProviderText('前言 {"a":1} 后记','dsh'));
-  assert.throws(()=>parseProviderText('{"a":','dsh'));
 });
 test('Normalization removes only redundant references, never duplicate definitions or invents evidence',()=>{
   const audit:string[]=[],value={nodes:[{node_id:'same'},{node_id:'same'}],evidence_ids:['x','x'],outputs:[{data_type:null}]};

@@ -31,7 +31,7 @@ export function engineeringDocumentCategory(file:string):EngineeringSectionCateg
   return undefined;
 }
 interface RequirementSubmission {
-  phase:'analysis'|'execution'; expected_version?:number; channel:'codex'|'kimi'|'dsh';
+  phase:'analysis'|'execution'; expected_version?:number; channel:'codex';
   checkAvailable:()=>void; onSaved:(task:EngineeringTask)=>void;
 }
 export class EngineeringService {

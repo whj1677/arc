@@ -3,10 +3,8 @@ import type {WorkspaceData} from '../shared';
 export const analysisModes={
   codex:{name:'Codex',option:'Codex · 派发到绑定会话',start:'启动 Codex 分析',retry:'通过 Codex 重新分析',
     description:'ARC 派发到绑定的 Codex 会话，实际领取后开始分析。'},
-  dsh:{name:'DeepSeek Harness',option:'DeepSeek Harness · 本机运行',start:'启动 DeepSeek Harness 分析',retry:'通过 DeepSeek Harness 重新分析',
-    description:'ARC 调用本机 DeepSeek Harness，只读分析冻结源码，进度和结果写回 ARC。'},
   mcp:{name:'MCP',option:'外部 Agent · 等待对话领取',start:'准备 MCP 分析任务',retry:'准备 MCP 重新分析',
-    description:'ARC 保存分析任务，由已接入 MCP 的 Agent 对话领取。'},
+    description:'ARC 保存分析任务，由已接入 MCP 的 Codex 对话领取。'},
 };
 export type AnalysisMode=keyof typeof analysisModes;
 export function isAnalysisMode(value:unknown):value is AnalysisMode{
