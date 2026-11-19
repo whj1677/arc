@@ -45,16 +45,21 @@ test('DSH result tool stages one schema-valid result in its run directory',async
   }
 });
 
-test('reading questions and detailed function analysis both stop after five minutes',async t=>{
-  t.mock.timers.enable({apis:['setTimeout']});
-  const events:any[]=[];let stopped=0,error='';
-  const stop=async()=>{stopped++;};
-  const deadline=readingWatchdog({reading_question_id:'reading-timeout'},stop,message=>{error=message;},event=>events.push(event),()=>assert.fail('stopping should succeed'));
-  let detailed='';const full=readingWatchdog({},stop,message=>{detailed=message;},()=>{},()=>assert.fail('stopping should succeed'));
-  t.mock.timers.tick(5*60*1000-1);assert.equal(stopped,0);assert.equal(error,'');
-  t.mock.timers.tick(1);await Promise.resolve();assert.equal(stopped,2);assert.match(detailed,/功能与调用链分析/);assert.match(error,/5 分钟.*已收原文保留/);assert.equal(events[0].stage,'timeout');
-  clearTimeout(deadline);clearTimeout(full);
-});
+for(const {label,run,minutes} of [
+  {label:'阅读追问',run:{reading_question_id:'reading-timeout'},minutes:5},
+  {label:'功能与调用链分析',run:{},minutes:8},
+]){
+  test(`${label} gets ${minutes} minutes even after ten minutes in the queue`,t=>{
+    t.mock.timers.enable({apis:['setTimeout','Date']});
+    const created_at=new Date(Date.now()-10*60*1000).toISOString();
+    const events:any[]=[];let stopped=0,error='';
+    readingWatchdog({...run,created_at},async()=>{stopped++;},message=>{error=message;},event=>events.push(event),()=>assert.fail('stopping should succeed'));
+    t.mock.timers.tick(minutes*60*1000-1);assert.equal(stopped,0);assert.equal(error,'');
+    t.mock.timers.tick(1);assert.equal(stopped,1);
+    assert.match(error,new RegExp(`${label}超过 ${minutes} 分钟.*已收原文保留`));
+    assert.equal(events[0].stage,'timeout');
+  });
+}
 
 test('a reading timeout reports a rejected stop instead of continuing to wait silently',async t=>{
   t.mock.timers.enable({apis:['setTimeout']});
@@ -63,15 +68,16 @@ test('a reading timeout reports a rejected stop instead of continuing to wait si
   t.mock.timers.tick(5*60*1000);await Promise.resolve();
   assert.deepEqual(failures,[stopError]);assert.equal(events[0].stage,'timeout');
 });
-test('overview generation and relation review share the same five-minute deadline',async t=>{
+test('overview generation and relation review share the same ten-minute deadline',t=>{
   t.mock.timers.enable({apis:['setTimeout','Date']});
   const run={overview_format:'overview-1' as const,created_at:new Date().toISOString()};
   let stopped=0;
   const first=readingWatchdog(run,async()=>{stopped++;},()=>{},()=>{},()=>{});
   t.mock.timers.tick(120000);clearTimeout(first);
-  const review=readingWatchdog(run,async()=>{stopped++;},()=>{},()=>{},()=>{});
-  t.mock.timers.tick(179999);assert.equal(stopped,0);
-  t.mock.timers.tick(1);await Promise.resolve();assert.equal(stopped,1);clearTimeout(review);
+  let error='';
+  readingWatchdog(run,async()=>{stopped++;},message=>{error=message;},()=>{},()=>{});
+  t.mock.timers.tick(8*60*1000-1);assert.equal(stopped,0);
+  t.mock.timers.tick(1);assert.equal(stopped,1);assert.match(error,/首次分析超过 10 分钟/);
 });
 
 test('long analysis waits beyond the former limit and accepts a later terminal reply',async t=>{

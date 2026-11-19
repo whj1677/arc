@@ -269,12 +269,13 @@ export function codexChildEnvironment(parent:NodeJS.ProcessEnv) {
 }
 
 export function readingWatchdog(run:Pick<Run,'reading_question_id'|'overview_format'> & Partial<Pick<Run,'created_at'>>,stop:()=>Promise<void>,fail:(message:string)=>void,event:(value:any)=>void,stopFailed:(error:unknown)=>void) {
-  const elapsed=run.created_at?Date.now()-Date.parse(run.created_at):0;
+  const minutes=run.overview_format?10:run.reading_question_id?5:8;
+  const elapsed=run.overview_format&&run.created_at?Date.now()-Date.parse(run.created_at):0;
   return setTimeout(()=>{
-    const message=`${run.overview_format?'首次分析':run.reading_question_id?'阅读追问':'功能与调用链分析'}超过 5 分钟执行期限；已请求停止，问题、公开进度和已收原文保留，可重试这个问题。`;
+    const message=`${run.overview_format?'首次分析':run.reading_question_id?'阅读追问':'功能与调用链分析'}超过 ${minutes} 分钟执行期限；已请求停止，问题、公开进度和已收原文保留，可重试这个问题。`;
     fail(message);event({type:'local.stage',stage:'timeout',message});
     void stop().catch(stopFailed);
-  },Math.max(1,5*60*1000-elapsed));
+  },Math.max(1,minutes*60*1000-elapsed));
 }
 
 export async function makePrompt(run:Run,snapshot:Snapshot,storage:string,annotations:Annotation[],previous?:unknown,featureDetail=false) {
@@ -418,7 +419,7 @@ export async function runCodex(options:{
       options.event(frame);
       turnErrors.accept(frame);
     });
-    // Discovery and review share one deadline from the immutable run start.
+    // Overview phases share one deadline. Other runs get a fresh budget at spawn.
     const stop=async()=>{await stopTree(child);};
     const deadline=readingWatchdog(run,stop,message=>{protocol_error=message;},options.event,error=>{
       // taskkill may reject just after a normal close. The terminal outcome
