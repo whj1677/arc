@@ -843,12 +843,62 @@ export class ArcService {
       throw new Error('真实返回不是合法 JSON，原始文件已保留；未生成正式关系图。');
     }
 
+    const repairValidation = async (repairPrompt: string, outputSchema?: typeof overviewSchema) => {
+      const outputDirectory = path.join(this.directory, 'runs', runId, 'repair');
+      try {
+        const repair = await this.codexRunner({
+          ...options,
+          prompt: repairPrompt,
+          reasoningEffort: 'low',
+          outputDirectory,
+          outputPath: path.join(outputDirectory, 'result.json'),
+          ...(outputSchema ? { outputSchema } : {}),
+          shouldStart: () => canStart('validating'),
+          started: active => started(active, 'validating'),
+        });
+        if (repair.code !== 0 || repair.protocol_error) {
+          throw Error(`Codex 未成功完成修正（exit=${repair.code}）：${repair.protocol_error || repair.stderr.slice(-2500)}`);
+        }
+        const audit: string[] = [];
+        const repairedValue = normalizeTransport(parseJsonReply(repair.raw), audit);
+        if (audit.length) this.event(runId, { type: 'local.format_normalization', changes: audit });
+        return repairedValue;
+      } finally {
+        this.active.delete(runId);
+      }
+    };
+
     let semanticReview: string | undefined;
     if (initial.overview_format) {
       run.status = 'validating';
       this.store.put('run', runId, run);
       this.changed();
-      const draft = await prepareOverview(value, initial, snapshot, this.directory);
+      let draft: Awaited<ReturnType<typeof prepareOverview>>;
+      try {
+        draft = await prepareOverview(value, initial, snapshot, this.directory);
+      } catch (error) {
+        if (provider !== 'codex') throw error;
+        if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
+        this.event(runId, { type: 'local.stage', stage: 'repairing_validation', message: '工程全貌校验发现偏差，正在让 Codex 定向修正（最多 1 轮）' });
+        if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
+        const repairPrompt = [
+          '只修正以下 ARC 校验错误，输出完整、符合工程全貌 Schema 的 JSON。',
+          (error as Error).message,
+          '每条 evidence 的 start..end（对应 line_start..line_end）必须是有效源码行，含首尾最多 40 行，并包含逐字匹配的 quote。用 arc_read_source / arc_list_files 核对源码。',
+          '上一轮草稿 JSON：',
+          JSON.stringify(value),
+        ].join('\n');
+        let repairedValue: unknown;
+        try {
+          repairedValue = await repairValidation(repairPrompt, overviewSchema);
+        } catch (repairError) {
+          if ((repairError as { remoteUnknown?: boolean })?.remoteUnknown) throw repairError;
+          if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
+          throw repairError;
+        }
+        if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
+        draft = await prepareOverview(repairedValue, initial, snapshot, this.directory);
+      }
       const checked = await this.overviews.finishOverview(initial, snapshot, profile, draft);
       value = checked.result;
       semanticReview = checked.semantic;
@@ -865,30 +915,13 @@ export class ArcService {
           '上一轮草稿 JSON：',
           JSON.stringify(value),
         ].join('\n');
-        const outputDirectory = path.join(this.directory, 'runs', runId, 'repair');
         let repairedValue: unknown;
         try {
-          const repair = await this.codexRunner({
-            ...options,
-            prompt: repairPrompt,
-            reasoningEffort: 'low',
-            outputDirectory,
-            outputPath: path.join(outputDirectory, 'result.json'),
-            shouldStart: () => canStart('validating'),
-            started: active => started(active, 'validating'),
-          });
-          if (repair.code !== 0 || repair.protocol_error) {
-            throw Error(`Codex 未成功完成修正（exit=${repair.code}）：${repair.protocol_error || repair.stderr.slice(-2500)}`);
-          }
-          const audit: string[] = [];
-          repairedValue = normalizeTransport(parseJsonReply(repair.raw), audit);
-          if (audit.length) this.event(runId, { type: 'local.format_normalization', changes: audit });
+          repairedValue = await repairValidation(repairPrompt);
         } catch (error) {
           if ((error as { remoteUnknown?: boolean })?.remoteUnknown) throw error;
           if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
           this.event(runId, { type: 'local.stage', stage: 'repair_failed', message: `Codex 定向修正失败：${(error as Error).message}` });
-        } finally {
-          this.active.delete(runId);
         }
         if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
         if (repairedValue !== undefined) {

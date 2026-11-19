@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {ArcService} from '../src/main/service';
+import {overviewSchema} from '../src/main/overview-result';
 import {validateResult} from '../src/main/validation';
 import type {runCodex} from '../src/main/providers';
 import type {Run,Snapshot,AnalysisResult} from '../src/shared';
@@ -14,6 +15,53 @@ function resultFor(run:Run,snapshot:Snapshot,evidence: Partial<AnalysisResult['e
   const file=snapshot.files[0];
   return {schema_version:'1.0',fictional:false,result_id:'result-'+run.binding.run_id,binding:run.binding,provider:{provider_id:run.provider_id,connection_id:'local-'+run.provider_id,adapter_version:'0.1.0'},summary:{text:'计算输入加三',claim_ids:['claim']},coverage:{covered_scope:['calculate'],unresolved_scope:['调用入口未提供']},nodes:[{node_id:'node',kind:'function',label:'calculate',description:'输入加三',execution_context:{kind:'unknown',identity:null,label:'未知调用上下文',status:'unknown',claim_ids:[],evidence_ids:[]},inputs:[{io_id:'input',name:'x',availability:'specified',data_type:'int',value_or_shape:null,description:'输入参数',claim_ids:['claim'],evidence_ids:['ev']}],outputs:[],claim_ids:['claim'],evidence_ids:['ev']}],edges:[],claims:[{claim_id:'claim',statement:'calculate 返回 x+3',status:'source_supported',rationale:'函数体',limitations:['无实际运行记录'],evidence_ids:['ev'],targets:{node_ids:['node'],edge_ids:[],io_ids:['input']}}],evidence:[{evidence_id:'ev',source_snapshot_id:snapshot.source_snapshot_id,path:file.path,line_start:1,line_end:3,content_sha256:file.content_sha256,role:'definition',note:'函数体',...evidence}],gaps:[{gap_id:'gap',kind:'missing_entry',question:'谁调用此函数',impact:'调用上下文未知',suggested_action:'补充入口',related_node_ids:['node'],claim_ids:[],evidence_ids:[]}]};
 }
+
+test('Codex overview repairs an oversized evidence range before semantic review',async t=>{
+  const calls:Parameters<typeof runCodex>[0][]=[];
+  const calculation={id:'calculator',label:'计算',description:'计算输入加三',evidence_ids:['ev']};
+  const overview={
+    schema_version:'overview-1',summary:{text:'计算输入加三',evidence_ids:['ev']},
+    scope:'calculate 函数',unresolved:['调用入口未提供'],
+    components:[{...calculation,kind:'stage',inputs:['x'],outputs:['x + 3']}],
+    features:[{label:'计算功能',items:[{...calculation,id:'calculate-feature'}]}],
+    readings:[{node_id:'calculate-feature',entry:'输入 x',outcome:'返回 x + 3',
+      steps:[{text:'将输入加三并返回',evidence_ids:['ev']}],boundary:'仅核对函数体'}],
+    relations:[],evidence:[{id:'ev',path:'source.c',start:1,end:3,quote:'return x + 3;'}],
+  };
+  const invalid={...overview,evidence:[{...overview.evidence[0],end:45}]};
+  const {dir,project,service}=await context(async options=>{
+    calls.push(options);
+    assert.equal(options.shouldStart?.(),true);
+    if(options.phase==='overview_review'){
+      const input=JSON.parse(options.prompt.split('待复核输入：')[1]);
+      return {code:0,raw:JSON.stringify({
+        schema_version:'overview-review-1',run_id:input.run_id,source_snapshot_id:input.source_snapshot_id,
+        draft_sha256:input.draft_sha256,summary:{verdict:'supported',reason:'函数直接返回 x + 3'},relations:[],
+      }),stderr:''};
+    }
+    return {code:0,raw:JSON.stringify(calls.length===1?invalid:overview),stderr:''};
+  });
+  t.after(async()=>{service.store.close();await fs.rm(dir,{recursive:true,force:true});});
+  await fs.appendFile(path.join(project,'source.c'),'// padding\r\n'.repeat(42));
+  const opened=await service.openProject(project),scenario=service.overview(opened.project_id);
+  service.store.put('provider','codex',{status:'available',checked_at:new Date().toISOString()});
+  const run=await service.startRun(scenario.scenario_id,'codex','overview-repair-test-key');
+  const runId=run.binding.run_id;
+  await service.executing.get(runId);
+
+  assert.deepEqual(calls.map(options=>options.phase),[undefined,undefined,'overview_review']);
+  const repair=calls[1];
+  assert.equal(repair.reasoningEffort,'low');
+  assert.equal(repair.outputSchema,overviewSchema);
+  assert.equal(repair.outputDirectory,path.join(service.directory,'runs',runId,'repair'));
+  assert.equal(repair.outputPath,path.join(repair.outputDirectory!,'result.json'));
+  assert.ok(repair.prompt.split('\n').includes('源码引用校验失败：ev (source.c:1-45, quote="return x + 3;")：源码行范围必须有效且不超过 40 行，文件共 45 行'));
+  assert.ok(repair.prompt.includes(JSON.stringify(invalid)));
+  assert.equal(service.store.events(runId).filter(event=>event.stage==='repairing_validation').length,1);
+  const saved=service.store.get<Run>('run',runId);
+  assert.equal(saved.status,'completed',saved.error);
+  assert.equal(service.data().explanations[0].result.evidence[0].line_end,3);
+});
 
 for(const outcome of ['completed','still invalid','invalid JSON','cancel before repair','cancel during repair'] as const) {
   test(`Codex validation repair: ${outcome}`,async t=>{
