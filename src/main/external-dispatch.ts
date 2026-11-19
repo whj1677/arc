@@ -129,6 +129,22 @@ export class ExternalDispatch {
     if(item.sent_at||!['blocked','queued'].includes(item.state))throw Error('任务可能已经送达，不能重发。请在原会话使用同一个派发 ID 接续。');
     item.state='queued';item.error=undefined;this.save(item);await this.pump();return this.store.get<Dispatch>('external_dispatch',dispatchId);
   }
+  private async ensureDaemon(program:string){
+    const socketUnavailable=/failed to connect|10061|ECONNREFUSED|ENOENT/i;
+    const probe=()=>this.command(program,['app-server','daemon','version'],{windowsHide:true,timeout:10000});
+    try{
+      await probe();
+    }catch(error){
+      if(!socketUnavailable.test((error as Error).message))throw error;
+      try{
+        await this.command(program,['app-server','daemon','start'],{windowsHide:true,timeout:15000});
+        await probe();
+      }catch(retryError){
+        if(!socketUnavailable.test((retryError as Error).message))throw retryError;
+        throw Error('本机 Codex 后台服务（app-server daemon）未启动，请在普通终端运行 codex app-server daemon start 或重启 Codex 桌面端后点击重试。');
+      }
+    }
+  }
   async pump(){
     if(this.pumping)return;this.pumping=true;
     try{
@@ -154,7 +170,7 @@ export class ExternalDispatch {
           const resolvedProgram=await locate('codex',binding.program);
           const [current]=await Promise.all([
             this.metadata(resolvedProgram,binding.workspace_path,'thread/read',{threadId:binding.thread_id,includeTurns:false}),
-            this.command(resolvedProgram,['app-server','daemon','version'],{windowsHide:true,timeout:10000}),
+            this.ensureDaemon(resolvedProgram),
           ]);
           if(path.resolve(current.thread.cwd).toLowerCase()!==path.resolve(binding.workspace_path).toLowerCase())throw Error('外部会话工作区已改变');
           const latestQueued=this.store.get<Dispatch>('external_dispatch',item.dispatch_id),activeBinding=this.binding(item.project_id);

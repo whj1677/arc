@@ -35,6 +35,31 @@ test('delivery stays pending until claim, duplicate enqueue is stable, restart n
   }finally{dispatch.close();store.close();await fs.rm(directory,{recursive:true});}
 });
 
+test('connection refused starts the daemon once before dispatching',async()=>{
+  const directory=await fs.mkdtemp(path.resolve('.test-data/dispatch-'));
+  const store=new Store(directory);
+  const calls:string[]=[];
+  let allowed=false;
+  const metadata=async()=>({thread:{id:'t',cwd:directory}});
+  const command=async(_program:string,args:string[])=>{
+    if(args[0]==='app-server'){
+      calls.push(args[2]);
+      if(calls.length===1)throw Error('os error 10061');
+    }
+    if(args.includes('--message'))calls.push('dispatch');
+    return {stdout:args[0]==='--version'?'codex-cli test':'--resume',stderr:''};
+  };
+  const dispatch=new ExternalDispatch(store,()=>{},metadata,command as any,()=>allowed);
+  try{
+    await dispatch.bind('p',directory,process.execPath,'t');
+    const item=dispatch.enqueue('p',{run_id:'r'});
+    allowed=true;
+    await dispatch.pump();
+    assert.deepEqual(calls,['version','start','version','dispatch']);
+    assert.equal(store.get<any>('external_dispatch',item.dispatch_id).state,'awaiting_claim');
+  }finally{dispatch.close();store.close();await fs.rm(directory,{recursive:true});}
+});
+
 test('missing daemon saves a blocked unsent task and rejects a different workspace binding',async()=>{
   const directory=await fs.mkdtemp(path.resolve('.test-data/dispatch-'));
   const store=new Store(directory);
