@@ -10,7 +10,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "start": "npm run build && electron .",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "node scripts/test.mjs",
     "package": "npm run build && node scripts/package.mjs"
   },
   "dependencies": {
