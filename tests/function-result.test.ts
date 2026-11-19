@@ -12,7 +12,7 @@ import {hasFunctionGraphs,type Run} from '../src/shared';
 test('DSH graph transport binds real definitions, ordered call sites and business steps; rejects incorrect anchors or an empty graph',async t=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-function-result-')),root=path.join(dir,'project');
   t.after(()=>fs.rm(dir,{recursive:true,force:true}));
-  await fs.mkdir(root);await fs.writeFile(path.join(root,'main.c'),'int read_item(void) {\n  return 1;\n}\nint run(void) {\n  return read_item();\n}');
+  await fs.mkdir(root);await fs.writeFile(path.join(root,'main.c'),'int read_item(void) {\n  return 1;\n}\nint run(void) {\n  return read_item();\n}\nvoid poll(void) { schedule(poll); }');
   const snapshot=await capture(root,'project',dir,'');
   const run={binding:{run_id:'r',feature_id:'f',project_id:'project',scenario_id:'s',question_revision_id:'q',source_snapshot_id:snapshot.source_snapshot_id},
     provider_id:'dsh',dsh_function_format:'function-1',overview_parent_run_id:'parent',question:'查看读取功能'} as Run;
@@ -31,6 +31,13 @@ test('DSH graph transport binds real definitions, ordered call sites and busines
   assert.equal(result.evidence.find(e=>e.evidence_id==='site')?.content_sha256,snapshot.files[0].content_sha256);
   assert.deepEqual(result.function_walkthroughs![0].steps.map(s=>s.kind),['entry','call']);
   assert.deepEqual(result.edges.map(e=>[e.source_node_id,e.target_node_id,e.evidence_ids]),[['run','read_item',['site']]]);
+  const polling=structuredClone(draft);
+  polling.functions.push({...fn('poll'),signature:'void poll(void)'});
+  polling.evidence.push({id:'def-poll',path:'main.c',start:7,end:7,quote:'void poll(void)'},{id:'reschedule',path:'main.c',start:7,end:7,quote:'schedule(poll)'});
+  polling.paths.push({...draft.paths[0],steps:[{...entry,to:'poll',evidence_ids:['def-poll']},
+    {...call,kind:'dispatch',from:'poll',to:'poll',text:'登记下一次轮询',evidence_ids:['reschedule']}]});
+  const selfDispatch=await prepareFunctionGraphs(polling,run,snapshot,dir);
+  assert.deepEqual(selfDispatch.claims.find(c=>c.statement==='登记下一次轮询')?.targets.node_ids,['poll']);
   const bad=structuredClone(draft);bad.evidence[2].start=1;bad.evidence[2].end=1;
   await assert.rejects(prepareFunctionGraphs(bad,run,snapshot,dir),e=>e instanceof OverviewValidationError&&e.evidenceIds?.join()==='site');
   const missing=structuredClone(draft);missing.paths[0].steps[1]={...call,kind:'work',to:'run'};

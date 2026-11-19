@@ -76,7 +76,7 @@ export async function prepareFunctionGraphs(value:unknown,run:Run,snapshot:Snaps
       const stepId=pathId+'.'+(i+1);
       if(step.kind==='call'||step.kind==='callback'||step.kind==='dispatch'){
         const edgeId='edge.'+stepId,from=step.from!;
-        const claimId=claim(step.text,step.evidence_ids,[from,step.to],[edgeId]);
+        const claimId=claim(step.text,step.evidence_ids,[...new Set([from,step.to])],[edgeId]);
         edges.push({edge_id:edgeId,kind:step.kind==='call'?'sync_call':'execution_boundary',source_node_id:from,target_node_id:step.to,label:step.text,
           ...(step.condition?{condition:step.condition}:{}),status:'source_supported',claim_ids:[claimId],evidence_ids:step.evidence_ids});
       }
@@ -96,7 +96,7 @@ export async function prepareFunctionGraphs(value:unknown,run:Run,snapshot:Snaps
   claims.push({claim_id:summaryId,statement:draft.summary,status:'inferred',rationale:'根据下列调用路径概括。',limitations:limits,evidence_ids:[...new Set(paths.flatMap(p=>p.evidence_ids))],targets:{node_ids:[],edge_ids:[],io_ids:[]}});
   const result:AnalysisResult={schema_version:'1.0',fictional:false,result_id:'function-'+sha(run.binding.run_id).slice(0,32),binding:run.binding,
     provider:{provider_id:run.provider_id,connection_id:'local-'+run.provider_id,adapter_version:'0.1.0'},summary:{text:draft.summary,claim_ids:[summaryId]},
-    coverage:{covered_scope:paths.map(p=>p.trigger),unresolved_scope:[...draft.unresolved,...paths.map(p=>p.boundary)]},nodes,edges,claims,evidence,gaps:[],function_walkthroughs:paths};
+    coverage:{covered_scope:[...new Set(paths.map(p=>p.trigger))],unresolved_scope:[...new Set([...draft.unresolved,...paths.map(p=>p.boundary)])]},nodes,edges,claims,evidence,gaps:[],function_walkthroughs:paths};
   const report=await validateResult(result,run,snapshot,storage);
   if(report.errors.length)throw new OverviewValidationError('函数走读校验失败：'+report.errors.join('\n'));
   if(!hasFunctionGraphs(result))throw new OverviewValidationError('调用链和调用时间图缺少有依据的跨函数调用、回调或派发。');
