@@ -67,6 +67,27 @@ function answer(service:ArcService,q:ReadingQuestion) {
   return {schema_version:'reading-1' as const,question_id:q.question_id,binding:run.binding,answer:'返回值由输入 x 加三得到。[answer-source]',evidence:[{evidence_id:'answer-source',source_snapshot_id:snapshot.source_snapshot_id,path:file.path,line_start:1,line_end:3,content_sha256:file.content_sha256,role:'definition' as const,note:'calculate 的返回实现'}],uncertainties:['调用者尚未确认']};
 }
 
+test('Codex repairs a reading answer using the strict frozen-source evidence check',async t=>{
+  let calls=0;
+  const {service,project,scenario}=await setup(t,async options=>{
+    const question=service.store.get<ReadingQuestion>('reading_question',options.run.reading_question_id!);
+    const value=answer(service,question);
+    if(++calls===1) value.evidence[0].content_sha256='0'.repeat(64);
+    else {
+      assert.equal(options.reasoningEffort,'low');
+      assert.match(options.prompt,/哈希/);
+    }
+    return {code:0,raw:JSON.stringify(value),stderr:''};
+  });
+  service.store.put('provider','codex',{status:'available',checked_at:new Date().toISOString()});
+  const question=await service.askReading({project_id:project.project_id,scenario_id:scenario.scenario_id,target:{kind:'file',id:'src/main.ts'},question:'说明这个文件',mode:'codex',submission_key:'reading-repair-key'});
+  await service.executing.get(question.run_id);
+  assert.equal(calls,2);
+  assert.equal(service.store.get<Run>('run',question.run_id).status,'completed');
+  assert.deepEqual(service.store.get<ReadingQuestion>('reading_question',question.question_id).answer,answer(service,question));
+  assert.equal(service.data().explanations.length,0);
+});
+
 test('reading routes local engines and explicit external modes with the bridge installed',async t=>{
   const calls:string[]=[];
   function reply(run:Run){
