@@ -34,24 +34,36 @@ function ContextFacts({context,reload}:{context:EngineeringContext;reload:()=>Pr
   const [selected,setSelected]=useState<ContextEntry|null>(null),[editing,setEditing]=useState(false),[preview,setPreview]=useState(false);
   const [category,setCategory]=useState<ContextEntry['category']>('issue'),[title,setTitle]=useState(''),[body,setBody]=useState('');
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[readingFull,setReadingFull]=useState(false),[notice,setNotice]=useState(''),[versions,setVersions]=useState<ContextEntry[]>([]);
+  const [loadingHistory,setLoadingHistory]=useState(false);
   const sourcePanel=useRef<HTMLElement|null>(null),request=useRef(0);
   useEffect(()=>()=>{request.current++;},[]);
   const initialized=useRef(false);
-  useEffect(()=>{if(initialized.current||!context.entries.length)return;initialized.current=true;void api.invoke('reading_get',{key:'engineering-material/'+context.project_id}).then(value=>{const entry=context.entries.find(e=>e.entry_id===value?.entry_id)??context.entries[0];if(entry)void open(entry);}).catch(e=>setError(e.message));},[context.entries]);
+  useEffect(()=>{if(initialized.current||!context.entries.length)return;initialized.current=true;const mine=request.current;void api.invoke('reading_get',{key:'engineering-material/'+context.project_id}).then(value=>{if(mine!==request.current)return;const entry=context.entries.find(e=>e.entry_id===value?.entry_id)??context.entries[0];void open(entry);}).catch(e=>{if(mine===request.current)setError(e.message);});},[context.entries]);
+  function select(entry:ContextEntry,edit:boolean){
+    setSelected(entry);setCategory(entry.category);setTitle(entry.key.startsWith('initial:')?categoryNames[entry.category]:entry.key.replace(/^entry:/,''));setBody(entry.text);setEditing(edit);setPreview(false);
+  }
   async function open(entry:ContextEntry,edit=false){
-    const mine=++request.current;setBusy(true);setReadingFull(true);setError('');setVersions([]);
-    try{const value=await api.invoke<EngineeringContext>('engineering_context',{project_id:context.project_id,entry_id:entry.entry_id});const full=value.entries[0];if(!full||full.truncated)throw Error('未取得当前完整正文，不能覆盖编辑');if(mine!==request.current)return;setSelected(full);void api.invoke('reading_save',{key:'engineering-material/'+context.project_id,value:{entry_id:full.entry_id}}).catch(e=>setError(e.message));setCategory(full.category);setTitle(full.key.startsWith('initial:')?categoryNames[full.category]:full.key.replace(/^entry:/,''));setBody(full.text);setEditing(edit);setPreview(false);}
-    catch(e){if(mine===request.current)setError((e as Error).message);}finally{if(mine===request.current){setBusy(false);setReadingFull(false);}}
+    const mine=++request.current;setError('');setVersions([]);setLoadingHistory(false);select(entry,false);
+    const needsFull=edit||entry.truncated;setReadingFull(!!needsFull);
+    void api.invoke('reading_save',{key:'engineering-material/'+context.project_id,value:{entry_id:entry.entry_id}}).catch(e=>{if(mine===request.current)setError(e.message);});
+    if(!needsFull)return;
+    try{
+      const value=await api.invoke<EngineeringContext>('engineering_context',{project_id:context.project_id,entry_id:entry.entry_id});
+      if(mine!==request.current)return;
+      const full=value.entries[0];if(!full||full.truncated)throw Error('未取得当前完整正文，不能覆盖编辑');
+      select(full,edit);
+    }catch(e){if(mine===request.current)setError((e as Error).message);}finally{if(mine===request.current)setReadingFull(false);}
   }
-  useEffect(()=>{const latest=context.entries.find(e=>e.entry_id===selected?.entry_id);if(!editing&&latest&&latest.version!==selected?.version)void open(latest);},[context.entries,editing,selected?.version]);
+  useEffect(()=>{if(editing||!selected)return;const latest=context.entries.find(e=>e.entry_id===selected.entry_id);if(latest&&latest.version>selected.version)void open(latest);},[context.entries,editing,selected]);
   async function history(entry:ContextEntry){
-    setBusy(true);setError('');try{const values=await api.invoke<ContextEntry[]>('engineering_history',{kind:'context',id:entry.entry_id});const original=entry.supersedes?await api.invoke<ContextEntry[]>('engineering_history',{kind:'context',id:entry.supersedes}):[];setVersions([...original,...values]);}catch(e){setError((e as Error).message);}finally{setBusy(false);}
+    const mine=request.current;setLoadingHistory(true);setError('');try{const values=await api.invoke<ContextEntry[]>('engineering_history',{kind:'context',id:entry.entry_id});const original=entry.supersedes?await api.invoke<ContextEntry[]>('engineering_history',{kind:'context',id:entry.supersedes}):[];if(mine===request.current)setVersions([...original,...values]);}catch(e){if(mine===request.current)setError((e as Error).message);}finally{if(mine===request.current)setLoadingHistory(false);}
   }
+  function clearSelection(){request.current++;setReadingFull(false);setLoadingHistory(false);setSelected(null);setVersions([]);}
   async function save(e:React.FormEvent){e.preventDefault();if(busy||!body.trim()||!title.trim())return;setBusy(true);setError('');try{
     const saved=await api.invoke<ContextEntry>('engineering_save_entry',{project_id:context.project_id,entry_id:selected?.entry_id,expected_version:selected?.version??0,submission_key:crypto.randomUUID(),category,key:title,text:body});setSelected(saved);setEditing(false);setVersions([]);setNotice('已保存当前有效资料；原始来源与旧版本保留。正文编辑未修改源码，也未执行验证。');await reload();
   }catch(e){setError((e as Error).message);}finally{setBusy(false);}}
   return <>
-    <div className="row"><button disabled={busy} onClick={()=>{request.current++;setSelected(null);setCategory('issue');setTitle('');setBody('');setVersions([]);setEditing(true);setPreview(false);setError('');}}>新增工程资料</button></div>
+    <div className="row"><button disabled={busy} onClick={()=>{clearSelection();setCategory('issue');setTitle('');setBody('');setEditing(true);setPreview(false);setError('');}}>新增工程资料</button></div>
     {error&&<p role="alert" className="warning">{error}</p>}{notice&&<p role="status">{notice}</p>}
     <div className="engineering-material-layout"><nav className="engineering-material-directory" aria-label="工程资料目录">{([
       ['认识工程',['purpose','technology','build']],
@@ -62,13 +74,13 @@ function ContextFacts({context,reload}:{context:EngineeringContext;reload:()=>Pr
       const entries=categories.flatMap(kind=>context.entries.filter(e=>e.category===kind&&!e.task_id&&e.status!=='superseded').map(entry=>({entry,label:categoryNames[kind]})));
       return entries.length>0&&<section key={group}><h3>{group}</h3>{entries.map(({entry,label})=><button key={entry.entry_id} disabled={busy} aria-pressed={selected?.entry_id===entry.entry_id} onClick={()=>{if(editing&&!window.confirm('离开编辑将丢弃未保存的正文，是否继续？'))return;void open(entry);}}><span className="engineering-material-kind">{label}</span><strong>{contextEntryTitle(entry,label)}</strong><small>{originNames[entry.origin]} · v{entry.version}{entry.status==='needs_review'?' · 待复核':''}{entry.update_suggestion?' · 有更新建议':''}</small></button>)}</section>;
     })}</nav><div className="engineering-material-article">
-    {readingFull&&<div className="arc-skeleton-box" role="status"><span className="arc-skeleton-line wide" aria-hidden="true"/><span className="arc-skeleton-line medium" aria-hidden="true"/><small>正在读取完整正文…</small></div>}
     {!selected&&!editing&&<div className="engineering-empty"><h3>{context.entries.length?'选择一份资料开始阅读':'尚未形成工程资料'}</h3><p>{context.entries.length?'从左侧按用途、实现、约束或历史决定选择内容；正文、来源和版本会在这里展示。':'可以先检查来源变化，或新增一条明确的用户补充。空资料不会冒充已经完成工程分析。'}</p></div>}
-    {(selected||editing)&&<section ref={sourcePanel} className="engineering-source" aria-label="工程资料全文编辑"><div className="row between engineering-source-header"><h3>{selected?contextEntryTitle(selected,categoryNames[selected.category]):'新增工程级资料'}</h3><div className="row">{selected&&!editing&&<button disabled={busy} onClick={()=>void open(selected,true)}>编辑全文</button>}<button disabled={busy} onClick={()=>{request.current++;setSelected(null);setEditing(false);}}>关闭资料</button></div></div>
+    {(selected||editing)&&<section ref={sourcePanel} className="engineering-source" aria-label="工程资料全文编辑"><div className="row between engineering-source-header"><h3>{selected?contextEntryTitle(selected,categoryNames[selected.category]):'新增工程级资料'}</h3><div className="row">{selected&&!editing&&<button disabled={busy||readingFull} onClick={()=>void open(selected,true)}>编辑全文</button>}<button disabled={busy} onClick={()=>{clearSelection();setEditing(false);}}>关闭资料</button></div></div>
       {selected&&<p className="engineering-material-question">{categoryQuestions[selected.category]}</p>}
+      {readingFull&&<p role="status">正在读取完整正文…</p>}
       {editing?<form onSubmit={save}><label>资料类别<select aria-label="工程资料类别" disabled={busy||!!selected} value={category} onChange={e=>setCategory(e.target.value as ContextEntry['category'])}>{Object.entries(categoryNames).filter(([key])=>!['plan','design','verification_plan'].includes(key)).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label><label>资料标题<input aria-label="工程资料标题" value={title} maxLength={300} disabled={busy} onChange={e=>setTitle(e.target.value)} required/></label><div className="row"><button type="button" aria-pressed={!preview} onClick={()=>setPreview(false)}>编辑 Markdown</button><button type="button" aria-pressed={preview} onClick={()=>setPreview(true)}>预览 Markdown</button></div>{preview?<ContextText text={body}/>:<label>Markdown 正文<textarea aria-label="工程资料正文" value={body} maxLength={60000} rows={16} disabled={busy} onChange={e=>setBody(e.target.value)} required/></label>}<p>正文保存在 ARC。用户约束与资料说明不等于源码事实；保存不会改工程文件或产生验证通过记录。</p><button className="primary" disabled={busy||!body.trim()||!title.trim()}>{busy?'保存中…':'保存当前资料'}</button></form>:selected&&<ContextText text={selected.text}/>}
       {selected&&<><p>{originNames[selected.origin]} · 正文版本 v{selected.version} · {when(selected.updated_at)}</p>{selected.update_suggestion&&<details><summary>局部更新建议 · 原来源 v{selected.update_suggestion.source_version}</summary><p>仅比较这条资料对应的来源，不会自动替换当前正文。核对后可在全文编辑中选择需要的修改。</p><h4>修订时来源</h4><ContextText text={selected.update_suggestion.previous_text}/><h4>重新扫描来源</h4><ContextText text={selected.update_suggestion.proposed_text}/></details>}
-      <details><summary>冻结来源 · {selected.sources.length} 处引用</summary>{selected.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}{!selected.sources.length&&<p>尚无源码引用；属于{originNames[selected.origin]}或明确的待确认项。</p>}</details><button disabled={busy} onClick={()=>void history(selected)}>查看原文与版本历史</button>{versions.map(v=><details key={v.entry_id+':'+v.version}><summary>{v.entry_id===selected.entry_id?(v.version===selected.version?'当前正文':'正文旧版'):'原始来源'} · v{v.version} · {originNames[v.origin]} · {when(v.updated_at)}</summary><ContextText text={v.text}/>{v.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}</details>)}</>}
+      <details><summary>冻结来源 · {selected.sources.length} 处引用</summary>{selected.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}{!selected.sources.length&&<p>尚无源码引用；属于{originNames[selected.origin]}或明确的待确认项。</p>}</details><button disabled={busy||loadingHistory} onClick={()=>void history(selected)}>查看原文与版本历史</button>{versions.map(v=><details key={v.entry_id+':'+v.version}><summary>{v.entry_id===selected.entry_id?(v.version===selected.version?'当前正文':'正文旧版'):'原始来源'} · v{v.version} · {originNames[v.origin]} · {when(v.updated_at)}</summary><ContextText text={v.text}/>{v.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}</details>)}</>}
     </section>}
   </div></div></>;
 }

@@ -93,12 +93,23 @@ export class EngineeringService {
     if(input.view!==undefined&&!['strict','execution'].includes(input.view))throw Error('上下文读取模式无效');
     const restored=input.project_id&&!input.workspace_path?this.store.all<WorkspaceBinding>(workspaceKind).find(w=>w.project_id===input.project_id&&w.status==='unbound'):undefined;
     const workspace=restored??await this.resolve(input),projectId=workspace.project_id;
+    if(input.task_id&&this.task(input.task_id).project_id!==projectId)throw Error('任务不属于当前工程');
+    if(input.offset!==undefined&&(!Number.isSafeInteger(input.offset)||input.offset<0)||input.limit!==undefined&&(!Number.isSafeInteger(input.limit)||input.limit<1))throw Error('上下文分页参数无效');
+    const entryId=input.result_id?undefined:input.entry_id;
+    if(entryId&&!input.refresh){
+      const cached=this.store.maybe<{version:number}>('engineering_context_state',projectId);
+      const state=this.store.maybe<CodeState>('engineering_state',workspace.workspace_id);
+      if(cached&&state){
+        const entry=this.store.maybe<ContextEntry>(contextKind,entryId);
+        const entries=entry&&entry.project_id===projectId&&this.matchesContext(entry,input)?[this.contextEntry(entry,60000)]:[];
+        return {project_id:projectId,workspace,version:cached.version,code_state:state,entries,total_entries:entries.length,next_offset:null,analysis_refs:[],recent_tasks:[]};
+      }
+    }
     const state=restored?this.store.get<CodeState>('engineering_state',workspace.workspace_id):await this.captureState(projectId);
     const old=this.store.maybe<{fingerprint:string;version:number}>('engineering_context_state',projectId);
     if(!restored&&(input.refresh||!old||old.fingerprint!==state.fingerprint)){
       const pending=this.scanning.get(projectId);if(pending)await pending;else{const scan=this.scanContext(projectId,state);this.scanning.set(projectId,scan);try{await scan;}finally{this.scanning.delete(projectId);}}
     }
-    if(input.task_id&&this.task(input.task_id).project_id!==projectId)throw Error('任务不属于当前工程');
     if(!restored)await this.initializeMaterials(projectId,state);
     let reclassified=false;
     for(const entry of this.store.all<ContextEntry>(contextKind))if(entry.project_id===projectId&&entry.legacy_import&&entry.origin==='document'){
@@ -107,26 +118,30 @@ export class EngineeringService {
     }
     if(reclassified){const current=this.store.get<any>('engineering_context_state',projectId);current.version++;this.store.put('engineering_context_state',projectId,current);}
     const contextState=this.store.get<{version:number}>('engineering_context_state',projectId);
-    if(input.offset!==undefined&&(!Number.isSafeInteger(input.offset)||input.offset<0)||input.limit!==undefined&&(!Number.isSafeInteger(input.limit)||input.limit<1))throw Error('上下文分页参数无效');
     const all=this.store.all<ContextEntry>(contextKind).filter(e=>e.project_id===projectId);
     const replaced=new Set(all.filter(e=>e.status!=='superseded'&&e.supersedes).map(e=>e.supersedes));
     // A direct correction of an original source also invalidates an aggregate
     // that still quotes that original. Keep the other uncovered sources visible.
     for(const entry of all.filter(e=>e.status!=='superseded'&&!replaced.has(e.entry_id)))if(entry.covered_entries?.some(source=>replaced.has(source)))replaced.add(entry.entry_id);
     for(const entry of all.filter(e=>e.status!=='superseded'&&!replaced.has(e.entry_id)))for(const covered of entry.covered_entries??[])replaced.add(covered);
-    const entries=all.filter(e=>(input.entry_id?e.entry_id===input.entry_id:e.status!=='superseded'&&!replaced.has(e.entry_id))&&(input.view==='execution'?(!e.task_id||e.task_id===input.task_id):(input.task_id===undefined||(e.task_id??'')===input.task_id))&&(!input.category||e.category===input.category)&&(!input.query||`${e.key}\n${e.text}`.toLowerCase().includes(input.query.toLowerCase())));
+    const entries=all.filter(e=>(input.entry_id?e.entry_id===input.entry_id:e.status!=='superseded'&&!replaced.has(e.entry_id))&&this.matchesContext(e,input));
     const categories:ContextEntry['category'][]=['rule','purpose','build','issue','architecture','module','interface','technology','decision','plan','design','verification_plan'];
     const groups=categories.map(category=>entries.filter(e=>e.category===category).sort((a,b)=>Number(b.origin==='user')-Number(a.origin==='user')||Number(b.key.startsWith('initial:'))-Number(a.key.startsWith('initial:'))||Number(b.status==='current')-Number(a.status==='current')||a.key.localeCompare(b.key)));
     const ordered:ContextEntry[]=[];for(let i=0;i<Math.max(...groups.map(group=>group.length));i++)for(const group of groups)if(group[i])ordered.push(group[i]);
     const offset=input.entry_id?0:input.offset??0,limit=input.entry_id?1:Math.min(input.limit??24,40),maxText=input.entry_id?60000:1500;
-    const page=ordered.slice(offset,offset+limit).map(e=>{
-      const source=e.supersedes?all.find(s=>s.entry_id===e.supersedes):undefined;
-      const changed=source&&(e.source_version?source.version!==e.source_version:source.sources.some(s=>!e.sources.some(old=>old.path===s.path&&old.content_sha256===s.content_sha256)));
-      const previous=source&&changed?this.history('context',source.entry_id).find(v=>e.source_version?v.version===e.source_version:v.sources.every((s:ContextSource)=>e.sources.some(old=>old.path===s.path&&old.content_sha256===s.content_sha256))):undefined;
-      return {...e,text:e.text.slice(0,maxText),truncated:e.text.length>maxText,...(source&&changed?{update_suggestion:{source_entry_id:source.entry_id,source_version:source.version,previous_text:previous?.text??'原来源见冻结引用',proposed_text:source.text}}:{})};
-    });
+    const page=ordered.slice(offset,offset+limit).map(e=>this.contextEntry(e,maxText));
+    if(entryId)return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:page,total_entries:ordered.length,next_offset:null,analysis_refs:[],recent_tasks:[]};
     const analysis=input.result_id?this.readAnalysis(input.result_id,workspace,state,input):undefined;
     return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.all<Explanation>('explanation').filter(e=>e.result.binding.project_id===projectId).slice(-10).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),architecture:!!e.result.architecture?.node_ids.length,summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id&&(input.view!=='execution'||!input.task_id||t.task_id===input.task_id)).slice(0,5).map(t=>this.currentVerification(t,restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
+  }
+  private matchesContext(e:ContextEntry,input:ContextRequest):boolean {
+    return (input.view==='execution'?(!e.task_id||e.task_id===input.task_id):(input.task_id===undefined||(e.task_id??'')===input.task_id))&&(!input.category||e.category===input.category)&&(!input.query||`${e.key}\n${e.text}`.toLowerCase().includes(input.query.toLowerCase()));
+  }
+  private contextEntry(e:ContextEntry,maxText:number):ContextEntry {
+    const source=e.supersedes?this.store.maybe<ContextEntry>(contextKind,e.supersedes):null;
+    const changed=source?.project_id===e.project_id&&(e.source_version?source.version!==e.source_version:source.sources.some(s=>!e.sources.some(old=>old.path===s.path&&old.content_sha256===s.content_sha256)));
+    const previous=source&&changed?this.history('context',source.entry_id).find(v=>e.source_version?v.version===e.source_version:v.sources.every((s:ContextSource)=>e.sources.some(old=>old.path===s.path&&old.content_sha256===s.content_sha256))):undefined;
+    return {...e,text:e.text.slice(0,maxText),truncated:e.text.length>maxText,...(source&&changed?{update_suggestion:{source_entry_id:source.entry_id,source_version:source.version,previous_text:previous?.text??'原来源见冻结引用',proposed_text:source.text}}:{})};
   }
   async executionContext(projectId:string,taskId:string):Promise<EngineeringContext>{
     let context=await this.context({project_id:projectId,task_id:taskId,view:'execution',limit:40});

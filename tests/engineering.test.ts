@@ -56,6 +56,30 @@ test('project materials keep one effective full revision through scans and resta
     await assert.rejects(restarted.saveEntry({project_id:'p',task_id:other.task_id,entry_id:edited.entry_id,category:'build',key:'编译说明',text:'wrong owner',expected_version:edited.version,submission_key:'wrong-owner'},'user'),/不属于/);
   }finally{reopened?.close();await f.cleanup();}
 });
+test('single material reads use cached state and preserve full text and source updates',async t=>{
+  const f=await fixture();
+  try{
+    const initial=await f.service.context({project_id:'p'}),source=initial.entries.find(e=>e.key==='initial:build')!;
+    const body='完整构建说明。'.repeat(300);
+    const edited=await f.service.saveEntry({project_id:'p',category:'build',entry_id:source.entry_id,key:'构建说明',text:body,expected_version:source.version,submission_key:'edit'},'user');
+    const file=path.join(f.root,'package.json'),pkg=JSON.parse(await fs.readFile(file,'utf8'));
+    pkg.scripts.test='node --test --test-reporter=spec';await fs.writeFile(file,JSON.stringify(pkg,null,2));
+    const refreshed=await f.service.context({project_id:'p',refresh:true});
+    assert.equal(refreshed.entries.find(e=>e.entry_id===edited.entry_id)?.truncated,true);
+    const capture=t.mock.method(f.service,'captureState',async()=>{throw Error('单条资料读取不应重新采集工作区');});
+
+    const detail=await f.service.context({project_id:'p',entry_id:edited.entry_id});
+    assert.equal(capture.mock.callCount(),0);
+    assert.equal(detail.version,refreshed.version);assert.deepEqual(detail.code_state,refreshed.code_state);
+    assert.equal(detail.total_entries,1);assert.equal(detail.next_offset,null);
+    assert.deepEqual(detail.analysis_refs,[]);assert.deepEqual(detail.recent_tasks,[]);
+    const [entry]=detail.entries;
+    assert.equal(entry?.entry_id,edited.entry_id);assert.equal(entry.text,body);assert.equal(entry.truncated,false);
+    assert.equal(entry.update_suggestion?.source_entry_id,source.entry_id);
+    assert.equal(entry.update_suggestion?.previous_text,source.text);
+    assert.match(entry.update_suggestion!.proposed_text,/test-reporter=spec/);
+  }finally{await f.cleanup();}
+});
 test('a desktop launch without Git on PATH cannot identify an existing Git workspace as non-Git',async()=>{
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'arc-git-path-'));
   const repo=path.join(directory,'repo'),plain=path.join(directory,'plain');
