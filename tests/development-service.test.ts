@@ -63,7 +63,7 @@ test('direct Codex plans read-only and only runs approved execution with linked 
       exit_code:1,output:'incorrect value',completed_at:new Date().toISOString()};
     await options.commandCompleted!(receipt);
     await fs.writeFile(path.join(f.source,'main.ts'),'export const value=2;\n');
-    await options.commandCompleted!({...receipt,id:'value-after',exit_code:0,output:'correct value',completed_at:new Date().toISOString()});
+    await options.commandCompleted!({...receipt,id:'value-after',exit_code:0,output:'# tests 1\n# pass 1\n# fail 0\n# skipped 0',completed_at:new Date().toISOString()});
     return completed(options.task.task_id,[{command:'node --test',outcome:'passed',note:'Checked value 2',step_id:'update',criterion_id:'value'}]);
   };
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,
@@ -85,6 +85,7 @@ test('direct Codex plans read-only and only runs approved execution with linked 
     assert.equal(saved.approval?.reviewed_version,plan.version);
     assert.deepEqual(saved.verification.map(({outcome,origin,step_id,criterion_id})=>[outcome,origin,step_id,criterion_id]),
       [['failed','observed','update','value'],['passed','observed','update','value']]);
+    assert.deepEqual(saved.verification.at(-1)?.metrics,{total:1,passed:1,failed:0,skipped:0});
   }finally{await development.shutdown();await f.close();}
 });
 

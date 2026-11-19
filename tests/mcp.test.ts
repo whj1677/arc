@@ -200,7 +200,11 @@ test('ARC requirement analysis waits for reviewed scope, keeps one task and crea
   const execute=await bridge.queueDevelopment({project_id:project.project_id,task_id:task.task_id,expected_version:ready.version,goal:'execute reviewed scope',phase:'execution',scope:['a.ts'],submission_key:'execute'});
   assert.equal(execute.task_id,task.task_id);assert.equal(execute.workflow,'execution');assert.deepEqual(execute.approval,{reviewed_version:ready.version,scope:['a.ts']});
   const next=bridge.dispatch.items(project.project_id).at(-1)!;service.store.put('external_dispatch',next.dispatch_id,{...next,state:'awaiting_claim'});
+  service.engineering.updateBoundaries({task_id:task.task_id,expected_version:execute.version,non_goals:['API'],revoked:['legacy export']});
   const executing=await bridge.call('arc_claim_dispatch',{dispatch_id:next.dispatch_id});assert.deepEqual(executing.allowed_files,['a.ts']);
+  assert.deepEqual(executing.task.boundaries,{non_goals:['API'],revoked:['legacy export']});
+  assert.deepEqual(executing.task.behaviors,design.behaviors);assert.equal(executing.task.requests,undefined);
+  assert.match(executing.environment_brief,/可用工具/);
   await assert.rejects(bridge.call('arc_update_development',{task_id:task.task_id,expected_version:executing.task.version,submission_key:'replace-design',requirement_package:design}),/已批准/);
   await fs.writeFile(path.join(source,'a.ts'),'export const value=2;\n');
   const {code_state}=await bridge.call('arc_engineering_context',{workspace_path:source,task_id:task.task_id,refresh:true});

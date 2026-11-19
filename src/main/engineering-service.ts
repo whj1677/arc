@@ -10,6 +10,11 @@ import {capture,freshness,readSource,sha,relativePath,safeFile,workspaceFiles,wo
 import {exportEngineeringProject,restoreEngineeringProject} from './engineering-transfer';
 import {scanAecLegacy,type AecScan,type AecLegacyDocument} from './aec-migration';
 import {readingTarget} from './prompt-context';
+import {ProjectEnvironmentService,formatEnvironmentBrief} from './env-probe';
+import {evidenceFailed,evidenceSupportsPass,sameVerificationState} from '../delivery-audit';
+import type {Dispatch} from './external-dispatch';
+import {effectiveTaskBoundaries} from '../task-boundaries';
+export {sameVerificationState} from '../delivery-audit';
 
 const exec=promisify(execFile), workspaceKind='engineering_workspace', contextKind='engineering_context', taskKind='engineering_task', attemptKind='development_attempt';
 const requireText=(v:unknown,max=20000)=>{if(typeof v!=='string'||!v.trim()||v.length>max)throw Error(`请输入 1–${max} 个字符`);return v.trim();};
@@ -18,8 +23,9 @@ async function git(root:string,args:string[]) {return (await exec('git',['-C',ro
 function stateFiles(snapshot:Snapshot,state?:Pick<CodeState,'assets'>) {
   return new Map([...snapshot.files.map(f=>[f.path,f.content_sha256] as const),...(state?.assets??[]).map(f=>[f.path,f.sha256] as const)]);
 }
-export function sameVerificationState(a:CodeState,b:CodeState) {
-  return !!a.workspace_fingerprint&&a.workspace_fingerprint===b.workspace_fingerprint&&a.head===b.head&&a.branch===b.branch&&a.git_common_dir===b.git_common_dir;
+function boundaryList(value:unknown):string[] {
+  if(!Array.isArray(value)||value.length>40)throw Error('每组边界最多可保存 40 项');
+  return [...new Set(value.map(item=>requireText(item,6000)))];
 }
 // Explicit document names only; README/purpose is not a completed plan.
 export function engineeringDocumentCategory(file:string):EngineeringSectionCategory|undefined {
@@ -39,7 +45,9 @@ export class EngineeringService {
   private readonly scanning=new Map<string,Promise<void>>();
   private readonly initializing=new Map<string,Promise<void>>();
   onTaskFinished:(task:EngineeringTask)=>void=()=>{};
-  constructor(readonly store:Store,readonly changed:()=>void=()=>{}) {
+  readonly environment:ProjectEnvironmentService;
+  constructor(readonly store:Store,readonly changed:(event?:'engineering_changed')=>void=()=>{}) {
+    this.environment=new ProjectEnvironmentService(store);
     for(const attempt of store.all<DevelopmentAttempt>(attemptKind))if(['starting','running'].includes(attempt.status)) {
       if(attempt.origin==='agent'){attempt.connection_status='unknown';attempt.error='ARC 已重启，外部 Agent 会话可能仍在开发；等待回填确认，不自动重发。';store.put(attemptKind,attempt.attempt_id,attempt);continue;}
       attempt.status='interrupted';attempt.ended_at=now();attempt.error='ARC 重启前未保存终态；请核查原会话，不会自动重放写操作。';store.put(attemptKind,attempt.attempt_id,attempt);
@@ -89,7 +97,7 @@ export class EngineeringService {
     const currentWorkspace=this.store.get<WorkspaceBinding>(workspaceKind,workspace.workspace_id);if(currentWorkspace.status!=='bound'||!samePath(currentWorkspace.root_path,workspace.root_path))throw Error('采集期间工作区已重新绑定，请重新读取');
     this.store.put('engineering_state',workspace.workspace_id,state);return state;
   }
-  async context(input:ContextRequest):Promise<EngineeringContext> {
+  async context(input:ContextRequest,includeMaterialSources=false):Promise<EngineeringContext> {
     if(input.view!==undefined&&!['strict','execution'].includes(input.view))throw Error('上下文读取模式无效');
     const restored=input.project_id&&!input.workspace_path?this.store.all<WorkspaceBinding>(workspaceKind).find(w=>w.project_id===input.project_id&&w.status==='unbound'):undefined;
     const workspace=restored??await this.resolve(input),projectId=workspace.project_id;
@@ -105,19 +113,19 @@ export class EngineeringService {
         return {project_id:projectId,workspace,version:cached.version,code_state:state,entries,total_entries:entries.length,next_offset:null,analysis_refs:[],recent_tasks:[]};
       }
     }
-    const state=restored?this.store.get<CodeState>('engineering_state',workspace.workspace_id):await this.captureState(projectId);
-    const old=this.store.maybe<{fingerprint:string;version:number}>('engineering_context_state',projectId);
-    if(!restored&&(input.refresh||!old||old.fingerprint!==state.fingerprint)){
-      const pending=this.scanning.get(projectId);if(pending)await pending;else{const scan=this.scanContext(projectId,state);this.scanning.set(projectId,scan);try{await scan;}finally{this.scanning.delete(projectId);}}
+    const readContextState=()=>this.store.maybe<{fingerprint:string;version:number}>('engineering_context_state',projectId);
+    const cachedContext=input.cached&&!input.refresh&&!input.result_id?readContextState():null;
+    const cachedState=cachedContext?this.store.maybe<CodeState>('engineering_state',workspace.workspace_id):null;
+    const state=cachedState??(restored?this.store.get<CodeState>('engineering_state',workspace.workspace_id):await this.captureState(projectId));
+    if(!cachedState){
+      const old=readContextState();
+      if(!restored&&(input.refresh||!old||old.fingerprint!==state.fingerprint)){
+        const pending=this.scanning.get(projectId);if(pending)await pending;else{const scan=this.scanContext(projectId,state);this.scanning.set(projectId,scan);try{await scan;}finally{this.scanning.delete(projectId);}}
+      }
+      if(!restored)await this.initializeMaterials(projectId,state);
+      this.reclassifyLegacy(projectId);
     }
-    if(!restored)await this.initializeMaterials(projectId,state);
-    let reclassified=false;
-    for(const entry of this.store.all<ContextEntry>(contextKind))if(entry.project_id===projectId&&entry.legacy_import&&entry.origin==='document'){
-      const category=engineeringDocumentCategory(entry.legacy_import.import_key.replace(/^aec:/,''));
-      if(category&&category!==entry.category){entry.category=category;entry.version++;entry.updated_at=now();this.store.putVersion(contextKind,entry.entry_id,entry.version,entry);reclassified=true;}
-    }
-    if(reclassified){const current=this.store.get<any>('engineering_context_state',projectId);current.version++;this.store.put('engineering_context_state',projectId,current);}
-    const contextState=this.store.get<{version:number}>('engineering_context_state',projectId);
+    const contextState=cachedState?cachedContext!:this.store.get<{version:number}>('engineering_context_state',projectId);
     const all=this.store.all<ContextEntry>(contextKind).filter(e=>e.project_id===projectId);
     const replaced=new Set(all.filter(e=>e.status!=='superseded'&&e.supersedes).map(e=>e.supersedes));
     // A direct correction of an original source also invalidates an aggregate
@@ -132,7 +140,16 @@ export class EngineeringService {
     const page=ordered.slice(offset,offset+limit).map(e=>this.contextEntry(e,maxText));
     if(entryId)return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:page,total_entries:ordered.length,next_offset:null,analysis_refs:[],recent_tasks:[]};
     const analysis=input.result_id?this.readAnalysis(input.result_id,workspace,state,input):undefined;
-    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.all<Explanation>('explanation').filter(e=>e.result.binding.project_id===projectId).slice(-10).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),architecture:!!e.result.architecture?.node_ids.length,summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id&&(input.view!=='execution'||!input.task_id||t.task_id===input.task_id)).slice(0,5).map(t=>this.currentVerification(t,restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
+    const materialSources=includeMaterialSources?{material_sources:entries.map(({entry_id,key,category,sources})=>({entry_id,key,category,sources:[...new Set(sources.map(s=>s.path))].map(path=>({path}))}))}:{};
+    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.all<Explanation>('explanation').filter(e=>e.result.binding.project_id===projectId).slice(-10).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),architecture:!!e.result.architecture?.node_ids.length,summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),...materialSources,recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id&&(input.view!=='execution'||!input.task_id||t.task_id===input.task_id)).slice(0,5).map(t=>this.currentVerification(t,restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
+  }
+  private reclassifyLegacy(projectId:string){
+    let reclassified=false;
+    for(const entry of this.store.all<ContextEntry>(contextKind))if(entry.project_id===projectId&&entry.legacy_import&&entry.origin==='document'){
+      const category=engineeringDocumentCategory(entry.legacy_import.import_key.replace(/^aec:/,''));
+      if(category&&category!==entry.category){entry.category=category;entry.version++;entry.updated_at=now();this.store.putVersion(contextKind,entry.entry_id,entry.version,entry);reclassified=true;}
+    }
+    if(reclassified){const current=this.store.get<{version:number}>('engineering_context_state',projectId);current.version++;this.store.put('engineering_context_state',projectId,current);}
   }
   private matchesContext(e:ContextEntry,input:ContextRequest):boolean {
     return (input.view==='execution'?(!e.task_id||e.task_id===input.task_id):(input.task_id===undefined||(e.task_id??'')===input.task_id))&&(!input.category||e.category===input.category)&&(!input.query||`${e.key}\n${e.text}`.toLowerCase().includes(input.query.toLowerCase()));
@@ -147,7 +164,16 @@ export class EngineeringService {
     let context=await this.context({project_id:projectId,task_id:taskId,view:'execution',limit:40});
     const entries=[...context.entries];
     while(context.next_offset!==null){context=await this.context({project_id:projectId,task_id:taskId,view:'execution',limit:40,offset:context.next_offset});entries.push(...context.entries);}
-    return {...context,entries:entries.map(e=>({...e,text:this.store.get<ContextEntry>(contextKind,e.entry_id).text,truncated:false})),next_offset:null};
+    const environment_brief=formatEnvironmentBrief(await this.projectEnvironment(projectId));
+    return {...context,environment_brief,entries:entries.map(e=>({...e,text:this.store.get<ContextEntry>(contextKind,e.entry_id).text,truncated:false})),next_offset:null};
+  }
+  async projectEnvironment(projectId:string,refresh=false){
+    const workspace=await this.resolve({project_id:projectId});
+    return this.environment.get(projectId,workspace.root_path,refresh);
+  }
+  async saveEnvironmentCommands(projectId:string,commands:unknown){
+    const workspace=await this.resolve({project_id:projectId});
+    return this.environment.save(projectId,workspace.root_path,commands);
   }
   private analysisStatus(explanation:Explanation,workspace:WorkspaceBinding,state:CodeState):EngineeringAnalysis['status']{if(workspace.status==='unbound')return 'unbound';return explanation.source_status==='current'&&this.store.get<Snapshot>('snapshot',explanation.result.binding.source_snapshot_id).fingerprint===state.fingerprint?'current':'needs_review';}
   private readAnalysis(resultId:string,workspace:WorkspaceBinding,state:CodeState,input:ContextRequest):EngineeringAnalysis {
@@ -339,19 +365,20 @@ export class EngineeringService {
     const steps=task.steps?.map(step=>({...step,verification_status:this.currentStepStatus(task,step,state)}));
     return {...task,verification_status:status,...(steps?{steps}:{})};
   }
-  private async verificationState(task:EngineeringTask) {
+  private async verificationState(task:EngineeringTask,cached=false) {
     const workspace=this.store.get<WorkspaceBinding>(workspaceKind,task.workspace_id);
     if(workspace.status!=='bound')return undefined;
+    if(cached)return this.store.maybe<CodeState>('engineering_state',task.workspace_id);
     return this.captureState(task.project_id,task.workspace_path).catch(()=>null);
   }
   async currentTask(taskId:string) {
     const task=this.task(taskId),state=await this.verificationState(task);
     return this.currentVerification(task,state);
   }
-  async currentTasks(input:Parameters<EngineeringService['tasks']>[0]) {
+  async currentTasks(input:Parameters<EngineeringService['tasks']>[0],cached=false) {
     const states=new Map<string,ReturnType<EngineeringService['verificationState']>>();
     return Promise.all(this.tasks(input).map(async task=>{
-      if(!states.has(task.workspace_id))states.set(task.workspace_id,this.verificationState(task));
+      if(!states.has(task.workspace_id))states.set(task.workspace_id,this.verificationState(task,cached));
       const state=await states.get(task.workspace_id);
       return this.currentVerification(task,state);
     }));
@@ -359,6 +386,23 @@ export class EngineeringService {
   history(kind:'task'|'context',objectId:string){return this.store.versions(kind==='task'?taskKind:contextKind,objectId);}
   private receiptKey(operation:string,objectId:string,key:string){return sha(`${operation}\0${objectId}\0${requireText(key,300)}`);}
   private saveTask(task:EngineeringTask){task.version++;task.updated_at=now();task.saved='saved';this.store.putVersion(taskKind,task.task_id,task.version,task);}
+  updateBoundaries(input:{task_id:string;non_goals:string[];revoked:string[];expected_version?:number}):EngineeringTask {
+    const boundaries={non_goals:boundaryList(input.non_goals),revoked:boundaryList(input.revoked)};
+    const saved=this.store.transaction(()=>{
+      const task=this.task(input.task_id),previous=task.version;
+      if(input.expected_version!==undefined&&input.expected_version!==previous)throw Error('VERSION_CONFLICT：边界已有新版本，请重新核对');
+      task.boundaries=boundaries;
+      this.saveTask(task);
+      // A boundary-only edit also applies to a queued, unclaimed dispatch for this exact version.
+      for(const item of this.store.all<Dispatch>('external_dispatch')){
+        if(item.task_id===task.task_id&&item.task_version===previous&&!item.revoked&&!item.attempt_id&&['queued','sending','awaiting_claim','unknown','blocked'].includes(item.state)){
+          item.task_version=task.version;this.store.put('external_dispatch',item.dispatch_id,item);
+        }
+      }
+      return task;
+    });
+    this.changed('engineering_changed');return saved;
+  }
   private idList(value:unknown):string[] {
     if(!Array.isArray(value)||value.length>100)throw Error('步骤证据列表无效');
     const values=value.map(item=>requireText(item,300));if(new Set(values).size!==values.length)throw Error('步骤证据引用重复');return values;
@@ -393,7 +437,7 @@ export class EngineeringService {
     const ids=new Set([...step.evidence_ids,...step.criteria.flatMap(criterion=>criterion.evidence_ids)]),linked=task.verification.filter(item=>item.step_id===step.step_id||ids.has(item.evidence_id));
     if(!linked.length)return 'not_run';if(state===null)return 'stale';if(!state)return 'partial';const current=linked.filter(item=>sameVerificationState(item.code_state,state));if(!current.length)return 'stale';
     const latest=new Map<string,VerificationEvidence>();for(const item of current)latest.set(item.command,item);const checks=[...latest.values()];
-    if(checks.some(item=>item.outcome==='failed'))return 'failed';return checks.every(item=>item.outcome==='passed'&&item.origin==='observed'&&!!item.log_path&&item.code_state_verified!==false)?'passed':'partial';
+    if(checks.some(evidenceFailed))return 'failed';return checks.every(evidenceSupportsPass)?'passed':'partial';
   }
   private validateReading(projectId:string,input?:TaskReadingBinding):TaskReadingBinding|undefined {
     if(!input)return undefined;
@@ -417,6 +461,9 @@ export class EngineeringService {
   }
   private validatePackage(task:EngineeringTask) {
     const behaviors=task.requirement_package?.behaviors;
+    for(const key of ['assumptions','open_questions','non_goals','revoked'] as const){
+      const list=task.requirement_package?.[key];if(list!==undefined)boundaryList(list);
+    }
     if(!Array.isArray(behaviors)||!behaviors.length||behaviors.length>100)throw Error('需求包需要 1–100 项可验收行为');
     const scope=new Set(task.proposed_scope??[]),steps=new Set((task.steps??[]).filter(step=>step.status!=='superseded').map(step=>step.step_id));
     const ids=new Set<string>(),coveredFiles=new Set<string>(),coveredSteps=new Set<string>();
@@ -431,6 +478,17 @@ export class EngineeringService {
     }
     if(coveredFiles.size!==scope.size||coveredSteps.size!==steps.size)throw Error('建议范围中的文件及实施步骤均需对应需求行为');
   }
+  private setRequirementPackage(task:EngineeringTask,pkg:NonNullable<EngineeringTask['requirement_package']>){
+    // Keep edits made while planning and include newly proposed redlines in the review.
+    if(task.boundaries){
+      for(const key of ['non_goals','revoked'] as const){
+        const previous=task.requirement_package?.[key]??[];
+        const proposed=boundaryList(pkg[key]??[]).filter(item=>!previous.includes(item));
+        task.boundaries[key]=boundaryList([...new Set([...task.boundaries[key],...proposed])]);
+      }
+    }
+    task.requirement_package=pkg;
+  }
   private prepareRequirement(task:EngineeringTask,input:CreateEngineeringTask,submission:RequirementSubmission) {
     submission.checkAvailable();
     if(input.task_id&&(!Number.isInteger(submission.expected_version)||task.version!==submission.expected_version))throw Error('VERSION_CONFLICT：任务版本已变化，请重新审阅');
@@ -442,6 +500,7 @@ export class EngineeringService {
       task.scope=[...task.approval.scope];
     }else{
       task.analysis_channel=submission.channel;
+      if(task.requirement_package)task.boundaries=effectiveTaskBoundaries(task);
       delete task.approval;delete task.requirement_package;
       task.scope=[];task.proposed_scope=[];task.steps=[];task.summary='';task.decisions=[];task.unresolved=[];
       task.verification=[];task.verification_status='not_run';
@@ -478,7 +537,7 @@ export class EngineeringService {
     return this.store.transaction(()=>{const task=this.task(input.task_id);this.checkUpdate(task,input);
       if(input.summary!==undefined)task.summary=requireText(input.summary);
       if(input.decisions)task.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)task.unresolved=input.unresolved.map(s=>requireText(s));
-      if(input.requirement_package!==undefined)task.requirement_package=input.requirement_package;
+      if(input.requirement_package!==undefined)this.setRequirementPackage(task,input.requirement_package);
       if(input.proposed_scope)task.proposed_scope=input.proposed_scope.map(relativePath);
       if(input.steps)this.mergeSteps(task,input.steps);
       if(input.requirement_package!==undefined)this.validatePackage(task);
@@ -511,7 +570,7 @@ export class EngineeringService {
     const current=task.verification.filter(e=>sameVerificationState(e.code_state,state));
     if(!current.length&&task.verification.some(e=>!e.code_state.workspace_fingerprint&&e.code_state.fingerprint===state.fingerprint&&e.code_state.head===state.head))return 'partial';
     if(!current.length)return 'stale';const latest=new Map<string,VerificationEvidence>();for(const e of current)latest.set(e.command,e);const checks=[...latest.values()];
-    if(checks.some(e=>e.outcome==='failed'))return 'failed';if(checks.every(e=>e.outcome==='passed'&&e.origin==='observed'&&!!e.log_path&&e.code_state_verified!==false))return 'passed';return 'partial';
+    if(checks.some(evidenceFailed))return 'failed';if(checks.every(evidenceSupportsPass))return 'passed';return 'partial';
   }
   async finishTask(input:FinishEngineeringTask,maySave:()=>boolean=()=>true):Promise<EngineeringTask> {
     const key=this.receiptKey('finish',input.task_id,input.submission_key),prior=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(prior)return prior;
@@ -538,7 +597,7 @@ export class EngineeringService {
       .map(p=>({path:p,before_sha256:beforeFiles.get(p)??null,after_sha256:afterFiles.get(p)??null,ownership:comparison.dirty.includes(p)||task.rebind_preexisting_files?.some(f=>f.path===p)?'preexisting_overlap' as const:'task_change' as const,...(assets.has(p)?{text_diff_unavailable:true}:{})}));
     const saved=this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;if(!maySave())throw Error('执行已停止，拒绝迟到开发结果');const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);if(input.decisions)current.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
       if(ownershipUnknown)current.unresolved=[...new Set([...current.unresolved,'无法确认提交完成时与采集时的代码状态一致。报告已保存，差异归属待核查。'])];
-      if(input.requirement_package!==undefined)current.requirement_package=input.requirement_package;
+      if(input.requirement_package!==undefined)this.setRequirementPackage(current,input.requirement_package);
       if(input.proposed_scope)current.proposed_scope=input.proposed_scope.map(relativePath);
       if(input.steps)this.mergeSteps(current,input.steps);
       if(analyzing&&input.status==='completed'){

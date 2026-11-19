@@ -44,12 +44,15 @@ export interface ContextEntry {
   legacy_import?:LegacyImport;
 }
 export interface EngineeringContext {
+  material_sources?:MaterialSourceIndexEntry[];
+  environment_brief?:string;
   project_id:string; workspace:WorkspaceBinding; version:number; code_state:CodeState;
   entries:ContextEntry[]; analysis_refs:{result_id:string; source_snapshot_id:string; status:string;summary:string;architecture?:boolean}[];
   analysis?:EngineeringAnalysis;
   recent_tasks:Pick<EngineeringTask,'task_id'|'goal'|'status'|'summary'|'version'|'updated_at'|'verification_status'|'decisions'|'unresolved'>[];
   total_entries:number; next_offset:number|null;
 }
+export type MaterialSourceIndexEntry=Pick<ContextEntry,'entry_id'|'key'|'category'>&{sources:{path:string}[]};
 export interface EngineeringAnalysis {
   result_id:string; binding:RunBinding; created_at:string;
   source_snapshot_id:string; source_fingerprint:string; source_status:string;
@@ -76,6 +79,7 @@ export interface DevelopmentStep {
   verification_status?:'not_run'|'passed'|'failed'|'partial'|'stale';
 }
 export interface VerificationEvidence {
+  metrics?:{total?:number;passed?:number;failed?:number;skipped?:number;suspicious_empty?:boolean};
   evidence_id:string; command:string; cwd:string; outcome:'passed'|'failed'|'blocked'|'not_run';
   exit_code:number|null; origin:'observed'|'self_reported'; code_state:CodeState;
   created_at:string; log_path?:string; note?:string;
@@ -92,6 +96,7 @@ export interface WalkthroughUpdate {
   update_id?:string; error?:string; updated_at:string;
 }
 export interface RequirementPackage {
+  assumptions?:string[]; open_questions?:string[]; non_goals?:string[]; revoked?:string[];
   behaviors:{id:string;behavior:string;design:string;files:string[];step_ids:string[];verification:string}[];
 }
 export interface EngineeringTask {
@@ -100,6 +105,7 @@ export interface EngineeringTask {
   version:number; submission_key:string; goal:string; scope:string[];
   workflow?:'analysis'|'ready'|'execution'; proposed_scope?:string[];
   requirement_package?:RequirementPackage;
+  boundaries?:{non_goals:string[];revoked:string[]};
   approval?:{reviewed_version:number;scope:string[]};
   analysis_channel?:'codex'|'kimi'|'dsh';
   execution_mode?:ExecutionMode;
@@ -124,7 +130,7 @@ export interface DevelopmentAttempt {
   write_scope?:string[];
   connection_status?:'connected'|'unknown';
 }
-export interface ContextRequest {view?:'strict'|'execution';task_id?:string;project_id?:string; workspace_path?:string; refresh?:boolean;query?:string;entry_id?:string;result_id?:string;category?:ContextEntry['category'];offset?:number;limit?:number}
+export interface ContextRequest {view?:'strict'|'execution';task_id?:string;project_id?:string; workspace_path?:string; cached?:boolean;refresh?:boolean;query?:string;entry_id?:string;result_id?:string;category?:ContextEntry['category'];offset?:number;limit?:number}
 export interface CreateEngineeringTask extends ContextRequest {
   goal:string; submission_key:string; task_id?:string; scope?:string[]; reading?:TaskReadingBinding;
 }

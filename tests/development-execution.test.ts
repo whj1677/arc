@@ -5,6 +5,8 @@ import path from 'node:path';
 import http from 'node:http';
 import {execFileSync} from 'node:child_process';
 import {developmentArguments,developmentPrompt,developmentSandboxArguments,developmentSandboxError,supportsDevelopmentSandboxProbe} from '../src/main/development-runner';
+import {codexRequirementPlanSchema,readRequirementPlan,requirementPrompt} from '../src/main/dsh-development';
+import type {EngineeringContext,EngineeringTask} from '../src/engineering';
 import {callArcWithOutbox,pendingDevelopmentWrites,flushDevelopmentWrites,queueDevelopmentWrite} from '../src/main/development-outbox';
 import {ArcService} from '../src/main/service';
 import {ArcMcpBridge,bridgeTools} from '../src/main/mcp-bridge';
@@ -16,6 +18,36 @@ test('development uses actual workspace, host model, exact permission profile an
   assert.equal(args[args.indexOf('--cd')+1],'C:\\工程 workspace');assert.ok(!args.includes('--sandbox'));
   assert.deepEqual(args.slice(0,3),['-a','never','exec']);assert.ok(args.includes('default_permissions="arc-files-test"'));assert.ok(!args.includes('-m'));assert.ok(!args.join(' ').includes('danger'));
   assert.match(developmentPrompt({task_id:'task-a',workspace_path:'real-workspace',goal:'fix typo'} as any,{} as any,['src/cart.mjs']),/src\/cart\.mjs/);
+});
+test('approved prompts use current behaviors, boundaries and host commands without superseded requests',()=>{
+  const task={task_id:'current',workspace_path:'workspace',workflow:'execution',goal:'old-goal',
+    summary:'old-summary',requests:[{text:'old-request'}],unresolved:['old-issue'],
+    approval:{reviewed_version:3,scope:['current.ts']},decisions:['keep-current-decision'],
+    requirement_package:{behaviors:[{behavior:'effective-behavior'}],assumptions:['old-assumption'],non_goals:['removed-boundary']},
+    boundaries:{non_goals:['preserve-export'],revoked:['cancel-webhook']},
+    steps:[{step_id:'now',title:'current-step',change:'implement',status:'pending',criteria:[{criterion_id:'verify',text:'check-current'}]},
+      {title:'old-step',status:'superseded'}],
+  } as EngineeringTask;
+  const context={environment_brief:'测试：npm run verify-local',entries:[{text:'old-material'}]} as EngineeringContext;
+  for(const prompt of [developmentPrompt(task,context,task.approval!.scope),requirementPrompt(task,context)]){
+    for(const expected of ['effective-behavior','current.ts','current-step','check-current','keep-current-decision','preserve-export','cancel-webhook','测试：npm run verify-local'])assert.ok(prompt.includes(expected),expected);
+    for(const old of ['old-goal','old-summary','old-request','old-issue','old-assumption','removed-boundary','old-step','old-material'])assert.ok(!prompt.includes(old),old);
+  }
+  const codex=developmentPrompt(task,context,task.approval!.scope);
+  for(const guard of ['禁止空跑或跳过测试冒充通过','禁止将未定义行为','严守授权文件范围'])assert.ok(codex.includes(guard));
+  const planning=requirementPrompt({...task,workflow:'analysis',boundaries:undefined},context);
+  for(const expected of ['old-goal','old-request','old-material','assumptions','open_questions','non_goals','revoked','removed-boundary','npm run verify-local'])assert.ok(planning.includes(expected),expected);
+});
+test('plan contract accepts existing packages and validates optional structured lists',()=>{
+  const behavior={id:'a',behavior:'show value',design:'existing export',files:['a.ts'],step_ids:['update'],verification:'test value'};
+  const step={step_id:'update',title:'update',change:'value',status:'pending',progress:'waiting',criteria:[{criterion_id:'value',text:'read value',evidence_ids:[]}],evidence_ids:[],unresolved:[]};
+  const plan={summary:'Change value',steps:[step],proposed_scope:['a.ts'],requirement_package:{behaviors:[behavior]},decisions:[],unresolved:[]};
+  assert.deepEqual(readRequirementPlan(JSON.stringify(plan)),plan);
+  const pkg={...plan.requirement_package,assumptions:['A'],open_questions:['Q'],non_goals:['N'],revoked:['R']};
+  assert.deepEqual(readRequirementPlan(JSON.stringify({...plan,requirement_package:pkg})).requirement_package,pkg);
+  assert.throws(()=>readRequirementPlan(JSON.stringify({...plan,requirement_package:{...pkg,revoked:Array(41).fill('x')}})),/结构检查/);
+  assert.throws(()=>readRequirementPlan(JSON.stringify({...plan,requirement_package:{...pkg,assumptions:'A'}})),/结构检查/);
+  assert.deepEqual((codexRequirementPlanSchema.properties.requirement_package as {required:string[]}).required,Object.keys(pkg));
 });
 test('file authorization refuses directories, metadata, wildcards, traversal and hard links',async()=>{
   const directory=await temporary();

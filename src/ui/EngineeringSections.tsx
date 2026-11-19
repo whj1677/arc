@@ -1,5 +1,6 @@
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import type {ContextEntry,EngineeringContext,EngineeringSectionCategory,EngineeringTask} from '../engineering';
+import {verificationEvidenceLabel} from '../delivery-audit';
 import {SourceExcerpt} from './SourceExcerpt';
 import type {Dispatch,ExecutorBinding} from '../main/external-dispatch';
 
@@ -214,7 +215,7 @@ export function EngineeringSections({projectId,taskId,section,onSection,tasks,on
       </article>)}
       {context?.next_offset!=null&&<button onClick={()=>void more()}>继续读取{title} · 共 {context.total_entries} 条</button>}
       {editing===section&&<form ref={editor} className="engineering-section-editor" onSubmit={save}><h3>{draft.entry?'更新记录':'补充'+title}</h3><label>记录标题<input aria-label="工程记录标题" disabled={busy} maxLength={300} value={draft.key} onChange={e=>changeDraft({...draft,key:e.target.value})} required/></label><label>{title}内容<textarea aria-label="工程栏目内容" disabled={busy} value={draft.text} onChange={e=>changeDraft({...draft,text:e.target.value})} maxLength={60000} rows={8} required/></label><small>保存为用户补充；保留历史，未经源码复核不会冒充事实或验证通过。</small><div className="row"><button className="primary" disabled={busy||!draft.key.trim()||!draft.text.trim()}>{busy?'保存中…':'保存到工程上下文'}</button><button type="button" disabled={busy} onClick={()=>setEditing(null)}>收起编辑（保留草稿）</button></div></form>}
-      {section==='verification_plan'&&<section className="engineering-verification-results"><h3>实际验证结果</h3><p className="muted">验证计划不等于执行通过；执行结果绑定当时的代码版本。</p>{!verification.length?<p>还没有执行证据。</p>:verification.map(task=><article key={task.task_id}><button onClick={()=>onTask(task.task_id)}>{task.goal} · {outcomeNames[task.verification_status]}</button>{task.verification.map(v=><p key={v.evidence_id}><code>{v.command}</code> · {outcomeNames[v.outcome]} · {v.origin==='observed'?'已观测执行':'Agent 上报，未独立核验'} · exit {v.exit_code??'未取得'}</p>)}</article>)}</section>}
+      {section==='verification_plan'&&<section className="engineering-verification-results"><h3>实际验证结果</h3><p className="muted">验证计划不等于执行通过；执行结果绑定当时的代码版本。</p>{!verification.length?<p>还没有执行证据。</p>:verification.map(task=><article key={task.task_id}><button onClick={()=>onTask(task.task_id)}>{task.goal} · {outcomeNames[task.verification_status]}</button>{task.verification.map(v=><p key={v.evidence_id}><code>{v.command}</code> · {verificationEvidenceLabel(v)} · {v.origin==='observed'?'已观测执行':'Agent 上报，未独立核验'} · exit {v.exit_code??'未取得'}</p>)}</article>)}</section>}
     </div>}
   </section>;
 }

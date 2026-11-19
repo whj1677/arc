@@ -2,17 +2,18 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {CreateEngineeringTask,EngineeringContext,EngineeringTask,DevelopmentAttempt,VerificationEvidence,CodeState,TaskReadingBinding} from '../engineering';
 import type {ProviderProfile,Run,Snapshot} from '../shared';
+import {inspectVerificationOutput} from '../delivery-audit';
 import {EngineeringService,sameVerificationState} from './engineering-service';
 import {runDevelopmentCodex,type DevelopmentCommand} from './development-runner';
 import {readCodexConfiguration} from './codex-configuration';
 import {probeProviders,redact,runCodex,type ActiveProcess} from './providers';
 import {DshMalformedReply,runDshWeb} from './dsh-web';
-import {applyDshEdits,dshEditSchema,readDshEdits,readRequirementPlan,requirementPlanSchema,requirementPrompt} from './dsh-development';
+import {applyDshEdits,codexRequirementPlanSchema,dshEditSchema,readDshEdits,readRequirementPlan,requirementPlanSchema,requirementPrompt} from './dsh-development';
 import {id,now,Store} from './store';
 import {resolveDevelopmentScope} from './development-scope';
 import {sha} from './snapshot';
 
-type CommandRecord={command:DevelopmentCommand;state:CodeState;log:string;stateVerified:boolean};
+type CommandRecord={command:DevelopmentCommand;state:CodeState;log:string;stateVerified:boolean;metrics:VerificationEvidence['metrics']};
 type LocalMode='codex'|'dsh';
 type RequirementInput=CreateEngineeringTask & {project_id:string;phase?:'analysis'|'execution';expected_version?:number};
 
@@ -129,7 +130,8 @@ export class DevelopmentService {
           const log=`development/${taskId}/${attemptId}/${id('command')}.log`;
           await fs.mkdir(path.dirname(path.join(this.store.directory,log)),{recursive:true});
           await fs.writeFile(path.join(this.store.directory,log),`${command.command}\n${command.output}`);
-          records.push({command,state,log,stateVerified:atReceipt===possibleWrite});
+          const {label,skipped_flag,...metrics}=inspectVerificationOutput(command.command,command.exit_code,command.output);
+          records.push({command,state,log,stateVerified:atReceipt===possibleWrite,metrics:Object.keys(metrics).length?metrics:undefined});
         });return captureQueue;
       },
     });
@@ -158,7 +160,7 @@ export class DevelopmentService {
         const outcome=commandOutcome(record.command);
         const matchedReport=result.result.verification.findLast(item=>commandBody(item.command)===key&&item.outcome===outcome),note=matchedReport?.note;
         verification.push({evidence_id:id('verification'),command:record.command.command,cwd:task.workspace_path,
-          outcome,exit_code:record.command.exit_code,origin:'observed',
+          outcome,exit_code:record.command.exit_code,origin:'observed',metrics:record.metrics,
           code_state:record.state,created_at:record.command.completed_at,log_path:record.log,code_state_verified:record.stateVerified,
           step_id:(matchedReport??report).step_id,criterion_id:(matchedReport??report).criterion_id,
           note:`${note?note+'；':''}代码状态采集于命令完成回执后，工作目录为绑定执行目录。${record.stateVerified?'':'采集期间出现后续命令或修改，验证对应代码状态不确定。'}`});
@@ -199,7 +201,7 @@ export class DevelopmentService {
     this.event(attemptId,{type:'local.stage',stage:planning?'requirement_analysis':'dsh_implementation',
       message:planning?'正在读取冻结源码并形成可审阅需求包。':'正在读取批准文件并生成变更。'});
     const options={run,snapshot,storage,resources:this.resources,profile,prompt:requirementPrompt(task,context),
-      outputSchema:planning?requirementPlanSchema:dshEditSchema,shouldStart:()=>!this.isStopped(attemptId),
+      outputSchema:planning?(mode==='codex'?codexRequirementPlanSchema:requirementPlanSchema):dshEditSchema,shouldStart:()=>!this.isStopped(attemptId),
       started:(process:ActiveProcess)=>this.started(attemptId,process),
       event:(event:any)=>{
         if((event.type==='session.started'||event.type==='thread.started')&&typeof event.thread_id==='string'&&!this.isStopped(attemptId)){

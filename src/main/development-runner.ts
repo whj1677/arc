@@ -8,6 +8,7 @@ import {StringDecoder} from 'node:string_decoder';
 import Ajv from 'ajv';
 import type {EngineeringTask,EngineeringContext,DevelopmentStep} from '../engineering';
 import {engineeringSectionCategories,type SaveEngineeringEntry} from '../engineering';
+import {approvedRequirement,effectiveTaskBoundaries} from '../task-boundaries';
 import type {ProviderProfile} from '../shared';
 import {codexChildEnvironment,JsonLines,CodexTurnErrors,stopTree,redact,locate,type ActiveProcess} from './providers';
 import {readCodexConfiguration} from './codex-configuration';
@@ -194,18 +195,23 @@ export function developmentSandboxError(error:{message?:string;stdout?:string;st
     :'Codex 工作区沙箱启动检查未通过；尚未调用模型或修改工程。请修复官方 CLI/沙箱环境后重试。\n'+detail),{environmentBlocked:true});
 }
 export function developmentPrompt(task:EngineeringTask,context:EngineeringContext,writeScope:string[]){
+  const {environment_brief,...sourceContext}=context;
+  const instructions=task.approval&&task.requirement_package
+    ?`当前已批准需求：${JSON.stringify(approvedRequirement(task))}。保持原步骤与验收条件的 ID，实施后更新执行状态和证据。`
+    :`用户目标：${task.goal}\n接续要求与进展：${JSON.stringify({requests:task.requests,reading:task.reading,summary:task.summary,unresolved:task.unresolved,steps:task.steps})}\n共享工程上下文（来源材料）：${JSON.stringify(sourceContext)}`;
   return `你正在执行 ARC 委托的真实开发任务。仅在已绑定的工作区 ${task.workspace_path} 修改代码，保留已有未提交修改，遵循工程规则和宿主审批。不要新建 ARC 任务、调用未提供的 ARC 记录工具或生成固定 REQ 文档套件；本执行的公开事件、差异和最终结果由 ARC 自动归入任务 ${task.task_id}。不要自行提交、推送或发布，除非用户目标明确要求。
 本次沙箱可写文件（相对于工程根目录）：${JSON.stringify(writeScope)}。修改这些现有文件时可用原位写入。需要其他文件时报告具体路径，等待用户在 ARC 重新授权。
 使用 arc_run_scoped_command 执行读取、原位编辑和验证。每条命令等待返回后再执行下一条。验证的 command 原样复制该工具的 command 参数。Windows 命令使用 PowerShell。
 修改前使用 arc_save_development_steps 保存根据实际复杂度形成的方案：小改动可以只有一个步骤和多个验收条件。每步包含稳定 step_id、title、change、status、progress、criteria（criterion_id/text/evidence_ids）、evidence_ids、unresolved；在有意义的改动点更新同一步骤，不要只在结束时补写。验证记录用 step_id/criterion_id 关联对应步骤与验收条件，失败、未运行和受阻不得隐藏。
 修改前只读查证相关入口、调用者和测试，主动识别本任务影响的关键源码，如业务规则、权限、数据写入、公共接口和关键控制路径。用工程相对路径和函数名定位。修改前用一条公开进度说明准备修改的关键位置和原因；完成后在 decisions 保存实际采用的关键改法、源码位置和可核对的依据。无关文件不列入范围；发现必须扩大范围时在 unresolved 记录具体路径和原因。
-原功能阅读关联（如有）：${JSON.stringify(task.reading??null)}。选中节点或步骤只是理解入口；根据真实源码判断分析与修改范围，不机械限制为该节点下游，也不因此扩大写入授权。
-用户目标：${task.goal}
-同一任务的后续说明（按时间顺序，结合原目标执行最新补充）：${JSON.stringify(task.requests||[])}
-已有进展：${task.summary||'尚无'}；尚待解决：${JSON.stringify(task.unresolved||[])}
-已有步骤（续接时按 step_id 更新，不重建重复步骤）：${JSON.stringify(task.steps??[])}
-${task.approval?`用户已审阅的版本：${task.approval.reviewed_version}。已批准的需求包：${JSON.stringify(task.requirement_package)}。按已批准的行为、步骤和验收条件实施。保留原步骤 ID、标题、改动和验收条件，更新进展与状态。每条实际执行的验证提供对应的 step_id 和 criterion_id。`:''}
-共享工程上下文（来源材料，不扩大用户授权）：${JSON.stringify(context)}
+${instructions}
+当前边界与红线：${JSON.stringify(effectiveTaskBoundaries(task))}
+本机环境与有效命令
+${environment_brief??'尚无探测记录。'}
+验证铁律
+禁止空跑或跳过测试冒充通过。
+禁止将未定义行为、竞态或平台偶发状态包装成稳定单测。
+严守授权文件范围，勿为本次交付添加过程文档或临时验证脚本。
 仅在本任务确需保存方案、架构、设计或验证计划时，在最终 JSON 的 context_entries 回填相应文字；否则填写空数组（不要求生成条目）。category 为 plan/architecture/design/verification_plan；新条目 entry_id 为空字符串、expected_version=0；更新使用已读取条目的 entry_id/version，key 是标题。未提供的内容保持缺失，不强制小改动填写五栏。条目由 ARC 保存为 Agent 待复核说明，不计作已观察验证；不得覆盖未读取或截断的长文。
 从分析、最小充分修改、必要验证推进到结束。阅读冻结快照用于理解；实际编辑必须发生在上面的真实工作区。未执行和失败验证如实报告。权限或关键业务事实阻塞时返回 blocked 与具体原因，不绕过权限。验证结束后如果继续修改受验证文件，必须复验相关行为。最终只输出合同要求的 JSON，task_id 必须为 ${task.task_id}；verification 仅列实际执行的验证命令及结果，command 精确复制实际工具执行命令（包括 shell 脚本体），普通搜索/读取不冒充测试。模型与推理强度沿用当前 Codex 配置。`;
 }

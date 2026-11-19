@@ -1,0 +1,17 @@
+.env-card .project-home-heading {align-items:center}
+.env-tools {display:flex;flex-wrap:wrap;gap:.45rem;margin:0;padding:0 0 1rem;list-style:none}
+.env-tool {display:inline-flex;align-items:center;gap:.4rem;padding:.13rem .65rem;border-radius:2rem;background:var(--bg);color:var(--muted);font-size:12px;line-height:1.75}
+.env-tool i {width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.env-tool.available {background:var(--soft);color:var(--accent)}
+.env-tool.missing,.env-tool.unverifiable {background:color-mix(in srgb,var(--amber) 10%,var(--surface));color:var(--amber)}
+.env-card form {display:flex;align-items:flex-end;gap:1rem;border-top:1px solid var(--border);padding-top:.85rem}
+.env-commands {flex:1;min-width:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem}
+.env-commands>div {display:flex;min-width:0;flex-direction:column;align-items:stretch;gap:.25rem}
+.env-commands span,.env-commands small {color:var(--muted);font-size:13px}
+.env-commands code,.env-commands input {min-width:0;color:var(--ink);font-size:14px;line-height:1.65}
+.env-commands code {overflow-wrap:anywhere}
+.env-commands input {width:100%}
+.env-actions {display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:.4rem}
+.env-card button {white-space:nowrap}
+@media(max-width:1100px){.env-card form:has(input){flex-wrap:wrap}.env-card form:has(input) .env-commands{flex-basis:100%}.env-actions{margin-left:auto}}
+@media(max-width:720px){.env-card form{align-items:stretch;flex-direction:column;gap:.6rem}.env-commands{grid-template-columns:1fr}.env-card .project-home-heading{align-items:flex-start}}

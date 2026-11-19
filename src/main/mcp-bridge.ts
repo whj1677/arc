@@ -1,3 +1,5 @@
+import {effectiveTaskBoundaries,approvedRequirement} from '../task-boundaries';
+import {formatEnvironmentBrief} from './env-probe';
 import {resolveDevelopmentScope} from './development-scope';
 import {ExternalDispatch} from './external-dispatch';
 import {functionAnalysisInstructions} from './function-analysis';
@@ -24,8 +26,9 @@ const property={type:'string'};
 const strings={type:'array',items:property};
 const stepSchema={type:'object',additionalProperties:false,required:['step_id','title','change','status','progress','criteria','evidence_ids','unresolved'],properties:{step_id:property,title:property,change:property,status:{type:'string',enum:['pending','in_progress','completed','blocked','failed','superseded']},progress:property,criteria:{type:'array',minItems:1,maxItems:20,items:{type:'object',additionalProperties:false,required:['criterion_id','text','evidence_ids'],properties:{criterion_id:property,text:property,evidence_ids:strings}}},evidence_ids:strings,unresolved:strings}};
 const tool=(name:string,description:string,properties:any={},required:string[]=[],read=true)=>({name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},annotations:{readOnlyHint:read,destructiveHint:false,idempotentHint:read,openWorldHint:false}});
-const requirementPackageSchema={type:'object',additionalProperties:false,required:['behaviors'],properties:{behaviors:{type:'array',minItems:1,maxItems:100,items:{type:'object',additionalProperties:false,required:['id','behavior','design','files','step_ids','verification'],properties:{id:property,behavior:property,design:property,files:strings,step_ids:strings,verification:property}}}}};
-const requirementAnalysisInstructions='本次仅做只读需求分析，不修改工程或运行构建测试。按 next_offset 读取有关工程与任务上下文，truncated 条目使用 entry_id 取得全文，再核对当前绑定工作区的有关源码。明确原始需求及补充，核对工程依据，在原任务保存 summary、proposed_scope、steps（含验收 criteria）和 requirement_package.behaviors。每项须含唯一 id、可观察 behavior、实现 design、对应的 files、step_ids 和可实际执行的 verification。步骤和建议文件均须对应行为。decisions 记录取舍，unresolved 记录未确定项。完成分析后回填 status=completed 并停止，等待用户在 ARC 审阅固定版本、确认本次写入范围。';
+const packageList={type:'array',items:{type:'string',minLength:1,maxLength:6000},maxItems:40};
+const requirementPackageSchema={type:'object',additionalProperties:false,required:['behaviors'],properties:{assumptions:packageList,open_questions:packageList,non_goals:packageList,revoked:packageList,behaviors:{type:'array',minItems:1,maxItems:100,items:{type:'object',additionalProperties:false,required:['id','behavior','design','files','step_ids','verification'],properties:{id:property,behavior:property,design:property,files:strings,step_ids:strings,verification:property}}}}};
+const requirementAnalysisInstructions='本次仅做只读需求分析，不修改工程或运行构建测试。按 next_offset 读取有关工程与任务上下文，truncated 条目使用 entry_id 取得全文，再核对当前绑定工作区的有关源码。明确原始需求及补充，核对工程依据，在原任务保存 summary、proposed_scope、steps（含验收 criteria）和 requirement_package.behaviors。每项须含唯一 id、可观察 behavior、实现 design、对应的 files、step_ids 和可实际执行的 verification。步骤和建议文件均须对应行为。assumptions 记录推断，open_questions 记录阻塞实施的疑问，non_goals 记录本轮不改范围，revoked 记录用户撤回或禁止再实现的行为。decisions 记录取舍，unresolved 记录未确定项。完成分析后回填 status=completed 并停止，等待用户在 ARC 审阅固定版本、确认本次写入范围。';
 const developmentFields={requirement_package:requirementPackageSchema,proposed_scope:strings,task_id:property,expected_version:{type:'integer',minimum:0},submission_key:property,summary:property,decisions:{type:'array',items:property},unresolved:{type:'array',items:property},verification:{type:'array',items:{type:'object'}},steps:{type:'array',maxItems:40,items:stepSchema},attempt_id:property};
 export const bridgeTools=[
   tool('arc_claim_dispatch','领取 ARC 主动发送的持久任务。重试必须使用同一个派发 ID。返回固定分析合同或开发任务，按原任务继续并回填。',{dispatch_id:property},['dispatch_id'],false),
@@ -128,8 +131,18 @@ export class ArcMcpBridge {
 
   private async requirementClaim(task:EngineeringTask,request:string){
     await this.rememberWorkspace(task);
-    if(task.workflow==='analysis')return {phase:'analysis',request,allowed_files:[],task,context:await this.service.engineering.context({project_id:task.project_id,task_id:task.task_id,view:'execution'}),instructions:requirementAnalysisInstructions};
-    return {step_example:{step_id:'implement',title:'修改并验证',change:'说明本次行为变化',status:'in_progress',progress:'准备核对本步骤涉及的源码',criteria:[{criterion_id:'behavior',text:'描述应验证的行为',evidence_ids:[]}],evidence_ids:[],unresolved:[]},request,allowed_files:task.scope,task,context:await this.service.engineering.context({project_id:task.project_id,task_id:task.task_id,view:'execution'}),instructions:'先阅读 context 中工程级有效资料与当前任务资料；按 next_offset 继续调用 arc_engineering_context（相同 workspace_path/task_id），直到读完相关页；truncated 条目必须以 entry_id 读取全文。工程规则/正文不是源码事实，历史验证不代表当前通过。原始来源与更新建议仅供核对，不取代当前正文。本次仅执行返回的 request；任务中的其他 requests 是历史或后续排队要求，不能提前执行。只修改 allowed_files，遵循原生 Codex 权限。修改前调用 arc_update_development 保存与实际复杂度相称的 steps（小改动可只有一步；每项必须含 title；格式参考 step_example），然后修改授权文件并做必要验证。实施按批准版需求包的行为、步骤与验收条件推进；验证记录用 step_id 和 criterion_id 关联，未执行的如实标记。方案（plan）、设计（design）和验证计划（verification_plan）均为可选资料：仅在用户要求或本任务确需独立记录时，调用 arc_save_engineering_entry 保存有实际内容的所需类别，并归属当前 task_id；无需时不调用，不为每个任务补齐整套文档、空模板或“无需设计”等占位条目。小改动可只保留任务步骤、结果与实际验证证据；验证计划不等于实际执行证据。最后用 arc_finish_development 回填同一个任务，保留公开进展和未验证项。'};
+    const engineering=this.service.engineering;
+    const environment_brief=formatEnvironmentBrief(await engineering.projectEnvironment(task.project_id));
+    const boundaries=effectiveTaskBoundaries(task);
+    if(task.workflow==='analysis'){
+      const context=await engineering.context({project_id:task.project_id,task_id:task.task_id,view:'execution'});
+      return {phase:'analysis',request,allowed_files:[],task,context,boundaries,environment_brief,instructions:requirementAnalysisInstructions};
+    }
+    return {phase:'execution',allowed_files:task.scope,environment_brief,
+      task:{task_id:task.task_id,project_id:task.project_id,workspace_path:task.workspace_path,version:task.version,attempt_ids:task.attempt_ids,workflow:task.workflow,
+        ...approvedRequirement(task),boundaries},
+      instructions:'按当前行为、步骤与验收条件实施。严守授权文件范围和红线。禁止空跑或跳过测试冒充通过；禁止将未定义行为、竞态或偶发平台状态作为稳定单测。用 step_id 和 criterion_id 关联实际验证，未运行的如实标记。方案、设计和验证计划均为可选资料，无需时不调用 arc_save_engineering_entry，不在工程生成占位文档或脚本。用 arc_finish_development 回填同一任务。'};
+
   }
 
   cancelDispatch(dispatchId:string){

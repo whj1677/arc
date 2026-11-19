@@ -80,6 +80,53 @@ test('single material reads use cached state and preserve full text and source u
     assert.match(entry.update_suggestion!.proposed_text,/test-reporter=spec/);
   }finally{await f.cleanup();}
 });
+test('cached project pages reuse both SQLite records and a fresh check still reads changed sources',async t=>{
+  const f=await fixture();
+  try{
+    const initial=await f.service.context({project_id:'p'});
+    const capture=t.mock.method(f.service,'captureState');
+    const scan=t.mock.method(f.service as any,'scanContext');
+    const materials=t.mock.method(f.service as any,'initializeMaterials');
+    const legacy=t.mock.method(f.service as any,'reclassifyLegacy');
+    await fs.appendFile(path.join(f.root,'README.md'),'Changed after initial scan.');
+    const cached=await f.service.context({project_id:'p',task_id:'',cached:true,limit:1},true);
+    assert.deepEqual(cached.entries,initial.entries.slice(0,1));
+    assert.equal(cached.material_sources?.length,initial.total_entries);
+    assert.deepEqual(cached.code_state,initial.code_state);
+    for(const spy of [capture,scan,materials,legacy])assert.equal(spy.mock.callCount(),0);
+    const refreshed=await f.service.context({project_id:'p',cached:true,refresh:true});
+    assert.notEqual(refreshed.code_state.fingerprint,initial.code_state.fingerprint);
+    for(const spy of [capture,scan,materials,legacy])assert.equal(spy.mock.callCount(),1);
+    f.store.db.prepare('DELETE FROM objects WHERE kind=? AND id=?').run('engineering_context_state','p');
+    await f.service.context({project_id:'p',cached:true});
+    assert.equal(capture.mock.callCount(),2);assert.equal(scan.mock.callCount(),2);
+  }finally{await f.cleanup();}
+});
+
+test('boundary edits persist before and after approval without rewriting the reviewed package or scope',async()=>{
+  const f=await fixture();let reopened:Store|undefined;
+  try{
+    const service=f.service,submission={channel:'codex' as const,checkAvailable:()=>{},onSaved:()=>{}};
+    const first=await service.createTask({project_id:'p',goal:'Check sum',submission_key:'initial'},{...submission,phase:'analysis'});
+    service.updateBoundaries({task_id:first.task_id,non_goals:['UI'],revoked:[]});
+    const attempt=service.startAttempt(first.task_id,{origin:'agent',provider_id:'codex',model:'fixture',write_scope:[]});
+    const step={step_id:'one',title:'Sum',change:'Check sum',progress:'Analyzed',status:'pending' as const,criteria:[{criterion_id:'sum',text:'Sum works',evidence_ids:[]}],evidence_ids:[],unresolved:[],created_at:'',updated_at:''};
+    const pkg={behaviors:[{id:'sum',behavior:'Sum works',design:'Use addition',files:['sum.js'],step_ids:['one'],verification:'Run tests'}],revoked:['old export']};
+    const ready=await service.finishTask({task_id:first.task_id,expected_version:service.task(first.task_id).version,status:'completed',summary:'Analyzed',submission_key:'plan',steps:[step],proposed_scope:['sum.js'],requirement_package:pkg});
+    service.updateAttempt(attempt.attempt_id,{status:'completed'});
+    assert.deepEqual(ready.boundaries,{non_goals:['UI'],revoked:['old export']});
+    const reviewed=service.updateBoundaries({task_id:first.task_id,expected_version:ready.version,non_goals:['UI'],revoked:[]});
+    const approved=await service.createTask({project_id:'p',task_id:first.task_id,goal:'Execute',submission_key:'approve',scope:['sum.js']},{...submission,phase:'execution',expected_version:reviewed.version});
+    const latest=service.updateBoundaries({task_id:first.task_id,non_goals:['UI'],revoked:['legacy mode']});
+    assert.deepEqual(latest.requirement_package,pkg);assert.deepEqual(latest.approval,approved.approval);
+    assert.deepEqual(service.history('task',first.task_id).find(v=>v.version===latest.approval!.reviewed_version).boundaries,reviewed.boundaries);
+    assert.throws(()=>service.updateBoundaries({task_id:first.task_id,expected_version:reviewed.version,non_goals:[],revoked:[]}),/VERSION_CONFLICT/);
+    assert.throws(()=>service.updateBoundaries({task_id:first.task_id,non_goals:[],revoked:Array(41).fill('x')}),/40/);
+    reopened=new Store(f.store.directory);
+    assert.deepEqual(new EngineeringService(reopened).task(first.task_id).boundaries,latest.boundaries);
+  }finally{reopened?.close();await f.cleanup();}
+});
+
 test('a desktop launch without Git on PATH cannot identify an existing Git workspace as non-Git',async()=>{
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'arc-git-path-'));
   const repo=path.join(directory,'repo'),plain=path.join(directory,'plain');

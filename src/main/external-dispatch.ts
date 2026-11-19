@@ -180,7 +180,7 @@ export class ExternalDispatch {
           binding.program=resolvedProgram;
           binding.model=current.thread.model??null;binding.reasoning_effort=current.thread.reasoningEffort??null;binding.checked_at=now();
           this.store.put('external_executor',binding.project_id,binding);
-          item.thread_id=binding.thread_id;item.state='sending';item.sent_at=now();item.error=undefined;this.save(item);
+          latestQueued.thread_id=binding.thread_id;latestQueued.state='sending';latestQueued.sent_at=now();latestQueued.error=undefined;this.save(latestQueued);
           const message=`ARC 派发 ${item.dispatch_id}。先调用 arc_claim_dispatch，dispatch_id=${item.dispatch_id}，按返回的固定任务、上下文与权限执行。仅操作 ${binding.workspace_path}。如已领取，继续同一任务，禁止新建重复修改。${item.task_id?`${item.phase==='analysis'?'本次是只读需求分析，禁止修改工程或运行构建测试；按领取合同在 ARC 保存 AEC 需求包、实施步骤和建议范围；完成分析后停止，等待用户确认。':'执行已批准的需求包版本和文件范围，按批准的步骤关联验证证据并回填结果。'}使用会话原生只读文件或命令工具核对当前工作区源码；arc_read_source 仅适用于工程分析运行，不接受开发 task_id。`:'工程分析只读本次运行的冻结源码，按领取返回的 run_id 使用 arc_list_files 和 arc_read_source。'}`;
           const response=await this.command(resolvedProgram,['queue','--thread',binding.thread_id,'--message',message,'--resume'],{cwd:binding.workspace_path,windowsHide:true,timeout:20000});
           const latest=this.store.get<Dispatch>('external_dispatch',item.dispatch_id);

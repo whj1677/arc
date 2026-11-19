@@ -1,6 +1,8 @@
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import type {DevelopmentAttempt,EngineeringTask} from '../engineering';
 import type {Dispatch} from '../main/external-dispatch';
+import {TaskBoundaries} from './TaskBoundaries';
+import {verificationEvidenceLabel} from '../delivery-audit';
 
 export type ActivityEvent={attempt_id:string;received_at:string;type:string;message?:string;item?:{type:string;text?:string;command?:string;aggregated_output?:string;exit_code?:number}};
 const receiptNames:Record<Dispatch['state'],string>={queued:'已排队，等待发送',sending:'正在发送',awaiting_claim:'已发送，等待 Agent 领取',running:'Agent 已领取',completed:'回填完成',blocked:'派发受阻',unknown:'派发状态待核对',cancelled:'派发已取消'};
@@ -39,19 +41,31 @@ export function DevelopmentActivity({task,attempt,dispatch,events,onSettings}:{t
     </div>}
   </section>;
 }
-function RequirementPackage({task,record=task}:{task:EngineeringTask;record?:EngineeringTask}){
+function RequirementQuestions({task}:{task:EngineeringTask}){
+  const pkg=task.requirement_package!;
+  const assumptions=pkg.assumptions??[];
+  const questions=pkg.open_questions??[...new Set([...task.unresolved,...(task.steps??[]).filter(step=>step.status!=='superseded').flatMap(step=>step.unresolved)])];
+  const any=!!(assumptions.length||questions.length);
+  return <section className={any?'requirement-uncertainties':''}><h4>假设与待确认</h4>
+    {assumptions.length>0&&<ApprovalGroup title="AI 假设" items={assumptions}/>}
+    {questions.length>0&&<ApprovalGroup title="待确认项" items={questions}/>}
+    {!any&&<p className="muted">暂无假设或待确认项。</p>}
+  </section>;
+}
+function RequirementPackage({task,record=task,readOnly=true,onSaved,showBoundaries=true}:{
+  task:EngineeringTask;record?:EngineeringTask;readOnly?:boolean;showBoundaries?:boolean;onSaved?:(task:EngineeringTask)=>void;
+}){
   const pkg=task.requirement_package;
   if(!pkg)return <p>此版本没有正式需求包。</p>;
   const scope=record.approval?.scope??task.proposed_scope??task.scope;
-  const outcomeLabels={passed:'通过',failed:'失败',blocked:'受阻',not_run:'未执行'};
   return <section aria-label="正式需求包" className="requirement-package">
     <h3>正式需求包 · v{task.version}</h3><h4>需求目标</h4><p>{task.goal}</p>
-    {task.requests?.some(request=>request.text!==task.goal)&&<><h4>接续要求</h4><ul>{task.requests.filter(request=>request.text!==task.goal).map(request=><li key={request.submission_key}>{request.text}</li>)}</ul></>}
+    {task.requests?.some(request=>request.text!==task.goal)&&<details><summary>历史接续要求</summary><ul>{task.requests.filter(request=>request.text!==task.goal).map(request=><li key={request.submission_key}>{request.text}</li>)}</ul></details>}
     {task.summary&&<><h4>任务摘要</h4><p>{task.summary}</p></>}
-    <h4>行为与实现</h4>{pkg.behaviors.map(behavior=><article key={behavior.id} className="requirement-behavior">
+    <h4>行为变化</h4>{pkg.behaviors.map(behavior=><article key={behavior.id} className="requirement-behavior">
       <strong>{behavior.behavior}</strong><p>{behavior.design}</p>
       <dl><dt>涉及文件</dt><dd>{behavior.files.map(file=><code key={file}>{file}</code>)}</dd>
-      <dt>验证方法</dt><dd>{behavior.verification}</dd></dl>
+      <dt>验收方式</dt><dd>{behavior.verification}</dd></dl>
       {behavior.step_ids.map(id=>{
         const step=task.steps?.find(item=>item.step_id===id);
         if(!step)return <p key={id}>缺少关联步骤 {id}</p>;
@@ -62,18 +76,20 @@ function RequirementPackage({task,record=task}:{task:EngineeringTask;record?:Eng
           <ul>{step.criteria.map(criterion=><li key={criterion.criterion_id}>{criterion.text}</li>)}</ul>
           {!!step.unresolved?.length&&<><small>此步骤待解决</small><ul>{step.unresolved.map((item,i)=><li key={i}>{item}</li>)}</ul></>}
           {evidence.length?<><small>关联验证记录{record.verification_status==='stale'?' · 代码已变化，需重新验证':''}</small><ul>{evidence.map(item=><li key={item.evidence_id}>
-            {outcomeLabels[item.outcome]} · {item.origin==='observed'?'实际执行':'Agent 上报'} · <code>{item.command}</code>{item.criterion_id&&' · '+(step.criteria.find(c=>c.criterion_id===item.criterion_id)?.text??item.criterion_id)}
+            {verificationEvidenceLabel(item)} · {item.origin==='observed'?'实际执行':'Agent 上报'} · <code>{item.command}</code>{item.criterion_id&&' · '+(step.criteria.find(c=>c.criterion_id===item.criterion_id)?.text??item.criterion_id)}
           </li>)}</ul></>:<small>尚无关联验证记录</small>}
         </div>;
       })}
     </article>)}
     {task.decisions.length>0&&<><h4>已记录的决定</h4><ul>{task.decisions.map((item,i)=><li key={i}>{item}</li>)}</ul></>}
     {task.unresolved.length>0&&<><h4>待解决事项</h4><ul>{task.unresolved.map((item,i)=><li key={i}>{item}</li>)}</ul></>}
-    <h4>{record.approval?'已批准范围':'建议修改范围'}</h4><ul>{scope.map(file=><li key={file}><code>{file}</code></li>)}</ul>
+    <h4>{record.approval?'已批准修改文件':'建议修改文件'}</h4><ul>{scope.map(file=><li key={file}><code>{file}</code></li>)}</ul>
+    <RequirementQuestions task={task}/>
+    {showBoundaries&&<TaskBoundaries task={record} readOnly={readOnly} onSaved={onSaved} title="本轮不改与已撤销红线"/>}
   </section>;
 }
 
-export function SavedRequirementPackage({task}:{task:EngineeringTask}){
+export function SavedRequirementPackage({task,readOnly=false,onSaved}:{task:EngineeringTask;readOnly?:boolean;onSaved?:(task:EngineeringTask)=>void}){
   const [open,setOpen]=useState(false),[reviewed,setReviewed]=useState<EngineeringTask|null>(null),[error,setError]=useState('');
   const version=task.approval?.reviewed_version;
   useEffect(()=>{
@@ -90,11 +106,11 @@ export function SavedRequirementPackage({task}:{task:EngineeringTask}){
   },[open,task.task_id,version]);
   const snapshot=version?(reviewed?.task_id===task.task_id&&reviewed.version===version?reviewed:null):task;
   return <details className="saved-requirement-package" onToggle={event=>setOpen(event.currentTarget.open)}><summary>查看正式需求包</summary>
-    {open&&(snapshot?<RequirementPackage task={snapshot} record={task}/>:<p role={error?'alert':'status'}>{error||'正在读取已批准的版本…'}</p>)}
+    {open&&(snapshot?<RequirementPackage task={snapshot} record={task} readOnly={readOnly} onSaved={onSaved}/>:<p role={error?'alert':'status'}>{error||'正在读取已批准的版本…'}</p>)}
   </details>;
 }
 
-function ApprovalGroup({title,items,format='bullets',empty,attention=false}:{title:string;items:string[];format?:'bullets'|'numbered'|'files';empty?:string;attention?:boolean}){
+function ApprovalGroup({title,items,format='bullets',empty}:{title:string;items:string[];format?:'bullets'|'numbered'|'files';empty?:string}){
   const [expanded,setExpanded]=useState(false),[clipped,setClipped]=useState(false);
   const preview=useRef<HTMLDivElement>(null);
   useLayoutEffect(()=>{
@@ -111,7 +127,7 @@ function ApprovalGroup({title,items,format='bullets',empty,attention=false}:{tit
   const filenames=format==='files'?items.map(path=>path.split('/').at(-1)||path):[];
   const distinctFiles=new Set(filenames).size===filenames.length;
   const abbreviated=format==='files'&&distinctFiles&&items.some((path,index)=>path!==filenames[index]);
-  return <section className={attention?'approval-questions':''}>
+  return <section>
     <div className="approval-group-title"><h4>{title}</h4><span>{items.length} {format==='files'?'个文件':'项'}</span></div>
     {items.length?<div ref={preview} className="approval-preview" data-expanded={expanded}>
       <List className={format==='files'?'approval-file-list':undefined}>{items.map((item,index)=><li key={index}>{format==='files'?<code title={item}>{abbreviated&&!expanded?filenames[index]:item}</code>:item}</li>)}</List>
@@ -120,26 +136,24 @@ function ApprovalGroup({title,items,format='bullets',empty,attention=false}:{tit
   </section>;
 }
 
-function ApprovalOverview({snapshot,scope}:{snapshot:EngineeringTask;scope:string[]}){
+function ApprovalOverview({snapshot,scope,disabled,onSaved,onSavingChange}:{snapshot:EngineeringTask;scope:string[];disabled:boolean;onSaved:(task:EngineeringTask)=>void;onSavingChange:(saving:boolean)=>void}){
   const pkg=snapshot.requirement_package;
   if(!pkg)return <p>此版本没有正式需求包。</p>;
-  const stepQuestions=(snapshot.steps??[]).filter(step=>step.status!=='superseded').flatMap(step=>step.unresolved??[]);
-  const questions=[...new Set([...snapshot.unresolved,...stepQuestions].map(text=>text.trim()).filter(Boolean))];
-
   return <>
     <section aria-label="批准内容" className="approval-overview">
       <ApprovalGroup title="行为变化" items={pkg.behaviors.map(item=>item.behavior)} format="numbered"/>
       <ApprovalGroup title="建议修改文件" items={scope} format="files" empty="未列出建议修改文件。"/>
       <ApprovalGroup title="验收方式" items={pkg.behaviors.map(item=>item.verification)} format="numbered"/>
-      <ApprovalGroup title="待确认项" items={questions} empty="需求包未列出待确认项。" attention={questions.length>0}/>
+      <RequirementQuestions task={snapshot}/>
     </section>
-    <details className="approval-source"><summary>查看完整需求包</summary><RequirementPackage task={snapshot}/></details>
+    <TaskBoundaries task={snapshot} title="本轮不改与已撤销红线" disabled={disabled} onSaved={onSaved} onSavingChange={onSavingChange}/>
+    <details className="approval-source"><summary>查看完整需求包</summary><RequirementPackage task={snapshot} showBoundaries={false}/></details>
   </>;
 }
 
-export function PlanDecision({task,busy,error,onDecision}:{task:EngineeringTask;busy:boolean;error:string;onDecision:(snapshot:EngineeringTask,revision?:string)=>void}){
+export function PlanDecision({task,busy,error,onDecision,onTaskSaved}:{task:EngineeringTask;busy:boolean;error:string;onDecision:(snapshot:EngineeringTask,revision?:string)=>void;onTaskSaved?:(task:EngineeringTask)=>void}){
   const [snapshot,setSnapshot]=useState(task),[feedback,setFeedback]=useState('');
-  const dialog=useRef<HTMLDialogElement>(null);
+  const [saving,setSaving]=useState(false),dialog=useRef<HTMLDialogElement>(null);
   useEffect(()=>{dialog.current?.showModal();},[]);
   const stale=snapshot.version!==task.version;
   const scope=snapshot.proposed_scope??snapshot.scope;
@@ -149,10 +163,11 @@ export function PlanDecision({task,busy,error,onDecision}:{task:EngineeringTask;
       <div className="engineering-approval">
         {stale&&<div role="alert">任务已更新至 v{task.version}，当前展示 v{snapshot.version}。<button disabled={busy} onClick={refresh}>查看最新版本</button></div>}
         {error&&<p role="alert">{error}</p>}
-        <ApprovalOverview key={snapshot.version} snapshot={snapshot} scope={scope}/>
+        <ApprovalOverview snapshot={snapshot} scope={scope} disabled={busy||stale} onSavingChange={setSaving}
+          onSaved={updated=>{setSnapshot(updated);onTaskSaved?.(updated);}}/>
         {snapshot.requirement_package?<><label>修订意见<textarea aria-label="修订意见" placeholder="说明要补充的行为、验证方法或需要调整的文件范围" rows={2} value={feedback} onChange={event=>setFeedback(event.target.value)}/></label>
-          <div className="row"><button disabled={busy||stale||!feedback.trim()} onClick={()=>onDecision(snapshot,feedback.trim())}>退回补充</button>
-          <button className="primary" disabled={busy||stale||!scope.length} onClick={()=>onDecision(snapshot)}>按此方案执行</button></div></>:
+          <div className="row"><button disabled={busy||saving||stale||!feedback.trim()} onClick={()=>onDecision(snapshot,feedback.trim())}>退回补充</button>
+          <button className="primary" disabled={busy||saving||stale||!scope.length} onClick={()=>onDecision(snapshot)}>按此方案执行</button></div></>:
           <button disabled={busy||stale} onClick={()=>onDecision(snapshot,'根据当前目标和既有资料重新进行只读分析，生成完整需求包。')}>重新分析并生成需求包</button>}
       </div>
     </dialog>

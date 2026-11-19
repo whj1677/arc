@@ -79,7 +79,7 @@ export class ArcService {
     private readonly dshRunner: typeof runDshWeb = runDshWeb,
   ) {
     this.store = new Store(directory);
-    this.engineering = new EngineeringService(this.store, () => this.changed());
+    this.engineering = new EngineeringService(this.store, type => this.emit({type:type??'changed'}));
     this.engineering.onTaskFinished = task => {
       void this.refreshTaskWalkthrough(task.task_id);
     };
