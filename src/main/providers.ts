@@ -2,6 +2,7 @@ import {functionAnalysisInstructions} from './function-analysis';
 import {architectureAnalysisInstructions,catalogReadingInstructions,overviewDiscoveryQuestion} from './architecture-analysis';
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { StringDecoder } from 'node:string_decoder';
@@ -81,16 +82,43 @@ let cachedNodePath:string|undefined;
 export async function locate(name:string, configured?:string) {
   if(configured) {
     if(!path.isAbsolute(configured))throw new Error('程序路径必须是绝对路径');
-    await fs.access(configured);
+    try {
+      await fs.access(configured);
+    } catch {
+      throw new Error(`指定的程序路径不存在或无法访问：${configured}`);
+    }
     return configured;
   }
   if(name==='node'&&cachedNodePath)return cachedNodePath;
-  const {stdout}=await exec(process.platform==='win32'?'where.exe':'which',[name],{windowsHide:true,timeout:5000});
-  const candidates=stdout.trim().split(/\r?\n/);
-  // Windows desktop bundles can put a Unix launcher before their native binary.
-  const resolved=(process.platform==='win32'?candidates.find(file=>/\.exe$/i.test(file)):undefined)??candidates[0];
-  if(name==='node')cachedNodePath=resolved;
-  return resolved;
+  try {
+    const {stdout}=await exec(process.platform==='win32'?'where.exe':'which',[name],{windowsHide:true,timeout:5000});
+    const candidates=stdout.trim().split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+    if(candidates.length) {
+      // Windows desktop bundles can put a Unix launcher before their native binary.
+      const resolved=(process.platform==='win32'?candidates.find(file=>/\.exe$/i.test(file)):undefined)??candidates[0];
+      if(name==='node')cachedNodePath=resolved;
+      return resolved;
+    }
+  } catch {
+    // Avoid surfacing raw GBK-encoded Windows where.exe stderr as UTF-8 mojibake.
+  }
+  if(process.platform==='win32') {
+    const appData=process.env.APPDATA, localAppData=process.env.LOCALAPPDATA, home=os.homedir();
+    const fallbacks=[
+      appData&&path.join(appData,'npm',`${name}.exe`),
+      appData&&path.join(appData,'npm',`${name}.cmd`),
+      localAppData&&path.join(localAppData,'Programs',name,`${name}.exe`),
+      home&&path.join(home,'.local','bin',`${name}.exe`),
+    ].filter((item):item is string=>Boolean(item));
+    for(const candidate of fallbacks) {
+      try {
+        await fs.access(candidate);
+        if(name==='node')cachedNodePath=candidate;
+        return candidate;
+      } catch {}
+    }
+  }
+  throw new Error(`本机 PATH 中未找到「${name}」程序。请先确认已安装，或在下方「诊断与手动指定」中填写完整路径。`);
 }
 
 export async function probeProviders(config:Record<string,string>={},_only?:'codex'):Promise<ProviderProfile[]> {

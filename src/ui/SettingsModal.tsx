@@ -64,6 +64,16 @@ export function SettingsModal({
       )}
       {notice && <p role="status">{notice}</p>}
 
+      {project && !project.fictional && (
+        <section className="agent-onboarding-guide" aria-label="新工程连接指引">
+          <strong>新工程接入只需两步</strong>
+          <p>
+            任选下方一种方式即可开始分析：推荐直接连接 <b>Codex 桌面端</b>（自动派发）；如未安装 Codex CLI 或习惯自己开对话，可展开下方{' '}
+            <b>外部 Agent 自行领取 · MCP</b> 授权后由外部对话领取任务。
+          </p>
+        </section>
+      )}
+
       {project && !project.fictional ? (
         <ExternalExecutor
           key={projectId}

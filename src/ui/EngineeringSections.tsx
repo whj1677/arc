@@ -86,10 +86,10 @@ export function ExternalExecutor({projectId,projectPath,programHint='',onBound}:
       {state?.binding&&<p>{state.workspace_matches?'这条会话的工程授权已撤销。选择会话后可重新授权。':'工程目录已更新。请连接使用当前目录的会话。'}</p>}
       <div className="agent-workspace"><div><small>Codex 会话须使用此工程目录</small><code>{projectPath}</code></div>
         <button type="button" onClick={()=>void copyPath()}>复制工程路径</button></div>
-      {lookup&&!lookup.sessions.length&&<ol className="agent-connection-steps">
-        <li>在 Codex 桌面端打开上面的工程目录。</li>
-        <li>在该工程中新建会话，并发送一句「准备接收 ARC 任务」。</li>
-        <li>回到这里刷新会话列表。</li>
+      {(!lookup||!lookup.sessions.length)&&<ol className="agent-connection-steps">
+        <li>点击右侧「复制工程路径」，在 Codex 桌面端打开该目录。</li>
+        <li>在 Codex 中新建会话，发送一句「准备接收 ARC 任务」。</li>
+        <li>回到这里点击「刷新会话列表」，选中会话并授权连接，即可开始分析。</li>
       </ol>}
       {lookup&&lookup.sessions.length>0&&<><label>选择要接收 ARC 任务的会话
         <select aria-label="Codex 桌面会话" value={thread} disabled={!!busy} onChange={e=>setThread(e.target.value)}>
@@ -105,10 +105,10 @@ export function ExternalExecutor({projectId,projectPath,programHint='',onBound}:
       </div>
     </>}
     {feedback&&<p className="agent-feedback" role="status">{feedback}</p>}
-    {error&&<p role="alert" className="warning">{error}</p>}
-    <details className="agent-connection-secondary"><summary>诊断与手动指定</summary>
-      <label>Codex 程序路径<input aria-label="外部 Codex CLI 路径" placeholder="自动检测" value={program} onChange={e=>setProgram(e.target.value)}/></label>
-      <label>会话 ID<input aria-label="外部 Codex 会话 ID" value={manualThread} onChange={e=>setManualThread(e.target.value)}/></label>
+    {error&&<div role="alert" className="agent-error-box"><strong>连接需要检查</strong><p>{error}</p></div>}
+    <details className="agent-connection-secondary" open={!!error||undefined}><summary>诊断与手动指定</summary>
+      <label>Codex 程序路径<div className="agent-path-row"><input aria-label="外部 Codex CLI 路径" placeholder="自动检测（未找到时可填 codex.exe 完整路径）" value={program} onChange={e=>setProgram(e.target.value)}/><button type="button" disabled={!!busy} onClick={()=>void discover(program)}>重新检测</button></div></label>
+      <label>会话 ID<input aria-label="外部 Codex 会话 ID" placeholder="可选：直接粘贴会话 ID" value={manualThread} onChange={e=>setManualThread(e.target.value)}/></label>
       <button disabled={!!busy||!manualThread.trim()} onClick={()=>void bind(manualThread,program)}>授权并连接指定会话</button>
       {binding&&<p className="muted">{binding.version} · {new Date(binding.checked_at).toLocaleString()}</p>}
     </details>
