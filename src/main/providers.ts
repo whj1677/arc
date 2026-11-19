@@ -14,6 +14,7 @@ import {readingAnswerTransportSchema,readingPrompt} from './reading-question';
 import {overviewSchema,overviewPrompt} from './overview-result';
 import {overviewReviewSchema} from './overview-review';
 import {overviewResearchSchema} from './overview-research';
+import {probeDsh} from './dsh';
 
 export type OverviewPhase='overview_review'|'overview_research'|'overview_recheck';
 export const overviewPhaseDirectory={overview_review:'review',overview_research:'research',overview_recheck:'recheck'} as const;
@@ -164,14 +165,20 @@ export async function locate(name:string, configured?:string) {
       }
     }
   }
-  throw new Error(`本机 PATH 中未找到「${name}」程序。请先确认已安装，或在下方「诊断与手动指定」中填写完整路径。`);
+  throw new Error(`本机 PATH 中未找到「${name}」程序。请确认已安装并加入 PATH。`);
 }
 
-export async function probeProviders(config:Record<string,string>={},_only?:'codex'):Promise<ProviderProfile[]> {
+export async function probeProviders(config:Record<string,string>={},only?:'codex'|'dsh'):Promise<ProviderProfile[]> {
+  if(only==='codex')return [await probeCodex(config.codex_path)];
+  if(only==='dsh')return [await probeDsh(config.dsh_path)];
+  return Promise.all([probeCodex(config.codex_path),probeDsh(config.dsh_path)]);
+}
+
+async function probeCodex(configured?:string):Promise<ProviderProfile> {
   const base={checked_at:now(),capabilities:{submit_task:'unknown',cancel_run:'unknown',restore:'unsupported',followup:'emulated: 新 run + 有来源上下文，不续接原会话',code_write:'unsupported'}};
-  const result:ProviderProfile[]=[];
+  let file:string|undefined;
   try {
-    const file=await locate('codex',config.codex_path);
+    file=await locate('codex',configured);
     // Verify CLI identity and semver floor before invoking any subcommands.
     const version=(await exec(file,['--version'],{windowsHide:true,timeout:8000})).stdout.trim();
     if(!version.startsWith('codex-cli '))throw new Error('程序输出不是 codex-cli，身份未验证');
@@ -185,7 +192,7 @@ export async function probeProviders(config:Record<string,string>={},_only?:'cod
     if(!help.includes('--output-schema')||!help.includes('--json')||!help.includes('read-only'))throw new Error('版本缺少所需 exec 能力');
     if(!mcpHelpOut.stdout.includes('--json'))throw new Error('版本缺少 mcp list --json 能力，无法校验只读工具范围');
     const auth=authOut?redact((authOut.stdout+authOut.stderr).trim()):'需要在 Codex 客户端/CLI 登录';
-    result.push({
+    return {
       ...base,
       provider_id:'codex',
       requested_name:'codex',
@@ -204,20 +211,20 @@ export async function probeProviders(config:Record<string,string>={},_only?:'cod
         workspace_binding:'native: --cd 固定快照',
         structured_output:'native: --output-schema',
       },
-    });
+    };
   }catch(e){
-    result.push({
+    return {
       ...base,
       provider_id:'codex',
       requested_name:'codex',
       product:'OpenAI Codex',
       transport:'exec / JSONL',
       auth:'unknown',
+      path:file,
       status:'blocked_external',
       reason:redact((e as Error).message),
-    });
+    };
   }
-  return result;
 }
 
 export class JsonLines {
@@ -328,11 +335,11 @@ export function reasoningEffortForRun(run:Pick<Run,'reading_question_id'|'readin
 export async function runCodex(options:{
   run:Run;snapshot:Snapshot;storage:string;resources:string;profile:ProviderProfile;prompt:string;
   event:(value:any)=>void;started:(active:ActiveProcess)=>void;shouldStart?:()=>boolean;
-  phase?:OverviewPhase;
+  phase?:OverviewPhase;outputSchema?:object;outputDirectory?:string;
 }):Promise<{code:number|null;raw:string;stderr:string;protocol_error?:string}> {
   const {run,snapshot,storage,profile,prompt}=options;
   const env=codexChildEnvironment(process.env);
-  const runRoot=run?.binding?.run_id?path.join(storage,'runs',run.binding.run_id):undefined;
+  const runRoot=options.outputDirectory??(run?.binding?.run_id?path.join(storage,'runs',run.binding.run_id):undefined);
   const runDir=runRoot?path.join(runRoot,...(options.phase?[overviewPhaseDirectory[options.phase]]:[])):undefined;
   const workspace=snapshot?.source_snapshot_id?path.join(storage,'snapshots',snapshot.source_snapshot_id):undefined;
   const preflightKey=run?.binding?.run_id&&workspace?JSON.stringify([run.binding.run_id,workspace,profile.path,profile.version]):'';
@@ -371,7 +378,7 @@ export async function runCodex(options:{
   const contextPath=path.join(runRoot!,'source-context.json');
   const contextServer=path.join(options.resources,'dist','context-server.cjs');
   const writes:Promise<unknown>[]=[
-    fs.writeFile(schemaPath,JSON.stringify(options.phase?transportSchema(options.phase==='overview_research'?overviewResearchSchema:overviewReviewSchema):run.overview_format?overviewSchema:run.reading_question_id?readingAnswerTransportSchema():transportSchema())),
+    fs.writeFile(schemaPath,JSON.stringify(options.outputSchema??(options.phase?transportSchema(options.phase==='overview_research'?overviewResearchSchema:overviewReviewSchema):run.overview_format?overviewSchema:run.reading_question_id?readingAnswerTransportSchema():transportSchema()))),
   ];
   const hasContext=await fs.access(contextPath).then(()=>true,()=>false);
   if(!hasContext)writes.push(fs.writeFile(contextPath,JSON.stringify({storage,snapshot})));

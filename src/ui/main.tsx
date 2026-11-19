@@ -6,7 +6,7 @@ import { discoveredFeature } from '../discovered-feature';
 import { functionCallMap } from './function-call-map';
 import { selectedCallStep } from './function-sequence-model';
 import { AnalysisModePicker, catalogGraphState } from './FeatureCatalog';
-import { analysisModes, isAnalysisMode, waitingForAgent, type AnalysisMode } from './discovery-state';
+import { analysisModes, waitingForAgent, type AnalysisMode } from './discovery-state';
 import { projectLabel } from './project-label';
 import { FeatureDevelopment, type FeatureDevelopmentDraft } from './FeatureDevelopment';
 import {
@@ -81,11 +81,12 @@ function App() {
   const [renameFeature, setRenameFeature] = useState('');
   const [eventError, setEventError] = useState('');
   const [activityFocus, setActivityFocus] = useState(0);
-  const [expandMode, setExpandMode] = useState<AnalysisMode>('codex');
+  const [openDesktop, setOpenDesktop] = useState(false);
   const [mcp, setMcp] = useState<any>(null);
   const [settings, setSettings] = useState<any>(null);
   const [connectionError, setConnectionError] = useState('');
 
+  const expandMode = data.default_engine ?? 'codex';
   const analysisMode = analysisModes[expandMode];
   const readingScope = useRef('');
   const emptyEntrance = useRef<'overview' | 'walk'>('overview');
@@ -302,7 +303,7 @@ function App() {
   const featureTask = (data.development_tasks ?? [])
     .filter(task => task.reading?.scenario_id === scenarioId)
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
-  const featureDraft = featureDrafts[scenarioId] ?? { editing: false, request: '', mode: 'codex' as const };
+  const featureDraft = featureDrafts[scenarioId] ?? { editing: false, request: '' };
   const questionLocation = readingQuestionTarget(
     result,
     reading,
@@ -515,22 +516,6 @@ function App() {
       }
     };
   }, [reading, readingKey, loadedKey, projectId]);
-
-  useEffect(() => {
-    let current = true;
-    setExpandMode('codex');
-    if (projectId) {
-      void api
-        .invoke('reading_get', { key: 'feature-expand-mode/' + projectId })
-        .then(v => {
-          if (current) setExpandMode(v?.version === 1 && isAnalysisMode(v.mode) ? v.mode : 'codex');
-        })
-        .catch(e => setError(e.message));
-    }
-    return () => {
-      current = false;
-    };
-  }, [projectId]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -765,14 +750,13 @@ function App() {
       const workspace = await reload();
       const hasReading =
         workspace.explanations.some(e => e.result.binding.project_id === p.project_id) ||
-        workspace.runs.some(r => r.binding.project_id === p.project_id && !r.reading_question_id);
+        workspace.runs.some(r => r.binding.project_id === p.project_id && !r.reading_question_id) ||
+        waitingForAgent(workspace, p.overview_scenario_id || '');
       if (analyze && !hasReading) {
-        const { binding, authorized, workspace_matches } = await api.invoke('executor_status', { project_id: p.project_id });
-        needsConnection = !binding || !authorized || !workspace_matches;
+        needsConnection = expandMode === 'codex_desktop' && !(await desktopReady(p.project_id));
         if (!needsConnection) {
           target = (await api.invoke<Scenario>('overview_create', { project_id: p.project_id })).scenario_id;
-          await api.invoke('reading_save', { key: 'feature-expand-mode/' + p.project_id, value: { mode: 'codex', version: 1 } });
-          await api.invoke('run_start', { scenario_id: target, provider_id: 'codex', submission_key: crypto.randomUUID() });
+          await api.invoke('run_start', { scenario_id: target, mode: expandMode, submission_key: crypto.randomUUID() });
         }
       }
     } finally {
@@ -782,10 +766,9 @@ function App() {
         if (target && projectSwitch.current === switchVersion + 1) {
           navigation.current = { scope: p.project_id + '/' + target, value: { entrance: 'overview', view: 'system', detail_tab: 'details', mode: 'normal' } };
           setScenarioId(target);
-          setExpandMode('codex');
         }
       }
-      if (needsConnection && projectSwitch.current === switchVersion + 1) showMcp();
+      if (needsConnection && projectSwitch.current === switchVersion + 1) showDesktop();
       else setModal('');
     }
   }
@@ -824,8 +807,17 @@ function App() {
   }
 
   function setAnalysisMode(mode: AnalysisMode) {
-    setExpandMode(mode);
-    void action(() => api.invoke('reading_save', { key: 'feature-expand-mode/' + projectId, value: { mode, version: 1 } }));
+    if (pending || mode === expandMode) return;
+    setPending(true);
+    void action(async () => {
+      await api.invoke('default_engine_save', { mode });
+      await reload();
+    }).finally(() => setPending(false));
+  }
+
+  async function desktopReady(id: string) {
+    const { binding, authorized, workspace_matches } = await api.invoke('executor_status', { project_id: id });
+    return binding && authorized && workspace_matches;
   }
 
   async function requestAnalysis(overview = false) {
@@ -836,22 +828,18 @@ function App() {
     const keepFunctions = !overview && reading.view === 'functions';
     try {
       await action(async () => {
-        if (expandMode === 'codex') {
-          const { binding, authorized, workspace_matches } = await api.invoke('executor_status', { project_id: projectId });
-          if (!binding || !authorized || !workspace_matches) {
-            showMcp();
-            return;
-          }
+        if (expandMode === 'codex_desktop' && !(await desktopReady(projectId))) {
+          showDesktop();
+          return;
         }
         const target = overview ? (await api.invoke<Scenario>('overview_create', { project_id: projectId })).scenario_id : scenarioId;
-        if (expandMode === 'mcp') await api.invoke('analysis_prepare', { scenario_id: target });
-        else await api.invoke('run_start', { scenario_id: target, provider_id: 'codex', submission_key: crypto.randomUUID() });
+        await api.invoke('run_start', { scenario_id: target, mode: expandMode, submission_key: crypto.randomUUID() });
         await reload();
         if (activeReadingKey.current !== readingAtStart) return;
         chooseScenario(target, {
           entrance: overview ? 'overview' : 'walk',
           view: overview ? 'system' : keepFunctions ? 'functions' : 'timeline',
-          detail_tab: expandMode === 'codex' ? 'details' : 'agent',
+          detail_tab: expandMode === 'mcp' || expandMode === 'codex_desktop' ? 'agent' : 'details',
           mode: 'normal',
         });
       });
@@ -1005,9 +993,15 @@ function App() {
     setError('');
     setNotice('');
     setConnectionError('');
+    setOpenDesktop(false);
     setModal('settings');
     void api.invoke('settings').then(setSettings).catch(e => setConnectionError('读取应用设置失败：' + (e as Error).message));
     refreshMcp();
+  }
+
+  function showDesktop() {
+    showMcp();
+    setOpenDesktop(true);
   }
 
   function askHere() {
@@ -1079,7 +1073,7 @@ function App() {
     !previewRun.dsh_overview_format &&
     !previewRun.dsh_function_format;
   const needsFunctionGraphs = reading.entrance === 'walk' && reading.view === 'functions' && (functionPreview || (!!result && !result.function_walkthroughs?.length));
-  const generateLabel = expandMode === 'mcp' ? '准备调用图任务' : '用 Codex 生成调用图';
+  const generateLabel = expandMode === 'mcp' ? '准备调用图任务' : '用 ' + analysisMode.name + ' 生成调用图';
   const graphPending = activityRun && ['queued', 'waiting_agent', 'running', 'validating', 'cancel_requested'].includes(activityRun.status);
   const graphWaiting = functionPreview ? previewGraphs?.status === '等待领取' : waitingMcp;
 
@@ -1318,6 +1312,7 @@ function App() {
   const development =
     project && (featureReading || (reading.entrance === 'walk' && reading.view === 'functions')) && result && scenario && (
       <FeatureDevelopment
+        defaultEngine={expandMode}
         project={project}
         scenario={scenario}
         result={result}
@@ -1428,6 +1423,7 @@ function App() {
       askHere={askHere}
       reload={reload}
       showMcp={showMcp}
+      showDesktop={showDesktop}
       viewCompleted={viewCompleted}
       requestAnalysis={requestAnalysis}
       action={action}
@@ -1868,6 +1864,7 @@ function App() {
                   requestedTask={requestedTask}
                   onTaskOpened={() => setRequestedTask('')}
                   onSettings={showMcp}
+                  defaultEngine={expandMode}
                   focusGoal={focusDevelopment}
                   onGoalFocused={() => setFocusDevelopment(false)}
                   back={() => switchView('system')}
@@ -2001,6 +1998,9 @@ function App() {
               notice={notice}
               setNotice={setNotice}
               pending={pending}
+              mode={expandMode}
+              setMode={setAnalysisMode}
+              openDesktop={openDesktop}
               refreshMcp={refreshMcp}
               action={action}
               reload={reload}

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isExecutionMode, type ExecutionMode } from '../shared';
 import type {
   Annotation,
   Explanation,
@@ -62,9 +63,10 @@ export class ReadingService {
     if (this.host.isClosing()) throw Error('Arc 正在退出，未派发新任务');
     const question = requireText(args.question, 4000);
     const mode = args.mode ?? 'codex';
-    if (!['codex', 'mcp'].includes(mode) || !['bound', 'latest'].includes(args.source_mode ?? 'bound')) {
+    if (!isExecutionMode(mode) || !['bound', 'latest'].includes(args.source_mode ?? 'bound')) {
       throw Error('追问通道或来源模式无效');
     }
+    if (mode === 'codex_desktop' && !this.host.getDispatchRun()) throw Error('Codex 桌面会话派发通道不可用');
     const existing = store.all<ReadingQuestion>('reading_question').find(q => q.submission_key === args.submission_key);
     if (existing) {
       if (
@@ -181,9 +183,9 @@ export class ReadingService {
     return this.startRun(item, mode, args.submission_key);
   }
 
-  retry(questionId: string, mode: 'codex' | 'mcp' = 'codex', submissionKey: string): ReadingQuestion {
+  retry(questionId: string, mode: ExecutionMode = 'codex', submissionKey: string): ReadingQuestion {
     const { store } = this.host;
-    if (!/^[\w-]{8,100}$/.test(submissionKey) || !['codex', 'mcp'].includes(mode)) {
+    if (!/^[\w-]{8,100}$/.test(submissionKey) || !isExecutionMode(mode)) {
       throw Error('重试参数无效');
     }
     const item = store.get<ReadingQuestion>('reading_question', questionId);
@@ -199,8 +201,10 @@ export class ReadingService {
     return this.startRun(item, mode, submissionKey);
   }
 
-  private startRun(item: ReadingQuestion, mode: 'codex' | 'mcp', submissionKey: string): ReadingQuestion {
+  private startRun(item: ReadingQuestion, mode: ExecutionMode, submissionKey: string): ReadingQuestion {
     if (this.host.isClosing()) throw Error('Arc 正在退出，未派发新任务');
+    const dispatch=mode==='codex_desktop'?this.host.getDispatchRun():undefined;
+    if(mode==='codex_desktop'&&!dispatch)throw Error('Codex 桌面会话派发通道不可用');
     const runId = id('run');
     const run: Run = {
       binding: {
@@ -211,7 +215,8 @@ export class ReadingService {
         source_snapshot_id: item.source_snapshot_id,
         run_id: runId,
       },
-      provider_id: 'codex',
+      provider_id: mode === 'dsh' ? 'dsh' : 'codex',
+      execution_mode: mode,
       status: mode === 'mcp' ? 'waiting_agent' : 'queued',
       origin: mode === 'mcp' ? 'mcp' : undefined,
       question: item.question,
@@ -235,16 +240,13 @@ export class ReadingService {
       stage: mode === 'mcp' ? 'waiting_agent' : 'queued',
       message: mode === 'mcp'
         ? '问题和源码已固定，等待外部 Agent 通过 MCP 领取；尚未执行分析'
-        : '问题和源码已固定，正在准备 Codex 只读分析',
+        : '问题和源码已固定，正在准备只读分析',
     });
     this.host.changed();
 
-    const dispatch = this.host.getDispatchRun();
     if (dispatch) {
       dispatch(run);
-      return item;
-    }
-    if (mode === 'codex') {
+    } else if (mode !== 'mcp') {
       this.host.launchRun(run);
     }
     return item;

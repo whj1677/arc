@@ -7,8 +7,10 @@ import { sha } from './snapshot';
 import { overviewPhaseDirectory, redact, type ActiveProcess, type OverviewPhase, type runCodex } from './providers';
 import { validateResult } from './validation';
 import { prepareOverview } from './overview-result';
-import { applyOverviewReview, makeOverviewReviewPrompt, parseOverviewReview, type OverviewReview } from './overview-review';
-import { applyOverviewResearch, makeOverviewResearchPrompt } from './overview-research';
+import { applyOverviewReview, makeOverviewReviewPrompt, overviewReviewSchema, parseOverviewReview, type OverviewReview } from './overview-review';
+import { applyOverviewResearch, makeOverviewResearchPrompt, overviewResearchSchema } from './overview-research';
+import { parseDshReply } from './dsh';
+import type { runDshWeb } from './dsh-web';
 
 const terminal = new Set(['completed', 'failed', 'cancelled', 'blocked_external']);
 const parseJsonReply = (raw: string) => JSON.parse(raw.trim());
@@ -19,6 +21,7 @@ export interface OverviewOrchestratorHost {
   readonly resources: string;
   readonly active: Map<string, ActiveProcess>;
   readonly codexRunner: typeof runCodex;
+  readonly dshRunner: typeof runDshWeb;
   isClosing(): boolean;
   changed(): void;
   event(runId: string, event: any, eventId?: string, sequence?: number): void;
@@ -57,7 +60,7 @@ export class OverviewOrchestrator {
     const explanation = store.get<Explanation>('explanation', resultId);
     const previous = store.get<Run>('run', explanation.result.binding.run_id);
     if (
-      previous.provider_id !== 'codex' ||
+      (previous.provider_id !== 'codex' && previous.provider_id !== 'dsh') ||
       !previous.overview_format ||
       previous.status !== 'completed' ||
       explanation.result.fictional ||
@@ -76,7 +79,8 @@ export class OverviewOrchestrator {
     const runId = id('run');
     const run: Run = {
       binding: { ...previous.binding, run_id: runId },
-      provider_id: 'codex',
+      provider_id: previous.provider_id,
+      execution_mode: previous.provider_id,
       status: 'queued',
       question: previous.question,
       title: '自动补查工程关系',
@@ -95,11 +99,6 @@ export class OverviewOrchestrator {
     });
     this.host.changed();
 
-    const dispatch = this.host.getDispatchRun();
-    if (dispatch) {
-      dispatch(run);
-      return run;
-    }
     void this.host.launchRun(run);
     return run;
   }
@@ -170,6 +169,7 @@ export class OverviewOrchestrator {
           run_id: runId,
         },
         provider_id: parent.provider_id,
+        execution_mode: parent.execution_mode,
         overview_parent_run_id: parent.binding.run_id,
         status: mode === 'manual' ? 'waiting_agent' : 'queued',
         question: scenario.question,
@@ -312,7 +312,7 @@ export class OverviewOrchestrator {
     this.host.changed();
 
     const phaseRun: Run = { ...initial, output_path: path.join(directory, 'runs', runId, overviewPhaseDirectory[phase], 'result.json') };
-    const result = await this.host.codexRunner({
+    const options: Parameters<typeof runCodex>[0] = {
       run: phaseRun,
       snapshot,
       storage: directory,
@@ -341,7 +341,11 @@ export class OverviewOrchestrator {
         store.put('run', runId, latest);
         this.host.changed();
       },
-    });
+    };
+    const dsh = initial.provider_id === 'dsh';
+    const result = dsh
+      ? await this.host.dshRunner({ ...options, outputSchema: phase === 'overview_research' ? overviewResearchSchema : overviewReviewSchema })
+      : await this.host.codexRunner(options);
     this.host.active.delete(runId);
 
     const latest = store.get<Run>('run', runId);
@@ -361,7 +365,7 @@ export class OverviewOrchestrator {
     latest.status = 'validating';
     store.put('run', runId, latest);
     this.host.changed();
-    return parseJsonReply(result.raw);
+    return dsh ? parseDshReply(result.raw) : parseJsonReply(result.raw);
   }
 
   async finishOverview(run: Run, snapshot: Snapshot, profile: ProviderProfile, draft: AnalysisResult, inherited?: OverviewReview) {

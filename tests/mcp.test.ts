@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {ArcService} from '../src/main/service';
 import {ArcMcpBridge,bridgeTools} from '../src/main/mcp-bridge';
 import {activity} from '../src/ui/activity';
-async function setup(){const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-mcp-'));const source=path.join(dir,'source');await fs.mkdir(source);await fs.writeFile(path.join(source,'a.ts'),'export const value=1;\n');const service=new ArcService(path.join(dir,'data'),path.resolve('.'));const project=await service.openProject(source);const bridge=new ArcMcpBridge(service,path.resolve('.'),false);await bridge.start();return {dir,source,service,project,bridge};}
+async function setup(){const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-mcp-'));const source=path.join(dir,'source');await fs.mkdir(source);await fs.writeFile(path.join(source,'a.ts'),'export const value=1;\n');const service=new ArcService(path.join(dir,'data'),path.resolve('.'));const project=await service.openProject(source);const bridge=new ArcMcpBridge(service,path.resolve('.'));await bridge.start();return {dir,source,service,project,bridge};}
 test('MCP authenticated stdio round trip, scoped frozen reads, progress, revoke and idempotence',async()=>{
  const {source,service,project,bridge}=await setup();let child:ReturnType<typeof spawn>|undefined;
  try{
@@ -30,6 +30,27 @@ test('MCP authenticated stdio round trip, scoped frozen reads, progress, revoke 
  bridge.disable();await assert.rejects(bridge.call('arc_read_source',{run_id,path:'a.ts'}),/授权/);assert.equal(service.store.get('run',run_id).status,'cancelled');
  }finally{child?.kill();await bridge.close();await service.shutdown();service.store.close();}
 });
+test('registered desktop bridge dispatches only explicitly selected desktop runs',async()=>{
+ const {dir,service,project,bridge}=await setup();
+ try{
+  const {scenario:local}=service.addFeature(project.project_id,'Local','Review locally');
+  const {scenario:external}=service.addFeature(project.project_id,'Desktop','Review in Desktop');
+  const {scenario:dsh}=service.addFeature(project.project_id,'DSH','Review in DSH');
+  for(const provider of ['codex','dsh'])service.store.put('provider',provider,{provider_id:provider,status:'blocked_external',transport:provider==='dsh'?'dsh web':'test',checked_at:new Date().toISOString(),reason:'fixture'});
+  const localRun=await service.startRun(local.scenario_id,'codex','local-arc-run');
+  const dshRun=await service.startRun(dsh.scenario_id,'dsh','local-dsh-run');
+  assert.equal(localRun.execution_mode,'codex');
+  assert.equal(dshRun.provider_id,'dsh');
+  assert.equal(bridge.status().enabled,false);
+  assert.deepEqual(bridge.dispatch.items(project.project_id),[]);
+  const desktop=await service.startRun(external.scenario_id,'codex_desktop','desktop-arc-run');
+  assert.equal(desktop.provider_id,'codex');
+  assert.equal(desktop.execution_mode,'codex_desktop');
+  assert.equal(desktop.status,'waiting_agent');
+  assert.deepEqual(bridge.dispatch.items(project.project_id).map(item=>item.run_id),[desktop.binding.run_id]);
+ }finally{await bridge.close();await service.shutdown();service.store.close();await fs.rm(dir,{recursive:true,force:true});}
+});
+
 test('MCP host configuration accepts Codex and rejects unsupported hosts',async()=>{
  const {service,project,bridge}=await setup();try{
   await bridge.enable(project.project_id);
@@ -155,6 +176,12 @@ test('ARC requirement analysis waits for reviewed scope, keeps one task and crea
   const dispatch=bridge.dispatch.items(project.project_id).at(-1)!;
   // Only the protocol delivery state is simulated here; real UI/CLI acceptance is separate.
   service.store.put('external_dispatch',dispatch.dispatch_id,{...dispatch,state:'awaiting_claim'});
+  const local=await service.engineering.createTask({project_id:project.project_id,goal:'Another local task',submission_key:'other-local'});
+  const localAttempt=service.engineering.startAttempt(local.task_id,{provider_id:'dsh',model:'fixture',origin:'arc',write_scope:[]});
+  await assert.rejects(bridge.call('arc_claim_dispatch',{dispatch_id:dispatch.dispatch_id}),/已有开发任务/);
+  assert.equal(bridge.dispatch.items(project.project_id).at(-1)!.state,'awaiting_claim');
+  await service.engineering.finishTask({task_id:local.task_id,expected_version:service.engineering.task(local.task_id).version,submission_key:'finish-other-local',status:'cancelled'});
+  service.engineering.updateAttempt(localAttempt.attempt_id,{status:'cancelled'});
   const claim=await bridge.call('arc_claim_dispatch',{dispatch_id:dispatch.dispatch_id});
   assert.equal(claim.phase,'analysis');assert.deepEqual(claim.allowed_files,[]);assert.match(claim.instructions,/只读需求分析/);
   await assert.rejects(bridge.queueDevelopment({project_id:project.project_id,task_id:task.task_id,goal:'premature',phase:'execution',scope:['a.ts'],submission_key:'premature'}));
@@ -185,6 +212,21 @@ test('ARC requirement analysis waits for reviewed scope, keeps one task and crea
   assert.deepEqual(done.approval,execute.approval);assert.deepEqual(service.engineering.history('task',task.task_id).find(item=>item.version===done.approval.reviewed_version).requirement_package,design);
   assert.equal(done.status,'completed');assert.equal(done.attempt_ids.length,2);assert.equal(done.changes[0].path,'a.ts');
   assert.deepEqual((await bridge.call('arc_engineering_context',{workspace_path:source,task_id:task.task_id,view:'strict'})).entries,[]);
+ }finally{await bridge.close();await service.shutdown();service.store.close();await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('MCP-only development waits for a manual claim and keeps the approval gate',async()=>{
+ const {dir,source,service,project,bridge}=await setup();
+ try{
+  const task=await bridge.queueDevelopment({project_id:project.project_id,goal:'Review a.ts',phase:'analysis',submission_key:'save-manual'},'mcp');
+  assert.equal(task.execution_mode,'mcp');
+  assert.deepEqual(bridge.dispatch.items(project.project_id),[]);
+  const input={workspace_path:source,task_id:task.task_id,submission_key:'claim-manual'};
+  const claim=await bridge.call('arc_begin_development',input);
+  assert.equal(claim.phase,'analysis');
+  assert.deepEqual(claim.allowed_files,[]);
+  assert.deepEqual((await bridge.call('arc_begin_development',input)).task.attempt_ids,claim.task.attempt_ids);
+  await assert.rejects(bridge.queueDevelopment({project_id:project.project_id,task_id:task.task_id,expected_version:claim.task.version,goal:'Execute',phase:'execution',scope:['a.ts'],submission_key:'premature-manual'},'mcp'),/审阅|已有开发任务/);
  }finally{await bridge.close();await service.shutdown();service.store.close();await fs.rm(dir,{recursive:true,force:true});}
 });
 

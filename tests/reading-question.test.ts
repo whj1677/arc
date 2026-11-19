@@ -5,15 +5,16 @@ import os from 'node:os';
 import path from 'node:path';
 import {ArcService} from '../src/main/service';
 import {ArcMcpBridge} from '../src/main/mcp-bridge';
+import type {runDshWeb} from '../src/main/dsh-web';
 import {makePrompt,type runCodex} from '../src/main/providers';
 import {readingAnswerTransportSchema} from '../src/main/reading-question';
 import {buildReadingContext} from '../src/main/prompt-context';
 import type {AnalysisResult,ReadingQuestion,Run,Snapshot} from '../src/shared';
 
-async function setup(t:any,codexRunner?:typeof runCodex) {
+async function setup(t:any,codexRunner?:typeof runCodex,dshRunner?:typeof runDshWeb) {
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-reading-')),root=path.join(dir,'中文 工程');
   await fs.mkdir(path.join(root,'src'),{recursive:true});await fs.writeFile(path.join(root,'src/main.ts'),'export function calculate(x:number) {\n  return x + 3;\n}\n');
-  const service=new ArcService(path.join(dir,'data'),path.resolve('.'),undefined,codexRunner),project=await service.openProject(root);
+  const service=new ArcService(path.join(dir,'data'),path.resolve('.'),undefined,codexRunner,dshRunner),project=await service.openProject(root);
   const {scenario}=service.addFeature(project.project_id,'计算数值','返回的数值来自哪里？'),snapshot=service.store.get<Snapshot>('snapshot',project.snapshot_id);
   t.after(async()=>{await service.shutdown();service.store.close();await fs.rm(dir,{recursive:true,force:true});});
   return {dir,root,service,project,scenario,snapshot};
@@ -65,6 +66,52 @@ function answer(service:ArcService,q:ReadingQuestion) {
   const run=service.store.get<Run>('run',q.run_id),snapshot=service.store.get<Snapshot>('snapshot',q.source_snapshot_id),file=snapshot.files[0];
   return {schema_version:'reading-1' as const,question_id:q.question_id,binding:run.binding,answer:'返回值由输入 x 加三得到。[answer-source]',evidence:[{evidence_id:'answer-source',source_snapshot_id:snapshot.source_snapshot_id,path:file.path,line_start:1,line_end:3,content_sha256:file.content_sha256,role:'definition' as const,note:'calculate 的返回实现'}],uncertainties:['调用者尚未确认']};
 }
+
+test('reading routes local engines and explicit external modes with the bridge installed',async t=>{
+  const calls:string[]=[];
+  function reply(run:Run){
+    const question=service.store.get<ReadingQuestion>('reading_question',run.reading_question_id!);
+    return {code:0,raw:JSON.stringify(answer(service,question)),stderr:''};
+  }
+  const {service,project,scenario}=await setup(t,async options=>{
+    calls.push('codex');
+    return reply(options.run);
+  },async options=>{
+    calls.push('dsh');
+    const run=service.store.all<Run>('run').find(run=>run.output_path===options.run.output_path)!;
+    return reply(run);
+  });
+  const bridge=new ArcMcpBridge(service,path.resolve('.'));
+  try {
+    const checked_at=new Date().toISOString();
+    service.store.put('provider','codex',{status:'available',checked_at});
+    service.store.put('provider','dsh',{status:'available',transport:'dsh web',checked_at});
+    const input={project_id:project.project_id,scenario_id:scenario.scenario_id,target:{kind:'file' as const,id:'src/main.ts'},question:'说明此文件的返回值。'};
+    const direct=await service.askReading({...input,submission_key:'route-direct'});
+    const dsh=await service.askReading({...input,mode:'dsh',submission_key:'route-dsh'});
+    await Promise.all(service.executing.values());
+    for(const [mode,question] of [['codex',direct],['dsh',dsh]] as const){
+      const run=service.store.get<Run>('run',question.run_id);
+      assert.equal(run.execution_mode,mode);
+      assert.equal(run.provider_id,mode);
+      assert.equal(run.status,'completed');
+      assert.equal(run.origin,undefined);
+    }
+    assert.equal(bridge.status().enabled,false);
+    assert.deepEqual(bridge.dispatch.items(),[]);
+
+    await bridge.enable(project.project_id);
+    const desktop=await service.askReading({...input,mode:'codex_desktop',submission_key:'route-desktop'});
+    const manual=await service.askReading({...input,mode:'mcp',submission_key:'route-manual'});
+    assert.equal(service.store.get<Run>('run',desktop.run_id).status,'waiting_agent');
+    assert.deepEqual(bridge.dispatch.items().map(item=>item.run_id),[desktop.run_id]);
+    assert.equal(service.store.get<Run>('run',manual.run_id).status,'waiting_agent');
+    await assert.rejects(bridge.call('arc_begin_analysis',{request_id:'claim-desktop-manually',question_id:desktop.question_id}),/其他执行通道/);
+    const claim=await bridge.call('arc_begin_analysis',{request_id:'claim-manual-route',question_id:manual.question_id});
+    assert.equal(claim.binding.run_id,manual.run_id);
+    assert.deepEqual(calls.sort(),['codex','dsh']);
+  } finally {await bridge.close();}
+});
 
 test('reading question freezes selected explanation and clues, carries answers forward, and restores from storage',async t=>{
   const {service,project,scenario,snapshot}=await setup(t),result=await savedResult(service,project,scenario,snapshot);

@@ -101,7 +101,7 @@ export function EntityFormModal({
               <li>在 ARC 内分析全貌</li>
               <li>原位阅读与追问</li>
             </ol>
-            <p className="muted">首次分析需要连接 Codex 的同目录会话。已有分析记录的工程会恢复阅读。</p>
+            <p className="muted">首次分析使用默认引擎。已有分析记录的工程会恢复阅读。</p>
           </div>
         </>
       )}

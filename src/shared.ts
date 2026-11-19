@@ -1,6 +1,10 @@
 import type { AnalysisResult, RunBinding, ProviderId, SourceEvidence } from '../contracts/agent-adapter';
 export type { AnalysisResult, RunBinding, SourceEvidence, ProviderId };
 export type {ReadingGuide} from '../contracts/agent-adapter';
+export type ExecutionMode = 'codex' | 'dsh' | 'codex_desktop' | 'mcp';
+export function isExecutionMode(value: unknown): value is ExecutionMode {
+  return value === 'codex' || value === 'dsh' || value === 'codex_desktop' || value === 'mcp';
+}
 export interface SourceFile { path: string; content_sha256: string; bytes: number; line_count: number; encoding: string }
 export interface Snapshot {
   source_snapshot_id: string; project_id: string; captured_at: string; root_path: string;
@@ -31,10 +35,11 @@ export interface ReadingQuestion {
 }
 export interface ReadingAsk {
   project_id:string;scenario_id?:string;result_id?:string|null;target:ReadingTarget;question:string;
-  source_mode?:'bound'|'latest';mode?:'codex'|'mcp';submission_key:string;correction?:boolean;previous_question_id?:string;
+  source_mode?:'bound'|'latest';mode?:ExecutionMode;submission_key:string;correction?:boolean;previous_question_id?:string;
 }
 export interface Run {
   binding: RunBinding; provider_id: ProviderId; status: string; created_at: string; ended_at?: string;
+  execution_mode?: ExecutionMode;
   question: string; title: string; error?: string; external_id?: string; pid?: number;
   previous_run_id?: string; submission_key: string; output_path: string; runtime_version?: string;
   validation?: { structure: string; anchors: string; errors: string[]; semantic: string };
@@ -86,7 +91,7 @@ export interface ReadingState {
   feature_reading_version?: number;
 }
 export interface AnalysisRequest { project_analysis?:true; project_id:string; scenario_id:string; source_snapshot_id:string; question_revision_id?:string; created_at?:string; development_task_id?:string }
-export interface WorkspaceData { projects: Project[]; features: Feature[]; scenarios: Scenario[]; revisions: Revision[]; annotations: Annotation[]; runs: Run[]; explanations: Explanation[]; providers: ProviderProfile[]; snapshots: Snapshot[]; requested_analysis?:AnalysisRequest; questions?:ReadingQuestion[]; development_tasks?:import('./engineering').EngineeringTask[] }
+export interface WorkspaceData { projects: Project[]; features: Feature[]; scenarios: Scenario[]; revisions: Revision[]; annotations: Annotation[]; runs: Run[]; explanations: Explanation[]; providers: ProviderProfile[]; snapshots: Snapshot[]; requested_analysis?:AnalysisRequest; questions?:ReadingQuestion[]; development_tasks?:import('./engineering').EngineeringTask[]; default_engine?:ExecutionMode }
 export interface ArcApi {
   invoke<T = any>(operation: string, args?: unknown): Promise<T>;
   onEvent(callback: (event: { type: string; [key: string]: any }) => void): () => void;

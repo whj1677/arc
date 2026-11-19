@@ -5,7 +5,7 @@
    ========================================================================== */
 
 :root {
-  --font-sans: "Inter", "Segoe UI", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;
+  --font-sans: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
 
   --bg: #f4f6f2;
@@ -2373,26 +2373,40 @@ dialog::backdrop {
 /* ==========================================================================
    Agent Connection Settings Cards
    ========================================================================== */
-.agent-onboarding-guide {
+.agent-local-engines { margin-top: 0; }
+.agent-local-engines > p { margin: 6px 0 12px; }
+.agent-engine-choices {
   display: grid;
-  gap: 4px;
-  padding: 12px 14px;
-  margin-bottom: 12px;
-  border: 1px solid #bfd4c4;
-  border-left: 3px solid var(--accent);
-  border-radius: var(--radius-md);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 218px), 1fr));
+  gap: 8px;
+}
+.agent-engine-choices > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--surface-tint);
+  text-align: start;
+}
+.agent-engine-choices > button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent-hover);
   background: var(--soft);
 }
-.agent-onboarding-guide strong {
-  font-size: 13px;
-  color: var(--accent-hover);
+.agent-engine-choices .agent-state { flex: none; }
+.agent-engine-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
 }
-.agent-onboarding-guide p {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.65;
-  color: var(--ink-secondary);
-}
+.agent-engine-actions > small { color: var(--muted); }
+.agent-settings-advanced > summary { cursor: pointer; font-weight: 550; }
+.agent-settings-advanced > .agent-connection-card { margin-top: 12px; }
 .agent-error-box {
   display: grid;
   gap: 3px;

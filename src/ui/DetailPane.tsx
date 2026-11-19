@@ -21,6 +21,7 @@ import { FileSummary } from './FileSummary';
 import { ReadingQuestions } from './ReadingQuestions';
 import { SourceExcerpt } from './SourceExcerpt';
 import { RunActivity } from './RunActivity';
+import { activeStatuses, runEngineName } from './activity';
 import { AnalysisError } from './AnalysisError';
 import { annotationTarget } from './annotation';
 import { edgeExplanation } from './presentation';
@@ -88,6 +89,7 @@ export interface DetailPaneProps {
   askHere: () => void;
   reload: () => Promise<WorkspaceData>;
   showMcp: () => void;
+  showDesktop: () => void;
   viewCompleted: () => void;
   requestAnalysis: (overview?: boolean) => Promise<void>;
   action: <T>(fn: () => Promise<T>, message?: string) => Promise<T | undefined>;
@@ -153,6 +155,7 @@ export function DetailPane({
   askHere,
   reload,
   showMcp,
+  showDesktop,
   viewCompleted,
   requestAnalysis,
   action,
@@ -488,6 +491,7 @@ export function DetailPane({
               disabled={project.fictional}
               reload={reload}
               settings={showMcp}
+              desktopSettings={showDesktop}
             />
           </div>
         )}
@@ -562,7 +566,7 @@ export function DetailPane({
             {waitingMcp && (
               <div className="waiting-summary">
                 <h3>等待 Agent 对话领取</h3>
-                <p>所选功能已准备，尚未开始模型调用。请在已接入 Arc 的 Codex 对话中领取。</p>
+                <p>任务已准备。请在已接入 ARC MCP 的对话中领取。</p>
               </div>
             )}
             <details className="run-start-options" open={(!activityRun && !waitingMcp) || undefined}>
@@ -603,7 +607,7 @@ export function DetailPane({
                   <article className="run" key={run.binding.run_id}>
                     <div className="row between">
                       <strong>
-                        {run.origin === 'manual_import' ? '手动导入 · 非联调' : run.origin === 'mcp' ? 'MCP · Agent 主动写回' : run.provider_id}
+                        {run.origin === 'manual_import' ? '手动导入 · 非联调' : runEngineName(run)}
                       </strong>
                       <span className="tag">{statuses[run.status] || run.status}</span>
                     </div>
@@ -629,14 +633,14 @@ export function DetailPane({
                         {run.validation.semantic}
                       </small>
                     )}
-                    {run.origin === 'mcp' ? (
+                    {run.origin === 'mcp' && run.execution_mode !== 'codex_desktop' ? (
                       <small>MCP 任务请在原 Agent 对话继续；撤销只关闭 Arc 的读写权限。</small>
-                    ) : ['running', 'queued', 'cancel_requested'].includes(run.status) ? (
+                    ) : activeStatuses.has(run.status) ? (
                       <button
                         disabled={run.status === 'cancel_requested'}
                         onClick={() => void action(() => api.invoke('run_cancel', { run_id: run.binding.run_id }))}
                       >
-                        请求停止
+                        {run.execution_mode === 'codex_desktop' ? '撤销派发' : '请求停止'}
                       </button>
                     ) : (
                       <button

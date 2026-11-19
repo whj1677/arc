@@ -1,7 +1,8 @@
-import React from 'react';
+import React, {useEffect,useState} from 'react';
 import type { Project, Scenario, WorkspaceData } from '../shared';
 import { ExternalExecutor } from './EngineeringSections';
 import { EngineeringManagement } from './EngineeringWorkspace';
+import {analysisModes,type AnalysisMode} from './discovery-state';
 
 const api = window.arc;
 
@@ -19,6 +20,9 @@ export interface SettingsModalProps {
   notice: string;
   setNotice: (value: string) => void;
   pending: boolean;
+  mode: AnalysisMode;
+  openDesktop: boolean;
+  setMode: (mode: AnalysisMode) => void;
   refreshMcp: () => void;
   action: <T>(fn: () => Promise<T>, message?: string) => Promise<T | undefined>;
   reload: () => Promise<WorkspaceData>;
@@ -42,6 +46,9 @@ export function SettingsModal({
   notice,
   setNotice,
   pending,
+  mode,
+  openDesktop,
+  setMode,
   refreshMcp,
   action,
   reload,
@@ -50,6 +57,23 @@ export function SettingsModal({
   onOpenBuildConfig,
   onOpenRenameScenario,
 }: SettingsModalProps) {
+  const [detecting,setDetecting]=useState(false);
+  const [desktopExpanded,setDesktopExpanded]=useState(openDesktop);
+  const [detectionError,setDetectionError]=useState('');
+  async function detectEngines(){
+    setDetecting(true);
+    setDetectionError('');
+    try {
+      await api.invoke('providers_probe');
+      await reload();
+    } catch(e) {
+      setDetectionError((e as Error).message);
+    } finally {
+      setDetecting(false);
+    }
+  }
+  useEffect(()=>{void detectEngines();},[]);
+
   return (
     <div className="settings-body agent-settings">
       {error && (
@@ -64,31 +88,43 @@ export function SettingsModal({
       )}
       {notice && <p role="status">{notice}</p>}
 
-      {project && !project.fictional && (
-        <section className="agent-onboarding-guide" aria-label="新工程连接指引">
-          <strong>新工程接入只需两步</strong>
-          <p>
-            任选下方一种方式即可开始分析：推荐直接连接 <b>Codex 桌面端</b>（自动派发）；如未安装 Codex CLI 或习惯自己开对话，可展开下方{' '}
-            <b>外部 Agent 自行领取 · MCP</b> 授权后由外部对话领取任务。
-          </p>
-        </section>
-      )}
+      <section className="provider-card agent-local-engines" aria-labelledby="local-engines-title">
+        <h3 id="local-engines-title">本机引擎（开箱即用）</h3>
+        <p>默认引擎适用于所有工程的分析、提问和新需求。</p>
+        <div className="agent-engine-choices" role="group" aria-label="默认本机引擎">
+          {(['codex','dsh'] as const).map(engine=>{
+            const profile=data.providers.find(p=>p.provider_id===engine);
+            const status=detecting?'检测中…':profile?.status==='available'?'已就绪':profile?.status==='auth_required'?'需登录':profile?.path?'不可用':profile?'未检测到':'待检测';
+            return <button key={engine} aria-pressed={mode===engine} aria-describedby={`agent-state-${engine}`} disabled={pending} onClick={()=>setMode(engine)}>
+              <strong>{analysisModes[engine].option}</strong>
+              <span id={`agent-state-${engine}`} aria-hidden="true" className={`agent-state${profile?.status==='available'&&!detecting?' ready':''}`} title={profile?.reason}>
+                {status}
+              </span>
+            </button>;
+          })}
+        </div>
+        <div className="agent-engine-actions">
+          <small role="status">当前默认：{analysisModes[mode].option}</small>
+          <button disabled={detecting||pending} onClick={()=>void detectEngines()}>检测本机引擎</button>
+        </div>
+        {detectionError&&<p role="alert" className="warning">{detectionError}</p>}
+        {!detecting&&data.providers.filter(p=>p.provider_id===mode&&p.status!=='available').map(p=><p key={p.provider_id} className="muted">{p.status==='auth_required'?`请先在 ${analysisModes[mode].name} 中登录，再检测。`:p.reason}</p>)}
+      </section>
 
-      {project && !project.fictional ? (
-        <ExternalExecutor
-          key={projectId}
-          projectId={projectId}
-          projectPath={project.root_path}
-          programHint={data.providers.find(p => p.provider_id === 'codex')?.path || ''}
-          onBound={refreshMcp}
-        />
-      ) : (
-        <p className="scope-box">打开一个实际工程，即可查找并连接该工程的 Codex 会话。</p>
-      )}
+      <details className="provider-card agent-settings-advanced" open={desktopExpanded} onToggle={event=>setDesktopExpanded(event.currentTarget.open)}>
+        <summary>高级：绑定 Codex 桌面会话（可选）</summary>
+        <p>{analysisModes.codex_desktop.description}。</p>
+        <button aria-pressed={mode==='codex_desktop'} disabled={pending} onClick={()=>setMode('codex_desktop')}>设为默认引擎</button>
+        {desktopExpanded&&(project&&!project.fictional?(
+          <ExternalExecutor key={projectId} projectId={projectId} projectPath={project.root_path}
+            programHint={data.providers.find(p=>p.provider_id==='codex')?.path||''} onBound={refreshMcp}/>
+        ):<p className="scope-box">打开一个实际工程，即可查找并连接该工程的 Codex 会话。</p>)}
+      </details>
 
       <details className="provider-card agent-settings-advanced">
-        <summary>外部 Agent 自行领取 · MCP</summary>
-        <p>让已接入 MCP 的 Codex 对话来 ARC 领取你准备的分析任务。</p>
+        <summary>外部 Agent · MCP</summary>
+        <p>由已接入 ARC MCP 的 Agent 自行领取已保存的任务。</p>
+        <button aria-pressed={mode==='mcp'} disabled={pending} onClick={()=>setMode('mcp')}>设为默认引擎</button>
         {scenario && (
           <div className="scope-box">
             <strong>{scenario.title}</strong>

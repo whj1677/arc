@@ -2,6 +2,10 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {PassThrough} from 'node:stream';
 import {EventEmitter} from 'node:events';
+import {spawn} from 'node:child_process';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {AcpConnection,redact,CodexTurnErrors,codexChildEnvironment,runCodex,readingWatchdog,isSupportedCodexVersion,codexFeatureFlags,reasoningEffortForRun} from '../src/main/providers';
 
 test('direct Codex execution cannot inherit a desktop tool pipe or the calling session identity',()=>{
@@ -13,6 +17,32 @@ test('direct Codex execution cannot inherit a desktop tool pipe or the calling s
 
 test('a changed executable cannot reuse a previously accepted Codex profile',async()=>{
   await assert.rejects(runCodex({profile:{path:process.execPath,version:'codex-cli 0.163.0-alpha.10.2'}} as any),/Codex 程序版本已变化.*尚未派发分析/);
+});
+
+test('DSH result tool stages one schema-valid result in its run directory',async()=>{
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'arc-staged-result-'));
+  const contextPath=path.join(directory,'source-context.json');
+  const resultPath=path.join(directory,'submitted-result.json');
+  await fs.writeFile(contextPath,JSON.stringify({
+    resultSchema:{type:'object',properties:{summary:{type:'string'}},required:['summary'],additionalProperties:false},
+  }));
+  const child=spawn(process.execPath,[path.resolve('dist/context-server.cjs'),contextPath],{stdio:['pipe','pipe','pipe'],windowsHide:true});
+  const client=new AcpConnection(child,()=>{});
+  try{
+    const {tools}=await client.request('tools/list',{});
+    assert.deepEqual(tools.map((tool:{name:string})=>tool.name),['arc_list_files','arc_read_source','arc_submit_result']);
+    const submit=(args:object)=>client.request('tools/call',{name:'arc_submit_result',arguments:args});
+    assert.equal((await submit({summary:123})).isError,true);
+    await assert.rejects(fs.access(resultPath),{code:'ENOENT'});
+    assert.equal((await submit({summary:'approved result'})).isError,undefined);
+    assert.equal((await submit({summary:'replacement'})).isError,true);
+    assert.deepEqual(JSON.parse(await fs.readFile(resultPath,'utf8')),{summary:'approved result'});
+  }finally{
+    const closed=new Promise<void>(resolve=>child.once('close',()=>resolve()));
+    child.stdin.end();
+    await closed;
+    await fs.rm(directory,{recursive:true,force:true});
+  }
 });
 
 test('reading questions and detailed function analysis both stop after five minutes',async t=>{

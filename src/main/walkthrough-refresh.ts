@@ -1,4 +1,4 @@
-import type { Explanation, Run, Snapshot } from '../shared';
+import type { ExecutionMode, Explanation, Run, Snapshot } from '../shared';
 import type { EngineeringService } from './engineering-service';
 import { Store, id, now } from './store';
 import { redact } from './providers';
@@ -11,13 +11,13 @@ export interface WalkthroughRefreshHost {
   refresh(projectId: string): Promise<Snapshot>;
   startRun(
     scenarioId: string,
-    providerId: string,
+    mode: Exclude<ExecutionMode, 'mcp'>,
     submissionKey: string,
     previousRunId?: string,
     options?: { sourceSnapshotId?: string; developmentTaskId?: string; refreshFromResultId?: string; projectAnalysis?: boolean },
   ): Promise<Run>;
   cancel(runId: string): Promise<Run>;
-  getDispatchRun(): ((run: Run) => void) | undefined;
+  prepareManual(scenarioId: string, taskId: string): unknown;
 }
 
 export class WalkthroughRefreshCoordinator {
@@ -118,13 +118,18 @@ export class WalkthroughRefreshCoordinator {
       if (current.walkthrough?.update_id !== updateId || !['completed', 'failed', 'blocked', 'cancelled'].includes(current.status)) {
         return;
       }
-      const run = await this.host.startRun(reading.scenario_id, 'codex', submissionKey, undefined, {
+      const mode = current.execution_mode ?? (current.analysis_channel === 'dsh' ? 'dsh' : 'codex');
+      if (mode === 'mcp') {
+        this.host.prepareManual(reading.scenario_id, taskId);
+        return;
+      }
+      const run = await this.host.startRun(reading.scenario_id, mode, submissionKey, undefined, {
         sourceSnapshotId: snapshot.source_snapshot_id,
         developmentTaskId: taskId,
         refreshFromResultId: current.walkthrough!.previous_result_id,
       });
       runId = run.binding.run_id;
-      const dispatched = !!this.host.getDispatchRun();
+      const dispatched = mode === 'codex_desktop';
       this.host.engineering.saveWalkthrough(
         taskId,
         {

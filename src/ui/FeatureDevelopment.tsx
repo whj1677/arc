@@ -1,21 +1,22 @@
 import React,{useEffect,useState} from 'react';
 import type {Project,Scenario,AnalysisResult,ReadingTarget} from '../shared';
 import type {EngineeringTask,TaskReadingBinding} from '../engineering';
+import {analysisModes,type AnalysisMode} from './discovery-state';
 
 const api=window.arc;
 const developmentStates:Record<EngineeringTask['status'],string>={pending:'待执行',running:'开发执行中',blocked:'开发需要处理',completed:'开发结果已保存',failed:'开发失败，成果已保留',cancelled:'开发已取消，成果已保留',interrupted:'开发中断，成果已保留'};
 const analysisStates:Record<EngineeringTask['status'],string>={pending:'等待开始',running:'分析中',blocked:'需要处理',completed:'已保存',failed:'失败',cancelled:'已取消',interrupted:'已中断'};
 const walkthroughStates={pending:'等待更新功能走读',running:'正在按新代码更新功能走读',completed:'新版功能走读已保存',failed:'功能走读更新失败'};
 
-export interface FeatureDevelopmentDraft {editing:boolean;request:string;mode:'codex'}
+export interface FeatureDevelopmentDraft {editing:boolean;request:string}
 type Props={
   project:Project;scenario:Scenario;result:AnalysisResult;target:ReadingTarget;evidence?:TaskReadingBinding['evidence'];task?:EngineeringTask;
-  draft:FeatureDevelopmentDraft;onDraft:(patch:Partial<FeatureDevelopmentDraft>)=>void;
+  defaultEngine:AnalysisMode;draft:FeatureDevelopmentDraft;onDraft:(patch:Partial<FeatureDevelopmentDraft>)=>void;
   reload:()=>Promise<unknown>;onViewResult:(resultId:string)=>void;onOpenTask:(taskId:string)=>void;
 };
 
 /** A small in-place action over the existing reading and development channels. */
-export function FeatureDevelopment({project,scenario,result,target,evidence,task,draft,onDraft,reload,onViewResult,onOpenTask}:Props){
+export function FeatureDevelopment({project,scenario,result,target,evidence,task,defaultEngine,draft,onDraft,reload,onViewResult,onOpenTask}:Props){
   const {editing,request}=draft,setEditing=(value:boolean)=>onDraft({editing:value}),setRequest=(value:string)=>onDraft({request:value});
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[currentTask,setCurrentTask]=useState(task);
   useEffect(()=>{setError('');setNotice('');},[scenario.scenario_id,task?.task_id]);
@@ -28,7 +29,7 @@ export function FeatureDevelopment({project,scenario,result,target,evidence,task
     setBusy(true);setError('');setNotice('');
     try{
       const saved=await api.invoke<EngineeringTask>('development_start',{project_id:project.project_id,task_id:task?.task_id,expected_version:activeTask?.version,goal:request,phase:'analysis',submission_key:crypto.randomUUID(),reading:task?.reading??{feature_id:scenario.feature_id,scenario_id:scenario.scenario_id,result_id:result.result_id,source_snapshot_id:result.binding.source_snapshot_id,target,...(source?{evidence:source}:{})}});
-      onDraft({request:'',editing:false});setNotice(`${task?'已在原任务追加要求':'已保存要求和功能关联'}，等待 Codex 只读分析。`);await reload();onOpenTask(saved.task_id);return saved;
+      onDraft({request:'',editing:false});setNotice(saved.execution_mode==='mcp'?'需求已保存，等待外部 Agent 领取。':'需求与功能关联已保存，正在准备只读分析。');await reload();onOpenTask(saved.task_id);return saved;
     }catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
   async function retry(){
@@ -38,12 +39,12 @@ export function FeatureDevelopment({project,scenario,result,target,evidence,task
   return <section className="feature-development" aria-label="围绕当前位置修改">
     <div className="row between"><div><span className="eyebrow">从理解进入修改</span><h3>围绕这里修改</h3></div><button className="secondary" disabled={busy||running||project.fictional} onClick={()=>{setEditing(!editing);setError('');}}>{editing?'收起':task?'续接此功能任务':'围绕这里修改'}</button></div>
     {!task&&!editing&&<p>保留当前功能、走读版本、源码快照和选中位置；只需描述希望改变的行为。</p>}
-    {activeTask&&<div className="feature-task-status" role="status"><strong>{activeTask.workflow==='ready'?'需求包待审阅':activeTask.workflow==='analysis'?`Codex 需求分析 · ${analysisStates[activeTask.status]}`:developmentStates[activeTask.status]}</strong><span>验证：{verificationStatus==='passed'?'通过':verificationStatus==='failed'?'失败':verificationStatus==='stale'?'代码已变化，需复验':verificationStatus==='partial'?'部分完成':'未执行'}</span>{walkthrough&&<span className={walkthrough.status==='failed'?'warning':''}>{walkthroughStates[walkthrough.status]}</span>}<button className="quiet" onClick={()=>onOpenTask(activeTask.task_id)}>任务与验证</button></div>}
+    {activeTask&&<div className="feature-task-status" role="status"><strong>{activeTask.workflow==='ready'?'需求包待审阅':activeTask.workflow==='analysis'?`需求分析 · ${analysisStates[activeTask.status]}`:developmentStates[activeTask.status]}</strong><span>验证：{verificationStatus==='passed'?'通过':verificationStatus==='failed'?'失败':verificationStatus==='stale'?'代码已变化，需复验':verificationStatus==='partial'?'部分完成':'未执行'}</span>{walkthrough&&<span className={walkthrough.status==='failed'?'warning':''}>{walkthroughStates[walkthrough.status]}</span>}<button className="quiet" onClick={()=>onOpenTask(activeTask.task_id)}>任务与验证</button></div>}
     {task&&<details className="feature-task-origin"><summary>原任务与后续要求</summary><p>{task.goal}</p>{task.requests?.map((item,index)=><p key={item.submission_key}>补充 {index+1}：{item.text}</p>)}<small>任务 {task.task_id} · 新会话可凭此 ID 读取完整记录。</small></details>}
     {walkthrough?.status==='completed'&&walkthrough.result_id&&<div className="row">{walkthrough.result_id===result.result_id?<span className="tag feature-current-version" role="status">当前已是新版走读</span>:<button className="primary" onClick={()=>onViewResult(walkthrough.result_id!)}>查看同一功能的新版走读</button>}</div>}
     {walkthrough?.status==='pending'&&!running&&<div className="row"><button disabled={busy} onClick={()=>void retry()}>继续走读更新</button></div>}
     {walkthrough?.status==='failed'&&<div className="feature-refresh-error"><p className="warning">{walkthrough.error||'分析未完成'}。旧说明仍绑定其原始来源，开发结果没有回滚。</p><button disabled={busy||running} onClick={()=>void retry()}>重试功能走读更新</button></div>}
-    {editing&&<form onSubmit={submit}>{source&&<small aria-label="本任务关联源码">关联源码 · {source.path}:{source.line_start}–{source.line_end}</small>}<label>{task?'追加到原任务的修改要求':'希望怎样修改这里'}<textarea aria-label="围绕这里修改的要求" required maxLength={20000} placeholder="直接描述需要改变和必须保持不变的行为。" value={request} onChange={e=>setRequest(e.target.value)}/></label><small>Codex 先只读分析。你可以在同一任务审阅需求包、调整范围并确认执行。</small><div className="row"><button className="primary" disabled={busy||!request.trim()}>{busy?'保存中…':'分析需求'}</button><button type="button" onClick={()=>setEditing(false)}>取消</button></div></form>}
+    {editing&&<form onSubmit={submit}>{source&&<small aria-label="本任务关联源码">关联源码 · {source.path}:{source.line_start}–{source.line_end}</small>}<label>{task?'追加到原任务的修改要求':'希望怎样修改这里'}<textarea aria-label="围绕这里修改的要求" required maxLength={20000} placeholder="直接描述需要改变和必须保持不变的行为。" value={request} onChange={e=>setRequest(e.target.value)}/></label><small>{analysisModes[activeTask?.execution_mode??defaultEngine].name} 负责只读分析。你可以在同一任务审阅需求包、调整范围并确认执行。</small><div className="row"><button className="primary" disabled={busy||!request.trim()}>{busy?'保存中…':'分析需求'}</button><button type="button" onClick={()=>setEditing(false)}>取消</button></div></form>}
     {notice&&<p role="status">{notice}</p>}{error&&<p className="warning" role="alert">{error}</p>}
   </section>;
 }

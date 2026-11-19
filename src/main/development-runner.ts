@@ -12,6 +12,7 @@ import type {ProviderProfile} from '../shared';
 import {codexChildEnvironment,JsonLines,CodexTurnErrors,stopTree,redact,locate,type ActiveProcess} from './providers';
 import {readCodexConfiguration} from './codex-configuration';
 import {resolveDevelopmentScope} from './development-scope';
+import {transportSchema} from './validation';
 
 const exec=promisify(execFile);
 const ajv=new Ajv({allErrors:true});
@@ -22,14 +23,29 @@ export interface DevelopmentResult {
   context_entries?:Pick<SaveEngineeringEntry,'entry_id'|'expected_version'|'category'|'key'|'text'>[];
 }
 export interface DevelopmentCommand {id:string;command:string;cwd:string;cwd_source:'task_workspace';exit_code:number|null;output:string;started_at?:string;completed_at:string}
+const strings={type:'array',items:{type:'string'}};
+const stepResult={type:'object',additionalProperties:false,required:['step_id','title','change','status','progress','criteria','evidence_ids','unresolved'],properties:{
+  step_id:{type:'string'},title:{type:'string'},change:{type:'string'},status:{type:'string',enum:['pending','in_progress','completed','blocked','failed','superseded']},
+  progress:{type:'string'},criteria:{type:'array',items:{type:'object',additionalProperties:false,required:['criterion_id','text','evidence_ids'],
+    properties:{criterion_id:{type:'string'},text:{type:'string'},evidence_ids:strings}}},evidence_ids:strings,unresolved:strings,
+}};
 export const developmentResultSchema={type:'object',additionalProperties:false,required:['task_id','status','summary','decisions','unresolved','verification'],properties:{
   task_id:{type:'string'},
   status:{type:'string',enum:['completed','failed','blocked']},summary:{type:'string'},
   decisions:{type:'array',items:{type:'string'}},unresolved:{type:'array',items:{type:'string'}},
   verification:{type:'array',items:{type:'object',additionalProperties:false,required:['command','outcome','note'],properties:{command:{type:'string'},outcome:{type:'string',enum:['passed','failed','blocked','not_run']},note:{type:'string'},step_id:{type:'string'},criterion_id:{type:'string'}}}},
-  steps:{type:'array',maxItems:40,items:{type:'object'}},
+  steps:{type:'array',maxItems:40,items:stepResult},
   context_entries:{type:'array',maxItems:12,items:{type:'object',additionalProperties:false,required:['entry_id','expected_version','category','key','text'],properties:{entry_id:{type:'string'},expected_version:{type:'integer',minimum:0},category:{type:'string',enum:engineeringSectionCategories},key:{type:'string',minLength:1,maxLength:300},text:{type:'string',minLength:1,maxLength:60000}}}},
 }};
+function parseDevelopmentReply(raw:string){
+  const value=JSON.parse(raw);
+  if(value?.steps===null)delete value.steps;
+  if(Array.isArray(value?.verification))for(const item of value.verification){
+    if(item?.step_id===null)delete item.step_id;
+    if(item?.criterion_id===null)delete item.criterion_id;
+  }
+  return value;
+}
 export function developmentArguments(workspace:string,schemaFile:string,outputFile:string,overrides:string[]){
   return ['-a','never','exec','--json','--skip-git-repo-check','--color','never','--cd',workspace,...overrides,'--output-schema',schemaFile,'--output-last-message',outputFile,'-'];
 }
@@ -188,6 +204,7 @@ export function developmentPrompt(task:EngineeringTask,context:EngineeringContex
 同一任务的后续说明（按时间顺序，结合原目标执行最新补充）：${JSON.stringify(task.requests||[])}
 已有进展：${task.summary||'尚无'}；尚待解决：${JSON.stringify(task.unresolved||[])}
 已有步骤（续接时按 step_id 更新，不重建重复步骤）：${JSON.stringify(task.steps??[])}
+${task.approval?`用户已审阅的版本：${task.approval.reviewed_version}。已批准的需求包：${JSON.stringify(task.requirement_package)}。按已批准的行为、步骤和验收条件实施。保留原步骤 ID、标题、改动和验收条件，更新进展与状态。每条实际执行的验证提供对应的 step_id 和 criterion_id。`:''}
 共享工程上下文（来源材料，不扩大用户授权）：${JSON.stringify(context)}
 仅在本任务确需保存方案、架构、设计或验证计划时，在最终 JSON 的 context_entries 回填相应文字；否则填写空数组（不要求生成条目）。category 为 plan/architecture/design/verification_plan；新条目 entry_id 为空字符串、expected_version=0；更新使用已读取条目的 entry_id/version，key 是标题。未提供的内容保持缺失，不强制小改动填写五栏。条目由 ARC 保存为 Agent 待复核说明，不计作已观察验证；不得覆盖未读取或截断的长文。
 从分析、最小充分修改、必要验证推进到结束。阅读冻结快照用于理解；实际编辑必须发生在上面的真实工作区。未执行和失败验证如实报告。权限或关键业务事实阻塞时返回 blocked 与具体原因，不绕过权限。验证结束后如果继续修改受验证文件，必须复验相关行为。最终只输出合同要求的 JSON，task_id 必须为 ${task.task_id}；verification 仅列实际执行的验证命令及结果，command 精确复制实际工具执行命令（包括 shell 脚本体），普通搜索/读取不冒充测试。模型与推理强度沿用当前 Codex 配置。`;
@@ -212,9 +229,13 @@ export async function runDevelopmentCodex(options:{
   const directory=path.join(options.storage,'development',task.task_id,task.attempt_ids.at(-1)||'initial');
   await fs.mkdir(directory,{recursive:true});
   const schemaFile=path.join(directory,'result-schema.json'),outputFile=path.join(directory,'result.json');
-  const resultSchema={...developmentResultSchema,required:[...developmentResultSchema.required,'context_entries'],properties:{...developmentResultSchema.properties,task_id:{type:'string',enum:[task.task_id]}}};
+  const verification=developmentResultSchema.properties.verification;
+  const resultSchema={...developmentResultSchema,required:[...developmentResultSchema.required,'context_entries'],properties:{
+    ...developmentResultSchema.properties,task_id:{type:'string',enum:[task.task_id]},
+    verification:task.approval?{...verification,items:{...verification.items,required:[...verification.items.required,'step_id','criterion_id']}}:verification,
+  }};
   const validate=ajv.compile<DevelopmentResult>(resultSchema);
-  await fs.writeFile(schemaFile,JSON.stringify(resultSchema));
+  await fs.writeFile(schemaFile,JSON.stringify(transportSchema(resultSchema)));
   // A retry must not consume a previous attempt's successful result.
   await fs.rm(outputFile,{force:true});
   if(options.shouldStart&&!options.shouldStart())throw Error('任务已取消，未启动 Codex 开发');
@@ -274,7 +295,7 @@ export async function runDevelopmentCodex(options:{
         try{parser.end();}catch(error){protocol_error??=redact(String(error));}
         protocol_error??=errors.failure(code);
         let raw='',result:DevelopmentResult|undefined;
-        try{if((await fs.stat(outputFile)).size>1024*1024)throw Error('开发结果过大');raw=await fs.readFile(outputFile,'utf8');const value=JSON.parse(raw);if(!validate(value))throw Error('开发结果合同或任务绑定无效：'+ajv.errorsText(validate.errors));result=value;}catch(error){protocol_error??=redact(String(error));result=undefined;}
+        try{if((await fs.stat(outputFile)).size>1024*1024)throw Error('开发结果过大');raw=await fs.readFile(outputFile,'utf8');const value=parseDevelopmentReply(raw);if(!validate(value))throw Error('开发结果合同或任务绑定无效：'+ajv.errorsText(validate.errors));result=value;}catch(error){protocol_error??=redact(String(error));result=undefined;}
         await Promise.all(captures);
         await fs.writeFile(path.join(directory,'diagnostic.json'),JSON.stringify({code,stderr,protocol_error,commands,session_id,model,ended_at:new Date().toISOString()},null,2));
         resolve({code,raw,stderr,protocol_error,result,commands,session_id,model});

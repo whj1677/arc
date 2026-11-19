@@ -1,13 +1,20 @@
 import type {Run} from '../shared';
+import {analysisModes} from './discovery-state';
 
 export const activeStatuses=new Set(['queued','waiting_agent','running','validating','cancel_requested']);
 export type ActivityItem={id:string;at:string;kind:'message'|'tool'|'status'|'error';text:string};
+export function runEngineName(run:Run){
+  if(run.execution_mode)return analysisModes[run.execution_mode].name;
+  if(run.origin==='mcp')return 'MCP';
+  return run.provider_id==='codex'?analysisModes.codex.name:run.provider_id==='dsh'?analysisModes.dsh.name:run.provider_id;
+}
 export function runChannel(run:Run){
   if(run.origin==='manual_import')return '本地导入 · 未调用 Agent';
+  if(run.execution_mode==='codex_desktop')return 'Codex 桌面会话 · ARC 派发到已绑定对话';
   if(run.origin==='mcp')return 'Agent 对话通过 MCP 接入 · 对话由 Agent 客户端管理';
   if(run.provider_id==='codex')return 'Codex 在 ARC 内分析 · 独立只读任务，结果自动保存';
-  if(run.native_ui==='dsh-web')return 'DSH 图形会话 · 同一对话分析，完成后自动写回 Arc';
-  return `${run.provider_id==='dsh'?'DSH':'WorkBuddy'} 后台 · 在 Arc 查看过程`;
+  if(run.native_ui==='dsh-web')return 'DSH Web 本机分析 · 完成后自动保存';
+  return `${runEngineName(run)} 后台 · 在 ARC 查看过程`;
 }
 export function duration(ms:number) {
   const seconds=Math.max(0,Math.floor(ms/1000));
@@ -76,7 +83,7 @@ export function activity(run:Run,events:any[],now:number) {
       add(key,e,'error',message);
     }
   }
-  const phases:Record<string,string>={waiting_agent:'已排队，等待 Agent 领取',queued:`准备连接 ${run.provider_id==='codex'?'Codex':'Agent'}`,validating:'校验结果与源码依据',completed:'分析完成，说明已保存',failed:'分析失败',cancel_requested:'正在请求停止',cancelled:'任务已停止',unknown:run.origin==='mcp'?'状态未知，需核查原会话':'任务状态未确认，请查看记录或重试',blocked_external:'连接条件缺失'};
+  const phases:Record<string,string>={waiting_agent:'已排队，等待 Agent 领取',queued:`准备启动 ${runEngineName(run)}`,validating:'校验结果与源码依据',completed:'分析完成，说明已保存',failed:'分析失败',cancel_requested:'正在请求停止',cancelled:'任务已停止',unknown:run.origin==='mcp'?'状态未知，需核查原会话':'任务状态未确认，请查看记录或重试',blocked_external:'连接条件缺失'};
   const overviewPhases:Record<string,string>={repairing:'DSH 正在按校验错误修复本次返回',overview_review:'正在核对首轮关系与源码，结果尚未发布',overview_research:'正在自动补查未确认的关系，原阅读位置保留',overview_recheck:'正在复核补查后的关系，结果尚未保存',overview_reviewed:'关系复核已结束，等待本地校验和保存'};
   const processing=['running','validating'].includes(run.status);
   const phase=run.origin==='manual_import'&&run.status==='completed'?'手动导入已校验并保存 · 未调用 Agent':processing&&reconnecting?'连接中断，Agent 正在重连':processing&&overviewStage?overviewPhases[overviewStage]:phases[run.status]||(reconnecting?'连接中断，Agent 正在重连':pending.size?'正在读取源码 / 执行工具':output?'已收到输出，等待校验':connected?'Agent 处理中，等待后续输出':'进程已启动，等待 Agent 会话');

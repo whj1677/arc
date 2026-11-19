@@ -9,6 +9,8 @@ import {DevelopmentService,commandBody} from '../src/main/development-service';
 import type {runDevelopmentCodex} from '../src/main/development-runner';
 import {developmentSandboxError} from '../src/main/development-runner';
 import type {ProviderProfile} from '../src/shared';
+import type {runCodex} from '../src/main/providers';
+import {DshMalformedReply,type runDshWeb} from '../src/main/dsh-web';
 
 const exec=promisify(execFile);
 const profile:ProviderProfile={provider_id:'codex',requested_name:'codex',product:'test double',status:'available',path:process.execPath,version:'simulated',reason:'test double; no model call',transport:'test',auth:'test',capabilities:{},checked_at:new Date().toISOString()};
@@ -37,6 +39,91 @@ test('command matcher unwraps exact shell body without turning unrelated output 
   assert.notEqual(commandBody('echo npm test'),'npm test');
   assert.notEqual(commandBody('npm test; echo failed'),'npm test');
 });
+const requirementPlan={summary:'Approve the change to the existing value',proposed_scope:['main.ts'],decisions:[],unresolved:[],
+  requirement_package:{behaviors:[{id:'value',behavior:'Expose value 2',design:'Update the existing export',files:['main.ts'],step_ids:['update'],verification:'Check the value'}]},
+  steps:[{step_id:'update',title:'Update the value',change:'Change the export',status:'pending',progress:'Awaiting approval',criteria:[{
+    criterion_id:'value',text:'The value is 2',evidence_ids:[],
+  }],evidence_ids:[],unresolved:[]}],
+};
+
+test('direct Codex plans read-only and only runs approved execution with linked verification',async()=>{
+  const f=await fixture();let plans=0,configured=0,executions=0;
+  const analysis:typeof runCodex=async options=>{
+    plans++;
+    assert.match(options.prompt,/只分析/);
+    assert.equal(options.snapshot.project_id,f.project.project_id);
+    assert.equal(options.run.execution_mode,'codex');
+    return {code:0,raw:JSON.stringify(requirementPlan),stderr:''};
+  };
+  const runner:typeof runDevelopmentCodex=async options=>{
+    executions++;
+    assert.deepEqual(options.writeScope,['main.ts']);
+    assert.deepEqual(options.task.requirement_package,requirementPlan.requirement_package);
+    const receipt={id:'value-before',command:'node --test',cwd:f.source,cwd_source:'task_workspace' as const,
+      exit_code:1,output:'incorrect value',completed_at:new Date().toISOString()};
+    await options.commandCompleted!(receipt);
+    await fs.writeFile(path.join(f.source,'main.ts'),'export const value=2;\n');
+    await options.commandCompleted!({...receipt,id:'value-after',exit_code:0,output:'correct value',completed_at:new Date().toISOString()});
+    return completed(options.task.task_id,[{command:'node --test',outcome:'passed',note:'Checked value 2',step_id:'update',criterion_id:'value'}]);
+  };
+  const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,
+    async()=>{configured++;return configuration();},analysis);
+  try{
+    const input={project_id:f.project.project_id,goal:'Change value',submission_key:'codex-requirement'};
+    const task=await development.submit(input,'codex');
+    await Promise.all([...development.executing.values()]);
+    const plan=f.service.engineering.task(task.task_id);
+    assert.equal(plan.workflow,'ready');assert.equal(plan.status,'pending');assert.equal(configured,0);
+    assert.equal((await development.submit(input,'codex')).task_id,task.task_id);assert.equal(plans,1);
+    const approval={...input,task_id:task.task_id,phase:'execution' as const,submission_key:'codex-approval',scope:['main.ts']};
+    await assert.rejects(development.submit({...approval,expected_version:plan.version-1},'codex'),/VERSION_CONFLICT/);
+    assert.equal(executions,0);
+    await development.submit({...approval,expected_version:plan.version},'codex');
+    await Promise.all([...development.executing.values()]);
+    const saved=f.service.engineering.task(task.task_id);
+    assert.equal(saved.status,'completed');assert.equal(configured,1);assert.equal(executions,1);
+    assert.equal(saved.approval?.reviewed_version,plan.version);
+    assert.deepEqual(saved.verification.map(({outcome,origin,step_id,criterion_id})=>[outcome,origin,step_id,criterion_id]),
+      [['failed','observed','update','value'],['passed','observed','update','value']]);
+  }finally{await development.shutdown();await f.close();}
+});
+
+test('DSH Web retries malformed replies and applies approved edits only after a frozen source read',async()=>{
+  const f=await fixture();let readSource=false,applyCalls=0;
+  const web:typeof runDshWeb=async options=>{
+    assert.equal(options.profile.provider_id,'dsh');
+    if(options.run.title==='只读需求分析')return {code:0,raw:JSON.stringify(requirementPlan),stderr:''};
+    if(readSource){
+      if(++applyCalls===1)throw new DshMalformedReply('tool input is invalid JSON');
+      options.event({type:'session.update',update:{sessionUpdate:'tool_call',toolCallId:'read',title:'arc_read_source',rawInput:{path:'main.ts'}}});
+      options.event({type:'session.update',update:{sessionUpdate:'tool_call_update',toolCallId:'read',status:'completed'}});
+    }
+    return {code:0,raw:JSON.stringify({summary:'Change the value',edits:[{path:'main.ts',content:'export const value=2;\n'}],unresolved:[]}),stderr:''};
+  };
+  const noCodex=async()=>{throw Error('DSH must stay on DSH Web');};
+  const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},noCodex,
+    async(_,only)=>[({...profile,provider_id:only!})],noCodex,noCodex,web);
+  try{
+    const input={project_id:f.project.project_id,goal:'Change value',submission_key:'dsh-requirement'};
+    const task=await development.submit(input,'dsh');
+    const finish=async()=>{await Promise.all([...development.executing.values()]);return f.service.engineering.task(task.task_id);};
+    const plan=await finish();assert.equal(plan.workflow,'ready');assert.equal(plan.execution_mode,'dsh');
+    const approval={...input,task_id:task.task_id,phase:'execution' as const,submission_key:'dsh-approval',scope:['main.ts']};
+    await development.submit({...approval,expected_version:plan.version},'dsh');
+    const refused=await finish();assert.equal(refused.status,'failed');assert.match(refused.unresolved[0],/未通过冻结源码工具读取/);
+    assert.match(await fs.readFile(path.join(f.source,'main.ts'),'utf8'),/value=1/);
+    readSource=true;
+    await development.submit({...input,task_id:task.task_id,expected_version:refused.version,submission_key:'dsh-revised'},'dsh');
+    const revised=await finish();assert.equal(revised.workflow,'ready');
+    await development.submit({...approval,expected_version:revised.version,submission_key:'dsh-approved-again'},'dsh');
+    const saved=await finish();assert.equal(saved.status,'completed');assert.equal(saved.verification_status,'not_run');
+    assert.deepEqual(saved.changes.map(({path})=>path),['main.ts']);
+    assert.equal(applyCalls,2);
+    assert.match(await fs.readFile(path.join(f.source,'main.ts'),'utf8'),/value=2/);
+    assert.equal(await fs.readFile(path.join(f.source,'README.md'),'utf8'),'Test fixture only\n');
+  }finally{await development.shutdown();await f.close();}
+});
+
 test('development orchestration captures real differences, observed exit evidence and inherited configuration',async()=>{
   const f=await fixture();let optionsSeen:any;
   const runner:typeof runDevelopmentCodex=async options=>{

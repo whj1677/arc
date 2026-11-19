@@ -4,8 +4,20 @@ import { pathToFileURL } from 'node:url';
 import {ArcMcpBridge} from './mcp-bridge';
 import { ArcService } from './service';
 import { redact } from './providers';
+import {isExecutionMode,type ExecutionMode,type ReadingQuestion,type Scenario} from '../shared';
 import {scanAecLegacy,applyAecRuleMigration,installArcAgentRules} from './aec-migration';
 let window:BrowserWindow|null=null, service:ArcService, bridge:ArcMcpBridge, quitting=false;
+function defaultEngine():ExecutionMode {
+  return service.store.maybe<ExecutionMode>('settings','default_engine')??'codex';
+}
+function selectedEngine(mode:unknown):ExecutionMode {
+  if(mode===undefined)return defaultEngine();
+  if(!isExecutionMode(mode))throw Error('执行方式无效');
+  return mode;
+}
+async function enableExternal(mode:ExecutionMode,projectId:string){
+  if(mode==='mcp'||mode==='codex_desktop')await bridge.enable(projectId,false);
+}
 if(process.env.ARC_DATA_DIR)app.setPath('userData',path.resolve(process.env.ARC_DATA_DIR));
 app.setName('Arc');
 const primaryInstance=app.requestSingleInstanceLock();
@@ -18,7 +30,7 @@ app.whenReady().then(async()=>{
     window?.webContents.send('arc:event',event);
   });}
   catch(e){dialog.showErrorBox('Arc 无法打开数据',(e as Error).message);app.quit();return;}
-  bridge=new ArcMcpBridge(service,resources,true);await bridge.start();
+  bridge=new ArcMcpBridge(service,resources);await bridge.start();
   window=new BrowserWindow({width:1440,height:900,minWidth:320,minHeight:560,title:'Arc · 工程理解工作台',backgroundColor:'#101923',show:false,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
   window.removeMenu();
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
@@ -34,7 +46,11 @@ app.whenReady().then(async()=>{
         case 'mcp_status':value=bridge.status();break;
         case 'mcp_enable':value=await bridge.enable(args.project_id,args.register_codex===true);break;
         case 'mcp_disable':value=bridge.disable();break;
-        case 'data':value=service.data();break;
+        case 'data':value={...service.data(),default_engine:defaultEngine()};break;
+        case 'default_engine_save':{
+          if(!isExecutionMode(args.mode))throw Error('执行方式无效');
+          service.store.put('settings','default_engine',args.mode);service.changed();value=args.mode;break;
+        }
         case 'engineering_context':await service.engineering.connect(args.project_id);if(args.refresh)await service.refresh(args.project_id);value=await service.engineering.context(args);break;
         case 'engineering_tasks':value=await service.engineering.currentTasks(args);break;
         case 'engineering_task':value=await service.engineering.currentTask(args.task_id);break;
@@ -44,7 +60,13 @@ app.whenReady().then(async()=>{
         case 'engineering_save_entry':value=await service.engineering.saveEntry(args,'user');break;
         case 'engineering_log':value=await service.engineering.readLog(args.task_id,args.path);break;
         case 'engineering_diff':value=await service.engineering.taskDiff(args.task_id,args.path);break;
-        case 'development_start':value=await bridge.queueDevelopment(args);break;
+        case 'development_start':{
+          const task=args.task_id?service.engineering.task(args.task_id):undefined;
+          const previousMode=task?.execution_mode??(task?.analysis_channel==='dsh'?'dsh':undefined);
+          const mode=args.phase==='execution'?(previousMode??'codex_desktop'):selectedEngine(args.mode??previousMode);
+          value=mode==='codex'||mode==='dsh'?await service.development.submit(args,mode):await bridge.queueDevelopment(args,mode);
+          break;
+        }
         case 'executor_sessions':{const workspace=await service.engineering.resolve({project_id:args.project_id});value=await bridge.dispatch.sessions(workspace.root_path,args.program);break;}
         case 'executor_copy_workspace':{const workspace=await service.engineering.resolve({project_id:args.project_id});await clipboard.writeText(workspace.root_path);break;}
         case 'executor_open':{const binding=bridge.dispatch.binding(args.project_id);if(!binding)throw Error('请先选择并绑定会话');await shell.openExternal('codex://threads/'+encodeURIComponent(binding.thread_id));value={opened:true};break;}
@@ -60,8 +82,11 @@ app.whenReady().then(async()=>{
         case 'executor_verify_stopped':value=await bridge.verifyStopped(args.dispatch_id);break;
         case 'development_cancel':{
           const task=service.engineering.task(args.task_id);
-          const item=bridge.dispatch.items().filter(item=>item.task_id===task.task_id).at(-1);
-          value=item?bridge.cancelDispatch(item.dispatch_id):await service.development.cancel(task.task_id);
+          const item=task.execution_mode===undefined||task.execution_mode==='codex_desktop'
+            ?bridge.dispatch.items(task.project_id).filter(item=>item.task_id===task.task_id).at(-1):undefined;
+          value=item?bridge.cancelDispatch(item.dispatch_id):task.execution_mode==='mcp'&&task.status==='pending'
+            ?service.engineering.updateTask({task_id:task.task_id,expected_version:task.version,submission_key:`cancel-${task.version}`,status:'cancelled'})
+            :await service.development.cancel(task.task_id);
           break;
         }
         case 'development_events':value=service.development.events(args.task_id);break;
@@ -101,12 +126,21 @@ app.whenReady().then(async()=>{
         case 'reading_save':value=service.reading(args.key,args.value);break;
         case 'providers_probe':value=await service.probe(args.config);break;
         case 'run_start':{
-          await bridge.enable(service.store.get('scenario',args.scenario_id).project_id,false);
-          value=await service.startRun(args.scenario_id,'codex',args.submission_key,args.previous_run_id,{projectAnalysis:true});break;
+          const mode=selectedEngine(args.mode);
+          await enableExternal(mode,service.store.get<Scenario>('scenario',args.scenario_id).project_id);
+          value=mode==='mcp'?service.prepareAnalysis(args.scenario_id,undefined,true)
+            :await service.startRun(args.scenario_id,mode,args.submission_key,args.previous_run_id,{projectAnalysis:true});break;
         }
         case 'overview_research':value=await service.researchOverview(args.result_id,args.submission_key);break;
-        case 'reading_ask':await bridge.enable(args.project_id,false);value=await service.askReading(args);break;
-        case 'reading_retry':value=service.retryReading(args.question_id,args.mode,args.submission_key);break;
+        case 'reading_ask':{
+          const mode=selectedEngine(args.mode);
+          await enableExternal(mode,args.project_id);value=await service.askReading({...args,mode});break;
+        }
+        case 'reading_retry':{
+          const mode=selectedEngine(args.mode);
+          await enableExternal(mode,service.store.get<ReadingQuestion>('reading_question',args.question_id).project_id);
+          value=service.retryReading(args.question_id,mode,args.submission_key);break;
+        }
         case 'run_cancel':{const item=bridge.dispatch.items().find(item=>item.run_id===args.run_id);value=item?bridge.cancelDispatch(item.dispatch_id):await service.cancel(args.run_id);break;}
         case 'run_revalidate':value=await service.revalidate(args.run_id);break;
         case 'run_events':service.store.get('run',args.run_id);value=service.store.events(args.run_id);break;

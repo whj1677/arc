@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import type {Project,Snapshot,Explanation,Feature,Scenario} from '../shared';
+import type {ExecutionMode,Project,Snapshot,Explanation,Feature,Scenario} from '../shared';
 import {engineeringCategories,engineeringSectionCategories,type SaveEngineeringEntry,type EngineeringSectionCategory} from '../engineering';
 import type {CodeState,WorkspaceBinding,ContextEntry,ContextSource,EngineeringContext,EngineeringAnalysis,ContextRequest,EngineeringTask,CreateEngineeringTask,UpdateEngineeringTask,FinishEngineeringTask,DevelopmentAttempt,VerificationEvidence,TaskReadingBinding,WalkthroughUpdate,DevelopmentStep} from '../engineering';
 import {Store,id,now} from './store';
@@ -31,7 +31,7 @@ export function engineeringDocumentCategory(file:string):EngineeringSectionCateg
   return undefined;
 }
 interface RequirementSubmission {
-  phase:'analysis'|'execution'; expected_version?:number; channel:'codex';
+  phase:'analysis'|'execution'; expected_version?:number; channel:'codex'|'dsh'; executionMode?:ExecutionMode;
   checkAvailable:()=>void; onSaved:(task:EngineeringTask)=>void;
 }
 export class EngineeringService {
@@ -432,6 +432,7 @@ export class EngineeringService {
       task.verification=[];task.verification_status='not_run';
     }
     task.workflow=submission.phase;task.status='pending';
+    if(submission.executionMode)task.execution_mode=submission.executionMode;
   }
   async createTask(input:CreateEngineeringTask,submission?:RequirementSubmission):Promise<EngineeringTask> {
     const workspace=await this.resolve(input),reading=this.validateReading(workspace.project_id,input.reading);
@@ -497,7 +498,7 @@ export class EngineeringService {
     if(!current.length)return 'stale';const latest=new Map<string,VerificationEvidence>();for(const e of current)latest.set(e.command,e);const checks=[...latest.values()];
     if(checks.some(e=>e.outcome==='failed'))return 'failed';if(checks.every(e=>e.outcome==='passed'&&e.origin==='observed'&&!!e.log_path&&e.code_state_verified!==false))return 'passed';return 'partial';
   }
-  async finishTask(input:FinishEngineeringTask):Promise<EngineeringTask> {
+  async finishTask(input:FinishEngineeringTask,maySave:()=>boolean=()=>true):Promise<EngineeringTask> {
     const key=this.receiptKey('finish',input.task_id,input.submission_key),prior=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(prior)return prior;
     const task=this.task(input.task_id);this.checkUpdate(task,input);const workspace=await this.resolve({project_id:task.project_id});if(workspace.workspace_id!==task.workspace_id||!samePath(workspace.root_path,task.workspace_path))throw Error('任务绑定工作区已改变，拒绝写回');
     const binding=input.completion_binding;
@@ -520,7 +521,7 @@ export class EngineeringService {
       // Keep known task changes across attempts, but exclude files only changed between attempts.
       .filter(p=>!attemptFiles||previousChanges.has(p)||attemptFiles.get(p)!==afterFiles.get(p))
       .map(p=>({path:p,before_sha256:beforeFiles.get(p)??null,after_sha256:afterFiles.get(p)??null,ownership:comparison.dirty.includes(p)||task.rebind_preexisting_files?.some(f=>f.path===p)?'preexisting_overlap' as const:'task_change' as const,...(assets.has(p)?{text_diff_unavailable:true}:{})}));
-    const saved=this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);if(input.decisions)current.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
+    const saved=this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;if(!maySave())throw Error('执行已停止，拒绝迟到开发结果');const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);if(input.decisions)current.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
       if(ownershipUnknown)current.unresolved=[...new Set([...current.unresolved,'无法确认提交完成时与采集时的代码状态一致。报告已保存，差异归属待核查。'])];
       if(input.requirement_package!==undefined)current.requirement_package=input.requirement_package;
       if(input.proposed_scope)current.proposed_scope=input.proposed_scope.map(relativePath);
@@ -547,7 +548,7 @@ export class EngineeringService {
     for(const entry of this.store.all<ContextEntry>(contextKind))if(entry.project_id===projectId&&entry.status==='current'&&entry.sources.some(s=>files.includes(s.path))){entry.status='needs_review';entry.version++;entry.updated_at=now();this.store.putVersion(contextKind,entry.entry_id,entry.version,entry);changed=true;}
     if(changed){const state=this.store.get<any>('engineering_context_state',projectId);state.version++;this.store.put('engineering_context_state',projectId,state);}
   }
-  checkWorkspaceAvailable(workspace:WorkspaceBinding) {
+  checkWorkspaceAvailable(workspace:Pick<WorkspaceBinding,'root_path'>) {
     if(this.store.all<DevelopmentAttempt>(attemptKind).some(attempt=>samePath(attempt.workspace_path,workspace.root_path)&&['starting','running'].includes(attempt.status))||
       this.tasks().some(task=>task.status==='running'&&samePath(task.workspace_path,workspace.root_path)))throw Error('此工作区已有开发任务，请等待结束或停止后再继续。');
   }

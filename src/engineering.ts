@@ -1,4 +1,4 @@
-import type { ProviderId,ReadingTarget } from './shared';
+import type { ExecutionMode,ProviderId,ReadingTarget } from './shared';
 import type {AnalysisNode,AnalysisEdge,AnalysisClaim,SourceEvidence,RunBinding} from '../contracts/agent-adapter';
 
 export interface WorkspaceAsset {path:string;sha256:string}
@@ -102,6 +102,7 @@ export interface EngineeringTask {
   requirement_package?:RequirementPackage;
   approval?:{reviewed_version:number;scope:string[]};
   analysis_channel?:'codex'|'kimi'|'dsh';
+  execution_mode?:ExecutionMode;
   status:'pending'|'running'|'blocked'|'completed'|'failed'|'cancelled'|'interrupted';
   baseline:CodeState; end_state?:CodeState; diff_baseline?:CodeState; context_version:number;
   summary:string; decisions:string[]; unresolved:string[]; changes:FileChange[];

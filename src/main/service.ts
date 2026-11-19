@@ -4,6 +4,7 @@ import type {
   AnalysisResult,
   Annotation,
   Explanation,
+  ExecutionMode,
   Feature,
   Project,
   ProviderProfile,
@@ -21,12 +22,14 @@ import { hasFunctionGraphs } from '../shared';
 import { Store, id, now } from './store';
 import { capture, freshness, readSource, sha } from './snapshot';
 import { makePrompt, probeProviders, redact, runCodex, stopTree, type ActiveProcess } from './providers';
-import { normalizeTransport, validateResult } from './validation';
+import { normalizeTransport, schema, validateResult } from './validation';
 import { discoveredFeature } from '../discovered-feature';
 import { promptContext } from './prompt-context';
-import { validateReadingAnswer } from './reading-question';
+import { readingAnswerSchema, validateReadingAnswer } from './reading-question';
 import { overviewDiscoveryQuestion, shallowOverviewQuestion } from './architecture-analysis';
-import { prepareOverview } from './overview-result';
+import { overviewSchema, prepareOverview } from './overview-result';
+import { parseDshReply } from './dsh';
+import { runDshWeb } from './dsh-web';
 import { EngineeringService } from './engineering-service';
 import { DevelopmentService } from './development-service';
 import { ReadingService } from './reading-service';
@@ -63,7 +66,7 @@ export class ArcService {
   readonly indexing = new Map<string, AbortController>();
   readonly executing = new Map<string, Promise<void>>();
   private closing = false;
-  private checkingCodex?: Promise<ProviderProfile[]>;
+  private checkingProviders = new Map<'codex' | 'dsh', Promise<ProviderProfile[]>>();
   private readonly readingService: ReadingService;
   private readonly walkthroughs: WalkthroughRefreshCoordinator;
   private readonly overviews: OverviewOrchestrator;
@@ -73,6 +76,7 @@ export class ArcService {
     readonly resources: string,
     readonly emit: (e: any) => void = () => {},
     private readonly codexRunner: typeof runCodex = runCodex,
+    private readonly dshRunner: typeof runDshWeb = runDshWeb,
   ) {
     this.store = new Store(directory);
     this.engineering = new EngineeringService(this.store, () => this.changed());
@@ -113,7 +117,7 @@ export class ArcService {
       startRun: (scenarioId, providerId, submissionKey, previousRunId, options) =>
         this.startRun(scenarioId, providerId, submissionKey, previousRunId, options),
       cancel: runId => this.cancel(runId),
-      getDispatchRun: () => this.dispatchRun,
+      prepareManual: (scenarioId, taskId) => this.prepareAnalysis(scenarioId, taskId),
     });
 
     this.overviews = new OverviewOrchestrator({
@@ -122,6 +126,7 @@ export class ArcService {
       resources: this.resources,
       active: this.active,
       codexRunner: this.codexRunner,
+      dshRunner: this.dshRunner,
       isClosing: () => this.closing,
       changed: () => this.changed(),
       event: (runId, event, eventId, sequence) => this.event(runId, event, eventId, sequence),
@@ -551,16 +556,16 @@ export class ArcService {
     return this.store.maybe('reading', key);
   }
 
-  async probe(config?: Record<string, string>, _only?: 'codex') {
+  async probe(config?: Record<string, string>, only?: 'codex' | 'dsh') {
     if (config) {
       for (const [key, value] of Object.entries(config)) {
-        if (key !== 'codex_path' || typeof value !== 'string') throw new Error('不支持的连接配置');
+        if (!['codex_path', 'dsh_path'].includes(key) || typeof value !== 'string') throw new Error('不支持的连接配置');
       }
       config = { ...this.store.maybe('settings', 'providers'), ...config };
       this.store.put('settings', 'providers', config);
     }
     const saved = config || this.store.maybe<Record<string, string>>('settings', 'providers') || {};
-    const profiles = await probeProviders(saved, 'codex');
+    const profiles = await probeProviders(saved, only);
     for (const p of profiles) this.store.put('provider', p.provider_id, p);
     this.changed();
     return profiles;
@@ -570,7 +575,7 @@ export class ArcService {
     return this.readingService.ask(input);
   }
 
-  retryReading(questionId: string, mode: 'codex' | 'mcp' = 'codex', submissionKey: string): ReadingQuestion {
+  retryReading(questionId: string, mode: ExecutionMode = 'codex', submissionKey: string): ReadingQuestion {
     return this.readingService.retry(questionId, mode, submissionKey);
   }
 
@@ -592,17 +597,20 @@ export class ArcService {
 
   async startRun(
     scenarioId: string,
-    providerId: string,
+    mode: Exclude<ExecutionMode, 'mcp'>,
     submissionKey: string,
     previousRunId?: string,
     options: { sourceSnapshotId?: string; developmentTaskId?: string; refreshFromResultId?: string; projectAnalysis?: boolean } = {},
   ) {
     if (this.closing) throw new Error('Arc 正在退出，未派发新任务');
-    if (providerId !== 'codex') throw new Error('当前 ARC 仅支持 Codex 分析通道；演示请单独装载');
+    if (mode !== 'codex' && mode !== 'dsh' && mode !== 'codex_desktop') throw new Error('请选择支持的执行通道');
+    const providerId = mode === 'dsh' ? 'dsh' : 'codex';
+    const dispatch = mode === 'codex_desktop' ? this.dispatchRun : undefined;
+    if (mode === 'codex_desktop' && !dispatch) throw new Error('Codex 桌面会话派发通道不可用');
     if (!/^[\w-]{8,100}$/.test(submissionKey)) throw new Error('提交幂等键无效');
     const existing = this.store.all<Run>('run').find(r => r.submission_key === submissionKey);
     if (existing) {
-      if (existing.binding.scenario_id !== scenarioId || existing.provider_id !== providerId || existing.development_task_id !== options.developmentTaskId) {
+      if (existing.binding.scenario_id !== scenarioId || (existing.execution_mode ?? existing.provider_id) !== mode || existing.development_task_id !== options.developmentTaskId) {
         throw new Error('幂等键归属冲突');
       }
       return existing;
@@ -649,7 +657,8 @@ export class ArcService {
         source_snapshot_id: sourceSnapshotId,
         run_id: runId,
       },
-      provider_id: 'codex',
+      provider_id: providerId,
+      execution_mode: mode,
       status: 'queued',
       question: scenario.question,
       title: options.developmentTaskId ? `${scenario.title} · 开发后复核` : scenario.title,
@@ -660,7 +669,7 @@ export class ArcService {
       ...(options.developmentTaskId ? { development_task_id: options.developmentTaskId, refresh_from_result_id: options.refreshFromResultId } : {}),
     };
     if (options.projectAnalysis && !options.developmentTaskId && project.overview_scenario_id === scenarioId) {
-      run.overview_followup_mode = this.dispatchRun ? 'dispatch' : 'direct';
+      run.overview_followup_mode = dispatch ? 'dispatch' : 'direct';
     }
     if (scenario.question === overviewQuestion) run.overview_format = 'overview-1';
 
@@ -669,10 +678,10 @@ export class ArcService {
     this.event(runId, {
       type: 'local.stage',
       stage: 'queued',
-      message: options.developmentTaskId ? '开发结果已保存；正在按新代码重新核对同一功能，旧说明保留' : '任务与源码快照已绑定，正在准备 Codex 连接',
+      message: options.developmentTaskId ? '开发结果已保存；正在按新代码重新核对同一功能，旧说明保留' : '任务与源码快照已绑定，正在准备执行',
     });
-    if (this.dispatchRun) {
-      this.dispatchRun(run);
+    if (dispatch) {
+      dispatch(run);
       return run;
     }
     const task = this.execute(run)
@@ -727,25 +736,27 @@ export class ArcService {
   private async execute(initial: Run) {
     this.checkOverviewChild(initial);
     const runId = initial.binding.run_id;
-    let profile = this.store.maybe<ProviderProfile>('provider', initial.provider_id);
+    const provider = initial.provider_id;
+    if (provider !== 'codex' && provider !== 'dsh') throw Error('本机执行引擎不受支持');
+    const product = provider === 'dsh' ? 'DSH Web' : 'Codex';
+    let profile = this.store.maybe<ProviderProfile>('provider', provider);
     const profileAge = Date.now() - Date.parse(profile?.checked_at || '');
-    if (initial.provider_id === 'codex' && (!Number.isFinite(profileAge) || profileAge < 0 || profileAge > 5 * 60 * 1000)) {
-      this.event(runId, { type: 'local.stage', stage: 'checking_provider', message: '正在检测当前 Codex 程序与登录状态，更新过期的连接记录' });
-      this.checkingCodex ??= this.probe(undefined, 'codex').finally(() => {
-        this.checkingCodex = undefined;
-      });
-      await this.checkingCodex;
-      profile = this.store.get('provider', 'codex');
-    } else if (!profile) {
-      await this.probe();
-      profile = this.store.maybe('provider', initial.provider_id);
+    if (!Number.isFinite(profileAge) || profileAge < 0 || profileAge > 5 * 60 * 1000 || provider === 'dsh' && profile?.transport !== 'dsh web') {
+      this.event(runId, { type: 'local.stage', stage: 'checking_provider', message: `正在检测 ${product} 程序与登录状态` });
+      let probe = this.checkingProviders.get(provider);
+      if (!probe) {
+        probe = this.probe(undefined, provider).finally(() => this.checkingProviders.delete(provider));
+        this.checkingProviders.set(provider, probe);
+      }
+      await probe;
+      profile = this.store.get('provider', provider);
     }
 
     const freshRun = this.store.get<Run>('run', runId);
     if (freshRun.status === 'cancelled' || this.closing) return;
-    if (!profile || profile.status !== 'available' || initial.provider_id !== 'codex') {
+    if (!profile || profile.status !== 'available') {
       freshRun.status = 'blocked_external';
-      freshRun.error = profile?.reason || '缺少受支持的 Codex 执行通道';
+      freshRun.error = profile?.reason || `缺少受支持的 ${product} 执行通道`;
       freshRun.ended_at = now();
       this.store.put('run', runId, freshRun);
       this.changed();
@@ -762,12 +773,12 @@ export class ArcService {
 
     const { annotations, previous } = this.analysisHistory(initial);
     const prompt = await makePrompt(initial, snapshot, this.directory, annotations, previous, !!initial.overview_parent_run_id);
-    this.event(runId, { type: 'local.stage', stage: 'launching', message: '只读任务已准备，正在启动 Codex 官方后端' });
+    this.event(runId, { type: 'local.stage', stage: 'launching', message: `只读任务已准备，正在启动 ${product}` });
     if (this.store.get<Run>('run', runId).status === 'cancelled' || this.closing) return;
     this.checkOverviewChild(initial);
     if (this.closing || this.store.get<Run>('run', runId).status !== 'queued') return;
 
-    const result = await this.codexRunner({
+    const options: Parameters<typeof runCodex>[0] = {
       run: initial,
       snapshot,
       storage: this.directory,
@@ -795,7 +806,10 @@ export class ArcService {
         this.store.put('run', runId, run);
         this.changed();
       },
-    });
+    };
+    const result = provider === 'dsh'
+      ? await this.dshRunner({ ...options, outputSchema: initial.reading_question_id ? readingAnswerSchema : initial.overview_format ? overviewSchema : schema })
+      : await this.codexRunner(options);
     this.active.delete(runId);
 
     const run = this.store.get<Run>('run', runId);
@@ -817,7 +831,7 @@ export class ArcService {
     let value: unknown;
     try {
       const audit: string[] = [];
-      value = normalizeTransport(parseJsonReply(result.raw), audit);
+      value = normalizeTransport(provider === 'dsh' ? parseDshReply(result.raw) : parseJsonReply(result.raw), audit);
       if (audit.length) this.event(runId, { type: 'local.format_normalization', changes: audit });
     } catch {
       throw new Error('真实返回不是合法 JSON，原始文件已保留；未生成正式关系图。');
@@ -921,13 +935,13 @@ export class ArcService {
   async revalidate(runId: string) {
     const run = this.store.get<Run>('run', runId);
     if (run.overview_format) throw new Error('首轮分析需要完成源码校验和独立关系复核；请重新分析，不能将未复核的原始草稿直接发布。');
-    if (run.provider_id !== 'codex' || run.dsh_overview_format || run.dsh_function_format) {
-      throw new Error('历史非 Codex 格式记录仅作只读保留，请使用 Codex 重新分析。');
+    if ((run.provider_id !== 'codex' && run.execution_mode !== 'dsh') || run.dsh_overview_format || run.dsh_function_format) {
+      throw new Error('历史运行格式仅作只读保留，请重新分析。');
     }
     if (run.status !== 'failed' || this.active.has(runId)) throw new Error('仅可重新校验已失败且已停止的原始返回');
     const raw = await fs.readFile(run.output_path, 'utf8');
     const audit: string[] = [];
-    const parsed = normalizeTransport(parseJsonReply(raw), audit);
+    const parsed = normalizeTransport(run.execution_mode === 'dsh' ? parseDshReply(raw) : parseJsonReply(raw), audit);
     this.event(runId, {
       type: 'local.revalidation',
       reason: '重新校验首轮已保存原文，未派发外部请求',

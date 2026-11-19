@@ -23,6 +23,7 @@ import { FileMap } from './FileMap';
 import { clampZoom } from './zoom';
 import { functionPathPosition } from './feature-reading-model';
 import type { AnalysisMode } from './discovery-state';
+import { runEngineName } from './activity';
 import { ScrollPanel } from './workbench-primitives';
 
 export interface CanvasPaneProps {
@@ -403,7 +404,7 @@ export function CanvasPane({
             <p>功能：{data.features.find(f => f.feature_id === scenario?.feature_id)?.name}</p>
             <ol>
               <li>已绑定当前工程、问题版本和源码快照。</li>
-              <li>在接入 Arc MCP 的 Codex 对话中要求分析 Arc 当前选中的功能。</li>
+              <li>在接入 ARC MCP 的对话中领取当前分析任务。</li>
               <li>Agent 领取后，这里显示真实进度；结果写回后展示流程时间线。</li>
             </ol>
             <p className="muted">Arc 不会自动唤醒或切换 Agent 对话，此时还没有模型调用。</p>
@@ -434,7 +435,7 @@ export function CanvasPane({
                     ? '任务已保存，正在等待绑定会话的实际领取回执。'
                     : running.origin === 'mcp'
                       ? 'Agent 已在外部对话领取任务。'
-                      : 'Codex 正在读取冻结源码。') + '完成后会保存说明与源码依据；你可以继续浏览。'
+                      : `${runEngineName(running)} 正在读取冻结源码。`) + '完成后会保存说明与源码依据；你可以继续浏览。'
                 : latestRun?.status === 'failed'
                   ? '在右侧“分析进度”查看原因并重试，已有结果和原任务均保留。'
                   : featurePurpose ||

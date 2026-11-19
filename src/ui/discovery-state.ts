@@ -1,15 +1,17 @@
-import type {WorkspaceData} from '../shared';
+import {isExecutionMode,type ExecutionMode,type WorkspaceData} from '../shared';
 
 export const analysisModes={
-  codex:{name:'Codex',option:'Codex · 派发到绑定会话',start:'启动 Codex 分析',retry:'通过 Codex 重新分析',
-    description:'ARC 派发到绑定的 Codex 会话，实际领取后开始分析。'},
-  mcp:{name:'MCP',option:'外部 Agent · 等待对话领取',start:'准备 MCP 分析任务',retry:'准备 MCP 重新分析',
-    description:'ARC 保存分析任务，由已接入 MCP 的 Codex 对话领取。'},
-};
-export type AnalysisMode=keyof typeof analysisModes;
-export function isAnalysisMode(value:unknown):value is AnalysisMode{
-  return typeof value==='string'&&Object.hasOwn(analysisModes,value);
-}
+  codex:{name:'Codex',option:'Codex 直连 · 推荐',start:'启动 Codex 分析',retry:'通过 Codex 重新分析',
+    description:'自动调用本机 Codex，无需手动建会话'},
+  dsh:{name:'DSH',option:'DSH · DeepSeek Harness',start:'启动 DSH 分析',retry:'通过 DSH 重新分析',
+    description:'自动调用本机 DSH Web，无需手动建会话'},
+  codex_desktop:{name:'Codex 桌面会话',option:'Codex 桌面会话',start:'派发 Codex 分析',retry:'通过 Codex 桌面会话重新分析',
+    description:'派发到已绑定的 Codex 桌面端对话'},
+  mcp:{name:'MCP',option:'外部 Agent · MCP',start:'准备 MCP 分析任务',retry:'准备 MCP 重新分析',
+    description:'保存任务，由外部对话自行领取'},
+} satisfies Record<ExecutionMode,{name:string;option:string;start:string;retry:string;description:string}>;
+export type AnalysisMode=ExecutionMode;
+export const isAnalysisMode=isExecutionMode;
 
 // A prepared MCP request is not a running Agent. Keep the distinction after restart.
 export function waitingForAgent(data:WorkspaceData,scenarioId:string){
