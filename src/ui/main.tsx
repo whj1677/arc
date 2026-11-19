@@ -1,613 +1,2037 @@
-import {ExternalExecutor} from './EngineeringSections';
-import React,{useState,useEffect,useRef,useCallback} from 'react';
-import {createRoot} from 'react-dom/client';
-import type {EngineeringTask} from '../engineering';
-import type {WorkspaceData,ReadingState,Project,Scenario,Explanation,SourceEvidence,Run,AnalysisResult} from '../shared';
-import {hasFunctionGraphs} from '../shared';
-import {FunctionChain,FunctionDetail,FunctionStepDetail} from './FunctionChain';
-import {functionCallMap} from './function-call-map';
-import {selectedCallStep} from './function-sequence-model';
-import {Graph,edgeNames,claimNames,nodeNames} from './Graph';
-import {discoveredFeature} from '../discovered-feature';
-import {AnalysisModePicker,FeatureCatalog,CatalogFeatureReading,catalogGraphState} from './FeatureCatalog';
-import {analysisModes,isAnalysisMode,waitingForAgent,type AnalysisMode} from './discovery-state';
-import {projectLabel} from './project-label';
-import {Architecture} from './Architecture';
-import {ZoomSurface} from './ZoomSurface';
-import {Timeline} from './Timeline';
-import {FeatureReading,FeatureReadingDetail} from './FeatureReading';
-import {FeatureDevelopment,type FeatureDevelopmentDraft} from './FeatureDevelopment';
-import {featureReadingModel,featureReadingPosition,featureViewPosition,featurePathPosition,functionPathPosition,featureViews,guideEvidenceIds,guidePathForStep,guideItemTitle} from './feature-reading-model';
-import {SystemDetail} from './SystemDetail';
-import {StepDetail} from './StepDetail';
-import {timelineModel} from './timeline-model';
-import {Composition} from './Composition';
-import {FileMap} from './FileMap';
-import {FileSummary} from './FileSummary';
-import {ReadingQuestions} from './ReadingQuestions';
-import {SourceExcerpt} from './SourceExcerpt';
-import {savedBusinessPath} from './home-reading';
-import {EngineeringOverview,EngineeringWorkspace,EngineeringManagement} from './EngineeringWorkspace';
-import {WorkbenchNavigation} from './WorkbenchNavigation';
-import {readingQuestionTarget} from './reading-target';
-import {clampZoom} from './zoom';
-import {annotationTarget} from './annotation';
-import {compactTitle,sceneStatus,edgeExplanation,modernReading} from './presentation';
-import {RunActivity} from './RunActivity';
-import {AnalysisError} from './AnalysisError';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import type { EngineeringTask } from '../engineering';
+import type { Project, ReadingState, Run, Scenario, SourceEvidence, WorkspaceData } from '../shared';
+import { discoveredFeature } from '../discovered-feature';
+import { functionCallMap } from './function-call-map';
+import { selectedCallStep } from './function-sequence-model';
+import { AnalysisModePicker, catalogGraphState } from './FeatureCatalog';
+import { analysisModes, isAnalysisMode, waitingForAgent, type AnalysisMode } from './discovery-state';
+import { projectLabel } from './project-label';
+import { FeatureDevelopment, type FeatureDevelopmentDraft } from './FeatureDevelopment';
+import {
+  featurePathPosition,
+  featureReadingModel,
+  featureReadingPosition,
+  featureViewPosition,
+  featureViews,
+  functionPathPosition,
+  guideEvidenceIds,
+  guideItemTitle,
+  guidePathForStep,
+} from './feature-reading-model';
+import { timelineModel } from './timeline-model';
+import { savedBusinessPath } from './home-reading';
+import { EngineeringOverview, EngineeringWorkspace } from './EngineeringWorkspace';
+import { WorkbenchNavigation } from './WorkbenchNavigation';
+import { readingQuestionTarget } from './reading-target';
+import { compactTitle, modernReading } from './presentation';
+import { RunActivity } from './RunActivity';
+import {
+  Compare,
+  Separator,
+  closePopovers,
+  defaults,
+  firstGraphPath,
+  initialData,
+  short,
+  statuses,
+  type HomeBookmark,
+} from './workbench-primitives';
+import { SettingsModal } from './SettingsModal';
+import { EntityFormModal } from './EntityFormModal';
+import { CatalogSidebar } from './CatalogSidebar';
+import { DetailPane } from './DetailPane';
+import { CanvasPane } from './CanvasPane';
 import './styles.css';
 import './reading-diagrams.css';
 import './function-chain.css';
 import './reading.css';
 import './feature-reading.css';
 import './workbench.css';
-const api=window.arc;
-const initialData:WorkspaceData={projects:[],features:[],scenarios:[],revisions:[],annotations:[],runs:[],explanations:[],providers:[],snapshots:[]};
-const defaults:ReadingState={entrance:'overview',view:'system',scenario_id:'',result_id:'',selected:'',file:'',evidence_id:'',source_snapshot_id:'',mode:'normal',left_width:220,right_width:360,catalog_hidden:false,pinned:false,detail_tab:'details',expanded:[],scroll:{},zoom:1,stage:'',compare_id:'',linked:true,presentation_version:3,architecture_version:1};
-const statuses:Record<string,string>={validating:'本地校验中',queued:'排队',waiting_agent:'等待 Agent 领取',running:'运行中',cancel_requested:'停止请求中',cancelled:'已停止',completed:'执行完成',failed:'失败',unknown:'状态未知',blocked_external:'外部条件缺失',available:'本机可用 · 待工程验证',auth_required:'需要登录'};
-const short=(s:string)=>s.length>28?s.slice(0,12)+'…'+s.slice(-10):s;
-function closePopovers(except?:Node){for(const menu of document.querySelectorAll<HTMLDetailsElement>('.analysis-options[open],.context-edit-actions[open],.source-options[open],.view-options[open],.canvas-filter[open],.feature-menu[open]'))if(!except||!menu.contains(except))menu.open=false;}
-type HomeBookmark={projectId:string;label:string;catalogNodeId?:string;position:Pick<ReadingState,'scenario_id'|'result_id'|'source_snapshot_id'|'entrance'|'view'|'selected'|'file'|'evidence_id'|'detail_tab'|'reading_path'|'function_path'|'stage'|'function_mode'>};
-function firstGraphPath(result:AnalysisResult){
-  return result.function_walkthroughs?.find(path=>hasFunctionGraphs({...result,function_walkthroughs:[path]}))?.id||'';
-}
-function App(){
-  const [data,setData]=useState(initialData),[projectId,setProjectId]=useState(''),[scenarioId,setScenarioId]=useState('');
-  const [reading,setReading]=useState<ReadingState>(defaults),[loadedKey,setLoadedKey]=useState(''),[width,setWidth]=useState(window.innerWidth);
-  const [error,setError]=useState(''),[notice,setNotice]=useState(''),[saved,setSaved]=useState(''),[modal,setModal]=useState(''),[pending,setPending]=useState(false);
-  const [formName,setFormName]=useState(''),[formQuestion,setFormQuestion]=useState(''),[search,setSearch]=useState(''),[clueDrafts,setClueDrafts]=useState<Record<string,string>>({});
-  const [formFeature,setFormFeature]=useState('');
-  const [featureDrafts,setFeatureDrafts]=useState<Record<string,FeatureDevelopmentDraft>>({});
-  const [bookmark,setBookmark]=useState<HomeBookmark|null>(null);
-  const [focusDevelopment,setFocusDevelopment]=useState(false),[requestedTask,setRequestedTask]=useState('');
-  const [indexes,setIndexes]=useState<Record<string,any>>({}),[eventState,setEventState]=useState<{runId:string;items:any[]}>({runId:'',items:[]});
-  const [showDetail,setShowDetail]=useState(false),[showCatalog,setShowCatalog]=useState(false),[archiveVisible,setArchiveVisible]=useState(false);
-  const [renameFeature,setRenameFeature]=useState('');
-  const [eventError,setEventError]=useState(''),[activityFocus,setActivityFocus]=useState(0);
-  const [expandMode,setExpandMode]=useState<AnalysisMode>('codex');
-  const analysisMode=analysisModes[expandMode];
-  const [mcp,setMcp]=useState<any>(null);
-  const [settings,setSettings]=useState<any>(null),[connectionError,setConnectionError]=useState('');
-  const readingScope=useRef(''),lastWalk=useRef<Record<string,string>>({}),emptyEntrance=useRef<'overview'|'walk'>('overview');
-  const previousFocus=useRef<HTMLElement|null>(null),modalRef=useRef<HTMLDialogElement>(null),composing=useRef(false);
-  const starting=useRef(false),projectSwitch=useRef(0),navigation=useRef<{scope:string;value:Partial<ReadingState>}|null>(null);
-  const project=data.projects.find(p=>p.project_id===projectId),scenario=data.scenarios.find(s=>s.scenario_id===scenarioId);
-  const clue=clueDrafts[scenarioId]||'';
-  const setClue=(value:string)=>setClueDrafts(d=>({...d,[scenarioId]:value}));
-  const overviewFeature=data.scenarios.find(s=>s.scenario_id===project?.overview_scenario_id)?.feature_id;
-  const userFeatures=data.features.filter(f=>f.project_id===projectId&&!f.archived&&f.feature_id!==overviewFeature).sort((a,b)=>a.sort_order-b.sort_order);
-  const walkScenes=data.scenarios.filter(s=>s.project_id===projectId&&!s.archived&&s.scenario_id!==project?.overview_scenario_id&&userFeatures.some(f=>f.feature_id===s.feature_id)).sort((a,b)=>(userFeatures.findIndex(f=>f.feature_id===a.feature_id)-userFeatures.findIndex(f=>f.feature_id===b.feature_id))||a.sort_order-b.sort_order);
-  const analysisScope=(!scenarioId&&reading.entrance==='walk')||reading.view==='capabilities'?'功能目录':reading.entrance==='overview'?'工程全貌':scenario?.kind==='feature_overview'?'功能整体走读':'具体场景';
-  const snapshot=data.snapshots.find(s=>s.source_snapshot_id===project?.snapshot_id);
-  const sceneExplanations=data.explanations.filter(e=>e.scenario_id===scenarioId);
-  const explanation=sceneExplanations.find(e=>e.result_id===reading.result_id) || (reading.result_id?undefined:sceneExplanations.at(-1));
-  const result=explanation?.result;
-  const overviewRun=result&&data.runs.find(run=>run.binding.run_id===result.binding.run_id&&run.binding.source_snapshot_id===result.binding.source_snapshot_id&&run.binding.project_id===projectId&&run.binding.scenario_id===scenarioId);
-  const overviewReviewGaps=overviewRun?.overview_format&&!result?.fictional?result?.gaps.filter(gap=>gap.gap_id.startsWith('overview-review-'))||[]:[];
-  const catalogReading=reading.view==='capabilities'||(reading.entrance==='walk'&&!scenarioId);
-  const engineeringReading=['engineering','materials'].includes(reading.view);
-  const projectHome=reading.view==='home'&&!project?.fictional;
-  const catalogExplanation=data.explanations.filter(e=>e.scenario_id===project?.overview_scenario_id&&e.result.feature_catalog).at(-1);
-  const capabilityCount=catalogExplanation?.result.feature_catalog?.groups.reduce((n,g)=>n+g.node_ids.length,0)||0;
-  const featureReading=reading.entrance==='walk'&&!!scenarioId&&['timeline','collaboration','files'].includes(reading.view);
-  const readingGuide=featureReading&&result?featureReadingModel(result):undefined;
-  const readingEvidence=readingGuide&&reading.selected?result?.evidence.filter(e=>guideEvidenceIds(readingGuide,reading.selected).includes(e.evidence_id)):result?.evidence;
-  const businessReading=reading.view==='timeline'&&!!result&&timelineModel(result).ordered;
-  const systemReading=reading.entrance==='overview'&&['system','map','composition','modules','dependencies'].includes(reading.view);
-  const selectedNode=result?.nodes.find(n=>n.node_id===reading.selected),selectedEdge=result?.edges.find(n=>n.edge_id===reading.selected);
-  const functionStep=reading.view==='functions'&&result?selectedCallStep(result,reading.selected):undefined;
-  const selectedCall=reading.view==='functions'&&result&&selectedEdge&&['sync_call','execution_boundary'].includes(selectedEdge.kind)?{
-    kind:selectedEdge.kind==='execution_boundary'?'异步调度':'直接调用',
-    source:result.nodes.find(n=>n.node_id===selectedEdge.source_node_id),
-    target:result.nodes.find(n=>n.node_id===selectedEdge.target_node_id),
-  }:null;
-  const activeObject=selectedNode||selectedEdge;
-  const sceneRuns=data.runs.filter(r=>r.binding.scenario_id===scenarioId&&!r.reading_question_id);
-  const sceneAnnotations=data.annotations.filter(a=>a.scenario_id===scenarioId);
-  const windowMode=width>=1280?'desktop':width>=900?'medium':'narrow';
-  const detailDrawer=width<1280;
-  const architectureReading=reading.entrance==='overview'&&['system','map'].includes(reading.view);
-  const hasDetailSelection=reading.view==='functions'?!!(selectedNode?.kind==='function'||selectedCall||functionStep):!!reading.selected;
-  const detailVisible=(!featureReading&&!architectureReading&&reading.view!=='functions')||hasDetailSelection||reading.detail_tab!=='details'||showDetail;
-  const readingKey=`${projectId}/${scenarioId||reading.entrance}/${windowMode}`;
-  const activeReadingKey=useRef(readingKey);activeReadingKey.current=readingKey;
-  const sourceSnapshotId=reading.source_snapshot_id||result?.binding.source_snapshot_id||project?.snapshot_id||'';
-  const sourceSnapshot=data.snapshots.find(s=>s.source_snapshot_id===sourceSnapshotId);
-  const selectedEvidence=result?.evidence.find(e=>e.evidence_id===reading.evidence_id);
-  const selectedFile=reading.file||selectedEvidence?.path||'';
-  const citedFile=selectedEvidence&&sourceSnapshot?.files.find(file=>file.path===selectedEvidence.path);
-  const developmentEvidence=selectedEvidence&&selectedEvidence.path===selectedFile&&selectedEvidence.source_snapshot_id===sourceSnapshotId&&sourceSnapshotId===result?.binding.source_snapshot_id
-    &&citedFile?.content_sha256===selectedEvidence.content_sha256&&selectedEvidence.line_start>=1&&selectedEvidence.line_end>=selectedEvidence.line_start&&selectedEvidence.line_end<=citedFile.line_count
-    ?{evidence_id:selectedEvidence.evidence_id,path:selectedEvidence.path,line_start:selectedEvidence.line_start,line_end:selectedEvidence.line_end}:undefined;
-  const suggestedPath=React.useMemo(()=>projectHome&&project?savedBusinessPath(project,walkScenes,data.explanations):undefined,[projectHome,project,data.scenarios,data.features,data.explanations]);
-  const currentFeature=data.features.find(f=>f.feature_id===scenario?.feature_id);
-  const discovery=currentFeature?.discovery;
-  const graphRun=discovery&&reading.view==='timeline'&&result?sceneRuns.find(run=>run.binding.run_id===result.binding.run_id&&run.dsh_function_format):undefined;
-  const graphCatalog=graphRun?.overview_parent_run_id&&discovery?data.explanations.find(item=>
-    item.result_id===discovery.result_id&&item.result.binding.run_id===graphRun.overview_parent_run_id&&
-    item.result.binding.source_snapshot_id===graphRun.binding.source_snapshot_id&&
-    item.result.feature_catalog?.readings?.some(row=>row.node_id===discovery.node_id)):undefined;
-  const requestedCatalog=discovery&&!result?data.explanations.find(e=>e.result_id===reading.result_id&&e.result.feature_catalog&&e.result.binding.project_id===projectId):undefined;
-  const featureSource=discovery&&reading.entrance==='walk'&&scenario?.kind==='feature_overview'&&!result
-    ?(requestedCatalog&&discoveredFeature(data.features,data.explanations,requestedCatalog.result,discovery.node_id,project?.snapshot_id||'')?.feature_id===currentFeature?.feature_id
-      ?requestedCatalog:data.explanations.find(e=>e.result_id===discovery.result_id&&e.result.binding.project_id===projectId))
-    :undefined;
-  const preview=featureSource&&!catalogReading&&!engineeringReading&&project&&discovery;
-  const functionPreview=!!preview&&reading.view==='functions';
-  const previewGraphs=functionPreview&&featureSource&&discovery?catalogGraphState(data,featureSource,discovery.node_id):undefined;
-  const previewRun=previewGraphs?.run;
-  const automaticRun=previewRun?.overview_parent_run_id;
-  const previewExplanation=previewGraphs?.ready??(!automaticRun?previewGraphs?.latest:undefined);
-  const bookmarkResult=bookmark?.projectId===projectId&&data.explanations.find(e=>e.result_id===bookmark.position.result_id&&e.result.binding.project_id===projectId&&e.result.binding.source_snapshot_id===bookmark.position.source_snapshot_id);
-  const bookmarkScene=walkScenes.find(s=>s.scenario_id===bookmark?.position.scenario_id);
-  const sameBookmarkScope=bookmarkResult&&(bookmarkResult.scenario_id===bookmark?.position.scenario_id||!!bookmarkScene&&!!bookmark?.catalogNodeId&&discoveredFeature(data.features,data.explanations,bookmarkResult.result,bookmark.catalogNodeId,project?.snapshot_id||'')?.feature_id===bookmarkScene.feature_id);
-  const canResume=!!sameBookmarkScope&&(bookmark?.position.scenario_id===project?.overview_scenario_id||walkScenes.some(s=>s.scenario_id===bookmark?.position.scenario_id));
-  const objectLabel=featureReading&&readingGuide?guideItemTitle(readingGuide,reading.selected):activeObject?.label;
-  const bookmarkSource=result||(preview?featureSource?.result:undefined);
-  const bookmarkLabel=preview?currentFeature?.name:architectureReading||featureReading||reading.view==='functions'?objectLabel:reading.view==='files'?reading.file:'';
-  useEffect(()=>{
-    if(!projectHome||!projectId)return;
-    let current=true;
-    void api.invoke<HomeBookmark|null>('reading_get',{key:'home-bookmark/'+projectId}).then(value=>{if(current)setBookmark(value);}).catch(e=>setError(e.message));
-    return()=>{current=false;};
-  },[projectHome,projectId]);
-  useEffect(()=>{
-    if(!bookmarkLabel||!bookmarkSource||!scenario||loadedKey!==readingKey||reading.mode!=='normal'||bookmarkSource.binding.project_id!==projectId||!preview&&scenario.scenario_id!==bookmarkSource.binding.scenario_id)return;
-    const {view,entrance,selected,file,evidence_id,detail_tab,reading_path,function_path,function_mode,stage}=reading;
-    const position={view,entrance,selected,file,evidence_id,detail_tab,reading_path,function_path,function_mode,stage,
-      scenario_id:scenario.scenario_id,result_id:bookmarkSource.result_id,source_snapshot_id:bookmarkSource.binding.source_snapshot_id};
-    const value:HomeBookmark={projectId,label:bookmarkLabel,position,...(preview?{catalogNodeId:preview.node_id}:{})};
-    void api.invoke('reading_save',{key:'home-bookmark/'+projectId,value}).catch(e=>setError(e.message));
-  },[bookmarkLabel,projectId,scenario?.scenario_id,bookmarkSource?.result_id,loadedKey,readingKey,reading.mode,reading.view,reading.entrance,reading.selected,reading.file,reading.evidence_id,reading.detail_tab,reading.reading_path,reading.function_path,reading.function_mode,reading.stage]);
-  const latestRun=sceneRuns.at(-1);
-  const running=sceneRuns.find(r=>['queued','waiting_agent','running','validating','cancel_requested'].includes(r.status));
-  const activityRun=functionPreview?previewRun:running||latestRun;
-  const completedExplanation=data.explanations.find(e=>e.result.binding.run_id===activityRun?.binding.run_id);
-  const projectTasks=data.runs.filter(r=>!r.reading_question_id&&r.binding.project_id===projectId&&['queued','waiting_agent','running','validating','cancel_requested'].includes(r.status));
-  const otherProjectTasks=projectTasks.filter(r=>!r.overview_parent_run_id);
-  const pendingScene=data.scenarios.find(s=>s.project_id===projectId&&waitingForAgent(data,s.scenario_id));
-  const featureTask=(data.development_tasks??[]).filter(task=>task.reading?.scenario_id===scenarioId).sort((a,b)=>b.updated_at.localeCompare(a.updated_at))[0];
-  const featureDraft=featureDrafts[scenarioId]??{editing:false,request:'',mode:'codex' as const};
-  const questionLocation=readingQuestionTarget(result,reading,currentFeature?.feature_id||projectId,data.snapshots.find(s=>s.source_snapshot_id===(result?.binding.source_snapshot_id||project?.snapshot_id)));
-  if(questionLocation.target.kind==='feature')questionLocation.label=reading.entrance==='overview'?'当前工程整体':`${currentFeature?.name||scenario?.title||'当前功能'} · 整体`;
-  const featurePurpose=catalogExplanation?.result.nodes.find(n=>n.node_id===currentFeature?.discovery?.node_id)?.description;
-  const waitingMcp=waitingForAgent(data,scenarioId);
-  const events=eventState.runId===activityRun?.binding.run_id?eventState.items:[];
-  const indexTasks=Object.values(indexes);
-  const patch=useCallback((value:Partial<ReadingState>)=>setReading(r=>({...r,...value})),[]);
-  useEffect(()=>{
-    if(!previewExplanation||loadedKey!==readingKey)return;
-    patch({result_id:previewExplanation.result_id,source_snapshot_id:previewExplanation.result.binding.source_snapshot_id,
-      selected:'',file:'',evidence_id:'',reading_path:'',function_path:firstGraphPath(previewExplanation.result),function_mode:'calls',reading_focus:'',detail_tab:'details',mode:'normal'});
+
+const api = window.arc;
+
+function App() {
+  const [data, setData] = useState(initialData);
+  const [projectId, setProjectId] = useState('');
+  const [scenarioId, setScenarioId] = useState('');
+  const [reading, setReading] = useState<ReadingState>(defaults);
+  const [loadedKey, setLoadedKey] = useState('');
+  const [width, setWidth] = useState(window.innerWidth);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [saved, setSaved] = useState('');
+  const [modal, setModal] = useState('');
+  const [pending, setPending] = useState(false);
+  const [formName, setFormName] = useState('');
+  const [formQuestion, setFormQuestion] = useState('');
+  const [search, setSearch] = useState('');
+  const [clueDrafts, setClueDrafts] = useState<Record<string, string>>({});
+  const [formFeature, setFormFeature] = useState('');
+  const [featureDrafts, setFeatureDrafts] = useState<Record<string, FeatureDevelopmentDraft>>({});
+  const [bookmark, setBookmark] = useState<HomeBookmark | null>(null);
+  const [focusDevelopment, setFocusDevelopment] = useState(false);
+  const [requestedTask, setRequestedTask] = useState('');
+  const [indexes, setIndexes] = useState<Record<string, any>>({});
+  const [eventState, setEventState] = useState<{ runId: string; items: any[] }>({ runId: '', items: [] });
+  const [showDetail, setShowDetail] = useState(false);
+  const [showCatalog, setShowCatalog] = useState(false);
+  const [archiveVisible, setArchiveVisible] = useState(false);
+  const [renameFeature, setRenameFeature] = useState('');
+  const [eventError, setEventError] = useState('');
+  const [activityFocus, setActivityFocus] = useState(0);
+  const [expandMode, setExpandMode] = useState<AnalysisMode>('codex');
+  const [mcp, setMcp] = useState<any>(null);
+  const [settings, setSettings] = useState<any>(null);
+  const [connectionError, setConnectionError] = useState('');
+
+  const analysisMode = analysisModes[expandMode];
+  const readingScope = useRef('');
+  const emptyEntrance = useRef<'overview' | 'walk'>('overview');
+  const previousFocus = useRef<HTMLElement | null>(null);
+  const modalRef = useRef<HTMLDialogElement>(null);
+  const starting = useRef(false);
+  const projectSwitch = useRef(0);
+  const navigation = useRef<{ scope: string; value: Partial<ReadingState> } | null>(null);
+
+  const project = data.projects.find(p => p.project_id === projectId);
+  const scenario = data.scenarios.find(s => s.scenario_id === scenarioId);
+  const clue = clueDrafts[scenarioId] || '';
+  const setClue = (value: string) => setClueDrafts(d => ({ ...d, [scenarioId]: value }));
+
+  const overviewFeature = data.scenarios.find(s => s.scenario_id === project?.overview_scenario_id)?.feature_id;
+  const userFeatures = data.features
+    .filter(f => f.project_id === projectId && !f.archived && f.feature_id !== overviewFeature)
+    .sort((a, b) => a.sort_order - b.sort_order);
+  const walkScenes = data.scenarios
+    .filter(s => s.project_id === projectId && !s.archived && s.scenario_id !== project?.overview_scenario_id && userFeatures.some(f => f.feature_id === s.feature_id))
+    .sort((a, b) => userFeatures.findIndex(f => f.feature_id === a.feature_id) - userFeatures.findIndex(f => f.feature_id === b.feature_id) || a.sort_order - b.sort_order);
+
+  const analysisScope =
+    (!scenarioId && reading.entrance === 'walk') || reading.view === 'capabilities'
+      ? '功能目录'
+      : reading.entrance === 'overview'
+        ? '工程全貌'
+        : scenario?.kind === 'feature_overview'
+          ? '功能整体走读'
+          : '具体场景';
+  const snapshot = data.snapshots.find(s => s.source_snapshot_id === project?.snapshot_id);
+  const sceneExplanations = data.explanations.filter(e => e.scenario_id === scenarioId);
+  const explanation = sceneExplanations.find(e => e.result_id === reading.result_id) || (reading.result_id ? undefined : sceneExplanations.at(-1));
+  const result = explanation?.result;
+  const overviewRun =
+    result &&
+    data.runs.find(
+      run =>
+        run.binding.run_id === result.binding.run_id &&
+        run.binding.source_snapshot_id === result.binding.source_snapshot_id &&
+        run.binding.project_id === projectId &&
+        run.binding.scenario_id === scenarioId,
+    );
+  const overviewReviewGaps = overviewRun?.overview_format && !result?.fictional ? result?.gaps.filter(gap => gap.gap_id.startsWith('overview-review-')) || [] : [];
+
+  const catalogReading = reading.view === 'capabilities' || (reading.entrance === 'walk' && !scenarioId);
+  const engineeringReading = ['engineering', 'materials'].includes(reading.view);
+  const projectHome = reading.view === 'home' && !project?.fictional;
+  const catalogExplanation = data.explanations.filter(e => e.scenario_id === project?.overview_scenario_id && e.result.feature_catalog).at(-1);
+  const capabilityCount = catalogExplanation?.result.feature_catalog?.groups.reduce((n, g) => n + g.node_ids.length, 0) || 0;
+  const featureReading = reading.entrance === 'walk' && !!scenarioId && ['timeline', 'collaboration', 'files'].includes(reading.view);
+  const readingGuide = featureReading && result ? featureReadingModel(result) : undefined;
+  const readingEvidence = readingGuide && reading.selected ? result?.evidence.filter(e => guideEvidenceIds(readingGuide, reading.selected).includes(e.evidence_id)) : result?.evidence;
+  const businessReading = reading.view === 'timeline' && !!result && timelineModel(result).ordered;
+  const systemReading = reading.entrance === 'overview' && ['system', 'map', 'composition', 'modules', 'dependencies'].includes(reading.view);
+
+  const selectedNode = result?.nodes.find(n => n.node_id === reading.selected);
+  const selectedEdge = result?.edges.find(n => n.edge_id === reading.selected);
+  const functionStep = reading.view === 'functions' && result ? selectedCallStep(result, reading.selected) : undefined;
+  const selectedCall =
+    reading.view === 'functions' && result && selectedEdge && ['sync_call', 'execution_boundary'].includes(selectedEdge.kind)
+      ? {
+          kind: selectedEdge.kind === 'execution_boundary' ? '异步调度' : '直接调用',
+          source: result.nodes.find(n => n.node_id === selectedEdge.source_node_id),
+          target: result.nodes.find(n => n.node_id === selectedEdge.target_node_id),
+        }
+      : null;
+  const activeObject = selectedNode || selectedEdge;
+  const sceneRuns = data.runs.filter(r => r.binding.scenario_id === scenarioId && !r.reading_question_id);
+  const sceneAnnotations = data.annotations.filter(a => a.scenario_id === scenarioId);
+  const windowMode = width >= 1280 ? 'desktop' : width >= 900 ? 'medium' : 'narrow';
+  const detailDrawer = width < 1280;
+  const architectureReading = reading.entrance === 'overview' && ['system', 'map'].includes(reading.view);
+  const hasDetailSelection = reading.view === 'functions' ? !!(selectedNode?.kind === 'function' || selectedCall || functionStep) : !!reading.selected;
+  const detailVisible = (!featureReading && !architectureReading && reading.view !== 'functions') || hasDetailSelection || reading.detail_tab !== 'details' || showDetail;
+  const readingKey = `${projectId}/${scenarioId || reading.entrance}/${windowMode}`;
+  const activeReadingKey = useRef(readingKey);
+  activeReadingKey.current = readingKey;
+
+  const sourceSnapshotId = reading.source_snapshot_id || result?.binding.source_snapshot_id || project?.snapshot_id || '';
+  const sourceSnapshot = data.snapshots.find(s => s.source_snapshot_id === sourceSnapshotId);
+  const selectedEvidence = result?.evidence.find(e => e.evidence_id === reading.evidence_id);
+  const selectedFile = reading.file || selectedEvidence?.path || '';
+  const citedFile = selectedEvidence && sourceSnapshot?.files.find(file => file.path === selectedEvidence.path);
+  const developmentEvidence =
+    selectedEvidence &&
+    selectedEvidence.path === selectedFile &&
+    selectedEvidence.source_snapshot_id === sourceSnapshotId &&
+    sourceSnapshotId === result?.binding.source_snapshot_id &&
+    citedFile?.content_sha256 === selectedEvidence.content_sha256 &&
+    selectedEvidence.line_start >= 1 &&
+    selectedEvidence.line_end >= selectedEvidence.line_start &&
+    selectedEvidence.line_end <= citedFile.line_count
+      ? { evidence_id: selectedEvidence.evidence_id, path: selectedEvidence.path, line_start: selectedEvidence.line_start, line_end: selectedEvidence.line_end }
+      : undefined;
+
+  const suggestedPath = useMemo(
+    () => (projectHome && project ? savedBusinessPath(project, walkScenes, data.explanations) : undefined),
+    [projectHome, project, data.scenarios, data.features, data.explanations],
+  );
+  const currentFeature = data.features.find(f => f.feature_id === scenario?.feature_id);
+  const discovery = currentFeature?.discovery;
+  const graphRun = discovery && reading.view === 'timeline' && result ? sceneRuns.find(run => run.binding.run_id === result.binding.run_id && run.dsh_function_format) : undefined;
+  const graphCatalog =
+    graphRun?.overview_parent_run_id && discovery
+      ? data.explanations.find(
+          item =>
+            item.result_id === discovery.result_id &&
+            item.result.binding.run_id === graphRun.overview_parent_run_id &&
+            item.result.binding.source_snapshot_id === graphRun.binding.source_snapshot_id &&
+            item.result.feature_catalog?.readings?.some(row => row.node_id === discovery.node_id),
+        )
+      : undefined;
+  const requestedCatalog =
+    discovery && !result ? data.explanations.find(e => e.result_id === reading.result_id && e.result.feature_catalog && e.result.binding.project_id === projectId) : undefined;
+  const featureSource =
+    discovery && reading.entrance === 'walk' && scenario?.kind === 'feature_overview' && !result
+      ? requestedCatalog && discoveredFeature(data.features, data.explanations, requestedCatalog.result, discovery.node_id, project?.snapshot_id || '')?.feature_id === currentFeature?.feature_id
+        ? requestedCatalog
+        : data.explanations.find(e => e.result_id === discovery.result_id && e.result.binding.project_id === projectId)
+      : undefined;
+  const preview = featureSource && !catalogReading && !engineeringReading && project && discovery;
+  const functionPreview = !!preview && reading.view === 'functions';
+  const previewGraphs = functionPreview && featureSource && discovery ? catalogGraphState(data, featureSource, discovery.node_id) : undefined;
+  const previewRun = previewGraphs?.run;
+  const automaticRun = previewRun?.overview_parent_run_id;
+  const previewExplanation = previewGraphs?.ready ?? (!automaticRun ? previewGraphs?.latest : undefined);
+
+  const bookmarkResult =
+    bookmark?.projectId === projectId &&
+    data.explanations.find(
+      e => e.result_id === bookmark.position.result_id && e.result.binding.project_id === projectId && e.result.binding.source_snapshot_id === bookmark.position.source_snapshot_id,
+    );
+  const bookmarkScene = walkScenes.find(s => s.scenario_id === bookmark?.position.scenario_id);
+  const sameBookmarkScope =
+    bookmarkResult &&
+    (bookmarkResult.scenario_id === bookmark?.position.scenario_id ||
+      (!!bookmarkScene &&
+        !!bookmark?.catalogNodeId &&
+        discoveredFeature(data.features, data.explanations, bookmarkResult.result, bookmark.catalogNodeId, project?.snapshot_id || '')?.feature_id === bookmarkScene.feature_id));
+  const canResume = !!sameBookmarkScope && (bookmark?.position.scenario_id === project?.overview_scenario_id || walkScenes.some(s => s.scenario_id === bookmark?.position.scenario_id));
+  const objectLabel = featureReading && readingGuide ? guideItemTitle(readingGuide, reading.selected) : activeObject?.label;
+  const bookmarkSource = result || (preview ? featureSource?.result : undefined);
+  const bookmarkLabel = preview ? currentFeature?.name : architectureReading || featureReading || reading.view === 'functions' ? objectLabel : reading.view === 'files' ? reading.file : '';
+
+  useEffect(() => {
+    if (!projectHome || !projectId) return;
+    let current = true;
+    void api.invoke<HomeBookmark | null>('reading_get', { key: 'home-bookmark/' + projectId }).then(value => {
+      if (current) setBookmark(value);
+    }).catch(e => setError(e.message));
+    return () => {
+      current = false;
+    };
+  }, [projectHome, projectId]);
+
+  useEffect(() => {
+    if (
+      !bookmarkLabel ||
+      !bookmarkSource ||
+      !scenario ||
+      loadedKey !== readingKey ||
+      reading.mode !== 'normal' ||
+      bookmarkSource.binding.project_id !== projectId ||
+      (!preview && scenario.scenario_id !== bookmarkSource.binding.scenario_id)
+    ) {
+      return;
+    }
+    const { view, entrance, selected, file, evidence_id, detail_tab, reading_path, function_path, function_mode, stage } = reading;
+    const position = {
+      view,
+      entrance,
+      selected,
+      file,
+      evidence_id,
+      detail_tab,
+      reading_path,
+      function_path,
+      function_mode,
+      stage,
+      scenario_id: scenario.scenario_id,
+      result_id: bookmarkSource.result_id,
+      source_snapshot_id: bookmarkSource.binding.source_snapshot_id,
+    };
+    const value: HomeBookmark = { projectId, label: bookmarkLabel, position, ...(preview ? { catalogNodeId: preview.node_id } : {}) };
+    void api.invoke('reading_save', { key: 'home-bookmark/' + projectId, value }).catch(e => setError(e.message));
+  }, [
+    bookmarkLabel,
+    projectId,
+    scenario?.scenario_id,
+    bookmarkSource?.result_id,
+    loadedKey,
+    readingKey,
+    reading.mode,
+    reading.view,
+    reading.entrance,
+    reading.selected,
+    reading.file,
+    reading.evidence_id,
+    reading.detail_tab,
+    reading.reading_path,
+    reading.function_path,
+    reading.function_mode,
+    reading.stage,
+  ]);
+
+  const latestRun = sceneRuns.at(-1);
+  const running = sceneRuns.find(r => ['queued', 'waiting_agent', 'running', 'validating', 'cancel_requested'].includes(r.status));
+  const activityRun = functionPreview ? previewRun : running || latestRun;
+  const completedExplanation = data.explanations.find(e => e.result.binding.run_id === activityRun?.binding.run_id);
+  const projectTasks = data.runs.filter(r => !r.reading_question_id && r.binding.project_id === projectId && ['queued', 'waiting_agent', 'running', 'validating', 'cancel_requested'].includes(r.status));
+  const otherProjectTasks = projectTasks.filter(r => !r.overview_parent_run_id);
+  const pendingScene = data.scenarios.find(s => s.project_id === projectId && waitingForAgent(data, s.scenario_id));
+  const featureTask = (data.development_tasks ?? [])
+    .filter(task => task.reading?.scenario_id === scenarioId)
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+  const featureDraft = featureDrafts[scenarioId] ?? { editing: false, request: '', mode: 'codex' as const };
+  const questionLocation = readingQuestionTarget(
+    result,
+    reading,
+    currentFeature?.feature_id || projectId,
+    data.snapshots.find(s => s.source_snapshot_id === (result?.binding.source_snapshot_id || project?.snapshot_id)),
+  );
+  if (questionLocation.target.kind === 'feature') {
+    questionLocation.label = reading.entrance === 'overview' ? '当前工程整体' : `${currentFeature?.name || scenario?.title || '当前功能'} · 整体`;
+  }
+  const featurePurpose = catalogExplanation?.result.nodes.find(n => n.node_id === currentFeature?.discovery?.node_id)?.description;
+  const waitingMcp = waitingForAgent(data, scenarioId);
+  const events = eventState.runId === activityRun?.binding.run_id ? eventState.items : [];
+  const indexTasks = Object.values(indexes);
+
+  const patch = useCallback((value: Partial<ReadingState>) => setReading(r => ({ ...r, ...value })), []);
+
+  useEffect(() => {
+    if (!previewExplanation || loadedKey !== readingKey) return;
+    patch({
+      result_id: previewExplanation.result_id,
+      source_snapshot_id: previewExplanation.result.binding.source_snapshot_id,
+      selected: '',
+      file: '',
+      evidence_id: '',
+      reading_path: '',
+      function_path: firstGraphPath(previewExplanation.result),
+      function_mode: 'calls',
+      reading_focus: '',
+      detail_tab: 'details',
+      mode: 'normal',
+    });
     setShowDetail(false);
-  },[previewExplanation?.result_id,loadedKey,readingKey,patch]);
-  function switchView(view:string,overrides:Partial<ReadingState>={}){
+  }, [previewExplanation?.result_id, loadedKey, readingKey, patch]);
+
+  function switchView(view: string, overrides: Partial<ReadingState> = {}) {
     closePopovers();
-    if(view==='files')overrides={files_open:false,detail_tab:'details',...overrides};
-    setReading(r=>{
-      const featurePosition=featureViewPosition(r,view,result?.binding.source_snapshot_id||'');
-      if(featurePosition)return {...featurePosition,...overrides};
-      if(r.view===view)return {...r,...overrides};
-      const {selected,file,evidence_id,source_snapshot_id,mode,detail_tab,zoom,stage,result_id}=r;
-      const saved={selected,file,evidence_id,source_snapshot_id,mode,detail_tab,zoom,stage,result_id};
-      const target=r.view_states?.[view]||{selected:'',file:'',evidence_id:'',source_snapshot_id:'',mode:'normal' as const,detail_tab:'details',zoom:1,stage:'',result_id:r.result_id};
-      return {...r,...target,view,view_states:{...r.view_states,[r.view]:saved},...overrides};
+    if (view === 'files') overrides = { files_open: false, detail_tab: 'details', ...overrides };
+    setReading(r => {
+      const featurePosition = featureViewPosition(r, view, result?.binding.source_snapshot_id || '');
+      if (featurePosition) return { ...featurePosition, ...overrides };
+      if (r.view === view) return { ...r, ...overrides };
+      const { selected, file, evidence_id, source_snapshot_id, mode, detail_tab, zoom, stage, result_id } = r;
+      const savedState = { selected, file, evidence_id, source_snapshot_id, mode, detail_tab, zoom, stage, result_id };
+      const target = r.view_states?.[view] || {
+        selected: '',
+        file: '',
+        evidence_id: '',
+        source_snapshot_id: '',
+        mode: 'normal' as const,
+        detail_tab: 'details',
+        zoom: 1,
+        stage: '',
+        result_id: r.result_id,
+      };
+      return { ...r, ...target, view, view_states: { ...r.view_states, [r.view]: savedState }, ...overrides };
     });
   }
-  const savePosition=useCallback((name:string,top:number,left:number)=>setReading(r=>({...r,scroll:{...r.scroll,[name]:{top,left}}})),[]);
-  const reload=useCallback(async()=>{const d=await api.invoke<WorkspaceData>('data');setData(d);return d;},[]);
-  async function action<T>(fn:()=>Promise<T>,success?:string):Promise<T|undefined>{setError('');setNotice('');try{const r=await fn();if(success)setNotice(success);return r;}catch(e){setError((e as Error).message);return undefined;}}
-  useEffect(()=>{void (async()=>{const d=await reload();const last=await api.invoke('reading_get',{key:'last-session'});const initialProject=d.projects.find(p=>p.project_id===last?.project_id)??d.projects[0],savedScene=d.scenarios.some(s=>s.scenario_id===last?.scenario_id)?last.scenario_id:'';setProjectId(initialProject?.project_id||'');setScenarioId(savedScene||(last?.entrance==='walk'?'':initialProject?.overview_scenario_id||''));emptyEntrance.current=last?.entrance==='walk'?'walk':'overview';})();const off=api.onEvent(e=>{if(e.type==='changed')void reload();if(e.type==='indexing'){setNotice('');setIndexes(items=>({...items,[e.project_id]:e}));}if(e.type==='index_done')setIndexes(items=>{const next={...items};delete next[e.project_id];return next;});if(e.type==='run_event')void reload();});return off;},[reload]);
-  useEffect(()=>{const outside=(e:PointerEvent)=>closePopovers(e.target as Node);const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'){const menu=(document.activeElement as Element)?.closest<HTMLDetailsElement>('details[open]');closePopovers();menu?.querySelector<HTMLElement>('summary')?.focus();}};document.addEventListener('pointerdown',outside,true);document.addEventListener('keydown',escape);return()=>{document.removeEventListener('pointerdown',outside,true);document.removeEventListener('keydown',escape);};},[]);
-  useEffect(()=>{if(!notice)return;const timer=setTimeout(()=>setNotice(''),3500);return()=>clearTimeout(timer);},[notice]);
-  useEffect(()=>{const listener=()=>setWidth(window.innerWidth);window.addEventListener('resize',listener);return()=>window.removeEventListener('resize',listener);},[]);
-  useEffect(()=>{if(!projectId)return;let current=true;setLoadedKey('');void api.invoke('reading_get',{key:readingKey}).then(r=>{if(r)r=featureReadingPosition(modernReading(r));if(r&&scenarioId&&scenarioId!==project?.overview_scenario_id&&['home','engineering','materials'].includes(r.view))r={...r,entrance:'walk',view:'timeline'};if(current){const scope=projectId+'/'+scenarioId;const same=readingScope.current===scope;const requested=navigation.current?.scope===scope?navigation.current.value:{};navigation.current=null;setReading(previous=>({... (same?{...previous,left_width:r?.left_width??defaults.left_width,right_width:r?.right_width??defaults.right_width,detail_tab:width>=1280&&previous.detail_tab==='source'?'details':previous.detail_tab}:{...defaults,entrance:scenarioId&&scenarioId!==project?.overview_scenario_id?'walk':'overview',view:scenarioId&&scenarioId!==project?.overview_scenario_id?'timeline':project?.fictional?'system':'home',...r,...(!scenarioId?{entrance:emptyEntrance.current,view:r?.entrance===emptyEntrance.current?r.view:emptyEntrance.current==='walk'?'capabilities':project?.fictional?'system':'home'}:{}),scenario_id:scenarioId}),...requested}));readingScope.current=scope;setLoadedKey(readingKey);}}).catch(e=>setError(e.message));void api.invoke('reading_save',{key:'last-session',value:{project_id:projectId,scenario_id:scenarioId,entrance:scenarioId&&scenarioId!==project?.overview_scenario_id?'walk':emptyEntrance.current}});return()=>{current=false;};},[readingKey,projectId,scenarioId]);
-  useEffect(()=>{if(!projectId||loadedKey!==readingKey)return;void api.invoke('reading_save',{key:'project-session/'+projectId,value:{scenario_id:scenarioId,entrance:reading.entrance}}).catch(e=>setError(e.message));},[projectId,scenarioId,reading.entrance,loadedKey,readingKey]);
-  useEffect(()=>{if(loadedKey!==readingKey||!projectId)return;setSaved('保存中…');const timer=setTimeout(()=>{void api.invoke('reading_save',{key:readingKey,value:reading}).then(()=>setSaved('阅读位置已保存')).catch(e=>{setSaved('保存失败');setError(e.message);});},180);return()=>{clearTimeout(timer);if(activeReadingKey.current!==readingKey)void api.invoke('reading_save',{key:readingKey,value:reading}).catch(e=>setError(e.message));};},[reading,readingKey,loadedKey,projectId]);
-  useEffect(()=>{let current=true;setExpandMode('codex');if(projectId)void api.invoke('reading_get',{key:'feature-expand-mode/'+projectId}).then(v=>{if(current)setExpandMode(v?.version===1&&isAnalysisMode(v.mode)?v.mode:'codex');}).catch(e=>setError(e.message));return()=>{current=false;};},[projectId]);
-  useEffect(()=>{if(!projectId)return;void action(()=>api.invoke('check_freshness',{project_id:projectId}));},[projectId,scenarioId]);
-  useEffect(()=>{
-    let current=true,busy=false;const runId=activityRun?.binding.run_id;
+
+  const savePosition = useCallback((name: string, top: number, left: number) => setReading(r => ({ ...r, scroll: { ...r.scroll, [name]: { top, left } } })), []);
+  const reload = useCallback(async () => {
+    const d = await api.invoke<WorkspaceData>('data');
+    setData(d);
+    return d;
+  }, []);
+
+  async function action<T>(fn: () => Promise<T>, success?: string): Promise<T | undefined> {
+    setError('');
+    setNotice('');
+    try {
+      const r = await fn();
+      if (success) setNotice(success);
+      return r;
+    } catch (e) {
+      setError((e as Error).message);
+      return undefined;
+    }
+  }
+
+  useEffect(() => {
+    void (async () => {
+      const d = await reload();
+      const last = await api.invoke('reading_get', { key: 'last-session' });
+      const initialProject = d.projects.find(p => p.project_id === last?.project_id) ?? d.projects[0];
+      const savedScene = d.scenarios.some(s => s.scenario_id === last?.scenario_id) ? last.scenario_id : '';
+      setProjectId(initialProject?.project_id || '');
+      setScenarioId(savedScene || (last?.entrance === 'walk' ? '' : initialProject?.overview_scenario_id || ''));
+      emptyEntrance.current = last?.entrance === 'walk' ? 'walk' : 'overview';
+    })();
+    const off = api.onEvent(e => {
+      if (e.type === 'changed') void reload();
+      if (e.type === 'indexing') {
+        setNotice('');
+        setIndexes(items => ({ ...items, [e.project_id]: e }));
+      }
+      if (e.type === 'index_done') {
+        setIndexes(items => {
+          const next = { ...items };
+          delete next[e.project_id];
+          return next;
+        });
+      }
+      if (e.type === 'run_event') void reload();
+    });
+    return off;
+  }, [reload]);
+
+  useEffect(() => {
+    const outside = (e: PointerEvent) => closePopovers(e.target as Node);
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        const menu = (document.activeElement as Element)?.closest<HTMLDetailsElement>('details[open]');
+        closePopovers();
+        menu?.querySelector<HTMLElement>('summary')?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', outside, true);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('pointerdown', outside, true);
+      document.removeEventListener('keydown', escape);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(''), 3500);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    const listener = () => setWidth(window.innerWidth);
+    window.addEventListener('resize', listener);
+    return () => window.removeEventListener('resize', listener);
+  }, []);
+
+  useEffect(() => {
+    if (!projectId) return;
+    let current = true;
+    setLoadedKey('');
+    void api
+      .invoke('reading_get', { key: readingKey })
+      .then(r => {
+        if (r) r = featureReadingPosition(modernReading(r));
+        if (r && scenarioId && scenarioId !== project?.overview_scenario_id && ['home', 'engineering', 'materials'].includes(r.view)) {
+          r = { ...r, entrance: 'walk', view: 'timeline' };
+        }
+        if (current) {
+          const scope = projectId + '/' + scenarioId;
+          const same = readingScope.current === scope;
+          const requested = navigation.current?.scope === scope ? navigation.current.value : {};
+          navigation.current = null;
+          setReading(previous => ({
+            ...(same
+              ? {
+                  ...previous,
+                  left_width: r?.left_width ?? defaults.left_width,
+                  right_width: r?.right_width ?? defaults.right_width,
+                  detail_tab: width >= 1280 && previous.detail_tab === 'source' ? 'details' : previous.detail_tab,
+                }
+              : {
+                  ...defaults,
+                  entrance: scenarioId && scenarioId !== project?.overview_scenario_id ? 'walk' : 'overview',
+                  view: scenarioId && scenarioId !== project?.overview_scenario_id ? 'timeline' : project?.fictional ? 'system' : 'home',
+                  ...r,
+                  ...(!scenarioId
+                    ? {
+                        entrance: emptyEntrance.current,
+                        view: r?.entrance === emptyEntrance.current ? r.view : emptyEntrance.current === 'walk' ? 'capabilities' : project?.fictional ? 'system' : 'home',
+                      }
+                    : {}),
+                  scenario_id: scenarioId,
+                }),
+            ...requested,
+          }));
+          readingScope.current = scope;
+          setLoadedKey(readingKey);
+        }
+      })
+      .catch(e => setError(e.message));
+    void api.invoke('reading_save', {
+      key: 'last-session',
+      value: { project_id: projectId, scenario_id: scenarioId, entrance: scenarioId && scenarioId !== project?.overview_scenario_id ? 'walk' : emptyEntrance.current },
+    });
+    return () => {
+      current = false;
+    };
+  }, [readingKey, projectId, scenarioId]);
+
+  useEffect(() => {
+    if (!projectId || loadedKey !== readingKey) return;
+    void api.invoke('reading_save', { key: 'project-session/' + projectId, value: { scenario_id: scenarioId, entrance: reading.entrance } }).catch(e => setError(e.message));
+  }, [projectId, scenarioId, reading.entrance, loadedKey, readingKey]);
+
+  useEffect(() => {
+    if (loadedKey !== readingKey || !projectId) return;
+    setSaved('保存中…');
+    const timer = setTimeout(() => {
+      void api
+        .invoke('reading_save', { key: readingKey, value: reading })
+        .then(() => setSaved('阅读位置已保存'))
+        .catch(e => {
+          setSaved('保存失败');
+          setError(e.message);
+        });
+    }, 180);
+    return () => {
+      clearTimeout(timer);
+      if (activeReadingKey.current !== readingKey) {
+        void api.invoke('reading_save', { key: readingKey, value: reading }).catch(e => setError(e.message));
+      }
+    };
+  }, [reading, readingKey, loadedKey, projectId]);
+
+  useEffect(() => {
+    let current = true;
+    setExpandMode('codex');
+    if (projectId) {
+      void api
+        .invoke('reading_get', { key: 'feature-expand-mode/' + projectId })
+        .then(v => {
+          if (current) setExpandMode(v?.version === 1 && isAnalysisMode(v.mode) ? v.mode : 'codex');
+        })
+        .catch(e => setError(e.message));
+    }
+    return () => {
+      current = false;
+    };
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    void action(() => api.invoke('check_freshness', { project_id: projectId }));
+  }, [projectId, scenarioId]);
+
+  useEffect(() => {
+    let current = true;
+    let busy = false;
+    const runId = activityRun?.binding.run_id;
     setEventError('');
-    const refresh=async()=>{if(!runId||busy)return;busy=true;try{
-      const items=await api.invoke<any[]>('run_events',{run_id:runId});
-      if(current){setEventState({runId,items});setEventError('');}
-    }catch(e){if(current)setEventError((e as Error).message);}finally{busy=false;}};
+    const refresh = async () => {
+      if (!runId || busy) return;
+      busy = true;
+      try {
+        const items = await api.invoke<any[]>('run_events', { run_id: runId });
+        if (current) {
+          setEventState({ runId, items });
+          setEventError('');
+        }
+      } catch (e) {
+        if (current) setEventError((e as Error).message);
+      } finally {
+        busy = false;
+      }
+    };
     void refresh();
-    const off=api.onEvent(e=>{if(e.type==='run_event'&&e.run_id===runId)void refresh();});
-    const timer=runId&&['queued','running','validating','cancel_requested'].includes(activityRun?.status||'')?setInterval(()=>{void refresh();if(current&&['queued','running','validating','cancel_requested'].includes(activityRun?.status||''))void reload();},2500):undefined;
-    return()=>{current=false;off();clearInterval(timer);};
-  },[activityRun?.binding.run_id,activityRun?.status,reload]);
-  useEffect(()=>{if(modal){previousFocus.current=document.activeElement as HTMLElement;modalRef.current?.showModal();modalRef.current?.querySelector<HTMLInputElement>('input,textarea,button')?.focus();}else{modalRef.current?.close();previousFocus.current?.focus();}},[modal]);
-  useEffect(()=>{if(!result||reading.selected||featureReading||architectureReading||reading.view==='functions')return;patch({selected:(reading.view==='timeline'?timelineModel(result).ids[0]:result.nodes[0]?.node_id)||''});},[result?.result_id,reading.view,reading.selected,featureReading,architectureReading,patch]);
-  useEffect(()=>{const path=result?.function_walkthroughs?.find(p=>p.id===(reading.function_path??reading.reading_path))||result?.function_walkthroughs?.[0];const firstFunction=result?.nodes.find(n=>n.node_id===path?.entry_node_id)||result?.nodes.find(n=>n.kind==='function');if(reading.view==='functions'&&firstFunction&&!functionStep&&selectedNode?.kind!=='function'&&!['sync_call','execution_boundary'].includes(selectedEdge?.kind||''))patch({selected:firstFunction.node_id});},[reading.view,result?.result_id,reading.selected,reading.reading_path,reading.function_path]);
-  async function chooseProject(p:Project,workspace=data){
-    const request=++projectSwitch.current;
-    const last=await api.invoke('reading_get',{key:'project-session/'+p.project_id}).catch(e=>{setError(e.message);return null;});
-    if(projectSwitch.current!==request)return;
-    const savedScene=workspace.scenarios.find(s=>s.scenario_id===last?.scenario_id&&s.project_id===p.project_id&&!s.archived);
-    emptyEntrance.current=last?.entrance==='walk'?'walk':'overview';navigation.current=null;
-    setProjectId(p.project_id);setScenarioId(savedScene?.scenario_id||(last?.scenario_id===''?'':p.overview_scenario_id||''));setSearch('');setShowCatalog(false);setShowDetail(false);
+    const off = api.onEvent(e => {
+      if (e.type === 'run_event' && e.run_id === runId) void refresh();
+    });
+    const timer =
+      runId && ['queued', 'running', 'validating', 'cancel_requested'].includes(activityRun?.status || '')
+        ? setInterval(() => {
+            void refresh();
+            if (current && ['queued', 'running', 'validating', 'cancel_requested'].includes(activityRun?.status || '')) void reload();
+          }, 2500)
+        : undefined;
+    return () => {
+      current = false;
+      off();
+      clearInterval(timer);
+    };
+  }, [activityRun?.binding.run_id, activityRun?.status, reload]);
+
+  useEffect(() => {
+    if (modal) {
+      previousFocus.current = document.activeElement as HTMLElement;
+      modalRef.current?.showModal();
+      modalRef.current?.querySelector<HTMLInputElement>('input,textarea,button')?.focus();
+    } else {
+      modalRef.current?.close();
+      previousFocus.current?.focus();
+    }
+  }, [modal]);
+
+  useEffect(() => {
+    if (!result || reading.selected || featureReading || architectureReading || reading.view === 'functions') return;
+    patch({ selected: (reading.view === 'timeline' ? timelineModel(result).ids[0] : result.nodes[0]?.node_id) || '' });
+  }, [result?.result_id, reading.view, reading.selected, featureReading, architectureReading, patch]);
+
+  useEffect(() => {
+    const path = result?.function_walkthroughs?.find(p => p.id === (reading.function_path ?? reading.reading_path)) || result?.function_walkthroughs?.[0];
+    const firstFunction = result?.nodes.find(n => n.node_id === path?.entry_node_id) || result?.nodes.find(n => n.kind === 'function');
+    if (
+      reading.view === 'functions' &&
+      firstFunction &&
+      !functionStep &&
+      selectedNode?.kind !== 'function' &&
+      !['sync_call', 'execution_boundary'].includes(selectedEdge?.kind || '')
+    ) {
+      patch({ selected: firstFunction.node_id });
+    }
+  }, [reading.view, result?.result_id, reading.selected, reading.reading_path, reading.function_path]);
+
+  async function chooseProject(p: Project, workspace = data) {
+    const request = ++projectSwitch.current;
+    const last = await api.invoke('reading_get', { key: 'project-session/' + p.project_id }).catch(e => {
+      setError(e.message);
+      return null;
+    });
+    if (projectSwitch.current !== request) return;
+    const savedScene = workspace.scenarios.find(s => s.scenario_id === last?.scenario_id && s.project_id === p.project_id && !s.archived);
+    emptyEntrance.current = last?.entrance === 'walk' ? 'walk' : 'overview';
+    navigation.current = null;
+    setProjectId(p.project_id);
+    setScenarioId(savedScene?.scenario_id || (last?.scenario_id === '' ? '' : p.overview_scenario_id || ''));
+    setSearch('');
+    setShowCatalog(false);
+    setShowDetail(false);
   }
-  async function restoreEngineering(){
-    await action(async()=>{const restored=await api.invoke('engineering_restore');if(!restored)return;const workspace=await reload(),p=workspace.projects.find(item=>item.project_id===restored.project_id);if(p){await chooseProject(p,workspace);navigation.current={scope:p.project_id+'/'+(p.overview_scenario_id||''),value:{entrance:'overview',view:'engineering'}};setModal('');setNotice('工程记录与证据已恢复，请绑定实际源码工作区。');}});
+
+  async function restoreEngineering() {
+    await action(async () => {
+      const restored = await api.invoke('engineering_restore');
+      if (!restored) return;
+      const workspace = await reload();
+      const p = workspace.projects.find(item => item.project_id === restored.project_id);
+      if (p) {
+        await chooseProject(p, workspace);
+        navigation.current = { scope: p.project_id + '/' + (p.overview_scenario_id || ''), value: { entrance: 'overview', view: 'engineering' } };
+        setModal('');
+        setNotice('工程记录与证据已恢复，请绑定实际源码工作区。');
+      }
+    });
   }
-  function chooseScenario(id:string,value?:Partial<ReadingState>){if(value){if(id!==scenarioId)navigation.current={scope:projectId+'/'+id,value};patch(value);}setScenarioId(id);setSearch('');setShowCatalog(false);setShowDetail(false);}
-  function selectFunctionRelation(edgeId:string){
-    if(!result)return;
-    if(reading.pinned){setNotice('详情已固定。解除固定后可切换对象。');return;}
-    const paths=result.function_walkthroughs??[];
-    if(!paths.length){select(edgeId);return;}
-    const current=reading.function_path??reading.reading_path??'';
-    const currentMap=functionCallMap(result,current);
-    const find=(map:ReturnType<typeof functionCallMap>)=>map.links.find(link=>link.edgeIds.includes(edgeId));
-    const currentLink=find(currentMap);
-    if(currentLink){select(currentLink.id);return;}
-    for(const entry of paths){
-      const link=find(functionCallMap(result,entry.id));
-      if(!link)continue;
-      setReading(r=>functionPathPosition({...r,scroll:{...r.scroll,'detail-functions-details':{top:0,left:0}}},result,entry.id,link.id));
+
+  function chooseScenario(id: string, value?: Partial<ReadingState>) {
+    if (value) {
+      if (id !== scenarioId) navigation.current = { scope: projectId + '/' + id, value };
+      patch(value);
+    }
+    setScenarioId(id);
+    setSearch('');
+    setShowCatalog(false);
+    setShowDetail(false);
+  }
+
+  function selectFunctionRelation(edgeId: string) {
+    if (!result) return;
+    if (reading.pinned) {
+      setNotice('详情已固定。解除固定后可切换对象。');
+      return;
+    }
+    const paths = result.function_walkthroughs ?? [];
+    if (!paths.length) {
+      select(edgeId);
+      return;
+    }
+    const current = reading.function_path ?? reading.reading_path ?? '';
+    const find = (map: ReturnType<typeof functionCallMap>) => map.links.find(link => link.edgeIds.includes(edgeId));
+    const currentLink = find(functionCallMap(result, current));
+    if (currentLink) {
+      select(currentLink.id);
+      return;
+    }
+    for (const entry of paths) {
+      const link = find(functionCallMap(result, entry.id));
+      if (!link) continue;
+      setReading(r => functionPathPosition({ ...r, scroll: { ...r.scroll, 'detail-functions-details': { top: 0, left: 0 } } }, result, entry.id, link.id));
       return;
     }
     setNotice('这条调用关系尚未纳入任何已记录入口，当前路径保持原位。');
   }
-  function select(id:string){if(reading.pinned&&reading.selected!==id){setNotice('详情已固定。解除固定后可切换对象。');return;}setReading(r=>({...r,selected:id,...(architectureReading||r.view==='functions'?{file:'',evidence_id:''}:{}),...((r.view==='timeline'||r.view==='functions'||systemReading)?{detail_tab:'details',scroll:{...r.scroll,[`detail-${r.view}-details`]:{top:0,left:0}}}:{})}));if(detailDrawer||reading.view==='functions'){previousFocus.current=document.activeElement as HTMLElement;setShowDetail(true);}}
-  function evidence(e:SourceEvidence){patch({mode:'normal',file:e.path,evidence_id:e.evidence_id,source_snapshot_id:e.source_snapshot_id,detail_tab:'evidence'});setShowDetail(featureReading||reading.view==='functions'||detailDrawer);}
-  function chooseFile(file:string){if(featureReading){readingFile(file);return;}switchView('files',{file,evidence_id:'',selected:'',source_snapshot_id:result?.binding.source_snapshot_id||project?.snapshot_id||'',mode:'normal',detail_tab:'details'});setShowCatalog(false);if(detailDrawer)setShowDetail(true);}
-  function navigateFeature(view:string,focus=''){setSearch('');switchView(view,{reading_focus:focus,scroll:{...reading.scroll,[`canvas-${view}`]:{top:0,left:0}}});setShowDetail(false);setShowCatalog(false);}
-  function selectReading(key:string){patch({selected:key,file:key.startsWith('file:')?key.slice(5):'',evidence_id:'',source_snapshot_id:result?.binding.source_snapshot_id||'',detail_tab:'details',scroll:{...reading.scroll,[`detail-${reading.view}-details`]:{top:0,left:0}}});setShowDetail(true);}
-  function readingFile(path:string){navigateFeature('files',reading.selected);patch({selected:'file:'+path,file:path});setShowDetail(true);}
-  function readingStep(id:string){if(!readingGuide||!result)return;const path=guidePathForStep(readingGuide,id);navigateFeature('timeline');setReading(r=>({...featurePathPosition(r,result,path?.id||''),selected:'step:'+id}));setShowDetail(true);}
-  function readingPath(id:string){if(!result)return;setReading(r=>featurePathPosition(r,result,id));setSearch('');setShowDetail(false);}
-  function openModal(type:string){setFormName('');setFormQuestion('');if(type==='scenario')setFormFeature(userFeatures.some(f=>f.feature_id===scenario?.feature_id)?scenario!.feature_id:userFeatures[0]?.feature_id||'');setModal(type);}
-  async function openLocalProject(analyze:boolean){
-    const switchVersion=projectSwitch.current;
-    const p=await api.invoke<Project>('open_project_path',{path:formName.trim()});
-    let target='',needsConnection=false;
-    try{
-      const workspace=await reload();
-      // Reopening a project resumes its saved work; it never silently pays for another analysis.
-      const hasReading=workspace.explanations.some(e=>e.result.binding.project_id===p.project_id)||workspace.runs.some(r=>r.binding.project_id===p.project_id&&!r.reading_question_id);
-      if(analyze&&!hasReading){
-        const {binding,authorized,workspace_matches}=await api.invoke('executor_status',{project_id:p.project_id});
-        needsConnection=!binding||!authorized||!workspace_matches;
-        if(!needsConnection){
-          target=(await api.invoke<Scenario>('overview_create',{project_id:p.project_id})).scenario_id;
-          await api.invoke('reading_save',{key:'feature-expand-mode/'+p.project_id,value:{mode:'codex',version:1}});
-          await api.invoke('run_start',{scenario_id:target,provider_id:'codex',submission_key:crypto.randomUUID()});
-        }
-      }
-    }finally{
-      const workspace=await reload();
-      if(projectSwitch.current===switchVersion){
-        await chooseProject(workspace.projects.find(item=>item.project_id===p.project_id)!,workspace);
-        if(target&&projectSwitch.current===switchVersion+1){
-          navigation.current={scope:p.project_id+'/'+target,value:{entrance:'overview',view:'system',detail_tab:'details',mode:'normal'}};
-          setScenarioId(target);setExpandMode('codex');
-        }
-      }
-      if(needsConnection&&projectSwitch.current===switchVersion+1)showMcp();else setModal('');
-    }
-  }
-  async function submitForm(e:React.FormEvent,analyze=true){e.preventDefault();if(pending)return;setPending(true);
-    try{await action(async()=>{
-      if(modal==='feature'){const r=await api.invoke('feature_add',{project_id:projectId,name:formName,question:formQuestion});await reload();setScenarioId(r.scenario.scenario_id);}
-      if(modal==='scenario'){const r=await api.invoke('scenario_add',{feature_id:formFeature,question:formQuestion});await reload();setScenarioId(r.scenario_id);}
-      if(modal==='revise')await api.invoke('scenario_revise',{scenario_id:scenarioId,question:formQuestion});
-      if(modal==='featureRename')await api.invoke('organize',{kind:'feature',id:renameFeature,patch:{name:formName}});
-      if(modal==='rename')await api.invoke('organize',{kind:'scenario',id:scenarioId,patch:{title:formName}});
-      if(modal==='open'){await openLocalProject(analyze);return;}
-      if(modal==='build')await api.invoke('refresh',{project_id:projectId,build_config:formQuestion});
-      setModal('');setNotice('已保存');await reload();
-    });}finally{setPending(false);}
-  }
-  function setAnalysisMode(mode:AnalysisMode){setExpandMode(mode);void action(()=>api.invoke('reading_save',{key:'feature-expand-mode/'+projectId,value:{mode,version:1}}));}
-  async function requestAnalysis(overview=false){
-    if(starting.current||pending||running||!project)return;starting.current=true;setPending(true);
-    const readingAtStart=activeReadingKey.current,keepFunctions=!overview&&reading.view==='functions';
-    try{await action(async()=>{
-      if(expandMode==='codex'){
-        const {binding,authorized,workspace_matches}=await api.invoke('executor_status',{project_id:projectId});
-        if(!binding||!authorized||!workspace_matches){showMcp();return;}
-      }
-      let target=scenarioId;
-      if(overview){
-        target=(await api.invoke<Scenario>('overview_create',{project_id:projectId})).scenario_id;
-      }
-      if(expandMode==='mcp')await api.invoke('analysis_prepare',{scenario_id:target});
-      else await api.invoke('run_start',{scenario_id:target,provider_id:'codex',submission_key:crypto.randomUUID()});
-      await reload();
-      if(activeReadingKey.current!==readingAtStart)return;
-      chooseScenario(target,{entrance:overview?'overview':'walk',view:overview?'system':keepFunctions?'functions':'timeline',detail_tab:expandMode==='codex'?'details':'agent',mode:'normal'});
-    });}finally{starting.current=false;setPending(false);}
-  }
-  async function researchOverview(){
-    if(starting.current||pending||projectTasks.length||!result||!overviewReviewGaps.length||project?.fictional||indexes[projectId])return;
-    const resultId=result.result_id,key=activeReadingKey.current,switchVersion=projectSwitch.current;
-    starting.current=true;setPending(true);
-    // Pin this version before the asynchronous run so a newly saved result
-    // cannot replace the graph or source the user is currently reading.
-    patch({result_id:resultId});showRun();
-    try{await action(async()=>{
-      await api.invoke<Run>('overview_research',{result_id:resultId,submission_key:crypto.randomUUID()});
-      await reload();
-      if(activeReadingKey.current===key&&projectSwitch.current===switchVersion)setNotice('已在 ARC 内启动关系补查；当前说明和阅读位置保留。');
-    });}finally{starting.current=false;setPending(false);}
-  }
-  function openTask(sceneId:string){const s=data.scenarios.find(s=>s.scenario_id===sceneId);if(!s)return;chooseScenario(sceneId,{entrance:sceneId===project?.overview_scenario_id?'overview':'walk',view:sceneId===project?.overview_scenario_id?'system':'timeline',mode:'normal',detail_tab:'agent',result_id:''});}
-  function viewCompleted(){if(!completedExplanation)return;patch({scroll:{...reading.scroll,[`canvas-${reading.view}`]:{top:0,left:0},[`detail-${reading.view}-details`]:{top:0,left:0}},result_id:completedExplanation.result_id,reading_path:'',function_path:'',reading_focus:'',selected:'',file:'',evidence_id:'',source_snapshot_id:completedExplanation.result.binding.source_snapshot_id,detail_tab:'details',mode:'normal'});if(detailDrawer)setShowDetail(false);}
-  function viewFeatureResult(resultId:string){const next=sceneExplanations.find(item=>item.result_id===resultId);if(!next)return;patch({result_id:next.result_id,reading_path:'',function_path:'',reading_focus:'',selected:'',file:'',evidence_id:'',source_snapshot_id:next.result.binding.source_snapshot_id,detail_tab:'details',mode:'normal'});if(detailDrawer)setShowDetail(false);}
-  function returnToFeature(task:EngineeringTask){
-    const binding=task.reading;
-    if(!binding)return;
-    const original=data.explanations.find(item=>item.result_id===binding.result_id&&item.scenario_id===binding.scenario_id&&item.result.binding.source_snapshot_id===binding.source_snapshot_id);
-    const anchor=binding.evidence;
-    const source=anchor&&original?.result.evidence.find(item=>item.evidence_id===anchor.evidence_id&&item.source_snapshot_id===binding.source_snapshot_id
-      &&item.path===anchor.path&&item.line_start===anchor.line_start&&item.line_end===anchor.line_end);
-    const latest=data.explanations.find(item=>item.result_id===task.walkthrough?.result_id&&item.scenario_id===binding.scenario_id);
-    const saved=anchor?original:latest??original;
-    const position:Partial<ReadingState>={entrance:'walk',view:'timeline',mode:'normal',detail_tab:'details',result_id:saved?.result_id??binding.result_id,
-      source_snapshot_id:saved?.result.binding.source_snapshot_id??binding.source_snapshot_id,selected:'',reading_path:'',function_path:'',reading_focus:'',file:'',evidence_id:'',pinned:false};
-    if(source&&original){
-      const {kind,id}=binding.target,guide=featureReadingModel(original.result);
-      const call=kind==='call_step'?selectedCallStep(original.result,id):undefined;
-      const functionTarget=kind==='node'&&original.result.nodes.some(node=>node.node_id===id&&node.kind==='function')
-        ||kind==='edge'&&original.result.edges.some(edge=>edge.edge_id===id&&['sync_call','execution_boundary'].includes(edge.kind));
-      if(call||functionTarget){position.view='functions';position.selected=id;position.function_path=call?.path.id??'';}
-      else if(kind==='file'||kind==='directory'){position.view='files';position.selected='file:'+id;}
-      else if(kind==='role'||kind==='handoff'||kind==='edge'){position.view='collaboration';position.selected=(kind==='role'?'role:':'handoff:')+id;}
-      else if(kind==='step'||kind==='node'){position.selected='step:'+id;position.reading_path=guidePathForStep(guide,id)?.id??'';}
-      Object.assign(position,{detail_tab:'evidence',file:source.path,evidence_id:source.evidence_id});
-    }
-    chooseScenario(binding.scenario_id,position);
-    if(source)setShowDetail(true);
-  }
-  function openFeatureTask(taskId:string){setRequestedTask(taskId);switchView('engineering',{mode:'normal',catalog_hidden:true});}
-  function refreshMcp(){
-    void api.invoke('mcp_status').then(setMcp).catch(e=>setConnectionError('读取 MCP 状态失败：'+(e as Error).message));
-  }
-  function showMcp(){
-    closePopovers();setError('');setNotice('');setConnectionError('');setModal('settings');
-    void api.invoke('settings').then(setSettings).catch(e=>setConnectionError('读取应用设置失败：'+(e as Error).message));
-    refreshMcp();
-  }
-  function askHere(){patch({detail_tab:'questions'});setShowDetail(true);requestAnimationFrame(()=>document.getElementById('reading-question-input')?.focus());}
-  function showRun(){setReading(r=>({...r,detail_tab:'agent',scroll:{...r.scroll,[`detail-${r.view}-agent`]:{top:0,left:0}}}));setActivityFocus(n=>n+1);setShowDetail(featureReading||detailDrawer);}
-  const analysisLabel=pending?'正在提交…':running?`${statuses[running.status]} · 查看任务`:waitingMcp?(expandMode==='mcp'?'查看待领取任务':'改用 '+analysisMode.name+' 分析'):catalogReading?(catalogExplanation?'更新工程全貌与目录':'发现工程功能'):reading.entrance==='overview'?(result?'重新分析工程':'开始工程分析'):scenario?.kind==='feature_overview'?(result?'重新分析功能':preview?'深入分析功能':'开始功能分析'):scenario?(result?'重新分析场景':'开始场景分析'):'添加功能';
-  const beginAnalysis=()=>running||(waitingMcp&&expandMode==='mcp')?showRun():catalogReading?void requestAnalysis(true):reading.entrance==='walk'&&!scenario?openModal('feature'):void requestAnalysis(reading.entrance==='overview');
-  async function revalidateFunctionRun(run:Run){
-    if(starting.current||pending||running)return;
-    starting.current=true;setPending(true);
-    try{await action(()=>api.invoke('run_revalidate',{run_id:run.binding.run_id}));await reload();}
-    finally{starting.current=false;setPending(false);}
-  }
-  const canRevalidate=previewRun?.status==='failed'&&!previewRun.overview_format;
-  const needsFunctionGraphs=reading.entrance==='walk'&&reading.view==='functions'&&(functionPreview||!!result&&!result.function_walkthroughs?.length);
-  const generateLabel=expandMode==='mcp'?'准备调用图任务':'用 Codex 生成调用图';
-  const graphPending=activityRun&&['queued','waiting_agent','running','validating','cancel_requested'].includes(activityRun.status);
-  const graphWaiting=functionPreview?previewGraphs?.status==='等待领取':waitingMcp;
-  const manualGraphActions=<>
-    {canRevalidate&&<div><p>上次功能分析未通过校验。</p>
-      <button disabled={pending||!!running} onClick={()=>void revalidateFunctionRun(previewRun)}>重新校验已收原文</button></div>}
-    {(featureSource?.result||result)?.binding.source_snapshot_id!==project?.snapshot_id&&<p>新分析将使用当前工程的冻结快照。</p>}
-    <button className="primary analysis-start" disabled={pending||!!running||project?.fictional||!!indexes[projectId]} onClick={()=>void requestAnalysis()}>{pending?'正在提交…':generateLabel}</button>
-  </>;
-  const graphActions=needsFunctionGraphs&&<section aria-label="当前功能的深入分析">
-    {automaticRun?<p role="status">本轮工程分析已包含此功能 · {previewGraphs?.status||'已结束'}。</p>:
-      <p>一次功能分析可生成调用链和调用时间图。调用链展示谁调用谁，时间图按源码确认的先后排列步骤。</p>}
-    {graphPending||graphWaiting?<div className="row">
-      {!automaticRun&&<span role="status">{graphPending&&activityRun?(statuses[activityRun.status]||activityRun.status):'等待 Agent 领取'}</span>}
-      <button onClick={showRun}>{activityRun?.status==='waiting_agent'||!graphPending?'查看待领取任务':'查看当前功能分析进度'}</button>
-      {!running&&waitingMcp&&expandMode!=='mcp'&&!automaticRun&&<button disabled={pending||project?.fictional||!!indexes[projectId]} onClick={()=>void requestAnalysis()}>{generateLabel}</button>}</div>:
-      automaticRun?<details><summary>手动补查或重试</summary>{manualGraphActions}</details>:manualGraphActions}
-    {automaticRun&&previewGraphs?.latest&&!previewGraphs.ready&&<button onClick={()=>viewFeatureResult(previewGraphs.latest!.result_id)}>查看已有分析依据</button>}
-  </section>;
-  const analysisButton=!needsFunctionGraphs&&<button className="primary analysis-start" disabled={pending||project?.fictional||!!indexes[projectId]} onClick={beginAnalysis}>{analysisLabel}</button>;
-  const analysisMenu=<details className="analysis-options"><summary>分析方式 · {analysisMode.name}</summary>
-    <div className="popover-content"><AnalysisModePicker label="分析运行方式" mode={expandMode} setMode={setAnalysisMode}/><button onClick={showMcp}>连接 Agent</button><p>{analysisMode.description}</p></div>
-  </details>;
-  function setEntrance(entrance:'overview'|'walk'){emptyEntrance.current=entrance;chooseScenario(entrance==='overview'?project?.overview_scenario_id||'':'',{entrance,view:entrance==='walk'?'capabilities':project?.fictional?'system':'home',mode:'normal',catalog_hidden:false});}
-  function openWorkbench(view:'overview'|'walk'|'materials'|'engineering'){
-    if(!project){openModal('open');return;}
-    if(view==='overview'||view==='walk'){setEntrance(view);return;}
-    if(view==='engineering'||view==='materials'){switchView(view,{mode:'normal',catalog_hidden:true});return;}
 
+  function select(id: string) {
+    if (reading.pinned && reading.selected !== id) {
+      setNotice('详情已固定。解除固定后可切换对象。');
+      return;
+    }
+    setReading(r => ({
+      ...r,
+      selected: id,
+      ...(architectureReading || r.view === 'functions' ? { file: '', evidence_id: '' } : {}),
+      ...(r.view === 'timeline' || r.view === 'functions' || systemReading
+        ? { detail_tab: 'details', scroll: { ...r.scroll, [`detail-${r.view}-details`]: { top: 0, left: 0 } } }
+        : {}),
+    }));
+    if (detailDrawer || reading.view === 'functions') {
+      previousFocus.current = document.activeElement as HTMLElement;
+      setShowDetail(true);
+    }
   }
-  async function openCapability(nodeId:string){
-    if(starting.current||!catalogExplanation)return;starting.current=true;setPending(true);
-    try{await action(async()=>{
-      const requestedProject=projectSwitch.current;
-      const opened=await api.invoke('feature_open',{project_id:projectId,result_id:catalogExplanation.result_id,node_id:nodeId,request_mcp:false});
-      const workspace=await reload();
-      if(requestedProject!==projectSwitch.current)return;
-      const graph=catalogGraphState(workspace,catalogExplanation,nodeId);
-      const automatic=!!graph.run?.overview_parent_run_id;
-      const report=graph.ready??(!automatic?graph.latest:undefined);
-      emptyEntrance.current='walk';
-      chooseScenario(opened.scenario.scenario_id,{entrance:'walk',view:graph.ready||automatic?'functions':'timeline',mode:'normal',
-        result_id:report?.result_id||catalogExplanation.result_id,selected:'',file:'',evidence_id:'',reading_path:'',function_path:graph.ready?firstGraphPath(graph.ready.result):'',function_mode:'calls',reading_focus:'',
-        source_snapshot_id:catalogExplanation.result.binding.source_snapshot_id,detail_tab:'details',catalog_hidden:true,pinned:false});
-    });}finally{starting.current=false;setPending(false);}
+
+  function evidence(e: SourceEvidence) {
+    patch({ mode: 'normal', file: e.path, evidence_id: e.evidence_id, source_snapshot_id: e.source_snapshot_id, detail_tab: 'evidence' });
+    setShowDetail(featureReading || reading.view === 'functions' || detailDrawer);
   }
-  const changeWidth=(side:'left_width'|'right_width',amount:number)=>patch({[side]:Math.min(side==='left_width'?300:Math.max(280,width-(reading.mode==='source'?820:reading.left_width+480)),Math.max(side==='left_width'?200:280,reading[side]+amount))});
-  const featureOpen=(id:string)=>reading.expanded.includes('feature-open/'+id)||(!reading.expanded.includes('feature-closed/'+id)&&scenario?.feature_id===id);
-  function toggleFeature(id:string){const open=featureOpen(id);patch({expanded:[...reading.expanded.filter(v=>v!=='feature-open/'+id&&v!=='feature-closed/'+id),(open?'feature-closed/':'feature-open/')+id]});}
-  const primaryViews=reading.entrance==='overview'?[['home','工程概览'],['system','系统协作'],['capabilities','功能总览'],['functions','调用链'],['files','文件组织'],['dependencies','依赖关系']]:featureViews;
-  const extraViews=reading.entrance==='overview'?[['composition','组成导图']]:[];
-  const featureTabs=preview?[['timeline','功能说明'],['functions','函数走读']]:
-    reading.entrance==='walk'&&!catalogReading&&!engineeringReading&&scenario&&result&&featureViews.some(([view])=>view===reading.view)?featureViews:undefined;
-  const currentView=[...(featureTabs??primaryViews),...extraViews,['files','文件组织']].find(([v])=>v===reading.view)?.[1]||(preview?'功能说明':'当前视图');
-  function navigateView(view:string){if(featureReading){navigateFeature(view);return;}switchView(view,{mode:'normal',...(view==='modules'?{stage:''}:{}),...(view==='composition'?{files_open:false}:{})});setShowCatalog(false);}
-  const viewButton=([v,label]:string[])=><button key={v} className={`nav-view ${reading.view===v?'selected':''}`} aria-current={reading.view===v?'page':undefined} onClick={()=>navigateView(v)}>{label}</button>;
-  function resumeHomeReading(){
-    if(!bookmark||!canResume)return;
-    chooseScenario(bookmark.position.scenario_id,{...bookmark.position,mode:'normal',catalog_hidden:true,pinned:false});
-    setShowDetail(!bookmark.catalogNodeId&&(detailDrawer||bookmark.position.entrance==='walk'));
+
+  function chooseFile(file: string) {
+    if (featureReading) {
+      readingFile(file);
+      return;
+    }
+    switchView('files', { file, evidence_id: '', selected: '', source_snapshot_id: result?.binding.source_snapshot_id || project?.snapshot_id || '', mode: 'normal', detail_tab: 'details' });
+    setShowCatalog(false);
+    if (detailDrawer) setShowDetail(true);
   }
-  function openSuggestedStep(last:boolean,showSource=false){
-    if(!suggestedPath)return;
-    const {saved,path,first,last:finalStep}=suggestedPath;
-    const step=last?finalStep:first;
-    const source=showSource?saved.result.evidence.find(e=>step.evidence_ids.includes(e.evidence_id)):undefined;
-    chooseScenario(saved.scenario_id,{entrance:'walk',view:'timeline',result_id:saved.result_id,source_snapshot_id:saved.result.binding.source_snapshot_id,
-      reading_path:path.id,selected:'step:'+step.id,reading_focus:'',function_path:'',detail_tab:source?'evidence':'details',file:source?.path||'',evidence_id:source?.evidence_id||'',mode:'normal',catalog_hidden:true,pinned:false});
+
+  function navigateFeature(view: string, focus = '') {
+    setSearch('');
+    switchView(view, { reading_focus: focus, scroll: { ...reading.scroll, [`canvas-${view}`]: { top: 0, left: 0 } } });
+    setShowDetail(false);
+    setShowCatalog(false);
+  }
+
+  function selectReading(key: string) {
+    patch({
+      selected: key,
+      file: key.startsWith('file:') ? key.slice(5) : '',
+      evidence_id: '',
+      source_snapshot_id: result?.binding.source_snapshot_id || '',
+      detail_tab: 'details',
+      scroll: { ...reading.scroll, [`detail-${reading.view}-details`]: { top: 0, left: 0 } },
+    });
     setShowDetail(true);
   }
-  function openArchitecture(objectId=''){
-    const object=result?.nodes.find(node=>node.node_id===objectId)??result?.edges.find(edge=>edge.edge_id===objectId);
-    const firstEvidence=result?.evidence.find(item=>object?.evidence_ids.includes(item.evidence_id));
+
+  function readingFile(filePath: string) {
+    navigateFeature('files', reading.selected);
+    patch({ selected: 'file:' + filePath, file: filePath });
+    setShowDetail(true);
+  }
+
+  function readingStep(id: string) {
+    if (!readingGuide || !result) return;
+    const stepPath = guidePathForStep(readingGuide, id);
+    navigateFeature('timeline');
+    setReading(r => ({ ...featurePathPosition(r, result, stepPath?.id || ''), selected: 'step:' + id }));
+    setShowDetail(true);
+  }
+
+  function readingPath(id: string) {
+    if (!result) return;
+    setReading(r => featurePathPosition(r, result, id));
+    setSearch('');
+    setShowDetail(false);
+  }
+
+  function openModal(type: string) {
+    setFormName('');
+    setFormQuestion('');
+    if (type === 'scenario') setFormFeature(userFeatures.some(f => f.feature_id === scenario?.feature_id) ? scenario!.feature_id : userFeatures[0]?.feature_id || '');
+    setModal(type);
+  }
+
+  async function openLocalProject(analyze: boolean) {
+    const switchVersion = projectSwitch.current;
+    const p = await api.invoke<Project>('open_project_path', { path: formName.trim() });
+    let target = '';
+    let needsConnection = false;
+    try {
+      const workspace = await reload();
+      const hasReading =
+        workspace.explanations.some(e => e.result.binding.project_id === p.project_id) ||
+        workspace.runs.some(r => r.binding.project_id === p.project_id && !r.reading_question_id);
+      if (analyze && !hasReading) {
+        const { binding, authorized, workspace_matches } = await api.invoke('executor_status', { project_id: p.project_id });
+        needsConnection = !binding || !authorized || !workspace_matches;
+        if (!needsConnection) {
+          target = (await api.invoke<Scenario>('overview_create', { project_id: p.project_id })).scenario_id;
+          await api.invoke('reading_save', { key: 'feature-expand-mode/' + p.project_id, value: { mode: 'codex', version: 1 } });
+          await api.invoke('run_start', { scenario_id: target, provider_id: 'codex', submission_key: crypto.randomUUID() });
+        }
+      }
+    } finally {
+      const workspace = await reload();
+      if (projectSwitch.current === switchVersion) {
+        await chooseProject(workspace.projects.find(item => item.project_id === p.project_id)!, workspace);
+        if (target && projectSwitch.current === switchVersion + 1) {
+          navigation.current = { scope: p.project_id + '/' + target, value: { entrance: 'overview', view: 'system', detail_tab: 'details', mode: 'normal' } };
+          setScenarioId(target);
+          setExpandMode('codex');
+        }
+      }
+      if (needsConnection && projectSwitch.current === switchVersion + 1) showMcp();
+      else setModal('');
+    }
+  }
+
+  async function submitForm(e: React.FormEvent, analyze = true) {
+    e.preventDefault();
+    if (pending) return;
+    setPending(true);
+    try {
+      await action(async () => {
+        if (modal === 'feature') {
+          const r = await api.invoke('feature_add', { project_id: projectId, name: formName, question: formQuestion });
+          await reload();
+          setScenarioId(r.scenario.scenario_id);
+        }
+        if (modal === 'scenario') {
+          const r = await api.invoke('scenario_add', { feature_id: formFeature, question: formQuestion });
+          await reload();
+          setScenarioId(r.scenario_id);
+        }
+        if (modal === 'revise') await api.invoke('scenario_revise', { scenario_id: scenarioId, question: formQuestion });
+        if (modal === 'featureRename') await api.invoke('organize', { kind: 'feature', id: renameFeature, patch: { name: formName } });
+        if (modal === 'rename') await api.invoke('organize', { kind: 'scenario', id: scenarioId, patch: { title: formName } });
+        if (modal === 'open') {
+          await openLocalProject(analyze);
+          return;
+        }
+        if (modal === 'build') await api.invoke('refresh', { project_id: projectId, build_config: formQuestion });
+        setModal('');
+        setNotice('已保存');
+        await reload();
+      });
+    } finally {
+      setPending(false);
+    }
+  }
+
+  function setAnalysisMode(mode: AnalysisMode) {
+    setExpandMode(mode);
+    void action(() => api.invoke('reading_save', { key: 'feature-expand-mode/' + projectId, value: { mode, version: 1 } }));
+  }
+
+  async function requestAnalysis(overview = false) {
+    if (starting.current || pending || running || !project) return;
+    starting.current = true;
+    setPending(true);
+    const readingAtStart = activeReadingKey.current;
+    const keepFunctions = !overview && reading.view === 'functions';
+    try {
+      await action(async () => {
+        if (expandMode === 'codex') {
+          const { binding, authorized, workspace_matches } = await api.invoke('executor_status', { project_id: projectId });
+          if (!binding || !authorized || !workspace_matches) {
+            showMcp();
+            return;
+          }
+        }
+        const target = overview ? (await api.invoke<Scenario>('overview_create', { project_id: projectId })).scenario_id : scenarioId;
+        if (expandMode === 'mcp') await api.invoke('analysis_prepare', { scenario_id: target });
+        else await api.invoke('run_start', { scenario_id: target, provider_id: 'codex', submission_key: crypto.randomUUID() });
+        await reload();
+        if (activeReadingKey.current !== readingAtStart) return;
+        chooseScenario(target, {
+          entrance: overview ? 'overview' : 'walk',
+          view: overview ? 'system' : keepFunctions ? 'functions' : 'timeline',
+          detail_tab: expandMode === 'codex' ? 'details' : 'agent',
+          mode: 'normal',
+        });
+      });
+    } finally {
+      starting.current = false;
+      setPending(false);
+    }
+  }
+
+  async function researchOverview() {
+    if (starting.current || pending || projectTasks.length || !result || !overviewReviewGaps.length || project?.fictional || indexes[projectId]) return;
+    const resultId = result.result_id;
+    const key = activeReadingKey.current;
+    const switchVersion = projectSwitch.current;
+    starting.current = true;
+    setPending(true);
+    patch({ result_id: resultId });
+    showRun();
+    try {
+      await action(async () => {
+        await api.invoke<Run>('overview_research', { result_id: resultId, submission_key: crypto.randomUUID() });
+        await reload();
+        if (activeReadingKey.current === key && projectSwitch.current === switchVersion) setNotice('已在 ARC 内启动关系补查；当前说明和阅读位置保留。');
+      });
+    } finally {
+      starting.current = false;
+      setPending(false);
+    }
+  }
+
+  function openTask(sceneId: string) {
+    const s = data.scenarios.find(item => item.scenario_id === sceneId);
+    if (!s) return;
+    chooseScenario(sceneId, {
+      entrance: sceneId === project?.overview_scenario_id ? 'overview' : 'walk',
+      view: sceneId === project?.overview_scenario_id ? 'system' : 'timeline',
+      mode: 'normal',
+      detail_tab: 'agent',
+      result_id: '',
+    });
+  }
+
+  function viewCompleted() {
+    if (!completedExplanation) return;
+    patch({
+      scroll: { ...reading.scroll, [`canvas-${reading.view}`]: { top: 0, left: 0 }, [`detail-${reading.view}-details`]: { top: 0, left: 0 } },
+      result_id: completedExplanation.result_id,
+      reading_path: '',
+      function_path: '',
+      reading_focus: '',
+      selected: '',
+      file: '',
+      evidence_id: '',
+      source_snapshot_id: completedExplanation.result.binding.source_snapshot_id,
+      detail_tab: 'details',
+      mode: 'normal',
+    });
+    if (detailDrawer) setShowDetail(false);
+  }
+
+  function viewFeatureResult(resultId: string) {
+    const next = sceneExplanations.find(item => item.result_id === resultId);
+    if (!next) return;
+    patch({
+      result_id: next.result_id,
+      reading_path: '',
+      function_path: '',
+      reading_focus: '',
+      selected: '',
+      file: '',
+      evidence_id: '',
+      source_snapshot_id: next.result.binding.source_snapshot_id,
+      detail_tab: 'details',
+      mode: 'normal',
+    });
+    if (detailDrawer) setShowDetail(false);
+  }
+
+  function returnToFeature(task: EngineeringTask) {
+    const binding = task.reading;
+    if (!binding) return;
+    const original = data.explanations.find(
+      item => item.result_id === binding.result_id && item.scenario_id === binding.scenario_id && item.result.binding.source_snapshot_id === binding.source_snapshot_id,
+    );
+    const anchor = binding.evidence;
+    const source =
+      anchor &&
+      original?.result.evidence.find(
+        item =>
+          item.evidence_id === anchor.evidence_id &&
+          item.source_snapshot_id === binding.source_snapshot_id &&
+          item.path === anchor.path &&
+          item.line_start === anchor.line_start &&
+          item.line_end === anchor.line_end,
+      );
+    const latest = data.explanations.find(item => item.result_id === task.walkthrough?.result_id && item.scenario_id === binding.scenario_id);
+    const savedExp = anchor ? original : latest ?? original;
+    const position: Partial<ReadingState> = {
+      entrance: 'walk',
+      view: 'timeline',
+      mode: 'normal',
+      detail_tab: 'details',
+      result_id: savedExp?.result_id ?? binding.result_id,
+      source_snapshot_id: savedExp?.result.binding.source_snapshot_id ?? binding.source_snapshot_id,
+      selected: '',
+      reading_path: '',
+      function_path: '',
+      reading_focus: '',
+      file: '',
+      evidence_id: '',
+      pinned: false,
+    };
+    if (source && original) {
+      const { kind, id } = binding.target;
+      const guide = featureReadingModel(original.result);
+      const call = kind === 'call_step' ? selectedCallStep(original.result, id) : undefined;
+      const functionTarget =
+        (kind === 'node' && original.result.nodes.some(node => node.node_id === id && node.kind === 'function')) ||
+        (kind === 'edge' && original.result.edges.some(edge => edge.edge_id === id && ['sync_call', 'execution_boundary'].includes(edge.kind)));
+      if (call || functionTarget) {
+        position.view = 'functions';
+        position.selected = id;
+        position.function_path = call?.path.id ?? '';
+      } else if (kind === 'file' || kind === 'directory') {
+        position.view = 'files';
+        position.selected = 'file:' + id;
+      } else if (kind === 'role' || kind === 'handoff' || kind === 'edge') {
+        position.view = 'collaboration';
+        position.selected = (kind === 'role' ? 'role:' : 'handoff:') + id;
+      } else if (kind === 'step' || kind === 'node') {
+        position.selected = 'step:' + id;
+        position.reading_path = guidePathForStep(guide, id)?.id ?? '';
+      }
+      Object.assign(position, { detail_tab: 'evidence', file: source.path, evidence_id: source.evidence_id });
+    }
+    chooseScenario(binding.scenario_id, position);
+    if (source) setShowDetail(true);
+  }
+
+  function openFeatureTask(taskId: string) {
+    setRequestedTask(taskId);
+    switchView('engineering', { mode: 'normal', catalog_hidden: true });
+  }
+
+  function refreshMcp() {
+    void api.invoke('mcp_status').then(setMcp).catch(e => setConnectionError('读取 MCP 状态失败：' + (e as Error).message));
+  }
+
+  function showMcp() {
+    closePopovers();
+    setError('');
+    setNotice('');
+    setConnectionError('');
+    setModal('settings');
+    void api.invoke('settings').then(setSettings).catch(e => setConnectionError('读取应用设置失败：' + (e as Error).message));
+    refreshMcp();
+  }
+
+  function askHere() {
+    patch({ detail_tab: 'questions' });
+    setShowDetail(true);
+    requestAnimationFrame(() => document.getElementById('reading-question-input')?.focus());
+  }
+
+  function showRun() {
+    setReading(r => ({ ...r, detail_tab: 'agent', scroll: { ...r.scroll, [`detail-${r.view}-agent`]: { top: 0, left: 0 } } }));
+    setActivityFocus(n => n + 1);
+    setShowDetail(featureReading || detailDrawer);
+  }
+
+  const analysisLabel = pending
+    ? '正在提交…'
+    : running
+      ? `${statuses[running.status]} · 查看任务`
+      : waitingMcp
+        ? expandMode === 'mcp'
+          ? '查看待领取任务'
+          : '改用 ' + analysisMode.name + ' 分析'
+        : catalogReading
+          ? catalogExplanation
+            ? '更新工程全貌与目录'
+            : '发现工程功能'
+          : reading.entrance === 'overview'
+            ? result
+              ? '重新分析工程'
+              : '开始工程分析'
+            : scenario?.kind === 'feature_overview'
+              ? result
+                ? '重新分析功能'
+                : preview
+                  ? '深入分析功能'
+                  : '开始功能分析'
+              : scenario
+                ? result
+                  ? '重新分析场景'
+                  : '开始场景分析'
+                : '添加功能';
+
+  const beginAnalysis = () =>
+    running || (waitingMcp && expandMode === 'mcp')
+      ? showRun()
+      : catalogReading
+        ? void requestAnalysis(true)
+        : reading.entrance === 'walk' && !scenario
+          ? openModal('feature')
+          : void requestAnalysis(reading.entrance === 'overview');
+
+  async function revalidateFunctionRun(run: Run) {
+    if (starting.current || pending || running) return;
+    starting.current = true;
+    setPending(true);
+    try {
+      await action(() => api.invoke('run_revalidate', { run_id: run.binding.run_id }));
+      await reload();
+    } finally {
+      starting.current = false;
+      setPending(false);
+    }
+  }
+
+  const canRevalidate =
+    previewRun?.status === 'failed' &&
+    !previewRun.overview_format &&
+    previewRun.provider_id === 'codex' &&
+    !previewRun.dsh_overview_format &&
+    !previewRun.dsh_function_format;
+  const needsFunctionGraphs = reading.entrance === 'walk' && reading.view === 'functions' && (functionPreview || (!!result && !result.function_walkthroughs?.length));
+  const generateLabel = expandMode === 'mcp' ? '准备调用图任务' : '用 Codex 生成调用图';
+  const graphPending = activityRun && ['queued', 'waiting_agent', 'running', 'validating', 'cancel_requested'].includes(activityRun.status);
+  const graphWaiting = functionPreview ? previewGraphs?.status === '等待领取' : waitingMcp;
+
+  const manualGraphActions = (
+    <>
+      {canRevalidate && (
+        <div>
+          <p>上次功能分析未通过校验。</p>
+          <button disabled={pending || !!running} onClick={() => void revalidateFunctionRun(previewRun)}>
+            重新校验已收原文
+          </button>
+        </div>
+      )}
+      {(featureSource?.result || result)?.binding.source_snapshot_id !== project?.snapshot_id && <p>新分析将使用当前工程的冻结快照。</p>}
+      <button className="primary analysis-start" disabled={pending || !!running || project?.fictional || !!indexes[projectId]} onClick={() => void requestAnalysis()}>
+        {pending ? '正在提交…' : generateLabel}
+      </button>
+    </>
+  );
+
+  const graphActions = needsFunctionGraphs && (
+    <section aria-label="当前功能的深入分析">
+      {automaticRun ? (
+        <p role="status">本轮工程分析已包含此功能 · {previewGraphs?.status || '已结束'}。</p>
+      ) : (
+        <p>一次功能分析可生成调用链和调用时间图。调用链展示谁调用谁，时间图按源码确认的先后排列步骤。</p>
+      )}
+      {graphPending || graphWaiting ? (
+        <div className="row">
+          {!automaticRun && <span role="status">{graphPending && activityRun ? statuses[activityRun.status] || activityRun.status : '等待 Agent 领取'}</span>}
+          <button onClick={showRun}>{activityRun?.status === 'waiting_agent' || !graphPending ? '查看待领取任务' : '查看当前功能分析进度'}</button>
+          {!running && waitingMcp && expandMode !== 'mcp' && !automaticRun && (
+            <button disabled={pending || project?.fictional || !!indexes[projectId]} onClick={() => void requestAnalysis()}>
+              {generateLabel}
+            </button>
+          )}
+        </div>
+      ) : automaticRun ? (
+        <details>
+          <summary>手动补查或重试</summary>
+          {manualGraphActions}
+        </details>
+      ) : (
+        manualGraphActions
+      )}
+      {automaticRun && previewGraphs?.latest && !previewGraphs.ready && (
+        <button onClick={() => viewFeatureResult(previewGraphs.latest!.result_id)}>查看已有分析依据</button>
+      )}
+    </section>
+  );
+
+  const analysisButton = !needsFunctionGraphs && (
+    <button className="primary analysis-start" disabled={pending || project?.fictional || !!indexes[projectId]} onClick={beginAnalysis}>
+      {analysisLabel}
+    </button>
+  );
+  const analysisMenu = (
+    <details className="analysis-options">
+      <summary>分析方式 · {analysisMode.name}</summary>
+      <div className="popover-content">
+        <AnalysisModePicker label="分析运行方式" mode={expandMode} setMode={setAnalysisMode} />
+        <button onClick={showMcp}>连接 Agent</button>
+        <p>{analysisMode.description}</p>
+      </div>
+    </details>
+  );
+
+  function setEntrance(entrance: 'overview' | 'walk') {
+    emptyEntrance.current = entrance;
+    chooseScenario(entrance === 'overview' ? project?.overview_scenario_id || '' : '', {
+      entrance,
+      view: entrance === 'walk' ? 'capabilities' : project?.fictional ? 'system' : 'home',
+      mode: 'normal',
+      catalog_hidden: false,
+    });
+  }
+
+  function openWorkbench(view: 'overview' | 'walk' | 'materials' | 'engineering') {
+    if (!project) {
+      openModal('open');
+      return;
+    }
+    if (view === 'overview' || view === 'walk') {
+      setEntrance(view);
+      return;
+    }
+    if (view === 'engineering' || view === 'materials') {
+      switchView(view, { mode: 'normal', catalog_hidden: true });
+    }
+  }
+
+  async function openCapability(nodeId: string) {
+    if (starting.current || !catalogExplanation) return;
+    starting.current = true;
+    setPending(true);
+    try {
+      await action(async () => {
+        const requestedProject = projectSwitch.current;
+        const opened = await api.invoke('feature_open', { project_id: projectId, result_id: catalogExplanation.result_id, node_id: nodeId, request_mcp: false });
+        const workspace = await reload();
+        if (requestedProject !== projectSwitch.current) return;
+        const graph = catalogGraphState(workspace, catalogExplanation, nodeId);
+        const automatic = !!graph.run?.overview_parent_run_id;
+        const report = graph.ready ?? (!automatic ? graph.latest : undefined);
+        emptyEntrance.current = 'walk';
+        chooseScenario(opened.scenario.scenario_id, {
+          entrance: 'walk',
+          view: graph.ready || automatic ? 'functions' : 'timeline',
+          mode: 'normal',
+          result_id: report?.result_id || catalogExplanation.result_id,
+          selected: '',
+          file: '',
+          evidence_id: '',
+          reading_path: '',
+          function_path: graph.ready ? firstGraphPath(graph.ready.result) : '',
+          function_mode: 'calls',
+          reading_focus: '',
+          source_snapshot_id: catalogExplanation.result.binding.source_snapshot_id,
+          detail_tab: 'details',
+          catalog_hidden: true,
+          pinned: false,
+        });
+      });
+    } finally {
+      starting.current = false;
+      setPending(false);
+    }
+  }
+
+  const changeWidth = (side: 'left_width' | 'right_width', amount: number) =>
+    patch({
+      [side]: Math.min(
+        side === 'left_width' ? 300 : Math.max(280, width - (reading.mode === 'source' ? 820 : reading.left_width + 480)),
+        Math.max(side === 'left_width' ? 200 : 280, reading[side] + amount),
+      ),
+    });
+
+  const featureOpen = (id: string) => reading.expanded.includes('feature-open/' + id) || (!reading.expanded.includes('feature-closed/' + id) && scenario?.feature_id === id);
+  function toggleFeature(id: string) {
+    const open = featureOpen(id);
+    patch({ expanded: [...reading.expanded.filter(v => v !== 'feature-open/' + id && v !== 'feature-closed/' + id), (open ? 'feature-closed/' : 'feature-open/') + id] });
+  }
+
+  const primaryViews =
+    reading.entrance === 'overview'
+      ? [
+          ['home', '工程概览'],
+          ['system', '系统协作'],
+          ['capabilities', '功能总览'],
+          ['functions', '调用链'],
+          ['files', '文件组织'],
+          ['dependencies', '依赖关系'],
+        ]
+      : featureViews;
+  const extraViews = reading.entrance === 'overview' ? [['composition', '组成导图']] : [];
+  const featureTabs = preview
+    ? [
+        ['timeline', '功能说明'],
+        ['functions', '函数走读'],
+      ]
+    : reading.entrance === 'walk' && !catalogReading && !engineeringReading && scenario && result && featureViews.some(([view]) => view === reading.view)
+      ? featureViews
+      : undefined;
+  const currentView = [...(featureTabs ?? primaryViews), ...extraViews, ['files', '文件组织']].find(([v]) => v === reading.view)?.[1] || (preview ? '功能说明' : '当前视图');
+
+  function navigateView(view: string) {
+    if (featureReading) {
+      navigateFeature(view);
+      return;
+    }
+    switchView(view, { mode: 'normal', ...(view === 'modules' ? { stage: '' } : {}), ...(view === 'composition' ? { files_open: false } : {}) });
+    setShowCatalog(false);
+  }
+
+  function resumeHomeReading() {
+    if (!bookmark || !canResume) return;
+    chooseScenario(bookmark.position.scenario_id, { ...bookmark.position, mode: 'normal', catalog_hidden: true, pinned: false });
+    setShowDetail(!bookmark.catalogNodeId && (detailDrawer || bookmark.position.entrance === 'walk'));
+  }
+
+  function openSuggestedStep(last: boolean, showSource = false) {
+    if (!suggestedPath) return;
+    const { saved: savedExp, path, first, last: finalStep } = suggestedPath;
+    const step = last ? finalStep : first;
+    const source = showSource ? savedExp.result.evidence.find(e => step.evidence_ids.includes(e.evidence_id)) : undefined;
+    chooseScenario(savedExp.scenario_id, {
+      entrance: 'walk',
+      view: 'timeline',
+      result_id: savedExp.result_id,
+      source_snapshot_id: savedExp.result.binding.source_snapshot_id,
+      reading_path: path.id,
+      selected: 'step:' + step.id,
+      reading_focus: '',
+      function_path: '',
+      detail_tab: source ? 'evidence' : 'details',
+      file: source?.path || '',
+      evidence_id: source?.evidence_id || '',
+      mode: 'normal',
+      catalog_hidden: true,
+      pinned: false,
+    });
+    setShowDetail(true);
+  }
+
+  function openArchitecture(objectId = '') {
+    const object = result?.nodes.find(node => node.node_id === objectId) ?? result?.edges.find(edge => edge.edge_id === objectId);
+    const firstEvidence = result?.evidence.find(item => object?.evidence_ids.includes(item.evidence_id));
     setSearch('');
     setShowCatalog(false);
-    setShowDetail(!!object&&detailDrawer);
-    switchView('system',{mode:'normal',catalog_hidden:true,selected:objectId,pinned:false,
-      result_id:result?.result_id||'',detail_tab:firstEvidence?'evidence':'details',
-      file:firstEvidence?.path||'',evidence_id:firstEvidence?.evidence_id||'',
-      source_snapshot_id:result?.binding.source_snapshot_id||'',scroll:{...reading.scroll,'canvas-system':{top:0,left:0},'detail-system-evidence':{top:0,left:0}}});
+    setShowDetail(!!object && detailDrawer);
+    switchView('system', {
+      mode: 'normal',
+      catalog_hidden: true,
+      selected: objectId,
+      pinned: false,
+      result_id: result?.result_id || '',
+      detail_tab: firstEvidence ? 'evidence' : 'details',
+      file: firstEvidence?.path || '',
+      evidence_id: firstEvidence?.evidence_id || '',
+      source_snapshot_id: result?.binding.source_snapshot_id || '',
+      scroll: { ...reading.scroll, 'canvas-system': { top: 0, left: 0 }, 'detail-system-evidence': { top: 0, left: 0 } },
+    });
   }
-  function inspectComponent(id:string){switchView('modules',{stage:id,selected:id,mode:'normal',detail_tab:'details',expanded:[...new Set([...reading.expanded,'composition/'+id])],scroll:{...reading.scroll,'canvas-modules':{top:0,left:0},'detail-modules-details':{top:0,left:0}}});}
-  const catalog=<aside id="workspace-navigation" className="catalog" aria-label="工作区导航">
-    <div className="pane-heading"><span>{reading.entrance==='overview'?'深入阅读':'功能与场景'}</span><button className="icon" aria-label="收起目录" title="隐藏导航" onClick={()=>{patch({catalog_hidden:true});setShowCatalog(false);}}>‹</button></div>
-    <ScrollPanel positions={reading.scroll} restoreKey={loadedKey} onPosition={savePosition} name="catalog">
-      {reading.entrance==='overview'&&<nav className="catalog-views" aria-label="工程页面">{[...primaryViews,...extraViews].map(viewButton)}</nav>}
-      {reading.entrance==='walk'&&<>
-      <button className={`catalog-home ${catalogReading?'selected':''}`} onClick={()=>setEntrance('walk')}>功能总览</button>{!catalogReading&&!preview&&!featureTabs&&<nav className="catalog-views" aria-label="当前功能视图"><span className="catalog-label">当前功能视图</span>{[...primaryViews,...extraViews].map(viewButton)}</nav>}<span className="catalog-label">已展开的功能与场景</span>
-      {data.features.filter(f=>f.project_id===projectId&&(archiveVisible||!f.archived)&&data.scenarios.some(s=>s.feature_id===f.feature_id&&s.scenario_id!==project?.overview_scenario_id)).sort((a,b)=>a.sort_order-b.sort_order).map(feature=><div key={feature.feature_id} className="feature-group">
-        <div className="feature-label"><button className="feature-toggle" aria-expanded={featureOpen(feature.feature_id)} onClick={()=>toggleFeature(feature.feature_id)}><span aria-hidden="true">{featureOpen(feature.feature_id)?'⌄':'›'}</span><strong title={feature.name}>{compactTitle(feature.name,24)}</strong></button><details className="feature-menu"><summary aria-label={`管理功能 ${feature.name}`}>⋯</summary><div className="feature-actions"><button className="icon" aria-label={`重命名功能 ${feature.name}`} onClick={()=>{setRenameFeature(feature.feature_id);setFormName(feature.name);setModal('featureRename');}}>✎</button><button className="icon" aria-label={`将功能置前 ${feature.name}`} onClick={()=>void action(()=>api.invoke('organize',{kind:'feature',id:feature.feature_id,patch:{sort_order:Math.min(0,...data.features.filter(f=>f.project_id===projectId).map(f=>f.sort_order))-1}}))}>↑</button><button className="icon" aria-label={`${feature.archived?'恢复':'归档'}功能 ${feature.name}`} onClick={()=>void action(()=>api.invoke('organize',{kind:'feature',id:feature.feature_id,patch:{archived:!feature.archived}}))}>{feature.archived?'↶':'−'}</button></div></details></div>
-        <div className="feature-scenes" hidden={!featureOpen(feature.feature_id)}>{data.scenarios.filter(s=>s.feature_id===feature.feature_id&&s.scenario_id!==project?.overview_scenario_id&&(archiveVisible||!s.archived)).sort((a,b)=>a.sort_order-b.sort_order).map(s=><button key={s.scenario_id} className={`scene-row ${scenarioId===s.scenario_id?'selected':''}`} aria-label={s.title} aria-current={scenarioId===s.scenario_id?'page':undefined} onClick={()=>chooseScenario(s.scenario_id)}><span title={s.title}>{s.kind==='feature_overview'?'整体走读':compactTitle(s.title)}</span><small className="scene-status">{s.kind==='feature_overview'?'整体走读':'场景'} · {s.archived||feature.archived?'已归档':sceneStatus(data.runs.filter(r=>!r.reading_question_id&&r.binding.scenario_id===s.scenario_id),data.explanations.some(e=>e.scenario_id===s.scenario_id))}</small></button>)}</div>
-      </div>)}
-      <div className="catalog-management"><button className="quiet full" onClick={()=>openModal('feature')}>＋ 添加功能</button><button className="quiet full" onClick={()=>setArchiveVisible(!archiveVisible)}>{archiveVisible?'隐藏归档':'查看归档'}</button></div>
-      </>}
-    </ScrollPanel>
-  </aside>;
-  const development=project&&(featureReading||reading.entrance==='walk'&&reading.view==='functions')&&result&&scenario&&<FeatureDevelopment project={project} scenario={scenario} result={result} target={questionLocation.target} evidence={developmentEvidence} task={featureTask} draft={featureDraft} onDraft={patch=>setFeatureDrafts(items=>({...items,[scenarioId]:{...featureDraft,...patch}}))} reload={reload} onViewResult={viewFeatureResult} onOpenTask={openFeatureTask}/>;
-  const detail=<section className="detail">
-    <div className="pane-heading"><span>{reading.detail_tab==='questions'?'当前位置问答':featureReading?'阅读说明':reading.view==='files'?'文件用途':businessReading&&reading.detail_tab==='details'?'这一步怎么运转':systemReading&&reading.detail_tab==='details'?'职责与协作':reading.detail_tab==='agent'?`${analysisScope}分析`:selectedNode?nodeNames[selectedNode.kind]:selectedEdge?(selectedEdge.transfers?.length?'数据传递':'关系说明'):'当前说明'}</span><button className={`icon ${reading.pinned?'selected':''}`} aria-label={reading.pinned?'解除固定详情':'固定详情'} onClick={()=>patch({pinned:!reading.pinned})}>{reading.pinned?'◆':'◇'}</button>{architectureReading&&!detailDrawer&&<button className="icon" aria-label="收起详情" onClick={()=>{patch({selected:'',file:'',evidence_id:'',pinned:false,detail_tab:'details'});setShowDetail(false);}}>收起</button>}</div>
-    <nav className="detail-tabs">{(reading.view==='files'&&!featureReading?[['details','说明'],['questions','提问'],['evidence','依据']]:[['details','说明'],['questions','提问'],['evidence','依据'],['agent','分析进度'],['history','历史']]).map(([v,l])=><button key={v} className={reading.detail_tab===v?'selected':''} onClick={()=>patch({detail_tab:v})}>{l}</button>)}</nav>
-    <ScrollPanel positions={reading.scroll} restoreKey={loadedKey+':'+(result?.result_id||'')+(reading.detail_tab==='agent'?':'+activityFocus:(featureReading||businessReading||systemReading||reading.view==='functions')&&reading.detail_tab==='details'?':'+reading.selected:'')} onPosition={savePosition} name={`detail-${reading.view}-${reading.detail_tab}`}>
-      {reading.detail_tab==='details'&&<>
-        {development}
-        {featureReading&&readingGuide&&result?<FeatureReadingDetail guide={readingGuide} result={result} selected={reading.selected} view={reading.view} onFile={readingFile} onStep={readingStep} onEvidence={evidence}/>:featureReading?<p>当前功能尚未有分析说明，可以直接提问。</p>:reading.view==='files'&&sourceSnapshot?<FileSummary data={data} projectId={projectId} snapshot={sourceSnapshot} path={selectedFile} ask={askHere}/>:reading.view==='functions'&&result&&functionStep?<FunctionStepDetail result={result} selection={functionStep} select={select} evidence={evidence}/>:reading.view==='functions'&&result&&selectedNode?.kind==='function'?<FunctionDetail result={result} node={selectedNode} select={selectFunctionRelation} evidence={evidence}/>:businessReading&&result?<StepDetail result={result} selected={reading.selected} select={select}/>:systemReading&&result?<SystemDetail result={result} selected={reading.selected} select={select} inspect={inspectComponent}/>:<>
-          <span className="eyebrow">{selectedCall?.kind||(selectedEdge?(selectedEdge.transfers?.length?'数据交接':edgeNames[selectedEdge.kind]):selectedNode?.execution_context.label||analysisScope)}</span>
-          <h2>{activeObject?.label||(!result?'阅读与核对':scenario?.title)||'工程全貌'}</h2>
-          <p>{selectedNode?.description||(selectedEdge&&result?edgeExplanation(result,selectedEdge):result?.summary.text)||`点击上方「${analysisLabel}」，查看${analysisScope}的分析过程与源码依据。模型服务会接收本工程快照，原工程只读。`}</p>
-          {selectedEdge?.transfers?.map((transfer,index)=>{const upstream=result?.nodes.find(n=>n.node_id===selectedEdge.source_node_id)?.outputs.find(io=>io.io_id===transfer.source_output_id),downstream=result?.nodes.find(n=>n.node_id===selectedEdge.target_node_id)?.inputs.find(io=>io.io_id===transfer.target_input_id);return <article className="transfer-pair" key={index}><strong>传递：{transfer.label}</strong><p>输出：{upstream?.name} → 输入：{downstream?.name}</p><small>{claimNames[transfer.status]}</small><details><summary>查看传递前后的含义</summary><p>上一步产出：{upstream?.description}</p><p>下一步接收：{downstream?.description}</p></details></article>;})}{selectedEdge&&!selectedEdge.transfers?.length&&<p className="muted">{selectedCall?'参数与返回值可查看两端函数；此处尚未建立参数逐项传递映射。':'这是关系说明，尚未建立明确的输入输出传递映射。'}</p>}{selectedEdge&&!selectedEdge.transfers?.length&&<div className="call-pair"><span>{selectedCall?.source?.function_details?.symbol||result?.nodes.find(n=>n.node_id===selectedEdge.source_node_id)?.label}</span><b>→ {selectedCall?.kind||(selectedEdge.transfers?.length?'传递内容':edgeNames[selectedEdge.kind])} →</b><span>{selectedCall?.target?.function_details?.symbol||result?.nodes.find(n=>n.node_id===selectedEdge.target_node_id)?.label}</span><small>{claimNames[selectedEdge.status]}</small></div>}
-          {selectedNode&&<><div className="next-steps"><h3>{reading.view==='dependencies'?'依赖与关联':'接下来'}</h3>{result?.edges.filter(e=>e.source_node_id===selectedNode.node_id).map(e=><button key={e.edge_id} onClick={()=>select(e.edge_id)}><span>{e.label}</span><small>→ {result.nodes.find(n=>n.node_id===e.target_node_id)?.label}{e.status!=='source_supported'&&` · ${claimNames[e.status]}`}</small></button>)}{!result?.edges.some(e=>e.source_node_id===selectedNode.node_id)&&<p className="muted">当前分析没有继续的步骤。</p>}</div><details className="io-details" key={selectedNode.node_id}><summary>查看输入与输出</summary>{[['输入',selectedNode.inputs],['输出 / 返回',selectedNode.outputs]].map(([label,items])=><div key={label as string}><h3>{label as string}</h3>{(items as typeof selectedNode.inputs).length?(items as typeof selectedNode.inputs).map(io=><div className="io-row" key={io.io_id}><strong>{io.name}</strong><p>{io.description}</p><details className="technical-detail"><summary>技术细节</summary><code>{io.data_type??'类型未知'}</code>{io.value_or_shape&&<small>{io.value_or_shape}</small>}</details></div>):<p className="muted">未说明</p>}</div>)}</details></>}
-          {result?.claims.filter(c=>activeObject?.claim_ids.includes(c.claim_id)||(!activeObject&&result.summary.claim_ids.includes(c.claim_id))).map(c=>c.status==='source_supported'?<details className="claim supported-detail" key={c.claim_id}><summary>来源判断与边界</summary><p>{c.statement}</p><small>{c.rationale}</small>{c.limitations.map((l,i)=><p className="muted" key={i}>边界：{l}</p>)}</details>:<article className={`claim ${c.status}`} key={c.claim_id}><span className="tag">{claimNames[c.status]}</span><p>{c.statement}</p><small>{c.rationale}</small>{c.limitations.map((l,i)=><p className="muted" key={i}>边界：{l}</p>)}</article>)}
-        </>}
-        {!featureReading&&!functionStep&&reading.view!=='files'&&result&&<details className="supporting-evidence" key={activeObject?.label||result.result_id}><summary>查看分析依据 · {(activeObject?activeObject.evidence_ids:result.evidence).length} 处引用</summary>{(activeObject?result.evidence.filter(e=>activeObject.evidence_ids.includes(e.evidence_id)):result.evidence.slice(0,4)).map(e=><EvidenceButton key={e.evidence_id} evidence={e} open={evidence}/>)}</details>}
-        {reading.view!=='files'&&scenario&&<><details className="user-clue-editor" open={clue?true:undefined}><summary>仅保存补充线索</summary><textarea aria-label="补充线索" placeholder="补充背景或指出问题；保存后仍是用户线索。" value={clue} onChange={e=>setClue(e.target.value)}/><button className="secondary full" disabled={!clue.trim()} onClick={()=>void action(async()=>{await api.invoke('annotate',{scenario_id:scenarioId,text:clue,result_id:result?.result_id||null,object_id:featureReading?readingGuide?.steps.find(s=>'step:'+s.id===reading.selected)?.node_ids[0]||null:functionStep?.step.to_node_id||reading.selected||null});setClue('');},'线索已保存，下次分析可引用')}>保存线索</button></details>
-        {sceneAnnotations.map(a=>{const original=sceneExplanations.find(e=>e.result_id===a.result_id)?.result;const match=annotationTarget(a,original,result);return <article className="clue" key={a.annotation_id}><span className="tag">用户线索</span><p>{a.text}</p><small>{match} · {short(a.source_snapshot_id)}</small>{original&&a.result_id!==result?.result_id&&<button onClick={()=>patch({result_id:original.result_id,selected:a.object_id||'',file:'',evidence_id:'',source_snapshot_id:original.binding.source_snapshot_id,detail_tab:'details'})}>查看原批注</button>}{match.startsWith('同源')&&<button onClick={()=>patch({selected:a.object_id||'',detail_tab:'details'})}>定位对应对象</button>}</article>;})}</>}
-      </>}
-      {project&&<div hidden={reading.detail_tab!=='questions'}><ReadingQuestions data={data} projectId={projectId} scenarioId={scenarioId} resultId={result?.result_id||null} target={questionLocation.target} targetLabel={questionLocation.label} featureId={currentFeature?.feature_id||projectId} featureLabel={reading.entrance==='overview'?'当前工程整体':`${currentFeature?.name||scenario?.title||'当前功能'} · 整体`} snapshotId={result?.binding.source_snapshot_id||project.snapshot_id} disabled={project.fictional} reload={reload} settings={showMcp}/></div>}
-      {reading.detail_tab==='evidence'&&<><h2>{architectureReading&&activeObject?activeObject.label+' · 来源依据':'来源与覆盖'}</h2>{selectedEvidence&&<article className="scope-box evidence-location" aria-label="所选来源依据"><strong>{selectedEvidence.path}</strong><p>{selectedEvidence.note}</p><span>位置：第 {selectedEvidence.line_start}–{selectedEvidence.line_end} 行</span><span>版本：{selectedEvidence.source_snapshot_id}</span><small>SHA-256：{selectedEvidence.content_sha256}</small><SourceExcerpt evidence={selectedEvidence}/></article>}{developmentEvidence&&development}<p className="warning">结构、引用和哈希校验不等于语义已核实。</p><dl><dt>说明</dt><dd>{result?.result_id||'暂无'}</dd><dt>来源版本</dt><dd>{result?.binding.source_snapshot_id||project?.snapshot_id}</dd><dt>问题修订</dt><dd>{result?.binding.question_revision_id||scenario?.question_revision_id}</dd><dt>构建条件</dt><dd>{data.snapshots.find(s=>s.source_snapshot_id===(result?.binding.source_snapshot_id||project?.snapshot_id))?.build_config||'未知；没有指定宏、目标和包含路径'}</dd></dl>{(architectureReading&&activeObject?result?.evidence.filter(item=>activeObject.evidence_ids.includes(item.evidence_id)):readingEvidence)?.map(e=><EvidenceButton key={e.evidence_id} evidence={e} open={evidence}/>)}<h3>尚未覆盖</h3>{result?.gaps.map(g=><article className="gap" key={g.gap_id}><strong>{g.question}</strong><p>{g.impact}</p><small>{overviewReviewGaps.some(gap=>gap.gap_id===g.gap_id)?'ARC 可自动补查这条关系的原冻结源码，并对修订后的关系再次复核。':g.suggested_action}</small></article>)}{!result&&<p>尚未有分析结果。</p>}</>}
-      {reading.detail_tab==='agent'&&<>{activityRun&&!waitingMcp&&<RunActivity run={activityRun} events={events} error={eventError} detailed stop={()=>void action(()=>api.invoke('run_cancel',{run_id:activityRun.binding.run_id}))}/>} {completedExplanation&&!waitingMcp&&<button className="primary full view-completed" onClick={viewCompleted}>查看本次分析结果</button>}{waitingMcp&&<div className="waiting-summary"><h3>等待 Agent 对话领取</h3><p>所选功能已准备，尚未开始模型调用。请在已接入 Arc 的 Agent 对话中领取。</p></div>}<details className="run-start-options" open={!activityRun&&!waitingMcp||undefined}><summary>{activityRun?'再次分析':'分析执行方式'}</summary><button className="secondary full" onClick={showMcp}>连接 Agent</button><p>{analysisMode.description}</p><h2>分析：{analysisScope}</h2><p>{featurePurpose||scenario?.title||'先添加或选择一个场景。'}</p><details><summary>查看完整分析问题</summary><p>{scenario?.question}</p></details><div className="scope-box"><strong>本次来源</strong><span>{short(project?.snapshot_id||'')}</span><small>本地冻结源码；Agent 的模型服务将接收所选工程内容。原工程只读。</small></div>{!needsFunctionGraphs&&<button className="primary full" disabled={!scenario||project?.fictional||pending||!!running||!!indexes[projectId]} onClick={()=>void requestAnalysis(reading.entrance==='overview')}>{running?'分析进行中':analysisMode.start}</button>}{project?.fictional&&<p className="warning">当前是演示，不派发真实任务。</p>}</details>
-      <details className="run-history"><summary>历史运行与恢复操作 · {sceneRuns.length}</summary>{sceneRuns.slice().reverse().map(run=><article className="run" key={run.binding.run_id}><div className="row between"><strong>{run.origin==='manual_import'?'手动导入 · 非联调':run.origin==='mcp'?'MCP · Agent 主动写回':run.provider_id}</strong><span className="tag">{statuses[run.status]||run.status}</span></div><small>{short(run.binding.run_id)}</small><small>问题 {short(run.binding.question_revision_id)}</small><small>来源 {short(run.binding.source_snapshot_id)}</small>{run.previous_run_id&&<small className="retry-origin">{run.repair_from_run_id?'修复来源':'关联原运行'}：{run.previous_run_id}</small>}{run.external_id&&<p className="path">原生会话：{run.external_id}</p>}{run.error&&<AnalysisError error={run.error}/>}{run.status==='failed'&&!run.overview_format&&<button onClick={()=>void action(()=>api.invoke('run_revalidate',{run_id:run.binding.run_id}))}>重新校验已收原文（不调用 Agent）</button>}{run.validation&&<small>结构 {run.validation.structure} / 锚点 {run.validation.anchors}<br/>{run.validation.semantic}</small>}
-      {run.origin==='mcp'?<small>MCP 任务请在原 Agent 对话继续；撤销只关闭 Arc 的读写权限。</small>:['running','queued','cancel_requested'].includes(run.status)?<button disabled={run.status==='cancel_requested'} onClick={()=>void action(()=>api.invoke('run_cancel',{run_id:run.binding.run_id}))}>请求停止</button>:<button onClick={()=>void requestAnalysis(reading.entrance==='overview')} disabled={project?.fictional||pending||!!running}>{analysisMode.retry}</button>}</article>)}
-      </details><details><summary>最近运行的真实事件（{events.length}）</summary><div className="events">{events.slice(-60).map((e,i)=><pre key={i}>{JSON.stringify(e,null,2)}</pre>)}</div></details></>}
-      {reading.detail_tab==='history'&&<><h2>解释历史</h2><p>新分析保存为新版本，不覆盖历史源码。当前查看的历史不会被新返回切走。</p>{sceneExplanations.slice().reverse().map(e=><button key={e.result_id} className={`history-row ${e.result_id===result?.result_id?'selected':''}`} onClick={()=>patch({result_id:e.result_id,selected:'',file:'',evidence_id:'',reading_path:'',function_path:'',reading_focus:'',source_snapshot_id:e.result.binding.source_snapshot_id})}><strong>{e.result.summary.text.slice(0,100)}</strong><small>{new Date(e.created_at).toLocaleString('zh-CN')} · {e.result.provider.provider_id}</small><small>{short(e.result.binding.source_snapshot_id)}</small><small>{e.result.binding.question_revision_id===scenario?.question_revision_id?'当前问题':'历史问题'} · {e.source_status==='current'?'来源可核对':'来源待复核'}</small></button>)}<button className="secondary full" disabled={sceneExplanations.length<2} onClick={()=>patch({mode:'compare',compare_id:sceneExplanations.at(-2)?.result_id||''})}>旧版｜新版 并排比较</button></>}
-    </ScrollPanel>
-  </section>;
-  const filters=featureReading&&reading.view==='files'?<div className="fr-file-search"><input type="search" aria-label="搜索本功能文件" placeholder="查文件名或职责，只搜索本功能" value={search} onChange={e=>setSearch(e.target.value)}/>{search&&<button onClick={()=>setSearch('')}>清除</button>}</div>:<details className="canvas-filter" open={reading.view==='files'||!!search||undefined}><summary>搜索与筛选</summary><div className="filter-row"><input aria-label={featureReading&&reading.view==='files'?'搜索本功能文件':'搜索节点或文件'} placeholder={featureReading&&reading.view==='files'?'查文件名或职责，只搜索本功能':reading.view==='files'?'搜索真实文件…':'搜索节点、职责…'} value={search} onChange={e=>setSearch(e.target.value)}/>{search&&<button onClick={()=>setSearch('')}>清除</button>}{result&&['flow','sequence'].includes(reading.view)&&<select aria-label="阶段筛选" value={reading.stage} onChange={e=>patch({stage:e.target.value})}><option value="">全部阶段 / 上下文</option>{result.nodes.filter(n=>result.nodes.some(c=>c.parent_node_id===n.node_id)).map(n=><option key={n.node_id} value={n.node_id}>内部：{n.label}</option>)}{[...new Set(result.nodes.map(n=>n.execution_context.label))].map(v=><option key={v}>{v}</option>)}</select>}</div></details>;
-  const canvas=<main className="canvas">{!preview&&<div className="canvas-tools"><div className="row"><span className="eyebrow">{reading.entrance==='overview'?'工程全貌':'功能走读'}</span>{result&&<span className="tag">{data.runs.find(r=>r.binding.run_id===result.binding.run_id)?.origin==='manual_import'?'手动导入 · 非联调':result.fictional?'演示':'真实返回'} · {result.gaps.length?'部分覆盖':'已返回说明'}</span>}{!catalogReading&&filters}</div>{!catalogReading&&<div className="row"><small className="zoom-hint">Ctrl＋滚轮缩放</small><button className="icon" aria-label="缩小画布" onClick={()=>patch({zoom:clampZoom(reading.zoom-.1)})}>−</button><button className="icon zoom-reset" aria-label="重置画布缩放" title="恢复 100%" onClick={()=>patch({zoom:1})}>{Math.round(reading.zoom*100)}%</button><button className="icon" aria-label="放大画布" onClick={()=>patch({zoom:clampZoom(reading.zoom+.1)})}>＋</button></div>}</div>}
 
-    <ScrollPanel positions={reading.scroll} restoreKey={loadedKey+':'+(result?.result_id||'')} onPosition={savePosition} name={`canvas-${reading.view}`}>
-      {catalogReading?<FeatureCatalog explanation={catalogExplanation} data={data} projectId={projectId} busy={pending||!!indexes[projectId]||!!project?.fictional} open={id=>void openCapability(id)} discover={()=>void requestAnalysis(true)} mode={expandMode} setMode={setAnalysisMode}/> :graphCatalog&&discovery&&project?<CatalogFeatureReading key={graphCatalog.result_id+'/'+discovery.node_id} explanation={graphCatalog} nodeId={discovery.node_id} currentSnapshot={project.snapshot_id} sourceId={reading.evidence_id} onSource={evidence_id=>patch({evidence_id})}/>:preview&&featureSource?<CatalogFeatureReading functionActions={functionPreview?graphActions:undefined} key={featureSource.result_id+'/'+preview.node_id} explanation={featureSource} nodeId={preview.node_id} currentSnapshot={project.snapshot_id} sourceId={reading.evidence_id} onSource={evidence_id=>patch({evidence_id})}/>:featureReading&&result&&readingGuide?<ZoomSurface reflow zoom={reading.zoom} change={zoom=>patch({zoom})}><FeatureReading zoom={reading.zoom} result={result} guide={readingGuide} view={reading.view} pathId={reading.reading_path||''} selected={reading.selected} focus={reading.reading_focus||''} search={search} onPath={readingPath} onSelect={selectReading} onNavigate={navigateFeature} onStep={readingStep}/></ZoomSurface>:featureReading&&reading.view==='files'?<section className="fr-empty"><h2>当前功能尚未有相关文件说明</h2><p>完成分析后，这里只列本功能引用的文件及其用途。</p><button onClick={()=>navigateFeature('timeline')}>返回业务流程</button></section>:reading.view==='files'&&sourceSnapshot?<ZoomSurface reflow zoom={reading.zoom} change={zoom=>patch({zoom})}><FileMap files={sourceSnapshot.files} title={project?.name||'当前工程'} selected={selectedFile} select={chooseFile} expanded={reading.expanded} toggle={p=>patch({expanded:reading.expanded.includes(p)?reading.expanded.filter(x=>x!==p):[...reading.expanded,p]})} zoom={reading.zoom} search={search}/></ZoomSurface>:
-        result?<ZoomSurface reflow={['system','map','timeline','composition','topicmap','modules','dependencies','functions'].includes(reading.view)} zoom={reading.zoom} change={zoom=>patch({zoom})}>{['topicmap','modules','dependencies'].includes(reading.view)&&<Composition result={result} variant={reading.view==='dependencies'?'dependencies':reading.view==='modules'?'modules':'analysis'} focus={reading.view==='modules'?reading.stage:undefined} title={reading.view==='topicmap'?(scenario?.kind==='feature_overview'?(data.features.find(f=>f.feature_id===scenario.feature_id)?.name||scenario.title):(scenario?.title||'当前说明')):(project?.name||'当前工程')} selected={reading.selected} select={select} zoom={reading.zoom} search={search} expanded={reading.expanded} toggle={id=>patch({expanded:reading.expanded.includes(id)?reading.expanded.filter(x=>x!==id):[...reading.expanded,id]})} architecture={()=>switchView('system')} dependencies={()=>switchView('dependencies')}/>} {reading.view==='composition'&&<Composition result={result} title={project?.name||'当前工程'} selected={reading.selected} select={select} zoom={reading.zoom} search={search} expanded={reading.expanded} toggle={id=>patch({expanded:reading.expanded.includes(id)?reading.expanded.filter(x=>x!==id):[...reading.expanded,id]})} architecture={()=>switchView('system')} dependencies={()=>switchView('dependencies')}/>} {['system','map'].includes(reading.view)&&<Architecture result={result} selected={reading.selected} select={select} zoom={reading.zoom} search={search} modules={()=>switchView('modules',{stage:''})} inspect={inspectComponent}/>}{['system','map'].includes(reading.view)&&<div className="overview-feature-entry"><div><strong>系统有哪些功能</strong><br/><span>{capabilityCount?`已发现 ${capabilityCount} 项 · 阅读功能说明`:'在 ARC 内生成目录，再选择功能深入'}</span></div><button onClick={()=>navigateView('capabilities')}>浏览功能总览</button></div>}<details className="overview-summary" open={!!reading.summary_expanded} onToggle={e=>{if(e.currentTarget.open!==!!reading.summary_expanded)patch({summary_expanded:e.currentTarget.open});}} key={reading.view}><summary>分析说明与覆盖范围{explanation?.source_status!=='current'?' · 来源待复核':''}{result.binding.question_revision_id!==scenario?.question_revision_id?' · 历史问题':''}</summary><div className="summary"><span className="eyebrow">当前说明</span><p>{result.summary.text}</p>{explanation?.source_status!=='current'&&<span className="warning">来源可能受影响，保留旧解释，需按新来源复核。</span>}{result.binding.question_revision_id!==scenario?.question_revision_id&&<p className="warning">这是历史问题的结果；当前新问题尚未由此说明回答。</p>}</div></details>{reading.view==='modules'&&reading.stage&&<button className="architecture-back" onClick={()=>switchView('system')}>← 返回系统协作</button>}{reading.view==='functions'&&<>{overviewRun?.validation?.semantic.startsWith('已展示可校验的函数走读。')&&<details className="diagram-scope" aria-label="函数走读校验说明"><summary>部分步骤或引用未通过校验 · 查看详情</summary><p>{overviewRun.validation.semantic}</p></details>}<FunctionChain graphActions={graphActions} mode={reading.function_mode||'calls'} onModeChange={function_mode=>patch({function_mode})} result={result} selected={reading.selected} select={select} zoom={reading.zoom} search={search} pathId={reading.function_path??reading.reading_path??''} onPath={(pathId,selected)=>setReading(r=>functionPathPosition(r,result,pathId,selected))} evidence={evidence}/></>} {reading.view==='timeline'&&<Timeline result={result} selected={reading.selected} select={select} zoom={reading.zoom} search={search}/>} {reading.view!=='system'&&reading.view!=='map'&&reading.view!=='timeline'&&reading.view!=='composition'&&reading.view!=='topicmap'&&reading.view!=='modules'&&reading.view!=='dependencies'&&reading.view!=='functions'&&<Graph result={result} selected={reading.selected} select={select} view={reading.view} stage={reading.stage} expand={stage=>patch({stage})} zoom={reading.zoom} search={search} scope={reading.graph_scope} changeScope={graph_scope=>patch({graph_scope})}/>}</ZoomSurface>:
-          waitingMcp?<section className="mcp-waiting" aria-label="等待 Agent 领取"><span className="eyebrow">已准备所选功能 · 尚未开始分析</span><h2>等待 Agent 对话领取</h2><p>功能：{data.features.find(f=>f.feature_id===scenario?.feature_id)?.name}</p><ol><li>已绑定当前工程、问题版本和源码快照。</li><li>在接入 Arc MCP 的 Agent 对话中要求分析 Arc 当前选中的功能。</li><li>Agent 领取后，这里显示真实进度；结果写回后展示流程时间线。</li></ol><p className="muted">Arc 不会自动唤醒或切换 Agent 对话，此时还没有模型调用。</p><div className="row"><button onClick={showMcp}>查看接入方法</button></div></section>:<div className="empty"><span className="empty-mark">⌘</span><span className="eyebrow">从源码到理解</span><h1>{running?(running.status==='waiting_agent'?'已排队，等待 Codex 领取':'正在分析工程源码'):latestRun?.status==='failed'?'这次分析未完成，可重新发起':reading.entrance==='overview'?'工程已就绪，开始分析':scenario?'这个问题，等待第一次分析':'选择一条功能路径'}</h1><p>{running?(running.status==='waiting_agent'?'任务已保存，正在等待绑定会话的实际领取回执。':running.origin==='mcp'?'Agent 已在外部对话领取任务。':(running.provider_id==='dsh'?'DeepSeek Harness 正在只读分析冻结源码。':'Codex 正在读取冻结源码。'))+'完成后会保存说明与源码依据；你可以继续浏览。':latestRun?.status==='failed'?'在右侧“分析进度”查看原因并重试，已有结果和原任务均保留。':featurePurpose||scenario?.title||(reading.entrance==='overview'?'直接在 ARC 内生成系统架构和功能目录，再选择功能深入；不用切换到外部对话。':'添加你关注的功能和场景问题，再分析关键调用与输入输出。')}</p><div className="row"><button className="quiet" onClick={()=>switchView('files')}>先浏览文件组织</button></div><div className="facts"><div><strong>{snapshot?.files.length||0}</strong><span>已索引文本文件</span></div><div><strong>{snapshot?.excluded.length||0}</strong><span>排除或待确认项</span></div><div><strong>只读</strong><span>工程访问模式</span></div></div></div>}
-    </ScrollPanel></main>;
-  return <div className="arc-workbench"><WorkbenchNavigation projects={data.projects} projectId={projectId} active={reading.view==='materials'?'materials':engineeringReading?'engineering':reading.entrance==='walk'?'walk':'overview'} onProject={id=>{const p=data.projects.find(p=>p.project_id===id);if(p)void chooseProject(p);}} onOpen={()=>openModal('open')} onSettings={showMcp} onNavigate={openWorkbench}/><div className={`app reading-shell ${projectHome?'project-home-active':''} ${engineeringReading?'engineering-active':''} ${featureReading?'feature-reader':businessReading?'business-reader':systemReading?'system-reader':''}`}>
-    {indexTasks.map(task=><div key={task.project_id} className="index-status" role="status"><span title={task.root_path}>正在索引 {task.project_name||task.project_id} · 已读取 {task.count} 个文本文件 · 快照尚未完成{projectId&&task.project_id!==projectId?'（另一个工程）':''}</span><button onClick={()=>void api.invoke('index_cancel',{project_id:task.project_id})}>取消索引</button></div>)}
-    {error&&<div role="alert" className="error-banner"><span>{error}</span><button onClick={()=>setError('')}>关闭</button></div>}
-    {notice&&!indexTasks.length&&<div role="status" className="notice"><span>{notice}</span><button onClick={()=>setNotice('')}>×</button></div>}
-    {!project?<main className="welcome"><span className="eyebrow">ARC / LOCAL WORKSPACE</span><h1>看清工程。读懂一条真实路径。</h1><p>选择工程后，在 ARC 内完成分析、看图和追问。结论可追溯，历史保存在本机。</p><div className="row"><button className="primary" onClick={()=>openModal('open')}>打开并理解工程</button><button onClick={()=>void restoreEngineering()}>恢复工程记录</button><button onClick={()=>void action(async()=>{const p=await api.invoke<Project>('demo');await reload();void chooseProject(p);setScenarioId((await reload()).scenarios.find(s=>s.project_id===p.project_id)?.scenario_id||'');})}>查看明确标记的演示</button></div><div className="welcome-grid"><article><b>01 / 工程全貌</b><p>模块地图、文件用途、依赖边界。</p></article><article><b>02 / 功能走读</b><p>关键调用、输入输出、阶段时序。</p></article><article><b>03 / 来源核对</b><p>冻结快照、真实行号、版本比较。</p></article></div></main>:<>
-      {!engineeringReading&&!projectHome&&<div className="context"><div><div className="breadcrumb" title={project.root_path}>{projectLabel(project)} / {reading.entrance==='overview'?'工程全貌':data.features.find(f=>f.feature_id===scenario?.feature_id)?.name||'功能走读'}<span className="breadcrumb-kind"> · {currentView}</span>{project.fictional&&<span className="tag amber">演示数据</span>}</div><h1 title={scenario?.title}>{engineeringReading?'开发与工程记录':catalogReading?'功能总览':reading.entrance==='overview'&&reading.view==='functions'?'工程全貌 · 函数走读':(featureReading||(reading.entrance==='walk'&&reading.view==='functions'))?`${currentFeature?.name||scenario?.title||'当前功能'} · ${currentView}`:reading.view==='files'?'文件结构与用途':compactTitle(scenario?.title||(reading.entrance==='overview'?'系统架构与工程组成':'选择要理解的功能'),40)}</h1><div className="scope-hint"><span className="tag">{analysisScope}</span><span>{reading.entrance==='overview'?'系统组成、技术栈与组件关系':scenario?.kind==='feature_overview'?'这个功能的职责、关键调用与输入输出':'围绕当前问题核对调用、阶段和源码依据'}</span></div></div><div className="context-actions">{!engineeringReading&&<><div className="analysis-controls">{reading.view==='files'&&!featureReading?<button className="primary" onClick={askHere}>解释当前文件 / 目录</button>:analysisButton}{analysisMenu}</div><details className="context-edit-actions"><summary>更多操作</summary><div className="popover-content"><button onClick={()=>openModal('feature')}>＋ 功能</button><button disabled={!userFeatures.length} title={!userFeatures.length?'先添加一个功能，再建立具体场景':'选择所属功能并添加一个具体问题'} onClick={()=>openModal('scenario')}>＋ 场景</button>{scenario&&<><button onClick={()=>{setFormName(scenario.title);setModal('rename');}}>改标题</button><button onClick={()=>{setFormQuestion(scenario.question);setModal('revise');}}>编辑问题</button></>}</div></details></>}</div></div>}
-      <div className="workspace-bar"><div className="row"><button className="icon" aria-label={width>=900&&!reading.catalog_hidden?'隐藏目录':'显示目录'} aria-expanded={width>=900?!reading.catalog_hidden:showCatalog} aria-controls="workspace-navigation" title={width>=900&&!reading.catalog_hidden?'隐藏导航':'显示导航'} onClick={()=>{if(width>=900)patch({catalog_hidden:!reading.catalog_hidden});else{patch({catalog_hidden:false});setShowCatalog(!showCatalog);}}}>☰</button>
-        {reading.entrance==='walk'&&!catalogReading&&<button className="back-to-catalog" onClick={()=>setEntrance('walk')}>← 返回功能总览</button>}{featureTabs?<nav className="feature-view-tabs" aria-label="功能阅读视图">{featureTabs.map(([view,label])=><button key={view} type="button" className={view==='functions'?'feature-functions-tab':undefined} aria-current={reading.view===view?'page':undefined} onClick={()=>{if(reading.view!==view){if(preview)patch({view});else navigateFeature(view);}}}>{label}</button>)}</nav>:<span className="current-view">{catalogReading?'功能总览':currentView}</span>}{!engineeringReading&&activityRun?.status==='completed'&&<button className="saved-analysis" onClick={showRun}>已保存说明 · 查看真实过程</button>}</div>{!engineeringReading&&<div className="row"><details className="source-options"><summary>资料与来源</summary><div className="popover-content"><span className="source-badge" title={result?.binding.source_snapshot_id||project.snapshot_id}>来源 {short(result?.binding.source_snapshot_id||project.snapshot_id)}</span><button onClick={()=>void action(()=>api.invoke('refresh',{project_id:projectId}),'已冻结新快照；历史说明保留原来源')}>刷新来源</button></div></details>{!catalogReading&&<><button className="primary workspace-question" onClick={askHere}>提问</button><button className="workspace-detail-toggle" onClick={()=>{setShowDetail(true);patch({detail_tab:'details'});}}>详情</button></>}</div>}</div>
-      {catalogReading&&(otherProjectTasks.length>0||pendingScene)&&<section className="project-task-strip" aria-label="本工程进行中的分析">{otherProjectTasks.map(r=><button key={r.binding.run_id} onClick={()=>openTask(r.binding.scenario_id)}>{r.title} · {statuses[r.status]} · 查看进度 →</button>)}{pendingScene&&!projectTasks.some(r=>r.binding.scenario_id===pendingScene.scenario_id)&&<button onClick={()=>openTask(pendingScene.scenario_id)}>{pendingScene.title} · 等待 Agent 领取 →</button>}</section>}
-      {!engineeringReading&&!catalogReading&&waitingMcp&&result&&<div className="result-status">新分析等待 Agent 领取；当前仍显示已保存的说明。<button onClick={showRun}>查看待领取任务</button></div>}
-      {!engineeringReading&&!catalogReading&&overviewReviewGaps.length>0&&<div className="result-status" aria-label="关系自动补查"><span>{running?.overview_from_result_id===result?.result_id?'正在补查当前说明的关系，原图保留；完成后可查看新版本。':`${overviewReviewGaps.length} 条关系尚未确认。ARC 可沿用这份说明的冻结源码继续补查，并保存为新版本。`}</span><button disabled={pending||projectTasks.length>0||!!indexes[projectId]||!!project?.fictional} onClick={()=>void researchOverview()}>自动补查关系</button></div>}
-      {!engineeringReading&&!catalogReading&&!waitingMcp&&!running&&completedExplanation&&(!architectureReading||completedExplanation.result_id!==result?.result_id||explanation?.source_status!=='current')&&<div className="result-status"><span>{completedExplanation.result_id===result?.result_id?'正在查看已保存的分析结果':'本次分析已保存；当前仍在阅读旧版'}{explanation?.source_status!=='current'?' · 来源待核对':''}</span><button onClick={viewCompleted}>查看本次分析结果</button></div>}
-      {!engineeringReading&&!catalogReading&&activityRun&&activityRun.status!=='completed'&&!(reading.detail_tab==='agent'&&reading.mode!=='compare'&&(!detailDrawer||showDetail))&&<RunActivity key={activityRun.binding.run_id} collapsible detailed run={activityRun} events={events} error={eventError} open={showRun} stop={()=>void action(()=>api.invoke('run_cancel',{run_id:activityRun.binding.run_id}))}/>}
-      <div className={`workspace ${projectHome?'home-mode catalog-hidden':engineeringReading?'engineering-mode':catalogReading?'catalog-workspace':''} ${reading.mode==='source'?'source-mode':''} ${reading.catalog_hidden?'catalog-hidden':''}`} style={{'--left':`${reading.left_width}px`,'--right':`${Math.min(reading.right_width,reading.mode==='source'?Math.max(280,width-800):600)}px`} as React.CSSProperties}>
-        {width>=900&&!projectHome&&!reading.catalog_hidden&&<>{catalog}<Separator side="left_width" value={reading.left_width} change={changeWidth} reset={()=>patch({left_width:220})}/></>}
-        {projectHome?<EngineeringOverview key={project.project_id} businessPath={suggestedPath} onBusinessStep={openSuggestedStep} resumeLabel={canResume&&bookmark?bookmark.label+(bookmark.position.source_snapshot_id!==project.snapshot_id?' · 历史版本':''):''} onResume={resumeHomeReading} project={project} result={result} hasAnalysis={!!result} analysisLabel={analysisLabel} analysisBusy={pending||!!indexes[projectId]} analysisMenu={analysisMenu} onAnalyze={beginAnalysis} onArchitecture={openArchitecture} onWalk={()=>setEntrance('walk')} onFiles={()=>navigateView('files')} onMaterials={()=>switchView('materials',{mode:'normal',catalog_hidden:true})} onTask={id=>{setRequestedTask(id);switchView('engineering',{mode:'normal',catalog_hidden:true});}} develop={()=>{setFocusDevelopment(true);switchView('engineering',{mode:'normal',catalog_hidden:true});}}/>:engineeringReading?<EngineeringWorkspace key={project.project_id} project={project} page={reading.view==='materials'?'materials':'records'} requestedTask={requestedTask} onTaskOpened={()=>setRequestedTask('')} onSettings={showMcp} focusGoal={focusDevelopment} onGoalFocused={()=>setFocusDevelopment(false)} back={()=>switchView('system')} onArchitecture={id=>{const saved=data.explanations.find(e=>e.result_id===id);if(saved)chooseScenario(saved.scenario_id,{entrance:'overview',view:'system',result_id:id,source_snapshot_id:saved.result.binding.source_snapshot_id,mode:'normal'});else chooseScenario(project.overview_scenario_id||'',{entrance:'overview',view:'system',result_id:'',source_snapshot_id:project.snapshot_id,mode:'normal',detail_tab:'details',catalog_hidden:false});}} onRestored={id=>void reload().then(workspace=>{const restored=workspace.projects.find(p=>p.project_id===id);if(restored)void chooseProject(restored,workspace);})} onReading={returnToFeature}/>:reading.mode==='compare'?<div className="compare-workspace"><div className="compare-toolbar"><label><input type="checkbox" checked={reading.linked} onChange={e=>patch({linked:e.target.checked})}/>稳定身份联动</label><button onClick={()=>patch({mode:'normal'})}>返回工作区</button></div><Compare explanations={sceneExplanations} oldId={reading.compare_id} newId={result?.result_id||''} linked={reading.linked} selectOld={v=>patch({compare_id:v})}/></div>:<>{canvas}
-        {!detailDrawer&&!catalogReading&&detailVisible&&<><Separator side="right_width" value={reading.right_width} change={changeWidth} reset={()=>patch({right_width:360})}/>{detail}</>}
-        </>}
+  function inspectComponent(id: string) {
+    switchView('modules', {
+      stage: id,
+      selected: id,
+      mode: 'normal',
+      detail_tab: 'details',
+      expanded: [...new Set([...reading.expanded, 'composition/' + id])],
+      scroll: { ...reading.scroll, 'canvas-modules': { top: 0, left: 0 }, 'detail-modules-details': { top: 0, left: 0 } },
+    });
+  }
+
+  const development =
+    project && (featureReading || (reading.entrance === 'walk' && reading.view === 'functions')) && result && scenario && (
+      <FeatureDevelopment
+        project={project}
+        scenario={scenario}
+        result={result}
+        target={questionLocation.target}
+        evidence={developmentEvidence}
+        task={featureTask}
+        draft={featureDraft}
+        onDraft={draftPatch => setFeatureDrafts(items => ({ ...items, [scenarioId]: { ...featureDraft, ...draftPatch } }))}
+        reload={reload}
+        onViewResult={viewFeatureResult}
+        onOpenTask={openFeatureTask}
+      />
+    );
+
+  const catalog = (
+    <CatalogSidebar
+      data={data}
+      project={project}
+      projectId={projectId}
+      scenarioId={scenarioId}
+      reading={reading}
+      loadedKey={loadedKey}
+      catalogReading={catalogReading}
+      preview={preview}
+      featureTabs={featureTabs}
+      primaryViews={primaryViews}
+      extraViews={extraViews}
+      archiveVisible={archiveVisible}
+      setArchiveVisible={setArchiveVisible}
+      featureOpen={featureOpen}
+      toggleFeature={toggleFeature}
+      navigateView={navigateView}
+      setEntrance={setEntrance}
+      chooseScenario={chooseScenario}
+      onHide={() => {
+        patch({ catalog_hidden: true });
+        setShowCatalog(false);
+      }}
+      onOpenFeatureModal={() => openModal('feature')}
+      onRenameFeature={feature => {
+        setRenameFeature(feature.feature_id);
+        setFormName(feature.name);
+        setModal('featureRename');
+      }}
+      savePosition={savePosition}
+      action={action}
+    />
+  );
+
+  const detail = (
+    <DetailPane
+      data={data}
+      project={project}
+      projectId={projectId}
+      scenario={scenario}
+      scenarioId={scenarioId}
+      currentFeature={currentFeature}
+      reading={reading}
+      loadedKey={loadedKey}
+      activityFocus={activityFocus}
+      analysisScope={analysisScope}
+      analysisLabel={analysisLabel}
+      analysisMode={analysisMode}
+      featurePurpose={featurePurpose}
+      featureReading={featureReading}
+      businessReading={businessReading}
+      systemReading={systemReading}
+      architectureReading={architectureReading}
+      detailDrawer={detailDrawer}
+      needsFunctionGraphs={needsFunctionGraphs}
+      waitingMcp={waitingMcp}
+      pending={pending}
+      indexes={indexes}
+      result={result}
+      readingGuide={readingGuide}
+      readingEvidence={readingEvidence}
+      selectedNode={selectedNode}
+      selectedEdge={selectedEdge}
+      selectedCall={selectedCall}
+      functionStep={functionStep}
+      activeObject={activeObject}
+      sourceSnapshot={sourceSnapshot}
+      selectedFile={selectedFile}
+      selectedEvidence={selectedEvidence}
+      developmentEvidence={developmentEvidence}
+      development={development}
+      overviewReviewGaps={overviewReviewGaps}
+      sceneAnnotations={sceneAnnotations}
+      sceneExplanations={sceneExplanations}
+      sceneRuns={sceneRuns}
+      running={running}
+      activityRun={activityRun}
+      completedExplanation={completedExplanation}
+      events={events}
+      eventError={eventError}
+      questionLocation={questionLocation}
+      clue={clue}
+      setClue={setClue}
+      patch={patch}
+      setShowDetail={setShowDetail}
+      savePosition={savePosition}
+      select={select}
+      selectFunctionRelation={selectFunctionRelation}
+      evidence={evidence}
+      readingFile={readingFile}
+      readingStep={readingStep}
+      inspectComponent={inspectComponent}
+      askHere={askHere}
+      reload={reload}
+      showMcp={showMcp}
+      viewCompleted={viewCompleted}
+      requestAnalysis={requestAnalysis}
+      action={action}
+    />
+  );
+
+  const canvas = (
+    <CanvasPane
+      data={data}
+      project={project}
+      projectId={projectId}
+      scenario={scenario}
+      snapshot={snapshot}
+      sourceSnapshot={sourceSnapshot}
+      reading={reading}
+      setReading={setReading}
+      patch={patch}
+      loadedKey={loadedKey}
+      search={search}
+      setSearch={setSearch}
+      pending={pending}
+      indexes={indexes}
+      expandMode={expandMode}
+      setAnalysisMode={setAnalysisMode}
+      catalogReading={catalogReading}
+      catalogExplanation={catalogExplanation}
+      capabilityCount={capabilityCount}
+      featureReading={featureReading}
+      readingGuide={readingGuide}
+      featurePurpose={featurePurpose}
+      explanation={explanation}
+      result={result}
+      overviewRun={overviewRun}
+      discovery={discovery}
+      graphCatalog={graphCatalog}
+      featureSource={featureSource}
+      preview={preview}
+      functionPreview={functionPreview}
+      graphActions={graphActions}
+      selectedFile={selectedFile}
+      waitingMcp={waitingMcp}
+      running={running}
+      latestRun={latestRun}
+      savePosition={savePosition}
+      openCapability={openCapability}
+      requestAnalysis={requestAnalysis}
+      readingPath={readingPath}
+      selectReading={selectReading}
+      navigateFeature={navigateFeature}
+      readingStep={readingStep}
+      chooseFile={chooseFile}
+      select={select}
+      switchView={switchView}
+      navigateView={navigateView}
+      inspectComponent={inspectComponent}
+      evidence={evidence}
+      showMcp={showMcp}
+    />
+  );
+
+  const modalTitles: Record<string, string> = {
+    feature: '添加功能',
+    scenario: '添加场景',
+    revise: '编辑问题 · 新建修订',
+    featureRename: '重命名功能',
+    rename: '重命名场景',
+    open: '打开工程',
+    build: '构建条件',
+    settings: '连接 Agent',
+  };
+
+  return (
+    <div className="arc-workbench">
+      <WorkbenchNavigation
+        projects={data.projects}
+        projectId={projectId}
+        active={reading.view === 'materials' ? 'materials' : engineeringReading ? 'engineering' : reading.entrance === 'walk' ? 'walk' : 'overview'}
+        onProject={id => {
+          const p = data.projects.find(item => item.project_id === id);
+          if (p) void chooseProject(p);
+        }}
+        onOpen={() => openModal('open')}
+        onSettings={showMcp}
+        onNavigate={openWorkbench}
+      />
+      <div
+        className={`app reading-shell ${projectHome ? 'project-home-active' : ''} ${engineeringReading ? 'engineering-active' : ''} ${
+          featureReading ? 'feature-reader' : businessReading ? 'business-reader' : systemReading ? 'system-reader' : ''
+        }`}
+      >
+        {indexTasks.map(task => (
+          <div key={task.project_id} className="index-status" role="status">
+            <span title={task.root_path}>
+              正在索引 {task.project_name || task.project_id} · 已读取 {task.count} 个文本文件 · 快照尚未完成
+              {projectId && task.project_id !== projectId ? '（另一个工程）' : ''}
+            </span>
+            <button onClick={() => void api.invoke('index_cancel', { project_id: task.project_id })}>取消索引</button>
+          </div>
+        ))}
+        {error && (
+          <div role="alert" className="error-banner">
+            <span>{error}</span>
+            <button onClick={() => setError('')}>关闭</button>
+          </div>
+        )}
+        {notice && !indexTasks.length && (
+          <div role="status" className="notice">
+            <span>{notice}</span>
+            <button onClick={() => setNotice('')}>×</button>
+          </div>
+        )}
+
+        {!project ? (
+          <main className="welcome">
+            <span className="eyebrow">ARC / LOCAL WORKSPACE</span>
+            <h1>看清工程。读懂一条真实路径。</h1>
+            <p>选择工程后，在 ARC 内完成分析、看图和追问。结论可追溯，历史保存在本机。</p>
+            <div className="row">
+              <button className="primary" onClick={() => openModal('open')}>
+                打开并理解工程
+              </button>
+              <button onClick={() => void restoreEngineering()}>恢复工程记录</button>
+              <button
+                onClick={() =>
+                  void action(async () => {
+                    const p = await api.invoke<Project>('demo');
+                    await reload();
+                    void chooseProject(p);
+                    setScenarioId((await reload()).scenarios.find(s => s.project_id === p.project_id)?.scenario_id || '');
+                  })
+                }
+              >
+                查看明确标记的演示
+              </button>
+            </div>
+            <div className="welcome-grid">
+              <article>
+                <b>01 / 工程全貌</b>
+                <p>模块地图、文件用途、依赖边界。</p>
+              </article>
+              <article>
+                <b>02 / 功能走读</b>
+                <p>关键调用、输入输出、阶段时序。</p>
+              </article>
+              <article>
+                <b>03 / 来源核对</b>
+                <p>冻结快照、真实行号、版本比较。</p>
+              </article>
+            </div>
+          </main>
+        ) : (
+          <>
+            {!engineeringReading && !projectHome && (
+              <div className="context">
+                <div>
+                  <div className="breadcrumb" title={project.root_path}>
+                    {projectLabel(project)} /{' '}
+                    {reading.entrance === 'overview' ? '工程全貌' : data.features.find(f => f.feature_id === scenario?.feature_id)?.name || '功能走读'}
+                    <span className="breadcrumb-kind"> · {currentView}</span>
+                    {project.fictional && <span className="tag amber">演示数据</span>}
+                  </div>
+                  <h1 title={scenario?.title}>
+                    {catalogReading
+                      ? '功能总览'
+                      : reading.entrance === 'overview' && reading.view === 'functions'
+                        ? '工程全貌 · 函数走读'
+                        : featureReading || (reading.entrance === 'walk' && reading.view === 'functions')
+                          ? `${currentFeature?.name || scenario?.title || '当前功能'} · ${currentView}`
+                          : reading.view === 'files'
+                            ? '文件结构与用途'
+                            : compactTitle(scenario?.title || (reading.entrance === 'overview' ? '系统架构与工程组成' : '选择要理解的功能'), 40)}
+                  </h1>
+                  <div className="scope-hint">
+                    <span className="tag">{analysisScope}</span>
+                    <span>
+                      {reading.entrance === 'overview'
+                        ? '系统组成、技术栈与组件关系'
+                        : scenario?.kind === 'feature_overview'
+                          ? '这个功能的职责、关键调用与输入输出'
+                          : '围绕当前问题核对调用、阶段和源码依据'}
+                    </span>
+                  </div>
+                </div>
+                <div className="context-actions">
+                  <div className="analysis-controls">
+                    {reading.view === 'files' && !featureReading ? (
+                      <button className="primary" onClick={askHere}>
+                        解释当前文件 / 目录
+                      </button>
+                    ) : (
+                      analysisButton
+                    )}
+                    {analysisMenu}
+                  </div>
+                  <details className="context-edit-actions">
+                    <summary>更多操作</summary>
+                    <div className="popover-content">
+                      <button onClick={() => openModal('feature')}>＋ 功能</button>
+                      <button
+                        disabled={!userFeatures.length}
+                        title={!userFeatures.length ? '先添加一个功能，再建立具体场景' : '选择所属功能并添加一个具体问题'}
+                        onClick={() => openModal('scenario')}
+                      >
+                        ＋ 场景
+                      </button>
+                      {scenario && (
+                        <>
+                          <button
+                            onClick={() => {
+                              setFormName(scenario.title);
+                              setModal('rename');
+                            }}
+                          >
+                            改标题
+                          </button>
+                          <button
+                            onClick={() => {
+                              setFormQuestion(scenario.question);
+                              setModal('revise');
+                            }}
+                          >
+                            编辑问题
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </details>
+                </div>
+              </div>
+            )}
+
+            <div className="workspace-bar">
+              <div className="row">
+                <button
+                  className="icon"
+                  aria-label={width >= 900 && !reading.catalog_hidden ? '隐藏目录' : '显示目录'}
+                  aria-expanded={width >= 900 ? !reading.catalog_hidden : showCatalog}
+                  aria-controls="workspace-navigation"
+                  title={width >= 900 && !reading.catalog_hidden ? '隐藏导航' : '显示导航'}
+                  onClick={() => {
+                    if (width >= 900) patch({ catalog_hidden: !reading.catalog_hidden });
+                    else {
+                      patch({ catalog_hidden: false });
+                      setShowCatalog(!showCatalog);
+                    }
+                  }}
+                >
+                  ☰
+                </button>
+                {reading.entrance === 'walk' && !catalogReading && (
+                  <button className="back-to-catalog" onClick={() => setEntrance('walk')}>
+                    ← 返回功能总览
+                  </button>
+                )}
+                {featureTabs ? (
+                  <nav className="feature-view-tabs" aria-label="功能阅读视图">
+                    {featureTabs.map(([view, label]) => (
+                      <button
+                        key={view}
+                        type="button"
+                        className={view === 'functions' ? 'feature-functions-tab' : undefined}
+                        aria-current={reading.view === view ? 'page' : undefined}
+                        onClick={() => {
+                          if (reading.view !== view) {
+                            if (preview) patch({ view });
+                            else navigateFeature(view);
+                          }
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </nav>
+                ) : (
+                  <span className="current-view">{catalogReading ? '功能总览' : currentView}</span>
+                )}
+                {!engineeringReading && activityRun?.status === 'completed' && (
+                  <button className="saved-analysis" onClick={showRun}>
+                    已保存说明 · 查看真实过程
+                  </button>
+                )}
+              </div>
+              {!engineeringReading && (
+                <div className="row">
+                  <details className="source-options">
+                    <summary>资料与来源</summary>
+                    <div className="popover-content">
+                      <span className="source-badge" title={result?.binding.source_snapshot_id || project.snapshot_id}>
+                        来源 {short(result?.binding.source_snapshot_id || project.snapshot_id)}
+                      </span>
+                      <button onClick={() => void action(() => api.invoke('refresh', { project_id: projectId }), '已冻结新快照；历史说明保留原来源')}>
+                        刷新来源
+                      </button>
+                    </div>
+                  </details>
+                  {!catalogReading && (
+                    <>
+                      <button className="primary workspace-question" onClick={askHere}>
+                        提问
+                      </button>
+                      <button
+                        className="workspace-detail-toggle"
+                        onClick={() => {
+                          setShowDetail(true);
+                          patch({ detail_tab: 'details' });
+                        }}
+                      >
+                        详情
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {catalogReading && (otherProjectTasks.length > 0 || pendingScene) && (
+              <section className="project-task-strip" aria-label="本工程进行中的分析">
+                {otherProjectTasks.map(r => (
+                  <button key={r.binding.run_id} onClick={() => openTask(r.binding.scenario_id)}>
+                    {r.title} · {statuses[r.status]} · 查看进度 →
+                  </button>
+                ))}
+                {pendingScene && !projectTasks.some(r => r.binding.scenario_id === pendingScene.scenario_id) && (
+                  <button onClick={() => openTask(pendingScene.scenario_id)}>{pendingScene.title} · 等待 Agent 领取 →</button>
+                )}
+              </section>
+            )}
+
+            {!engineeringReading && !catalogReading && waitingMcp && result && (
+              <div className="result-status">
+                新分析等待 Agent 领取；当前仍显示已保存的说明。
+                <button onClick={showRun}>查看待领取任务</button>
+              </div>
+            )}
+
+            {!engineeringReading && !catalogReading && overviewReviewGaps.length > 0 && (
+              <div className="result-status" aria-label="关系自动补查">
+                <span>
+                  {running?.overview_from_result_id === result?.result_id
+                    ? '正在补查当前说明的关系，原图保留；完成后可查看新版本。'
+                    : `${overviewReviewGaps.length} 条关系尚未确认。ARC 可沿用这份说明的冻结源码继续补查，并保存为新版本。`}
+                </span>
+                <button
+                  disabled={pending || projectTasks.length > 0 || !!indexes[projectId] || !!project?.fictional}
+                  onClick={() => void researchOverview()}
+                >
+                  自动补查关系
+                </button>
+              </div>
+            )}
+
+            {!engineeringReading &&
+              !catalogReading &&
+              !waitingMcp &&
+              !running &&
+              completedExplanation &&
+              (!architectureReading || completedExplanation.result_id !== result?.result_id || explanation?.source_status !== 'current') && (
+                <div className="result-status">
+                  <span>
+                    {completedExplanation.result_id === result?.result_id ? '正在查看已保存的分析结果' : '本次分析已保存；当前仍在阅读旧版'}
+                    {explanation?.source_status !== 'current' ? ' · 来源待核对' : ''}
+                  </span>
+                  <button onClick={viewCompleted}>查看本次分析结果</button>
+                </div>
+              )}
+
+            {!engineeringReading &&
+              !catalogReading &&
+              activityRun &&
+              activityRun.status !== 'completed' &&
+              !(reading.detail_tab === 'agent' && reading.mode !== 'compare' && (!detailDrawer || showDetail)) && (
+                <RunActivity
+                  key={activityRun.binding.run_id}
+                  collapsible
+                  detailed
+                  run={activityRun}
+                  events={events}
+                  error={eventError}
+                  open={showRun}
+                  stop={() => void action(() => api.invoke('run_cancel', { run_id: activityRun.binding.run_id }))}
+                />
+              )}
+
+            <div
+              className={`workspace ${projectHome ? 'home-mode catalog-hidden' : engineeringReading ? 'engineering-mode' : catalogReading ? 'catalog-workspace' : ''} ${
+                reading.mode === 'source' ? 'source-mode' : ''
+              } ${reading.catalog_hidden ? 'catalog-hidden' : ''}`}
+              style={
+                {
+                  '--left': `${reading.left_width}px`,
+                  '--right': `${Math.min(reading.right_width, reading.mode === 'source' ? Math.max(280, width - 800) : 600)}px`,
+                } as React.CSSProperties
+              }
+            >
+              {width >= 900 && !projectHome && !reading.catalog_hidden && (
+                <>
+                  {catalog}
+                  <Separator side="left_width" value={reading.left_width} change={changeWidth} reset={() => patch({ left_width: 220 })} />
+                </>
+              )}
+              {projectHome ? (
+                <EngineeringOverview
+                  key={project.project_id}
+                  businessPath={suggestedPath}
+                  onBusinessStep={openSuggestedStep}
+                  resumeLabel={
+                    canResume && bookmark ? bookmark.label + (bookmark.position.source_snapshot_id !== project.snapshot_id ? ' · 历史版本' : '') : ''
+                  }
+                  onResume={resumeHomeReading}
+                  project={project}
+                  result={result}
+                  hasAnalysis={!!result}
+                  analysisLabel={analysisLabel}
+                  analysisBusy={pending || !!indexes[projectId]}
+                  analysisMenu={analysisMenu}
+                  onAnalyze={beginAnalysis}
+                  onArchitecture={openArchitecture}
+                  onWalk={() => setEntrance('walk')}
+                  onFiles={() => navigateView('files')}
+                  onMaterials={() => switchView('materials', { mode: 'normal', catalog_hidden: true })}
+                  onTask={id => {
+                    setRequestedTask(id);
+                    switchView('engineering', { mode: 'normal', catalog_hidden: true });
+                  }}
+                  develop={() => {
+                    setFocusDevelopment(true);
+                    switchView('engineering', { mode: 'normal', catalog_hidden: true });
+                  }}
+                />
+              ) : engineeringReading ? (
+                <EngineeringWorkspace
+                  key={project.project_id}
+                  project={project}
+                  page={reading.view === 'materials' ? 'materials' : 'records'}
+                  requestedTask={requestedTask}
+                  onTaskOpened={() => setRequestedTask('')}
+                  onSettings={showMcp}
+                  focusGoal={focusDevelopment}
+                  onGoalFocused={() => setFocusDevelopment(false)}
+                  back={() => switchView('system')}
+                  onArchitecture={id => {
+                    const savedExp = data.explanations.find(e => e.result_id === id);
+                    if (savedExp) {
+                      chooseScenario(savedExp.scenario_id, {
+                        entrance: 'overview',
+                        view: 'system',
+                        result_id: id,
+                        source_snapshot_id: savedExp.result.binding.source_snapshot_id,
+                        mode: 'normal',
+                      });
+                    } else {
+                      chooseScenario(project.overview_scenario_id || '', {
+                        entrance: 'overview',
+                        view: 'system',
+                        result_id: '',
+                        source_snapshot_id: project.snapshot_id,
+                        mode: 'normal',
+                        detail_tab: 'details',
+                        catalog_hidden: false,
+                      });
+                    }
+                  }}
+                  onRestored={id =>
+                    void reload().then(workspace => {
+                      const restored = workspace.projects.find(p => p.project_id === id);
+                      if (restored) void chooseProject(restored, workspace);
+                    })
+                  }
+                  onReading={returnToFeature}
+                />
+              ) : reading.mode === 'compare' ? (
+                <div className="compare-workspace">
+                  <div className="compare-toolbar">
+                    <label>
+                      <input type="checkbox" checked={reading.linked} onChange={e => patch({ linked: e.target.checked })} />
+                      稳定身份联动
+                    </label>
+                    <button onClick={() => patch({ mode: 'normal' })}>返回工作区</button>
+                  </div>
+                  <Compare
+                    explanations={sceneExplanations}
+                    oldId={reading.compare_id}
+                    newId={result?.result_id || ''}
+                    linked={reading.linked}
+                    selectOld={v => patch({ compare_id: v })}
+                  />
+                </div>
+              ) : (
+                <>
+                  {canvas}
+                  {!detailDrawer && !catalogReading && detailVisible && (
+                    <>
+                      <Separator side="right_width" value={reading.right_width} change={changeWidth} reset={() => patch({ right_width: 360 })} />
+                      {detail}
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+
+            {width < 900 && showCatalog && (
+              <div className="drawer catalog-drawer">
+                <button className="drawer-back" onClick={() => setShowCatalog(false)}>
+                  ← 返回原视图
+                </button>
+                {catalog}
+              </div>
+            )}
+            {detailDrawer && showDetail && !catalogReading && !engineeringReading && (
+              <div className="drawer">
+                <button
+                  className="drawer-back"
+                  onClick={() => {
+                    setShowDetail(false);
+                    previousFocus.current?.focus();
+                  }}
+                >
+                  ← 返回图与原位置
+                </button>
+                {detail}
+              </div>
+            )}
+
+            <footer>
+              <span>● 本机保存 · {saved}</span>
+              <span>
+                {catalogReading
+                  ? `${capabilityCount} 项已发现功能`
+                  : preview
+                    ? '来自已保存的工程分析'
+                    : scenario
+                      ? `${sceneExplanations.length} 个说明版本 · ${sceneAnnotations.length} 条线索`
+                      : '用途与关系待真实分析'}
+              </span>
+              <button onClick={() => patch({ ...defaults, entrance: reading.entrance, view: reading.view, scenario_id: scenarioId })}>恢复默认布局</button>
+            </footer>
+          </>
+        )}
+
+        <dialog
+          ref={modalRef}
+          onCancel={e => {
+            if (pending) e.preventDefault();
+            else setModal('');
+          }}
+          aria-label={modal === 'settings' ? '连接 Agent' : '编辑'}
+        >
+          <div className="modal-heading">
+            <h2>{modalTitles[modal]}</h2>
+            <button className="icon" aria-label="关闭对话框" disabled={pending} onClick={() => setModal('')}>
+              ×
+            </button>
+          </div>
+          {modal === 'settings' ? (
+            <SettingsModal
+              data={data}
+              project={project}
+              projectId={projectId}
+              scenario={scenario}
+              scenarioId={scenarioId}
+              mcp={mcp}
+              setMcp={setMcp}
+              settings={settings}
+              error={error}
+              connectionError={connectionError}
+              notice={notice}
+              setNotice={setNotice}
+              pending={pending}
+              refreshMcp={refreshMcp}
+              action={action}
+              reload={reload}
+              chooseProject={chooseProject}
+              restoreEngineering={restoreEngineering}
+              onOpenBuildConfig={config => {
+                setFormQuestion(config);
+                setModal('build');
+              }}
+              onOpenRenameScenario={title => {
+                setFormName(title);
+                setModal('rename');
+              }}
+            />
+          ) : (
+            <EntityFormModal
+              modal={modal}
+              error={error}
+              pending={pending}
+              indexTasks={indexTasks}
+              userFeatures={userFeatures}
+              formFeature={formFeature}
+              setFormFeature={setFormFeature}
+              formName={formName}
+              setFormName={setFormName}
+              formQuestion={formQuestion}
+              setFormQuestion={setFormQuestion}
+              onCancel={() => setModal('')}
+              onSubmit={submitForm}
+              action={action}
+            />
+          )}
+        </dialog>
       </div>
-      {width<900&&showCatalog&&<div className="drawer catalog-drawer"><button className="drawer-back" onClick={()=>setShowCatalog(false)}>← 返回原视图</button>{catalog}</div>}
-      {detailDrawer&&showDetail&&!catalogReading&&!engineeringReading&&<div className="drawer"><button className="drawer-back" onClick={()=>{setShowDetail(false);previousFocus.current?.focus();}}>← 返回图与原位置</button>{detail}</div>}
-      <footer><span>● 本机保存 · {saved}</span><span>{catalogReading?`${capabilityCount} 项已发现功能`:preview?'来自已保存的工程分析':scenario?`${sceneExplanations.length} 个说明版本 · ${sceneAnnotations.length} 条线索`:'用途与关系待真实分析'}</span><button onClick={()=>patch({...defaults,entrance:reading.entrance,view:reading.view,scenario_id:scenarioId})}>恢复默认布局</button></footer>
-    </>}
-    <dialog ref={modalRef} onCancel={e=>{if(pending)e.preventDefault();else setModal('');}} aria-label={modal==='settings'?'连接 Agent':'编辑'}>
-      <div className="modal-heading"><h2>{({feature:'添加功能',scenario:'添加场景',revise:'编辑问题 · 新建修订',featureRename:'重命名功能',rename:'重命名场景',open:'打开工程',build:'构建条件',settings:'连接 Agent'} as any)[modal]}</h2><button className="icon" aria-label="关闭对话框" disabled={pending} onClick={()=>setModal('')}>×</button></div>
-      {modal==='settings'?<div className="settings-body agent-settings">
-        {error&&<p role="alert" className="warning">{error}</p>}
-        {connectionError&&<p role="alert" className="warning">{connectionError}</p>}
-        {notice&&<p role="status">{notice}</p>}
-        {project&&!project.fictional
-          ?<ExternalExecutor key={projectId} projectId={projectId} projectPath={project.root_path}
-              programHint={data.providers.find(p=>p.provider_id==='codex')?.path||''} onBound={refreshMcp}/>
-          :<p className="scope-box">打开一个实际工程，即可查找并连接该工程的 Codex 会话。</p>}
-        <details className="provider-card agent-settings-advanced">
-          <summary>外部 Agent 自行领取 · MCP</summary>
-          <p>让已接入 MCP 的对话来 ARC 领取你准备的分析任务。</p>
-          {scenario&&<div className="scope-box"><strong>{scenario.title}</strong><p>准备任务后，在已接入 ARC 的对话中说「领取 ARC 当前分析任务」。</p></div>}
-          <p>当前可领取的工程：{mcp?.enabled?(data.projects.find(p=>p.project_id===mcp.project_id)?.name||mcp.project_id):mcp?'未授权':'正在读取'}</p>
-          {mcp?.registered&&<p className="muted">Codex 已登记 MCP。请在新会话中加载 ARC 工具。</p>}
-          <div className="row">
-            <button disabled={!project||project.fictional||pending} onClick={()=>void action(async()=>setMcp(await api.invoke('mcp_enable',{project_id:projectId,register_codex:true})),'已为 Codex 配置 MCP。请在新会话中加载 ARC 工具。')}>授权当前工程并登记 MCP</button>
-            <button disabled={!mcp?.enabled||pending} onClick={()=>void action(async()=>setMcp(await api.invoke('mcp_disable')))}>撤销上述工程授权</button>
-          </div>
-        </details>
-        <details className="provider-card agent-settings-advanced">
-          <summary>工程管理与本地数据</summary>
-          {project&&<EngineeringManagement project={project} onRestored={id=>void reload().then(workspace=>{
-            const restored=workspace.projects.find(p=>p.project_id===id);if(restored)void chooseProject(restored,workspace);
-          })}/>}
-          <p className="path">{settings?.data_directory}</p>
-          <div className="row">
-            <button onClick={()=>void action(async()=>{const value=await api.invoke('backup');if(value)setNotice('数据库备份已保存');})}>备份 SQLite</button>
-            <button disabled={!project} onClick={()=>void action(async()=>{const value=await api.invoke('engineering_export',{project_id:projectId});if(value)setNotice('工程上下文、开发记录与阅读资料已导出');})}>导出当前工程资料</button>
-            <button onClick={()=>void restoreEngineering()}>恢复工程记录</button>
-            <button disabled={!scenario} onClick={()=>void action(async()=>{const value=await api.invoke('import_result',{scenario_id:scenarioId});if(value)setNotice('手动导入已校验');})}>导入当前场景结果</button>
-          </div>
-          {project&&<div className="row"><button onClick={()=>{setFormQuestion(project.build_config);setModal('build');}}>配置构建目标 / 宏</button>
-            {scenario&&<><button onClick={()=>{setFormName(scenario.title);setModal('rename');}}>重命名场景</button>
-              <button onClick={()=>void action(()=>api.invoke('organize',{kind:'scenario',id:scenarioId,patch:{archived:!scenario.archived}}),'场景归档状态已保存')}>{scenario.archived?'恢复场景':'归档场景'}</button></>}
-          </div>}
-          <p className="muted">Arc {settings?.version} · Windows 桌面</p>
-        </details>
-      </div>:
-      <form onSubmit={submitForm} onCompositionStart={()=>{composing.current=true;}} onCompositionEnd={()=>{composing.current=false;}} onKeyDown={e=>{if(e.key==='Enter'&&(composing.current||e.nativeEvent.isComposing||e.nativeEvent.keyCode===229))e.preventDefault();}}>
-        {modal==='scenario'&&<label>所属功能<select required value={formFeature} onChange={e=>setFormFeature(e.target.value)}>{userFeatures.map(f=><option key={f.feature_id} value={f.feature_id}>{f.name}</option>)}</select></label>}
-        {modal==='open'&&<>{error&&<p className="warning" role="alert">{error}</p>}{pending&&<div className="scope-box" role="status"><strong>{indexTasks.length?'正在准备只读源码':'正在打开工程并准备任务…'}</strong>{indexTasks.map(task=><div key={task.project_id}><p>{task.project_name} · 已读取 {task.count} 个文本文件</p><button type="button" onClick={()=>void action(()=>api.invoke('index_cancel',{project_id:task.project_id}))}>取消本次索引</button></div>)}</div>}</>}{modal==='open'&&<div className="open-project-intro"><p>选一个源码文件夹，先看系统架构和功能目录，再点选功能或文件继续提问。</p><ol><li>冻结只读源码</li><li>在 ARC 内分析全貌</li><li>原位阅读与追问</li></ol><p className="muted">首次分析需要连接 Codex 的同目录会话。已有分析记录的工程会恢复阅读。</p></div>}{['feature','featureRename','open','rename'].includes(modal)&&<label>{modal==='open'?'本地工程绝对路径':modal==='feature'?'功能名称':'显示标题'}<input autoFocus required maxLength={modal==='open'?2000:300} value={formName} onChange={e=>setFormName(e.target.value)}/></label>}
-        {modal==='open'&&<button type="button" disabled={pending} onClick={()=>void action(async()=>{const path=await api.invoke<string|null>('pick_project_path');if(path)setFormName(path);})}>选择文件夹…</button>}{['feature','scenario','revise','build'].includes(modal)&&<label>{modal==='build'?'构建目标、宏与包含路径（作为源码来源条件保存）':modal==='feature'?'场景问题（可选）':'要理解的问题'}<textarea aria-label={modal==='build'?'构建目标、宏与包含路径（作为源码来源条件保存）':modal==='feature'?'场景问题（可选）':'要理解的问题'} required={modal==='scenario'||modal==='revise'} maxLength={20000} value={formQuestion} onChange={e=>setFormQuestion(e.target.value)} rows={5}/></label>}
-        {modal!=='open'&&<p className="muted">{modal==='revise'?'修改问题会建立新修订，旧运行保持原问题和来源。':'添加功能与场景只保存理解入口，不修改工程源码。'}</p>}<div className="row end"><button type="button" disabled={pending} onClick={()=>setModal('')}>取消</button>{modal==='open'&&<button type="button" disabled={pending} onClick={e=>void submitForm(e,false)}>仅打开</button>}<button className="primary" type="submit" value="analyze" disabled={pending}>{pending?'处理中…':modal==='open'?'打开并分析':'保存'}</button></div>
-      </form>}
-    </dialog>
-  </div></div>;
+    </div>
+  );
 }
-function ScrollPanel({name,children,positions,restoreKey,onPosition}:{name:string;children:React.ReactNode;positions:ReadingState['scroll'];restoreKey:string;onPosition:(name:string,top:number,left:number)=>void}){
-  const ref=useRef<HTMLDivElement>(null),restoring=useRef(false),timer=useRef<ReturnType<typeof setTimeout>|null>(null);
-  useEffect(()=>{const p=positions[name];restoring.current=true;if(ref.current){ref.current.scrollTop=p?.top||0;ref.current.scrollLeft=p?.left||0;}requestAnimationFrame(()=>{restoring.current=false;});},[restoreKey,name]);
-  useEffect(()=>()=>{if(timer.current)clearTimeout(timer.current);},[]);
-  return <div className="panel-scroll" ref={ref} onScroll={e=>{if(restoring.current)return;const {scrollTop,scrollLeft}=e.currentTarget;onPosition(name,scrollTop,scrollLeft);}}>{children}</div>;
-}
-function Separator({side,value,change,reset}:{side:'left_width'|'right_width';value:number;change:(side:'left_width'|'right_width',delta:number)=>void;reset:()=>void}){
-  return <div className="splitter" role="separator" aria-label={side==='left_width'?'调整目录宽度':'调整详情宽度'} aria-orientation="vertical" aria-valuenow={value} tabIndex={0} onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();change(side,(e.key==='ArrowRight'?1:-1)*(side==='left_width'?16:-16));}if(e.key==='Home')reset();}} onPointerDown={e=>{e.currentTarget.setPointerCapture(e.pointerId);e.currentTarget.dataset.x=String(e.clientX);}} onPointerMove={e=>{if(!e.currentTarget.hasPointerCapture(e.pointerId))return;const previous=Number(e.currentTarget.dataset.x);change(side,(e.clientX-previous)*(side==='left_width'?1:-1));e.currentTarget.dataset.x=String(e.clientX);}}/>;
-}
-function EvidenceButton({evidence,open}:{evidence:SourceEvidence;open:(e:SourceEvidence)=>void}){return <button className="evidence-button" onClick={()=>open(evidence)}><strong>{evidence.path}:{evidence.line_start}–{evidence.line_end}</strong><small>{evidence.role} · {evidence.note}</small><span>查看依据位置 →</span></button>;}
-function FileTree({files,expanded,toggle,selected,select,folder}:{files:string[];expanded:string[];toggle:(p:string)=>void;selected:string;select:(p:string)=>void;folder:(p:string)=>void}){
-  function branch(prefix:string,depth:number):React.ReactNode{
-    const entries=new Map<string,boolean>();for(const f of files){if(prefix&&!f.startsWith(prefix+'/'))continue;const rest=prefix?f.slice(prefix.length+1):f;const first=rest.split('/')[0];entries.set(first,entries.get(first)||rest.includes('/'));}
-    return [...entries].sort(([a,ad],[b,bd])=>Number(bd)-Number(ad)||a.localeCompare(b)).slice(0,160).map(([name,isFolder])=>{const p=prefix?prefix+'/'+name:name;return <div key={p}><div className={`tree-row ${p===selected?'selected':''}`} style={{paddingLeft:Math.min(depth,6)*12}}>{isFolder?<button className="tree-toggle" aria-label={`${expanded.includes(p)?'折叠':'展开'} ${p}`} aria-expanded={expanded.includes(p)} onClick={()=>toggle(p)}>{expanded.includes(p)?'⌄':'›'}</button>:<span className="tree-leaf">·</span>}<button className="tree-name" title={p} onClick={()=>isFolder?folder(p):select(p)}>{name}</button></div>{isFolder&&expanded.includes(p)&&branch(p,depth+1)}</div>;});
-  }
-  return <div className="file-tree">{branch('',0)}</div>;
-}
-function Compare({explanations,oldId,newId,linked,selectOld}:{explanations:Explanation[];oldId:string;newId:string;linked:boolean;selectOld:(v:string)=>void}){
-  const old=explanations.find(e=>e.result_id===oldId)||explanations.at(-2),fresh=explanations.find(e=>e.result_id===newId)||explanations.at(-1);
-  const [selected,setSelected]=useState('');
-  return <div className="compare-columns">{[old,fresh].map((e,index)=><section className="compare-panel" key={index}><div className="pane-heading"><h2>{index===0?'旧版':'新版'}</h2>{index===0&&<select aria-label="选择旧版" value={e?.result_id||''} onChange={ev=>selectOld(ev.target.value)}>{explanations.map(v=><option key={v.result_id} value={v.result_id}>{short(v.result_id)}</option>)}</select>}</div><div className="panel-scroll"><p className="path">来源 {e?.result.binding.source_snapshot_id}<br/>问题 {e?.result.binding.question_revision_id}</p><p>{e?.result.summary.text}</p><p className="warning">{old?.result.binding.source_snapshot_id===fresh?.result.binding.source_snapshot_id?'同一来源的解释差异':'不同源码来源；解释差异不自动等于源码差异'}</p>{e?.result.nodes.map(n=><button className={`compare-node ${linked&&n.node_id===selected?'selected':''}`} key={n.node_id} onClick={()=>setSelected(n.node_id)}><strong>{n.label}</strong><span>{n.description}</span><small>{(index===0?fresh:old)?.result.nodes.some(v=>v.node_id===n.node_id)?'相同稳定 ID 可联动':'无对应稳定 ID · 新增 / 移除 / 无法匹配'}</small></button>)}</div></section>)}</div>;
-}
-createRoot(document.getElementById('root')!).render(<App/>);
 
+createRoot(document.getElementById('root')!).render(<App />);

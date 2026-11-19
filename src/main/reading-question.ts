@@ -90,15 +90,16 @@ export async function preloadReadingSource(snapshot:Snapshot,storage:string,cont
     }
   };
 
+  const byFile=new Map<string,[number,number][]>();
   if(context.target.kind==='file'){
-    await appendWindow(context.target.id,[[1,MAX_LINES_PER_EXCERPT]]);
+    byFile.set(context.target.id,[[1,MAX_LINES_PER_EXCERPT]]);
   }else if(context.target.kind==='directory'){
-    try{directory_listing=listFrozenFiles(snapshot,{query:context.target.id+'/',limit:50});}catch{/* ignore */}
+    const prefix=context.target.id+'/';
+    const files=snapshot.files.filter(f=>f.path.startsWith(prefix)).slice(0,50);
+    directory_listing={source_snapshot_id:snapshot.source_snapshot_id,total:snapshot.files.filter(f=>f.path.startsWith(prefix)).length,offset:0,files,next_offset:null,excluded_count:snapshot.excluded.length,build_config:snapshot.build_config};
   }
 
-  const byFile=new Map<string,[number,number][]>();
   for(const item of context.evidence){
-    if(context.target.kind==='file'&&item.path===context.target.id)continue;
     if(!knownFiles.has(item.path))continue;
     const list=byFile.get(item.path)??[];
     list.push([Math.max(1,item.line_start-CONTEXT_PADDING_LINES),item.line_end+CONTEXT_PADDING_LINES]);

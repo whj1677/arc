@@ -2,7 +2,6 @@ import React,{useCallback,useEffect,useRef,useState} from 'react';
 import type {ContextEntry,EngineeringContext,EngineeringSectionCategory,EngineeringTask} from '../engineering';
 import {SourceExcerpt} from './SourceExcerpt';
 import type {Dispatch,ExecutorBinding} from '../main/external-dispatch';
-import type {ProviderProfile} from '../shared';
 
 export type EngineeringSection=EngineeringSectionCategory|'tasks';
 const sections:[EngineeringSection,string,string][]=[['plan','影响与方案','现状、取舍、范围与实施步骤'],['architecture','架构','模块、边界与协作'],['design','设计','接口、数据与实现设计'],['tasks','任务与变更','目标、实际修改与执行记录'],['verification_plan','验证与证据','验收条件、实际结果与遗留']];

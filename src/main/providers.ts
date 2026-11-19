@@ -98,15 +98,15 @@ export async function probeProviders(config:Record<string,string>={},_only?:'cod
   const result:ProviderProfile[]=[];
   try {
     const file=await locate('codex',config.codex_path);
-    const [versionOut,execHelpOut,mcpHelpOut,authOut]=await Promise.all([
-      exec(file,['--version'],{windowsHide:true,timeout:8000}),
+    // Verify CLI identity and semver floor before invoking any subcommands.
+    const version=(await exec(file,['--version'],{windowsHide:true,timeout:8000})).stdout.trim();
+    if(!version.startsWith('codex-cli '))throw new Error('程序输出不是 codex-cli，身份未验证');
+    if(!isSupportedCodexVersion(version))throw new Error(`该 Codex 版本低于最低要求（≥ 0.163.0）：${version}。`);
+    const [execHelpOut,mcpHelpOut,authOut]=await Promise.all([
       exec(file,['exec','--help'],{windowsHide:true,timeout:8000}),
       exec(file,['mcp','list','--help'],{windowsHide:true,timeout:8000}),
       exec(file,['login','status'],{windowsHide:true,timeout:8000}).catch(()=>null),
     ]);
-    const version=versionOut.stdout.trim();
-    if(!version.startsWith('codex-cli '))throw new Error('程序输出不是 codex-cli，身份未验证');
-    if(!isSupportedCodexVersion(version))throw new Error(`该 Codex 版本低于最低要求（≥ 0.163.0）：${version}。`);
     const help=execHelpOut.stdout;
     if(!help.includes('--output-schema')||!help.includes('--json')||!help.includes('read-only'))throw new Error('版本缺少所需 exec 能力');
     if(!mcpHelpOut.stdout.includes('--json'))throw new Error('版本缺少 mcp list --json 能力，无法校验只读工具范围');
@@ -261,8 +261,8 @@ export async function runCodex(options:{
   const runRoot=run?.binding?.run_id?path.join(storage,'runs',run.binding.run_id):undefined;
   const runDir=runRoot?path.join(runRoot,...(options.phase?[overviewPhaseDirectory[options.phase]]:[])):undefined;
   const workspace=snapshot?.source_snapshot_id?path.join(storage,'snapshots',snapshot.source_snapshot_id):undefined;
-  const preflightKey=run?.binding?.run_id?`${run.binding.run_id}|${profile.path}|${profile.version}`:'';
-  const cached=preflightKey?runPreflightCache.get(preflightKey):undefined;
+  const preflightKey=run?.binding?.run_id&&workspace?JSON.stringify([run.binding.run_id,workspace,profile.path,profile.version]):'';
+  const cached=options.phase&&preflightKey?runPreflightCache.get(preflightKey):undefined;
   const cacheFresh=!!cached&&Date.now()-cached.at<5*60*1000;
 
   let runtimeVersion:string;
@@ -344,7 +344,7 @@ export async function runCodex(options:{
       // already recorded in that case must win over this late stop response.
       if(settled)return;
       settled=true;
-      protocol_error=`${run.overview_format?'首次分析':'阅读追问'}已超时，但未能确认进程停止：${redact((error as Error).message)}`;
+      protocol_error=`${run.overview_format?'首次分析':run.reading_question_id?'阅读追问':'功能与调用链分析'}已超时，但未能确认进程停止：${redact((error as Error).message)}`;
       options.event({type:'local.stage',stage:'stop_failed',message:protocol_error});
       const failure=Object.assign(new Error(protocol_error),{remoteUnknown:true});
       void fs.writeFile(path.join(runDir!,'diagnostic.json'),JSON.stringify({code:null,stderr,protocol_error,stop_state:'unknown',ended_at:now()},null,2)).then(()=>reject(failure),diagnosticError=>{
