@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {PassThrough} from 'node:stream';
 import {EventEmitter} from 'node:events';
-import {AcpConnection,redact,CodexTurnErrors,codexChildEnvironment,runCodex,readingWatchdog} from '../src/main/providers';
+import {AcpConnection,redact,CodexTurnErrors,codexChildEnvironment,runCodex,readingWatchdog,isSupportedCodexVersion,codexFeatureFlags,reasoningEffortForRun} from '../src/main/providers';
 
 test('direct Codex execution cannot inherit a desktop tool pipe or the calling session identity',()=>{
   const parent={PATH:'path',CODEX_HOME:'owned-codex-home',HTTPS_PROXY:'existing-proxy',CODEX_APP_TOOLS_PIPE_PATH:'host-pipe',CODEX_APP_RUNTIME_CLI_PATH:'host-cli',CODEX_THREAD_ID:'host-thread',CODEX_SESSION_ID:'host-session',CODEX_PERMISSION_PROFILE:'host-permissions',ELECTRON_RUN_AS_NODE:'1'};
@@ -111,4 +111,22 @@ test('Normalization removes only redundant references, never duplicate definitio
 test('Provider diagnostic redaction strips known credential shapes',()=>{
   const output=redact('Bearer fixture-token-123 {"access_token":"fixture-secret","client_secret":"fixture-client"} sk-fixture123456789012');
   for(const secret of ['fixture-token','fixture-secret','fixture-client','sk-fixture'])assert.ok(!output.includes(secret));
+});
+test('Codex semver capability check supports modern versions and picks version-appropriate feature flags',()=>{
+  assert.equal(isSupportedCodexVersion('codex-cli 0.163.0-alpha.10.2'),true);
+  assert.equal(isSupportedCodexVersion('codex-cli 0.167.0-alpha.4.1'),true);
+  assert.equal(isSupportedCodexVersion('codex-cli 0.169.0-alpha.11.1'),true);
+  assert.equal(isSupportedCodexVersion('codex-cli 1.0.0'),true);
+  assert.equal(isSupportedCodexVersion('codex-cli 0.162.9'),false);
+  assert.equal(isSupportedCodexVersion('not-codex 1.0.0'),false);
+  const legacy=codexFeatureFlags('codex-cli 0.163.0-alpha.10.2');
+  assert.ok(legacy.includes('features.web_search=false'));
+  assert.ok(!legacy.includes('features.code_mode_host=true'));
+  const modern=codexFeatureFlags('codex-cli 0.169.0-alpha.11.1');
+  assert.ok(!modern.includes('features.web_search=false'));
+  assert.ok(modern.includes('features.code_mode_host=true'));
+  assert.ok(modern.includes('features.skip_host_skill_discovery=true'));
+  assert.equal(reasoningEffortForRun({reading_question_id:'q1',question:'why?',reading_context:{target:{kind:'node',id:'n1'}} as any}),'low');
+  assert.equal(reasoningEffortForRun({reading_question_id:'q2',question:'overview?',reading_context:{target:{kind:'directory',id:'src'}} as any}),'medium');
+  assert.equal(reasoningEffortForRun({question:'x'},'overview_recheck'),'low');
 });

@@ -77,6 +77,8 @@ export function promptContext(snapshot:Snapshot,annotations:Annotation[],previou
   for(const file of snapshot.files){const root=file.path.includes('/')?file.path.split('/')[0]+'/':'根目录文件';roots.set(root,(roots.get(root)||0)+1);}
   const rootList=[...roots].sort((a,b)=>b[1]-a[1]).slice(0,20).map(([name,count])=>({name:clipped(name,180),count}));
   const hints=snapshot.files.filter(f=>!f.path.includes('/')).slice(0,20).map(f=>clipped(f.path,180));
+  const entryPattern=/(?:^|\/)(?:package\.json|cargo\.toml|pyproject\.toml|go\.mod|cmakelists\.txt|makefile|readme(?:\.[a-z0-9]+)?|(?:main|index|app|server|cli|init|entry)\.[a-z0-9]+)$/i;
+  const entryHints=snapshot.files.filter(f=>entryPattern.test(f.path)&&f.path.split('/').length<=4).slice(0,20).map(f=>clipped(f.path,180));
   const clues=annotations.slice(-12).map(a=>({text:clipped(a.text,600),source_snapshot_id:a.source_snapshot_id,result_id:a.result_id,object_id:a.object_id,target:a.target}));
-  return {inventory:{total_files:snapshot.files.length,excluded_count:snapshot.excluded.length,largest_roots:rootList,root_file_hints:hints,inventory_is_partial:true},clues:{items:clues,omitted_count:Math.max(0,annotations.length-clues.length)},previous:previous?{result_id:previous.result_id,binding:previous.binding,summary_excerpt:clipped(previous.summary?.text??previous.summary,3000)}:null};
+  return {inventory:{total_files:snapshot.files.length,excluded_count:snapshot.excluded.length,largest_roots:rootList,root_file_hints:hints,entry_file_hints:entryHints,inventory_is_partial:true},clues:{items:clues,omitted_count:Math.max(0,annotations.length-clues.length)},previous:previous?{result_id:previous.result_id,binding:previous.binding,summary_excerpt:clipped(previous.summary?.text??previous.summary,3000)}:null};
 }

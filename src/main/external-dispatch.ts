@@ -145,9 +145,11 @@ export class ExternalDispatch {
         }
         if(this.items().some(other=>other.dispatch_id!==item.dispatch_id&&other.thread_id===binding.thread_id&&['sending','awaiting_claim','running','unknown'].includes(other.state)))continue;
         try{
-          const current=await this.metadata(binding.program,binding.workspace_path,'thread/read',{threadId:binding.thread_id,includeTurns:false});
+          const [current]=await Promise.all([
+            this.metadata(binding.program,binding.workspace_path,'thread/read',{threadId:binding.thread_id,includeTurns:false}),
+            this.command(binding.program,['app-server','daemon','version'],{windowsHide:true,timeout:10000}),
+          ]);
           if(path.resolve(current.thread.cwd).toLowerCase()!==path.resolve(binding.workspace_path).toLowerCase())throw Error('外部会话工作区已改变');
-          await this.command(binding.program,['app-server','daemon','version'],{windowsHide:true,timeout:10000});
           const latestQueued=this.store.get<Dispatch>('external_dispatch',item.dispatch_id),activeBinding=this.binding(item.project_id);
           if(latestQueued.state!=='queued'||latestQueued.revoked||!this.canSend(item.project_id,binding.workspace_path)||
             activeBinding?.thread_id!==binding.thread_id||activeBinding.program!==binding.program)continue;

@@ -144,3 +144,17 @@ test('failed answers retain questions; retry and cancellation keep original owne
   assert.equal(service.data().questions![0].run_ids.length,4);assert.equal(service.data().explanations.length,1);
   const schema=readingAnswerTransportSchema();assert.deepEqual(schema.required,['schema_version','question_id','binding','answer','evidence','uncertainties']);
 });
+
+test('reading prompt preloads bounded frozen source excerpts with exact line numbers and SHA-256',async t=>{
+  const {service,project,scenario,snapshot}=await setup(t),result=await savedResult(service,project,scenario,snapshot);
+  const q=await service.askReading({project_id:project.project_id,scenario_id:scenario.scenario_id,result_id:result.result_id,target:{kind:'file',id:'src/main.ts'},question:'这里返回值是多少？',mode:'mcp',submission_key:'preload-file-key'});
+  const run=service.store.get<import('../src/shared').Run>('run',q.run_id);
+  const {readingPrompt}=await import('../src/main/reading-question');
+  const prompt=await readingPrompt(run,snapshot,service.directory);
+  assert.match(prompt,/已预载的本次绑定冻结源码/);
+  assert.ok(prompt.includes(snapshot.files[0].content_sha256),'preloaded source includes exact frozen SHA-256');
+  assert.match(prompt,/return x \+ 3/);
+  const {promptContext}=await import('../src/main/prompt-context');
+  const overviewCtx=promptContext(snapshot,[]);
+  assert.ok(overviewCtx.inventory.entry_file_hints.includes('src/main.ts'));
+});
