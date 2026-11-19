@@ -159,4 +159,5 @@ test('Codex semver capability check supports modern versions and picks version-a
   assert.equal(reasoningEffortForRun({reading_question_id:'q1',question:'why?',reading_context:{target:{kind:'node',id:'n1'}} as any}),'low');
   assert.equal(reasoningEffortForRun({reading_question_id:'q2',question:'overview?',reading_context:{target:{kind:'directory',id:'src'}} as any}),'medium');
   assert.equal(reasoningEffortForRun({question:'x'},'overview_recheck'),'low');
+  assert.equal(reasoningEffortForRun({question:'分析此功能的调用链'}),'medium');
 });

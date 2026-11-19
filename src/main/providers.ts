@@ -322,14 +322,13 @@ function buildMcpDisableArgs(inventory:unknown,nodePath:string):string[] {
   return args;
 }
 
-export function reasoningEffortForRun(run:Pick<Run,'reading_question_id'|'reading_context'|'question'>,phase?:OverviewPhase):'low'|'medium'|undefined {
+export function reasoningEffortForRun(run:Pick<Run,'reading_question_id'|'reading_context'|'question'>,phase?:OverviewPhase):'low'|'medium' {
   if(phase==='overview_recheck')return 'low';
   if(run.reading_question_id){
     const broad=run.reading_context?.target.kind==='feature'||run.reading_context?.target.kind==='directory';
     return broad?'medium':'low';
   }
-  if(run.question===overviewDiscoveryQuestion)return 'medium';
-  return undefined;
+  return 'medium';
 }
 
 export async function runCodex(options:{
