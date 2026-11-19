@@ -28,7 +28,7 @@ class DshReturnError extends Error {
 function replyPath(run:Run) {
   return run.dsh_return_attempt?path.join(path.dirname(run.output_path),'repair-'+run.dsh_return_attempt,'result.json'):run.output_path;
 }
-type Correction={raw:string;errors:string[];attempt:number;base?:EvidenceRepairBase};
+type Correction={raw:string;errors:string[];attempt:number;base?:EvidenceRepairBase;evidencePatchSent?:boolean};
 async function repairPrompt(run:Run,{raw,errors,base}:Correction,snapshot:Snapshot,storage:string){
   if(base?.ids.length)return [
     '只修复指定证据。用只读工具读取各引用在本次快照中的实际路径与行号，quote 逐字摘取该范围内的连续源码。每个指定 ID 恰好返回一次。ARC 会把这些条目替换进原稿后重新校验。只返回符合合同的证据补丁 JSON。',
@@ -558,15 +558,24 @@ export class ArcService {
       if(!canRepairDshReturn(prior))throw Error('选择的 DSH 失败返回不可修复。');
       const priorFile=replyPath(prior);
       correction={raw:await fs.readFile(priorFile,'utf8'),errors:prior.dsh_return_errors??(prior.validation?.errors.length?prior.validation.errors:[prior.error!]),attempt:0,base:await readRepairBase(priorFile,'rejected')};
-      // Compact runs saved before evidence patches have only their full native reply.
-      if(!correction.base&&(prior.dsh_overview_format||prior.dsh_function_format)){
-        let draft:unknown;
-        try{draft=parseProviderText(correction.raw,'dsh');}catch(error){if(!(error instanceof SyntaxError))throw error;}
+      // A newer validator can exactly verify some anchors rejected by an older release.
+      if(prior.dsh_overview_format||prior.dsh_function_format){
+        let draft:unknown=correction.base?.draft;
+        if(!draft)try{draft=parseProviderText(correction.raw,'dsh');}catch(error){if(!(error instanceof SyntaxError))throw error;}
         if(draft){
-          try{await this.expandDshReply(draft,prior,snapshot,[]);}
+          try{
+            const value=await this.expandDshReply(draft,initial,snapshot,[]);
+            if(this.closing||this.store.get<Run>('run',runId).status!=='queued')return;
+            await this.acceptResult(runId,value,undefined,true,true);
+            this.event(runId,{type:'local.return_replayed',previous_run_id:prior.binding.run_id,reply_sha256:sha(correction.raw),draft_sha256:sha(JSON.stringify(draft)),message:'指定基稿按本版完整校验通过，已发布，未重新调用 DSH。'});return;
+          }
           catch(error){
-            if(!(error instanceof OverviewValidationError))throw error;
-            if(error.evidenceIds?.length)correction.base={draft:draft as EvidenceDraft,ids:error.evidenceIds};
+            if(!(error instanceof OverviewValidationError||error instanceof DshReturnError))throw error;
+            const ids=error instanceof OverviewValidationError?error.evidenceIds:undefined;
+            correction.errors=error instanceof DshReturnError?error.issues:[error.message];
+            correction.base=ids?.length||correction.base?{draft:draft as EvidenceDraft,ids:ids??[]}:undefined;
+            const latest=this.store.get<Run>('run',runId);
+            if(latest.status==='validating'){latest.status='queued';this.store.put('run',runId,latest);}
           }
         }
       }
@@ -629,7 +638,6 @@ export class ArcService {
         if(initial.dsh_overview_format||initial.dsh_function_format)compactDraft=parsed as EvidenceDraft;
         const audit:string[]=[];
         const value=await this.expandDshReply(parsed,run,snapshot,audit);
-        if(audit.length)this.event(runId,{type:'local.format_normalization',changes:audit});
         await this.acceptResult(runId,value,undefined,true,true);
       }catch(error){
         if(!(error instanceof DshReturnError||error instanceof OverviewValidationError))throw error;
@@ -642,15 +650,17 @@ export class ArcService {
         this.event(runId,{type:'local.return_rejected',attempt,errors:issues,reply_sha256:sha(result.raw),...(repairBase?.ids.length?{evidence_ids:repairBase.ids}:{})});
         latest.dsh_return_attempt=attempt;
         const converging=error instanceof OverviewValidationError&&shrinkingEvidence(patchBase?.ids,error.evidenceIds);
-        if(attempt>=4||(attempt>=2&&!converging)){
+        const evidencePatchSent=!!(patchBase||correction?.evidencePatchSent);
+        const firstEvidencePatch=!evidencePatchSent&&error instanceof OverviewValidationError&&!!error.evidenceIds?.length;
+        if(attempt>=4||(attempt>=2&&!converging&&!firstEvidencePatch)){
           latest.status='failed';latest.error='DSH 修复后仍未通过校验：'+issues.slice(0,5).join('；');
           latest.dsh_return_errors=issues;latest.ended_at=now();this.store.put('run',runId,latest);this.changed();return;
         }
         latest.status='queued';this.store.put('run',runId,latest);
         const scope=repairBase?.ids.length?`${repairBase.ids.length} 处源码引用`:`${issues.length} 项校验问题`;
-        const progress=attempt>=2?`，待修引用从 ${patchBase!.ids.length} 处减至 ${repairBase!.ids.length} 处，继续定点修复`:'';
+        const progress=attempt>=2?(firstEvidencePatch?'，首次进入源码引用修复':`，待修引用从 ${patchBase!.ids.length} 处减至 ${repairBase!.ids.length} 处，继续定点修复`):'';
         this.event(runId,{type:'local.stage',stage:'repairing',message:`正在请 DSH 修复第 ${attempt+1} 次返回的 ${scope}（第 ${attempt+1} 次自动修复${progress}）`});this.changed();
-        await this.execute(initial,{raw:result.raw,errors:issues,attempt:attempt+1,base:repairBase});
+        await this.execute(initial,{raw:result.raw,errors:issues,attempt:attempt+1,base:repairBase,evidencePatchSent});
       }
       return;
     }
@@ -666,9 +676,13 @@ export class ArcService {
     await this.acceptResult(runId,value,semanticReview);
   }
   private async expandDshReply(parsed:unknown,run:Run,snapshot:Snapshot,audit:string[]){
-    if(run.dsh_overview_format)return prepareOverview(parsed,run,snapshot,this.directory);
-    if(run.dsh_function_format)return prepareFunctionGraphs(parsed,run,snapshot,this.directory);
-    return normalizeTransport(parsed,audit);
+    try{
+      if(run.dsh_overview_format)return await prepareOverview(parsed,run,snapshot,this.directory,audit);
+      if(run.dsh_function_format)return await prepareFunctionGraphs(parsed,run,snapshot,this.directory,audit);
+      return normalizeTransport(parsed,audit);
+    }finally{
+      if(run.provider_id==='dsh'&&audit.length)this.event(run.binding.run_id,{type:'local.format_normalization',changes:audit});
+    }
   }
   private dshWalkthroughPrompt(run:Run,snapshot:Snapshot,task:import('../engineering').EngineeringTask) {
     const paths=new Set(task.changes.map(change=>change.path));

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {capture} from '../src/main/snapshot';
-import {overviewSchema,prepareOverview,overviewPrompt,OverviewValidationError} from '../src/main/overview-result';
+import {compactEvidence,overviewSchema,prepareOverview,overviewPrompt,OverviewValidationError} from '../src/main/overview-result';
 import {overviewDiscoveryQuestion} from '../src/main/architecture-analysis';
 import {promptContext} from '../src/main/prompt-context';
 import type {Run} from '../src/shared';
@@ -33,6 +33,23 @@ async function fixture(t:TestContext){
   ]};
   return {value,run,snapshot,storage};
 }
+
+test('DSH compact citations preserve exact literals and decode at most one source-proven escape layer',async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-escape-')),root=path.join(dir,'src'),storage=path.join(dir,'data');
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));await fs.mkdir(root);
+  const lines=['const sql = "select qty {a} [b] (c)";','  return sql;','const literal = "\\n";'];
+  await fs.writeFile(path.join(root,'sample.js'),lines.join('\r\n'));const snapshot=await capture(root,'fixture',storage,'');
+  const original=lines.slice(0,2).join('\n'),encoded=JSON.stringify(original).slice(1,-1);
+  const quote=(id:string,text:string,start=1,end=2)=>({id,path:'sample.js',start,end,quote:text});
+  const audit:string[]=[];
+  const checked=await compactEvidence([quote('json',encoded),quote('mixed',lines.slice(0,2).join('\\r\\n')),quote('literal',lines[2],3,3)],snapshot,storage,audit);
+  assert.deepEqual(checked.map(item=>item.note),[lines.slice(0,2).join('\r\n'),lines.slice(0,2).join('\r\n'),lines[2]]);
+  assert.equal(audit.length,2);assert.match(audit[0],/json: JSON string escape/);assert.match(audit[1],/mixed: escaped newline/);
+  for(const wrong of [JSON.stringify(encoded).slice(1,-1),encoded.replace('  return',' return')]){
+    await assert.rejects(compactEvidence([quote('bad',wrong)],snapshot,storage,[]),e=>e instanceof OverviewValidationError&&e.evidenceIds?.[0]==='bad');
+  }
+  await assert.rejects(compactEvidence([quote('other-range',encoded,2,3)],snapshot,storage,[]),OverviewValidationError);
+});
 
 test('one repair receives all bad source anchors while snapshot storage errors stay distinct',async t=>{
   const {value,run,snapshot,storage}=await fixture(t);

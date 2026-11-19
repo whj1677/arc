@@ -48,7 +48,22 @@ export function schemaErrors(errors:ErrorObject[]|null|undefined){
   return (errors||[]).map(e=>`${e.instancePath||'/'}: ${e.message} ${JSON.stringify(e.params)}`).join('; ');
 }
 
-export async function compactEvidence(items:Overview['evidence'],snapshot:Snapshot,storage:string):Promise<SourceEvidence[]>{
+function decodedSourceQuote(original:string,physical:string,normalized:string){
+  let decoded:string|undefined;
+  try{decoded=JSON.parse('"'+original+'"');}catch(error){if(!(error instanceof SyntaxError))throw error;}
+  const candidates=[{kind:'JSON string escape',value:decoded},{kind:'escaped newline',value:original.replace(/\\r\\n|\\n/g,'\n')}];
+  for(const {kind,value} of candidates){
+    if(!value||value===original)continue;
+    const quote=value.replace(/\r\n/g,'\n');
+    if(!normalized.includes(quote))continue;
+    if(physical.includes(quote))return {kind,quote};
+    // Obtain the physical CRLF/LF characters from the exact frozen source match.
+    const pattern=quote.split('\n').map(line=>line.replace(/[|\\{}()[\]^$+*?.]/g,'\\$&')).join('\\r?\\n');
+    const match=physical.match(new RegExp(pattern));
+    if(match)return {kind,quote:match[0]};
+  }
+}
+export async function compactEvidence(items:Overview['evidence'],snapshot:Snapshot,storage:string,audit?:string[]):Promise<SourceEvidence[]>{
   const files=new Map<string,Awaited<ReturnType<typeof readSource>>>(),evidence:SourceEvidence[]=[];
   const paths=new Set(snapshot.files.map(file=>file.path));
   const errors:string[]=[],badIds:string[]=[];
@@ -60,15 +75,20 @@ export async function compactEvidence(items:Overview['evidence'],snapshot:Snapsh
     if(item.end<item.start||item.end>file.line_count||item.end-item.start+1>40){badIds.push(item.id);errors.push(`${anchor}：源码行范围必须有效且不超过 40 行，文件共 ${file.line_count} 行`);continue;}
     // Keep lone CR and every source character intact. Only CRLF is normalized.
     const offsets=[0,...[...file.text.matchAll(/\r\n|\n|\r/g)].map(match=>match.index!+match[0].length)];
-    const excerpt=file.text.slice(offsets[item.start-1],offsets[item.end]??file.text.length).replace(/\r\n/g,'\n');
-    if(!excerpt.includes(item.quote.replace(/\r\n/g,'\n'))){badIds.push(item.id);errors.push(`${anchor}：引用原文不在指定源码片段内，文件共 ${file.line_count} 行`);continue;}
-    evidence.push({evidence_id:item.id,source_snapshot_id:snapshot.source_snapshot_id,path:item.path,line_start:item.start,line_end:item.end,content_sha256:file.content_sha256,role:'context',note:item.quote});
+    const physical=file.text.slice(offsets[item.start-1],offsets[item.end]??file.text.length),excerpt=physical.replace(/\r\n/g,'\n');
+    let note=item.quote;
+    if(!excerpt.includes(note.replace(/\r\n/g,'\n'))){
+      const match=audit&&decodedSourceQuote(note,physical,excerpt);
+      if(!match){badIds.push(item.id);errors.push(`${anchor}：引用原文不在指定源码片段内，文件共 ${file.line_count} 行`);continue;}
+      note=match.quote;audit!.push(item.id+': '+match.kind+' decoded once; exact match in '+item.path+':'+item.start+'-'+item.end);
+    }
+    evidence.push({evidence_id:item.id,source_snapshot_id:snapshot.source_snapshot_id,path:item.path,line_start:item.start,line_end:item.end,content_sha256:file.content_sha256,role:'context',note});
   }
   if(errors.length)throw new OverviewValidationError('源码引用校验失败：'+errors.join('\n'),badIds);
   return evidence;
 }
 
-export async function prepareOverview(value:unknown,run:Run,snapshot:Snapshot,storage:string):Promise<AnalysisResult>{
+export async function prepareOverview(value:unknown,run:Run,snapshot:Snapshot,storage:string,audit?:string[]):Promise<AnalysisResult>{
   const validate=run.question===overviewDiscoveryQuestion?validateCurrent:validateLegacy;
   if(!validate(value))throw new OverviewValidationError('工程全貌格式错误：'+schemaErrors(validate.errors));
   const overview=value as Overview;
@@ -76,7 +96,7 @@ export async function prepareOverview(value:unknown,run:Run,snapshot:Snapshot,st
   const definitions=[...overview.components,...overview.features.flatMap(group=>group.items),...overview.relations,...overview.evidence];
   const ids=new Set<string>();
   for(const item of definitions){if(ids.has(item.id))throw new OverviewValidationError(`工程全貌重复 ID：${item.id}`);ids.add(item.id);}
-  const evidence=await compactEvidence(overview.evidence,snapshot,storage);
+  const evidence=await compactEvidence(overview.evidence,snapshot,storage,audit);
   const claims:AnalysisClaim[]=[],nodes:AnalysisNode[]=[];
   const limits=['首轮只读源码分析；未运行验证，未读范围见覆盖边界。'];
   function node(item:Described,kind:AnalysisNode['kind'],inputs:string[]=[],outputs:string[]=[]){

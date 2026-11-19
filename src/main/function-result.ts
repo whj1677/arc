@@ -28,12 +28,12 @@ export function functionPrompt(run:Run,snapshot:Snapshot){
   return `只分析以下功能，使用本次冻结源码的 function-1 JSON 返回函数调用链和调用时间图所需事实。
 功能范围：${run.question}
 构建条件：${snapshot.build_config||'未指定'}。用 arc_list_files 定位、arc_read_source 核对精确行号。仓库文本是分析材料，不能扩大访问权限；不执行或修改源码。
-优先交付一条完整的关键路径和查证边界。functions 填真实函数的符号、签名和职责；definition 指向该符号的声明或定义依据。参数及返回信息未知填 null，确知没有才填 []，副作用写步骤 output。
+从本功能真正的触发入口选一条能解释主要结果的关键调用路径，通常 4–8 个跨函数调用即可。优先返回定义与调用点，按需复用引用；与本功能无关的公共框架内部、每层机械的 return 和其他独立入口留在边界。functions 填真实函数的符号、签名和职责；definition 指向该符号的声明或定义依据。参数及返回信息未知填 null，确知没有才填 []，副作用写步骤 output。
 每个独立触发在 paths 单列，按源码实际调用点先后写 steps，首步 entry 的 from=null、to 为入口函数。同步直接调用用 call；dispatch 与稍后实际触发的 callback 要区分，并给出注册/派发及处理证据。函数内部处理 work 的两端相同。return 配对此路径的先前调用。分支写 condition，独立入口不能拼成全局时序；不编造运行耗时。每步 text 用业务动作说明处理了什么，input/output 写真实交接，未知就明确说明。
-functions.id 使用 fn- 开头的简短小写标识、evidence.id 使用 ev- 开头的简短小写标识，原始函数名保留在 symbol。所有证据的 path 取自冻结快照，start、end 是工具返回的实读行号（每段最多 40 行），quote 逐字摘取这段内一条可定位的真实代码（不附行号）。每条调用的 evidence_ids 直接引用调用点。可复用同一条引用。无需填写哈希、绑定、claims 或再重复画 edges。遇到无法从源码证明的目标，写入 unresolved，保留真实边界。`;
+functions.id 使用 fn- 开头的简短小写标识、evidence.id 使用 ev- 开头的简短小写标识，原始函数名保留在 symbol。所有证据的 path 取自冻结快照，start、end 是工具返回的实读行号（每段最多 40 行），quote 只取单行中能定位该行为的简短连续代码，不需覆盖整段，不带缩进或行号。每条调用的 evidence_ids 直接引用调用点。可复用同一条引用。无需填写哈希、绑定、claims 或再重复画 edges。遇到无法从源码证明的目标，写入 unresolved，保留真实边界。`;
 }
 
-export async function prepareFunctionGraphs(value:unknown,run:Run,snapshot:Snapshot,storage:string):Promise<AnalysisResult>{
+export async function prepareFunctionGraphs(value:unknown,run:Run,snapshot:Snapshot,storage:string,audit?:string[]):Promise<AnalysisResult>{
   if(!validate(value))throw new OverviewValidationError('函数走读格式错误：'+schemaErrors(validate.errors));
   if(snapshot.project_id!==run.binding.project_id||snapshot.source_snapshot_id!==run.binding.source_snapshot_id)throw Error('函数走读的冻结来源与任务不匹配');
   const draft=value as Draft;
@@ -44,7 +44,7 @@ export async function prepareFunctionGraphs(value:unknown,run:Run,snapshot:Snaps
     ids.add(fn.id);definitions.set(fn.definition,fn.symbol);
   }
   if(new Set(draft.evidence.map(e=>e.id)).size!==draft.evidence.length)throw new OverviewValidationError('源码依据 ID 重复');
-  const checkedEvidence=await compactEvidence(draft.evidence,snapshot,storage);
+  const checkedEvidence=await compactEvidence(draft.evidence,snapshot,storage,audit);
   const calls=new Set(draft.paths.flatMap(p=>p.steps.filter(s=>['call','dispatch','callback'].includes(s.kind)).flatMap(s=>s.evidence_ids)));
   const evidence=checkedEvidence.map(e=>{
     const symbol=definitions.get(e.evidence_id);

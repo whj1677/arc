@@ -10,7 +10,7 @@ import type {runCodex} from '../src/main/providers';
 import {hasFunctionGraphs,type AnalysisResult,type Run,type Snapshot} from '../src/shared';
 import {canRepairDshReturn} from '../src/shared';
 import {dshWaitTimeout,type runDshWeb} from '../src/main/dsh-web';
-import {applyEvidenceRepair,readRepairBase,shrinkingEvidence} from '../src/main/evidence-repair';
+import {applyEvidenceRepair,readRepairBase,saveRepairBase,shrinkingEvidence} from '../src/main/evidence-repair';
 
 const entries=['read_value','write_value'];
 const source=['int record(void) { return 7; }',...entries.map(name=>`int ${name}(void) { return record(); }`)];
@@ -186,18 +186,29 @@ test('only rejected evidence IDs can change, including after a bad patch and man
   await service.executing.get(first.binding.run_id);
   assert.equal(service.store.get<Run>('run',first.binding.run_id).status,'failed');
   assert.deepEqual(await readRepairBase(path.join(path.dirname(first.output_path),'repair-2','result.json'),'input'),{draft,ids:[correct.id]});
+  const oldExtra={...overview.evidence[1],start:1,end:2,quote:source.slice(0,2).join('\\n')};
+  const historicalDraft={...draft,evidence:[wrongPatch.evidence[0],oldExtra,...overview.evidence.slice(2)]};
+  const oldReply=path.join(path.dirname(first.output_path),'repair-2','result.json');
+  await saveRepairBase(oldReply,'rejected',{draft:historicalDraft,ids:[correct.id,oldExtra.id]});
   const manual=await service.repairRun(first.binding.run_id,'evidence-manual-fix');
   await service.executing.get(manual.binding.run_id);
   assert.equal(service.store.get<Run>('run',manual.binding.run_id).status,'completed');
   assert.deepEqual(calls.map(call=>call.patch),[false,true,true,true]);
   assert.match(calls[2].prompt,/只返回这些 ID/);assert.match(calls[3].prompt,/wrong second quote/);
   const base=await readRepairBase(manual.output_path,'input');
-  assert.deepEqual(base,{draft:{...draft,evidence:[wrongPatch.evidence[0],...overview.evidence.slice(1)]},ids:[correct.id]});
-  assert.deepEqual(applyEvidenceRepair(base!,{evidence:[correct]}),overview);
+  assert.deepEqual(base,{draft:historicalDraft,ids:[correct.id]});
+  assert.deepEqual(JSON.parse(calls[3].prompt.split('\n').at(-1)!).required_evidence_ids,[correct.id]);
+  assert.deepEqual(applyEvidenceRepair(base!,{evidence:[correct]}),{...overview,evidence:[correct,oldExtra,...overview.evidence.slice(2)]});
   for(const patch of [{evidence:[{...correct,id:'other'}]},{evidence:[correct,correct]},{...overview,evidence:[correct]}])
     assert.throws(()=>applyEvidenceRepair(base!,patch));
   assert.deepEqual(JSON.parse(await fs.readFile(first.output_path,'utf8')),draft);
   assert.deepEqual(JSON.parse(await fs.readFile(manual.output_path,'utf8')),{evidence:[correct]});
+  // A prior release rejected a literal line-break escape now proven by the frozen file.
+  await saveRepairBase(oldReply,'rejected',{draft:{...overview,evidence:[correct,oldExtra,...overview.evidence.slice(2)]},ids:[oldExtra.id]});
+  const replay=await service.repairRun(first.binding.run_id,'fully-replay-evidence');
+  await service.executing.get(replay.binding.run_id);
+  assert.equal(service.store.get<Run>('run',replay.binding.run_id).status,'completed');assert.equal(calls.length,4);
+  assert.ok(service.store.events(replay.binding.run_id).some(e=>e.type==='local.return_replayed'&&e.previous_run_id===first.binding.run_id));
 });
 
 test('six rejected anchors narrowing to one permits an extra repair with exact source choices',async t=>{
@@ -213,16 +224,17 @@ test('six rejected anchors narrowing to one permits an extra repair with exact s
     options.event({type:'session.started',thread_id:'sql-fixture',native_ui:'dsh-web'});turns++;
     let raw:string;
     if(turns===1)raw='interrupted JSON';
-    else if(turns===2)raw=JSON.stringify(draft);
+    else if(turns===2)raw=JSON.stringify({schema_version:'overview-1'});
+    else if(turns===3)raw=JSON.stringify(draft);
     else{
       assert.equal(options.evidencePatch,true);
       const feedback=JSON.parse(options.prompt.split('\n').at(-1)!);
-      assert.deepEqual(feedback.required_evidence_ids,turns===3?evidence.map(row=>row.id):['sql']);
+      assert.deepEqual(feedback.required_evidence_ids,turns===4?evidence.map(row=>row.id):['sql']);
       const selected=feedback.source_hints.map((hint:{id:string;path:string;start:number;end:number;candidates:{line:number;quote:string}[]})=>{
         const {id,path,start,end}=hint,choice=hint.candidates[0];
         assert.ok(lines[choice.line-1].includes(choice.quote));
         if(id==='sql'){assert.match(choice.quote,/SELECT project_id/);assert.doesNotMatch(choice.quote,/"/);}
-        return {id,path,start,end,quote:id==='sql'&&turns===3?'still incorrect':choice.quote};
+        return {id,path,start,end,quote:id==='sql'&&turns===4?'still incorrect':choice.quote};
       });
       raw=JSON.stringify({evidence:selected});
     }
@@ -235,7 +247,7 @@ test('six rejected anchors narrowing to one permits an extra repair with exact s
   const run=await service.startRun(scene.scenario_id,'dsh','shrinking-evidence',undefined,{projectAnalysis:true});
   await service.executing.get(run.binding.run_id);
   const end=service.store.get<Run>('run',run.binding.run_id);
-  assert.equal(end.status,'completed',end.error);assert.equal(end.dsh_return_attempt,3);assert.equal(turns,4);
+  assert.equal(end.status,'completed',end.error);assert.equal(end.dsh_return_attempt,4);assert.equal(turns,5);
   assert.equal(shrinkingEvidence(['a','b'],['c']),false);
   assert.equal(shrinkingEvidence(['a'],['a']),false);
 });
