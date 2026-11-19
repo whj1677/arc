@@ -733,6 +733,18 @@ export class ArcService {
     this.emit({ type: 'run_event', run_id: runId, event: clean });
   }
 
+  private localResultStopped(run: Run) {
+    if (run.status === 'unknown') throw Object.assign(Error('分析停止状态未确认，迟到结果不发布'), { remoteUnknown: true });
+    if (run.status === 'cancel_requested' || (this.closing && !terminal.has(run.status))) {
+      run.status = 'cancelled';
+      run.ended_at = now();
+      run.error = '已确认本地进程退出；保留此前事件及原始部分。';
+      this.store.put('run', run.binding.run_id, run);
+      this.changed();
+    }
+    return terminal.has(run.status);
+  }
+
   private async execute(initial: Run) {
     this.checkOverviewChild(initial);
     const runId = initial.binding.run_id;
@@ -778,6 +790,27 @@ export class ArcService {
     this.checkOverviewChild(initial);
     if (this.closing || this.store.get<Run>('run', runId).status !== 'queued') return;
 
+    const canStart = (status: 'queued' | 'validating') =>
+      !this.closing && this.store.get<Run>('run', runId).status === status;
+    const started = (active: ActiveProcess, status: 'queued' | 'validating') => {
+      this.active.set(runId, active);
+      if (!canStart(status)) {
+        void active.cancel().catch(error => {
+          const latest = this.store.get<Run>('run', runId);
+          latest.status = 'unknown';
+          latest.error = `启动期间收到停止请求，但未能确认进程退出：${redact((error as Error).message)}`;
+          this.store.put('run', runId, latest);
+          this.changed();
+        });
+        return;
+      }
+      const run = this.store.get<Run>('run', runId);
+      if (status === 'queued') run.status = 'running';
+      run.pid = active.child.pid;
+      run.runtime_version = profile!.version;
+      this.store.put('run', runId, run);
+      this.changed();
+    };
     const options: Parameters<typeof runCodex>[0] = {
       run: initial,
       snapshot,
@@ -786,26 +819,8 @@ export class ArcService {
       profile,
       prompt,
       event: event => this.event(runId, event),
-      shouldStart: () => !this.closing && this.store.get<Run>('run', runId).status === 'queued',
-      started: active => {
-        this.active.set(runId, active);
-        const run = this.store.get<Run>('run', runId);
-        if (this.closing || run.status !== 'queued') {
-          void active.cancel().catch(error => {
-            const latest = this.store.get<Run>('run', runId);
-            latest.status = 'unknown';
-            latest.error = `启动期间收到停止请求，但未能确认进程退出：${redact((error as Error).message)}`;
-            this.store.put('run', runId, latest);
-            this.changed();
-          });
-          return;
-        }
-        run.status = 'running';
-        run.pid = active.child.pid;
-        run.runtime_version = profile!.version;
-        this.store.put('run', runId, run);
-        this.changed();
-      },
+      shouldStart: () => canStart('queued'),
+      started: active => started(active, 'queued'),
     };
     const result = provider === 'dsh'
       ? await this.dshRunner({ ...options, outputSchema: initial.reading_question_id ? readingAnswerSchema : initial.overview_format ? overviewSchema : schema })
@@ -813,16 +828,7 @@ export class ArcService {
     this.active.delete(runId);
 
     const run = this.store.get<Run>('run', runId);
-    if (run.status === 'cancelled') return;
-    if (run.status === 'cancel_requested') {
-      run.status = 'cancelled';
-      run.ended_at = now();
-      run.error = '已确认本地进程退出；保留此前事件及原始部分。';
-      this.store.put('run', runId, run);
-      this.changed();
-      return;
-    }
-    if (run.status === 'unknown') throw Object.assign(Error('分析停止状态未确认，迟到结果不发布'), { remoteUnknown: true });
+    if (this.localResultStopped(run)) return;
     const protocolError = 'protocol_error' in result ? result.protocol_error : undefined;
     if (result.code !== 0 || protocolError) {
       throw new Error(`${initial.provider_id} 未成功完成（exit=${result.code}）：${protocolError || result.stderr.slice(-2500)}`);
@@ -846,6 +852,52 @@ export class ArcService {
       const checked = await this.overviews.finishOverview(initial, snapshot, profile, draft);
       value = checked.result;
       semanticReview = checked.semantic;
+    } else if (provider === 'codex') {
+      const report = await this.validateRunResult(run, value, snapshot);
+      if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
+      if (report.errors.length) {
+        this.event(runId, { type: 'local.stage', stage: 'repairing_validation', message: `校验发现 ${report.errors.length} 处偏差，正在让 Codex 定向修正（最多 1 轮）` });
+        if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
+        const repairPrompt = [
+          '只修正以下 ARC 校验错误，保留草稿中的其他内容。需要核对文件路径、行号或 SHA-256 时，使用 arc_read_source / arc_list_files。',
+          '不要把同一函数内的步骤编造为跨函数调用。输出完整、符合当前 Schema 的 JSON。',
+          ...report.errors.slice(0, 15).map(error => `- ${error}`),
+          '上一轮草稿 JSON：',
+          JSON.stringify(value),
+        ].join('\n');
+        const outputDirectory = path.join(this.directory, 'runs', runId, 'repair');
+        let repairedValue: unknown;
+        try {
+          const repair = await this.codexRunner({
+            ...options,
+            prompt: repairPrompt,
+            reasoningEffort: 'low',
+            outputDirectory,
+            outputPath: path.join(outputDirectory, 'result.json'),
+            shouldStart: () => canStart('validating'),
+            started: active => started(active, 'validating'),
+          });
+          if (repair.code !== 0 || repair.protocol_error) {
+            throw Error(`Codex 未成功完成修正（exit=${repair.code}）：${repair.protocol_error || repair.stderr.slice(-2500)}`);
+          }
+          const audit: string[] = [];
+          repairedValue = normalizeTransport(parseJsonReply(repair.raw), audit);
+          if (audit.length) this.event(runId, { type: 'local.format_normalization', changes: audit });
+        } catch (error) {
+          if ((error as { remoteUnknown?: boolean })?.remoteUnknown) throw error;
+          if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
+          this.event(runId, { type: 'local.stage', stage: 'repair_failed', message: `Codex 定向修正失败：${(error as Error).message}` });
+        } finally {
+          this.active.delete(runId);
+        }
+        if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
+        if (repairedValue !== undefined) {
+          await this.acceptResult(runId, repairedValue);
+          return;
+        }
+      }
+      await this.acceptValidatedResult(runId, value, report, true);
+      return;
     }
     await this.acceptResult(runId, value, semanticReview);
   }
@@ -857,19 +909,27 @@ export class ArcService {
     if (['cancel_requested', 'cancelled', 'failed'].includes(run.status)) throw new Error('终止后的迟到结果保留为原始材料，不发布为新说明');
     if (run.status === 'completed') return run;
 
+    const report = await this.validateRunResult(run, value, snapshot);
+    if (semanticReview) report.semantic = semanticReview;
+    return this.acceptValidatedResult(runId, value, report, allowFollowups);
+  }
+
+  private async validateRunResult(run: Run, value: unknown, snapshot: Snapshot) {
+    const runId = run.binding.run_id;
     run.status = 'validating';
     this.store.put('run', runId, run);
     this.event(runId, { type: 'local.stage', stage: 'validating', message: '完整结果已收到，正在校验结构、任务绑定和源码行号' });
     this.changed();
 
-    const report = run.reading_question_id
-      ? await validateReadingAnswer(value, run, snapshot, this.directory)
-      : await validateResult(value, run, snapshot, this.directory);
-    if (semanticReview) report.semantic = semanticReview;
+    return run.reading_question_id
+      ? validateReadingAnswer(value, run, snapshot, this.directory)
+      : validateResult(value, run, snapshot, this.directory);
+  }
 
-    const afterValidation = this.store.get<Run>('run', runId);
-    if (afterValidation.status === 'completed') return afterValidation;
-    if (['cancel_requested', 'cancelled', 'failed'].includes(afterValidation.status)) throw new Error('校验期间收到停止请求，迟到结果不发布');
+  private async acceptValidatedResult(runId: string, value: unknown, report: Awaited<ReturnType<typeof validateResult>>, allowFollowups: boolean) {
+    const run = this.store.get<Run>('run', runId);
+    if (run.status === 'completed') return run;
+    if (['cancel_requested', 'cancelled', 'failed'].includes(run.status)) throw new Error('校验期间收到停止请求，迟到结果不发布');
     run.validation = report;
     if (report.errors.length) {
       run.status = 'failed';
@@ -901,6 +961,7 @@ export class ArcService {
       throw new Error('结果 ID 与另一个运行冲突');
     }
 
+    const snapshot = this.store.get<Snapshot>('snapshot', run.binding.source_snapshot_id);
     let changed = true;
     try {
       changed = (await freshness(snapshot)).length > 0;

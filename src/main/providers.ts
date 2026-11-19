@@ -334,7 +334,7 @@ export function reasoningEffortForRun(run:Pick<Run,'reading_question_id'|'readin
 export async function runCodex(options:{
   run:Run;snapshot:Snapshot;storage:string;resources:string;profile:ProviderProfile;prompt:string;
   event:(value:any)=>void;started:(active:ActiveProcess)=>void;shouldStart?:()=>boolean;
-  phase?:OverviewPhase;outputSchema?:object;outputDirectory?:string;
+  phase?:OverviewPhase;outputSchema?:object;outputDirectory?:string;outputPath?:string;reasoningEffort?:'low'|'medium';
 }):Promise<{code:number|null;raw:string;stderr:string;protocol_error?:string}> {
   const {run,snapshot,storage,profile,prompt}=options;
   const env=codexChildEnvironment(process.env);
@@ -383,6 +383,7 @@ export async function runCodex(options:{
   if(!hasContext)writes.push(fs.writeFile(contextPath,JSON.stringify({storage,snapshot})));
   await Promise.all(writes);
 
+  const outputPath=options.outputPath??run.output_path;
   const args=['exec','--json','--sandbox','read-only','--skip-git-repo-check','--color','never','--cd',workspace!,
     '-c','features.shell_tool=false','-c','features.unified_exec=false','-c','features.apply_patch_freeform=false',
     '-c','features.multi_agent=false','-c','features.multi_agent_v2=false',
@@ -390,10 +391,10 @@ export async function runCodex(options:{
     '-c',`mcp_servers.arc_frozen_source.command=${JSON.stringify(nodePath)}`,
     '-c',`mcp_servers.arc_frozen_source.args=${JSON.stringify([contextServer,contextPath])}`,
     '-c','mcp_servers.arc_frozen_source.enabled=true',
-    '--output-schema',schemaPath,'--output-last-message',run.output_path];
+    '--output-schema',schemaPath,'--output-last-message',outputPath];
 
-  const effort=reasoningEffortForRun(run,options.phase);
-  if(effort)args.push('-c',`model_reasoning_effort=${JSON.stringify(effort)}`);
+  const effort=options.reasoningEffort??reasoningEffortForRun(run,options.phase);
+  args.push('-c',`model_reasoning_effort=${JSON.stringify(effort)}`);
   if(!run.reading_question_id&&run.question===overviewDiscoveryQuestion&&!options.phase){
     options.event({type:'local.stage',stage:'overview_discovery',message:'正在查证入口与主要组件，生成架构、功能目录及可直接阅读的步骤；随后自动复核，遇疑点继续补查。'});
   }
@@ -441,9 +442,13 @@ export async function runCodex(options:{
       try {parser.end();}catch(e){protocol_error=(e as Error).message;}
       protocol_error??=turnErrors.failure(code);
       let raw='';
-      try {const stat=await fs.stat(run.output_path);if(stat.size>2*1024*1024)throw new Error('结果超过 2 MiB');raw=await fs.readFile(run.output_path,'utf8');}catch(e){if(code===0)protocol_error??=(e as Error).message;}
-      await fs.writeFile(path.join(runDir!,'diagnostic.json'),JSON.stringify({code,stderr,protocol_error,ended_at:now()},null,2));
-      resolve({code,raw,stderr,protocol_error});
+      try {const stat=await fs.stat(outputPath);if(stat.size>2*1024*1024)throw new Error('结果超过 2 MiB');raw=await fs.readFile(outputPath,'utf8');}catch(e){if(code===0)protocol_error??=(e as Error).message;}
+      try {
+        await fs.writeFile(path.join(runDir!,'diagnostic.json'),JSON.stringify({code,stderr,protocol_error,ended_at:now()},null,2));
+        resolve({code,raw,stderr,protocol_error});
+      } catch (error) {
+        reject(error);
+      }
     });
     child.stdin.on('error',()=>{});child.stdin.end(prompt);
   });
