@@ -43,6 +43,9 @@ export function WorkbenchNavigation({projects,projectId,active,onProject,onOpen,
           <option value="">选择工程</option>
           {projects.map(project=><option key={project.project_id} value={project.project_id} title={project.root_path}>{projectLabel(project)}</option>)}
         </select>
+        <svg className="workbench-project-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M4.5 6.2 8 9.7l3.5-3.5"/>
+        </svg>
       </label>
       <small className="workbench-project-meta"><i aria-hidden="true"/>{current?'本机工作区':'尚未选择工程'}</small>
     </div>

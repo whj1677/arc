@@ -181,7 +181,7 @@ export function CanvasPane({
 
   return (
     <main className="canvas">
-      {!preview && (
+      {!preview && !catalogReading && (
         <div className="canvas-tools">
           <div className="row">
             <span className="eyebrow">{reading.entrance === 'overview' ? '工程全貌' : '功能走读'}</span>
@@ -195,22 +195,8 @@ export function CanvasPane({
                 · {result.gaps.length ? '部分覆盖' : '已返回说明'}
               </span>
             )}
-            {!catalogReading && filters}
+            {filters}
           </div>
-          {!catalogReading && (
-            <div className="row">
-              <small className="zoom-hint">Ctrl＋滚轮缩放</small>
-              <button className="icon" aria-label="缩小画布" onClick={() => patch({ zoom: clampZoom(reading.zoom - 0.1) })}>
-                −
-              </button>
-              <button className="icon zoom-reset" aria-label="重置画布缩放" title="恢复 100%" onClick={() => patch({ zoom: 1 })}>
-                {Math.round(reading.zoom * 100)}%
-              </button>
-              <button className="icon" aria-label="放大画布" onClick={() => patch({ zoom: clampZoom(reading.zoom + 0.1) })}>
-                ＋
-              </button>
-            </div>
-          )}
         </div>
       )}
 
@@ -479,6 +465,24 @@ export function CanvasPane({
           </div>
         )}
       </ScrollPanel>
+      {!preview && !catalogReading && (
+        <div className="canvas-zoom-float" role="group" aria-label="画布缩放">
+          <small className="zoom-hint">Ctrl＋滚轮</small>
+          <button className="icon" aria-label="缩小画布" title="缩小画布" onClick={() => patch({ zoom: clampZoom(reading.zoom - 0.1) })}>
+            <svg className="arc-ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
+              <path d="M3.5 8h9" />
+            </svg>
+          </button>
+          <button className="icon zoom-reset" aria-label="重置画布缩放" title="恢复 100%" onClick={() => patch({ zoom: 1 })}>
+            {Math.round(reading.zoom * 100)}%
+          </button>
+          <button className="icon" aria-label="放大画布" title="放大画布" onClick={() => patch({ zoom: clampZoom(reading.zoom + 0.1) })}>
+            <svg className="arc-ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
+              <path d="M8 3.5v9M3.5 8h9" />
+            </svg>
+          </button>
+        </div>
+      )}
     </main>
   );
 }

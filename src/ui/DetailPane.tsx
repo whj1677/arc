@@ -210,9 +210,12 @@ export function DetailPane({
         <button
           className={`icon ${reading.pinned ? 'selected' : ''}`}
           aria-label={reading.pinned ? '解除固定详情' : '固定详情'}
+          title={reading.pinned ? '解除固定详情' : '固定详情'}
           onClick={() => patch({ pinned: !reading.pinned })}
         >
-          {reading.pinned ? '◆' : '◇'}
+          <svg className="arc-ui-icon" viewBox="0 0 16 16" fill={reading.pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M9.8 2.8 13.2 6.2 11.4 8l-.7-.2-2.2 2.2.3 1.4-1.2 1.2-2.2-2.2-2.4 2.4-.6-.6 2.4-2.4-2.2-2.2 1.2-1.2 1.4.3 2.2-2.2-.2-.7z" />
+          </svg>
         </button>
         {architectureReading && !detailDrawer && (
           <button
@@ -494,14 +497,14 @@ export function DetailPane({
             <h2>{architectureReading && activeObject ? activeObject.label + ' · 来源依据' : '来源与覆盖'}</h2>
             {selectedEvidence && (
               <article className="scope-box evidence-location" aria-label="所选来源依据">
-                <strong>{selectedEvidence.path}</strong>
-                <p>{selectedEvidence.note}</p>
-                <span>
-                  位置：第 {selectedEvidence.line_start}–{selectedEvidence.line_end} 行
-                </span>
-                <span>版本：{selectedEvidence.source_snapshot_id}</span>
-                <small>SHA-256：{selectedEvidence.content_sha256}</small>
-                <SourceExcerpt evidence={selectedEvidence} />
+                <div className="evidence-location-head">
+                  <strong title={selectedEvidence.path}>{selectedEvidence.path}</strong>
+                  <span className="evidence-line-pill">
+                    第 {selectedEvidence.line_start}–{selectedEvidence.line_end} 行
+                  </span>
+                </div>
+                {selectedEvidence.note && <p className="evidence-location-note">{selectedEvidence.note}</p>}
+                <SourceExcerpt evidence={selectedEvidence} hidePath />
               </article>
             )}
             {Boolean(developmentEvidence) && development}

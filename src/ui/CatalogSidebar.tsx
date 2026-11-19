@@ -81,7 +81,9 @@ export function CatalogSidebar({
       <div className="pane-heading">
         <span>{reading.entrance === 'overview' ? '深入阅读' : '功能与场景'}</span>
         <button className="icon" aria-label="收起目录" title="隐藏导航" onClick={onHide}>
-          ‹
+          <svg className="arc-ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M10 3.5 5.5 8 10 12.5" />
+          </svg>
         </button>
       </div>
       <ScrollPanel positions={reading.scroll} restoreKey={loadedKey} onPosition={savePosition} name="catalog">

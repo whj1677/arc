@@ -1675,7 +1675,10 @@ function App() {
                     }
                   }}
                 >
-                  ☰
+                  <svg className="arc-ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="2" y="2.5" width="12" height="11" rx="2" />
+                    <path d="M6 2.5v11" />
+                  </svg>
                 </button>
                 {reading.entrance === 'walk' && !catalogReading && (
                   <button className="back-to-catalog" onClick={() => setEntrance('walk')}>
@@ -1978,7 +1981,9 @@ function App() {
           <div className="modal-heading">
             <h2>{modalTitles[modal]}</h2>
             <button className="icon" aria-label="关闭对话框" disabled={pending} onClick={() => setModal('')}>
-              ×
+              <svg className="arc-ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+                <path d="M4 4l8 8M12 4l-8 8" />
+              </svg>
             </button>
           </div>
           {modal === 'settings' ? (
