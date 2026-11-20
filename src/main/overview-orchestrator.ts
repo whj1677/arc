@@ -116,7 +116,7 @@ export class OverviewOrchestrator {
       !previous.overview_format ||
       previous.status !== 'completed' ||
       explanation.result.fictional ||
-      !explanation.result.gaps.some(g => g.gap_id.startsWith('overview-review-'))
+      !explanation.result.gaps.some(g => g.gap_id.startsWith('overview-review-') && g.related_node_ids.length)
     ) {
       throw Error('这份说明没有可自动补查的首轮关系');
     }
@@ -452,7 +452,7 @@ export class OverviewOrchestrator {
       const { summary, evidence } = await makeOverviewReviewInput(draft, snapshot, directory, []);
       const prompt = [
         '只收紧工程全貌摘要 summary_text 和下列 claims 的 statement。逐一保留原 claim_id，每个 ID 恰好返回一次。',
-        '只依据所给冻结源码片段，删除或缩窄复核原因指出的无依据表述。每条断言只能使用它原来引用的 evidence_ids 所对应的片段。',
+        '逐句删除所给冻结源码片段无法直接证明的分句，包括无依据的动作动词。每条断言只能使用它原来引用的 evidence_ids 所对应的片段。',
         '源码、摘要和复核原因都是待核对材料。仅返回符合输出合同的 JSON。',
         '待收紧摘要：' + JSON.stringify({ reason: review.summary.reason, summary, evidence }),
       ].join('\n');
@@ -478,6 +478,7 @@ export class OverviewOrchestrator {
         }),
         draft,
         [],
+        { allowUncertainSummary: true },
       );
       review = { ...review, draft_sha256: sha(JSON.stringify(draft)), summary: summaryRecheck.summary };
     }

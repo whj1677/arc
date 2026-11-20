@@ -259,7 +259,7 @@ function reviewReply(options:RunnerOptions,rejectSave=false){
 }
 
 test('overview tightens a rejected summary once and publishes only after independent recheck',async t=>{
-  for(const verdict of ['supported','contradicted','cancelled'] as const)await t.test(verdict,async t=>{
+  for(const verdict of ['supported','uncertain','contradicted','cancelled'] as const)await t.test(verdict,async t=>{
     const phases:string[]=[];
     const reason='冻结源码只有内存写入，没有数据库持久化依据。';
     const summaryText='提交的字符串加入 records 数组。',statement='save 调用 records.push(value)。';
@@ -315,6 +315,20 @@ test('overview tightens a rejected summary once and publishes only after indepen
       assert.deepEqual(saved[0].result.edges,expected.edges);
       assert.deepEqual(saved[0].result.feature_catalog,expected.feature_catalog);
       assert.deepEqual(saved[0].result.summary,expected.summary);
+      const summaryGaps=saved[0].result.gaps.filter(gap=>gap.gap_id==='overview-review-summary');
+      const summaryClaim=saved[0].result.claims.find(claim=>claim.claim_id===summaryClaimId)!;
+      const originalLimitations=expected.claims.find(claim=>claim.claim_id===summaryClaimId)!.limitations;
+      if(verdict==='uncertain'){
+        assert.equal(summaryGaps.length,1);
+        assert.equal(summaryGaps[0].reason,reason);
+        assert.deepEqual(summaryGaps[0].related_node_ids,[]);
+        assert.deepEqual(summaryGaps[0].related_edge_ids,[]);
+        assert.deepEqual(summaryClaim.limitations,[...originalLimitations,`独立复核提示摘要仍有未完全覆盖的细节：${reason}`]);
+        await assert.rejects(service.researchOverview(saved[0].result_id,'summary-only-gap'),/没有可自动补查的首轮关系/);
+      }else{
+        assert.equal(summaryGaps.length,0);
+        assert.deepEqual(summaryClaim.limitations,originalLimitations);
+      }
     }
   });
 });

@@ -62,7 +62,7 @@ ${overviewRelationSemantics}
 待复核输入：${JSON.stringify(input)}`;
 }
 
-export function parseOverviewReview(value:unknown,result:AnalysisResult,edgeIds?:readonly string[],options?:{allowUnverifiedSummary?:boolean}):OverviewReview{
+export function parseOverviewReview(value:unknown,result:AnalysisResult,edgeIds?:readonly string[],options?:{allowUnverifiedSummary?:boolean;allowUncertainSummary?:boolean}):OverviewReview{
   if(!validate(value))throw Error('工程全貌复核格式错误：'+(validate.errors||[]).slice(0,12).map(error=>`${error.instancePath}: ${error.message}`).join('; '));
   const review=value as OverviewReview;
   if(review.run_id!==result.binding.run_id||review.source_snapshot_id!==result.binding.source_snapshot_id||review.draft_sha256!==sha(JSON.stringify(result)))throw Error('工程全貌复核与任务、冻结快照或草稿哈希不匹配');
@@ -74,12 +74,12 @@ export function parseOverviewReview(value:unknown,result:AnalysisResult,edgeIds?
     if(item.evidence_ids.some(id=>!edge.evidence_ids.includes(id))||(item.verdict==='supported'&&!item.evidence_ids.length))throw Error(`工程全貌复核必须引用本条关系的原始依据：${item.edge_id}`);
   }
   if(seen.size!==edges.size)throw Error('工程全貌复核遗漏关系');
-  if(!options?.allowUnverifiedSummary&&review.summary.verdict!=='supported')throw Error(`工程全貌摘要未通过语义复核（${review.summary.verdict}）：${review.summary.reason}`);
+  if(!options?.allowUnverifiedSummary&&(review.summary.verdict==='contradicted'||(review.summary.verdict==='uncertain'&&!options?.allowUncertainSummary)))throw Error(`工程全貌摘要未通过语义复核（${review.summary.verdict}）：${review.summary.reason}`);
   return review;
 }
 
 export function applyOverviewReview(value:unknown,result:AnalysisResult):{result:AnalysisResult;excluded:number;checked:number}{
-  const review=parseOverviewReview(value,result),edges=new Map(result.edges.map(edge=>[edge.edge_id,edge]));
+  const review=parseOverviewReview(value,result,undefined,{allowUncertainSummary:true}),edges=new Map(result.edges.map(edge=>[edge.edge_id,edge]));
   const rejected=review.relations.filter(item=>item.verdict!=='supported'),removedEdges=new Set(rejected.map(item=>item.edge_id));
   const keptEdges=result.edges.filter(edge=>!removedEdges.has(edge.edge_id));
   if(keptEdges.some(edge=>edge.related_call_edge_id&&removedEdges.has(edge.related_call_edge_id)))throw Error('工程全貌复核不能剔除仍被返回关系引用的调用');
@@ -99,14 +99,26 @@ export function applyOverviewReview(value:unknown,result:AnalysisResult):{result
     removedClaims.add(claim.claim_id);
   }
   const copy=structuredClone(result),gapIds=new Set(copy.gaps.map(gap=>gap.gap_id));
-  const gaps=rejected.map(item=>{
+  let claims=copy.claims.filter(claim=>!removedClaims.has(claim.claim_id));
+  const gaps:AnalysisResult['gaps'][number][]=rejected.map(item=>{
     const edge=edges.get(item.edge_id)!;
     let gapId=`overview-review-${sha(edge.edge_id).slice(0,16)}`;while(gapIds.has(gapId))gapId+='-r';gapIds.add(gapId);
     return {gap_id:gapId,kind:'other' as const,question:`关系 ${edge.edge_id}「${edge.label}」待确认：${item.reason}`,
       impact:`独立模型复核为 ${item.verdict}，已从正式关系中排除；模型复核不等于事实证明。`,
       suggested_action:'本次自动补查的已查位置和剩余限制见原因及源码依据；补查记录随分析保存，无需手工核对。',related_node_ids:[edge.source_node_id,edge.target_node_id],claim_ids:[],evidence_ids:[...edge.evidence_ids]};
   });
-  return {result:{...copy,edges:copy.edges.filter(edge=>!removedEdges.has(edge.edge_id)),claims:copy.claims.filter(claim=>!removedClaims.has(claim.claim_id)),
+  if(review.summary.verdict==='uncertain'){
+    const {reason}=review.summary;
+    if(!gapIds.has('overview-review-summary'))gaps.push({
+      gap_id:'overview-review-summary',kind:'other',question:'工程全貌摘要中有细节仍待进一步源码核对',reason,
+      impact:'已保留通过校验的架构与功能目录；摘要中的概括细节尚未在当前片段完全证明。',
+      suggested_action:'进一步核对摘要所引源码。',related_node_ids:[],related_edge_ids:[],claim_ids:[],evidence_ids:[],
+    });
+    claims=claims.map(claim=>copy.summary.claim_ids.includes(claim.claim_id)
+      ?{...claim,limitations:[...claim.limitations,`独立复核提示摘要仍有未完全覆盖的细节：${reason}`]}
+      :claim);
+  }
+  return {result:{...copy,edges:copy.edges.filter(edge=>!removedEdges.has(edge.edge_id)),claims,
     ...(copy.architecture?{architecture:{...copy.architecture,edge_ids:copy.architecture.edge_ids.filter(id=>!removedEdges.has(id))}}:{}),
     gaps:[...copy.gaps,...gaps],coverage:{...copy.coverage,unresolved_scope:[...copy.coverage.unresolved_scope,...gaps.map(gap=>gap.question)]}},excluded:rejected.length,checked:review.relations.length};
 }

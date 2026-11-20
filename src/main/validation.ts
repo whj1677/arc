@@ -27,6 +27,7 @@ export async function validateResult(value: unknown, run: Run, snapshot: Snapsho
     groups[key]=map;
   }
   groups.related_node_ids=groups.node_ids;
+  groups.related_edge_ids=groups.edge_ids;
   function refs(obj: any) {
     if(!obj||typeof obj!=='object')return;
     for(const [key,values] of Object.entries(obj)) {
@@ -174,7 +175,7 @@ export function transportSchema(base:object=schema) {
 }
 export function normalizeTransport(value:any,audit:string[]=[] ) {
   const optional=new Set(['function_walkthroughs','reading_guide','function_details','flow_role','feature_catalog','readings','source_scope','architecture','transfers','parent_node_id','execution_episode_id','related_call_edge_id','condition','symbol_id','runtime_version','external_provider_id','external_session_id','external_thread_id','external_task_id','external_run_id']);
-  const referenceSets=new Set(['node_ids','edge_ids','io_ids','claim_ids','evidence_ids','related_node_ids']);
+  const referenceSets=new Set(['node_ids','edge_ids','io_ids','claim_ids','evidence_ids','related_node_ids','related_edge_ids']);
   function visit(v:any,where=''){if(!v||typeof v!=='object')return;for(const k of Object.keys(v)){
     if(v[k]===null&&optional.has(k)){delete v[k];audit.push(`${where}/${k}: removed optional null`);}
     else if(referenceSets.has(k)&&Array.isArray(v[k])&&v[k].every((x:unknown)=>typeof x==='string')){

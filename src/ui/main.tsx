@@ -156,7 +156,7 @@ function App() {
         run.binding.project_id === projectId &&
         run.binding.scenario_id === scenarioId,
     );
-  const overviewReviewGaps = overviewRun?.overview_format && !result?.fictional ? result?.gaps.filter(gap => gap.gap_id.startsWith('overview-review-')) || [] : [];
+  const overviewReviewGaps = overviewRun?.overview_format && !result?.fictional ? result?.gaps.filter(gap => gap.gap_id.startsWith('overview-review-') && gap.related_node_ids.length) || [] : [];
 
   const catalogReading = reading.view === 'capabilities' || (reading.entrance === 'walk' && !scenarioId);
   const engineeringReading = ['engineering', 'materials'].includes(reading.view);
