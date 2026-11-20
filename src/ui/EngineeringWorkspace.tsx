@@ -23,6 +23,22 @@ const categoryNames:Record<ContextEntry['category'],string>={purpose:'工程概�
 const categoryQuestions:Record<ContextEntry['category'],string>={purpose:'这个工程服务谁、解决什么问题，能力边界在哪里？',build:'如何安装、启动、构建和验证？哪些命令只是发现，哪些实际执行过？',rule:'修改和运行时必须遵守哪些约束，哪些边界仍需确认？',technology:'使用什么运行环境、框架和外部依赖？',module:'系统由哪些模块组成，各自负责什么，应该去哪里修改？',interface:'模块之间通过什么 API、数据和事件协作，兼容约定是什么？',decision:'为什么选择当前实现，哪些方案和历史原因需要保留？',issue:'目前有哪些已知问题、风险和未覆盖范围？',plan:'本次准备如何实施，取舍、步骤和范围是什么？',architecture:'组件边界和协作关系是什么，变更会影响哪些部分？',design:'接口、数据和实现细节如何支撑目标？',verification_plan:'如何证明需求完成，哪些结果必须留下实际证据？'};
 const originNames={source:'源码 / 配置',document:'文档声明',user:'用户补充',agent:'Agent 归纳'};
 const when=(value:string)=>new Date(value).toLocaleString();
+const recordDay=new Intl.DateTimeFormat('zh-CN',{month:'2-digit',day:'2-digit'});
+const recordTime=new Intl.DateTimeFormat('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false});
+const verificationLabels={not_run:'未验证',passed:'验证通过',failed:'验证失败',partial:'部分验证',stale:'待复验'};
+function compactTimestamp(value:string){
+  const date=new Date(value);
+  return date.toDateString()===new Date().toDateString()?recordTime.format(date):recordDay.format(date);
+}
+function workflowLabel(task:EngineeringTask){
+  if(task.workflow==='ready')return '方案待确认';
+  if(task.workflow==='analysis'){
+    if(task.status==='pending')return '待分析';
+    if(task.status==='running')return '分析中';
+    return '需求分析 · '+stateNames[task.status];
+  }
+  return stateNames[task.status];
+}
 function toEvidence(source:ContextSource):SourceEvidence{return {evidence_id:`context:${source.path}:${source.line_start}`,source_snapshot_id:source.snapshot_id,path:source.path,line_start:source.line_start,line_end:source.line_end,content_sha256:source.content_sha256,role:'context',note:'工程上下文引用的冻结来源'};}
 function contextEntryTitle(entry:ContextEntry,label:string){if(entry.key.startsWith('initial:'))return label;const key=entry.key.replace(/^entry:/,''),[prefix,...rest]=key.split(':');return ['technology','module'].includes(prefix)&&rest.length?`${label} · ${rest.join(':')}`:key;}
 
@@ -238,7 +254,6 @@ export function EngineeringWorkspace({project,page,requestedTask,onTaskOpened,on
   const goalInput=useRef<HTMLTextAreaElement>(null);
   const [section,setSection]=useState<EngineeringSection>('tasks');
   const [recordMode,setMode]=useState<'new'|'records'>(focusGoal?'new':'records');
-  const mode=page==='materials'?'materials':!requestedTask&&tasksLoaded&&!tasks.length?'new':recordMode;
   const [goal,setGoal]=useState(''),[continuation,setContinuation]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
   const [dispatches,setDispatches]=useState<Dispatch[]>([]);
   const [taskAttempts,setAttempts]=useState<DevelopmentAttempt[]>([]),[taskEvents,setEvents]=useState<ActivityEvent[]>([]),[history,setHistory]=useState<EngineeringTask[]>([]),[historical,setHistorical]=useState<EngineeringTask|null>(null);
@@ -246,6 +261,7 @@ export function EngineeringWorkspace({project,page,requestedTask,onTaskOpened,on
   const [diff,setDiff]=useState<{path:string;before:string;after:string;truncated:boolean}|null>(null);
   useEffect(()=>{selectedTasks.set(project.project_id,selectedId);},[project.project_id,selectedId]);
   const current=tasks.find(t=>t.task_id===selectedId),task=historical||current;
+  const mode=page==='materials'?'materials':current?recordMode:'new';
   const attempts=taskAttempts.filter(item=>item.task_id===task?.task_id&&task.attempt_ids.includes(item.attempt_id));
   const events=taskEvents.filter(event=>attempts.some(item=>item.attempt_id===event.attempt_id));
   const latestAttempt=attempts.at(-1);
@@ -258,7 +274,13 @@ export function EngineeringWorkspace({project,page,requestedTask,onTaskOpened,on
   const latestWriteScope=attempts.findLast(attempt=>task?.attempt_ids.includes(attempt.attempt_id))?.write_scope;
   const reload=useCallback(async()=>{const values=await api.invoke<EngineeringTask[]>('engineering_tasks',{project_id:project.project_id,cached:true});if(alive.current){taskLists.set(project.project_id,values);setTasks(values);setTasksLoaded(true);setSelectedId(id=>values.some(t=>t.task_id===id)?id:'');}return values;},[project.project_id]);
   const taskSaved=(saved:EngineeringTask)=>setTasks(list=>list.map(item=>item.task_id===saved.task_id&&item.version<=saved.version?{...item,boundaries:saved.boundaries,version:saved.version,updated_at:saved.updated_at}:item));
-  const selectTask=(taskId:string,keepSection=false)=>{void api.invoke('reading_save',{key:'engineering-selection/'+project.project_id,value:{task_id:taskId,section:keepSection?section:'tasks'}}).catch(e=>setError(e.message));setMode('records');if(!keepSection||!taskId)setSection('tasks');setSelectedId(taskId);setHistorical(null);setContinuation(false);setDiff(null);if(taskId&&window.innerWidth<=850)requestAnimationFrame(()=>document.querySelector('.engineering-requirement-header')?.scrollIntoView({block:'start'}));};
+  const selectTask=(taskId:string,keepSection=false)=>{
+    void api.invoke('reading_save',{key:'engineering-selection/'+project.project_id,value:{task_id:taskId,section:keepSection?section:'tasks'}}).catch(e=>setError(e.message));
+    setMode('records');if(!keepSection||!taskId)setSection('tasks');
+    setSelectedId(taskId);setHistorical(null);setContinuation(false);setDiff(null);
+    if(!taskId)setGoal('');
+    if(window.innerWidth<900)requestAnimationFrame(()=>document.querySelector(taskId?'.engineering-requirement-header':'.engineering-list')?.scrollIntoView({block:'start'}));
+  };
   const newRequirement=(value='')=>{
     setNotice('');setError('');setMode('new');setHistorical(null);setContinuation(false);setGoal(value);setSection('tasks');
     requestAnimationFrame(()=>goalInput.current?.focus());
@@ -298,9 +320,8 @@ export function EngineeringWorkspace({project,page,requestedTask,onTaskOpened,on
     <div className="engineering-toolbar">
       <div>{mode==='materials'&&<span className="eyebrow">工程认知</span>}<h2>{mode==='materials'?'工程资料':'需求与开发'}</h2>
         <p>{mode==='materials'?'按认识工程、定位实现、约束与演变组织资料；来源和版本按需核对。':'从提出需求，到审阅方案、查看变更与验证证据。'}</p></div>
-      {mode!=='materials'&&tasks.length>0&&<div className="row engineering-toolbar-actions">
-        <button className={mode!=='new'?'primary':undefined} aria-pressed={mode==='new'} onClick={()=>mode==='new'?goalInput.current?.focus():newRequirement()}>提出新需求</button>
-        <button aria-pressed={mode==='records'&&!current} onClick={()=>selectTask('')}>全部记录 · {tasks.length}</button>
+      {mode!=='materials'&&<div className="row engineering-toolbar-actions">
+        <button className="primary" onClick={()=>mode==='new'?goalInput.current?.focus():newRequirement()}><span aria-hidden="true">＋ </span>提出新需求</button>
       </div>}
     </div>
 
@@ -308,26 +329,59 @@ export function EngineeringWorkspace({project,page,requestedTask,onTaskOpened,on
     {context?.workspace.status==='unbound'&&<p className="warning engineering-message">历史记录已恢复，但源码工作区尚未绑定。请到「连接 Agent → 工程管理与本地数据 → 接入与恢复」选择实际目录；恢复记录不等于恢复工程代码。</p>}
     {(mode==='materials'||showContext)&&!context&&!contextError&&<section className="engineering-context-panel engineering-materials-home"><div className="arc-skeleton-box" role="status"><span className="arc-skeleton-line wide" aria-hidden="true"/><span className="arc-skeleton-line medium" aria-hidden="true"/><span className="arc-skeleton-line short" aria-hidden="true"/><small>正在读取工程资料与当前工作区；大工程可能需要一些时间。</small></div></section>}
     {(mode==='materials'||showContext)&&context&&<section className={`engineering-context-panel ${mode==='materials'?'engineering-materials-home':''}`}><div className="row between"><h3>工程资料 · 版本 {context.version}</h3><button disabled={busy||checking} onClick={()=>void reloadContext(true)}>{checking?'正在检查…':'检查来源变化'}</button></div><ContextFacts context={context} reload={reloadContext}/>{context.next_offset!=null&&<button onClick={()=>void more()}>查看更多上下文</button>}</section>}
-    {mode==='records'&&task&&<section className="engineering-requirement-header"><div className="row between"><div><span className="eyebrow">开发任务</span><h2>{task.goal}</h2><div className="task-status-line"><span className="tag">{task.workflow==='ready'?'方案待确认':task.workflow==='analysis'?'需求分析 · '+stateNames[task.status]:stateNames[task.status]}</span><span className={`tag verification-${task.verification_status}`}>验证：{stateNames[task.verification_status]}</span>{task.execution_mode&&<span className="tag">{analysisModes[task.execution_mode].name}</span>}{!task.execution_mode&&task.analysis_channel==='dsh'&&<span className="tag">DeepSeek Harness</span>}<small>已保存 v{task.version}{historical?' · 历史版本':''}</small></div></div><div className="row"><button className="task-back-records" onClick={()=>selectTask('')}>返回记录</button>{inProgress&&!waitingMcp&&latestAttempt?.origin==='agent'&&latestDispatch?.state!=='queued'?<small>{current?.execution_mode==='mcp'?'请在原 Agent 中停止并回填取消结果。':'请在原 Agent 中停止执行；确认结束后在「连接 Agent」的派发记录中核对回执。'}</small>:inProgress?<button disabled={busy} onClick={()=>void action(()=>api.invoke('development_cancel',{task_id:current!.task_id}),'停止请求已发送，实际终态见记录')}>停止开发</button>:<button disabled={busy||!!historical} onClick={()=>{selectSection('tasks');setContinuation(true);setGoal(['failed','blocked','interrupted'].includes(task.status)?'处理本任务的阻碍后继续完成目标，并重新验证。':'');requestAnimationFrame(()=>goalInput.current?.focus());}}>继续此任务</button>}<button disabled={busy} onClick={()=>{selectSection('tasks');void showHistory();}}>版本历史</button>{task.reading&&!historical&&<button onClick={()=>onReading(task)}>返回关联功能走读</button>}</div></div>{waitingMcp&&!historical&&<p role="status">等待外部 Agent 领取。在已接入 ARC MCP 的对话中领取任务 <code>{task.task_id}</code>。 <button onClick={onSettings}>连接 Agent</button></p>}{task.reading?.evidence&&<p aria-label="关联源码位置">关联源码 · <code>{task.reading.evidence.path}:{task.reading.evidence.line_start}–{task.reading.evidence.line_end}</code></p>}{!historical&&(latestDispatch||panelAttempt)&&<DevelopmentActivity key={latestDispatch?.dispatch_id||panelAttempt?.attempt_id} dispatch={latestDispatch} attempt={panelAttempt} task={task} events={events} onSettings={onSettings}/>} {current?.workflow==='ready'&&!historical&&<PlanDecision key={task.task_id} task={task} busy={busy} error={error} onTaskSaved={taskSaved} onDecision={(snapshot,revision)=>void decide(snapshot,revision)}/>}</section>}
-{mode==='records'&&current&&section!=='tasks'&&<EngineeringSections taskId={selectedId} projectId={project.project_id} section={section} onSection={selectSection} tasks={tasks} onTask={id=>selectTask(id,true)} onArchitecture={onArchitecture} onDevelop={newRequirement}/>}
-    {mode!=='materials'&&<div className="engineering-columns" style={{display:mode==='new'||!current||section==='tasks'?undefined:'none'}}><aside className="engineering-list">
+    {mode!=='materials'&&<div className="engineering-columns"><aside className="engineering-list">
       <div className="engineering-list-heading"><h3>开发记录</h3><span className="tag">{visible.length}</span></div>
-      {tasks.length>0?<><label>查找记录<input aria-label="搜索工程记录" placeholder="目标、文件、决定或未完成项" value={query} onChange={e=>setQuery(e.target.value)}/></label>
-        <select aria-label="工程记录状态" value={filter} onChange={e=>setFilter(e.target.value)}><option value="">所有状态</option>{['running','completed','failed','blocked','cancelled','interrupted'].map(state=><option key={state} value={state}>{stateNames[state]}</option>)}</select>
+      {tasks.length>0?<><div className="engineering-list-filters">
+          <input type="search" aria-label="搜索工程记录" placeholder="搜索开发记录" value={query} onChange={e=>setQuery(e.target.value)}/>
+          <select aria-label="工程记录状态" value={filter} onChange={e=>setFilter(e.target.value)}><option value="">所有状态</option>{['pending','running','completed','failed','blocked','cancelled','interrupted'].map(state=><option key={state} value={state}>{stateNames[state]}</option>)}</select>
+        </div>
         <div className="engineering-task-list">{visible.map(item=>{
           const selected=mode==='records'&&selectedId===item.task_id;
           return <button key={item.task_id} className={`engineering-task-row ${selected?'selected':''}`} data-task-status={item.status} data-verification-status={item.verification_status} aria-pressed={selected} onClick={()=>selectTask(item.task_id)}>
-            <strong>{item.goal}</strong><span className="engineering-task-status"><i className="task-status-dot" aria-hidden="true"/>{item.workflow==='ready'?'方案待确认':item.workflow==='analysis'?'需求分析 · '+stateNames[item.status]:stateNames[item.status]} · 验证{stateNames[item.verification_status]}</span>
-            {item.summary&&<span className="engineering-task-summary">{item.summary}</span>}<small>{item.changes.length} 文件 · {item.verification.length} 验证 · {when(item.updated_at)}</small>
+            <strong title={item.goal}>{item.goal}</strong>
+            <span className="engineering-task-meta">
+              <i className="task-status-dot" aria-hidden="true"/>
+              <span className="engineering-task-status" title={workflowLabel(item)+' · 验证'+stateNames[item.verification_status]}>{workflowLabel(item)} · {verificationLabels[item.verification_status]}</span>
+              <time dateTime={item.updated_at} title={when(item.updated_at)}>{compactTimestamp(item.updated_at)}</time>
+              <span>{item.changes.length} 文件</span>
+            </span>
           </button>;
         })}{!visible.length&&<p className="muted">暂无符合条件的记录。</p>}</div></>:
         tasksLoaded&&<div className="engineering-list-empty"><strong>暂无开发记录</strong><p>提交后，可在这里查看需求、方案、代码差异和验证记录。</p></div>}
-    </aside><section className="engineering-task-detail" aria-label="工程任务详情">
-      {mode==='new'?<RequirementComposer context={context} defaultEngine={defaultEngine} onEngineChange={onEngineChange} enginePending={enginePending}
+    </aside><section className="engineering-task-detail" key={mode==='new'?'new':selectedId} aria-label="工程任务详情"
+      onFocusCapture={mode==='new'?()=>setMode('new'):undefined}>
+      {mode==='new'||!task?<RequirementComposer context={context} defaultEngine={defaultEngine} onEngineChange={onEngineChange} enginePending={enginePending}
         onSettings={onSettings} goal={goal} onGoalChange={setGoal} goalInput={goalInput} busy={busy} disabled={cannotStart}
-        onSubmit={start} onCancel={tasks.length?()=>selectTask(current?.task_id??visible[0]?.task_id??''):undefined}/>:
-        !tasksLoaded?<p className="muted" role="status">正在读取开发记录…</p>:
-        !task?<div className="engineering-empty"><h3>选择已有需求</h3><p>选择左侧记录后，查看该需求的方案、任务步骤与验证证据。</p></div>:<>
+        onSubmit={start} onCancel={tasks.length?()=>selectTask((current??visible[0]??tasks[0]).task_id):undefined}/>:<>
+        <header className="engineering-requirement-header">
+          <h2>{task.goal}</h2>
+          <div className="task-header-meta">
+            <div className="task-status-line">
+              <span className="tag">{workflowLabel(task)}</span>
+              <span className={`tag verification-${task.verification_status}`}>验证：{stateNames[task.verification_status]}</span>
+              {task.execution_mode&&<span className="tag">{analysisModes[task.execution_mode].name}</span>}
+              {!task.execution_mode&&task.analysis_channel==='dsh'&&<span className="tag">DeepSeek Harness</span>}
+              <small>已保存 v{task.version}{historical?' · 历史版本':''}</small>
+            </div>
+            <div className="task-header-actions">
+              <button className="task-back-records" onClick={()=>selectTask('')}>返回记录</button>
+              {task.reading&&!historical&&<button onClick={()=>onReading(task)}>返回关联功能走读</button>}
+              <button disabled={busy} onClick={()=>{selectSection('tasks');void showHistory();}}>版本历史</button>
+              {inProgress&&!waitingMcp&&latestAttempt?.origin==='agent'&&latestDispatch?.state!=='queued'?
+                <small>{current?.execution_mode==='mcp'?'请在原 Agent 中停止并回填取消结果。':'请在原 Agent 中停止执行；确认结束后在「连接 Agent」的派发记录中核对回执。'}</small>:
+                inProgress?<button disabled={busy} onClick={()=>void action(()=>api.invoke('development_cancel',{task_id:current!.task_id}),'停止请求已发送，实际终态见记录')}>停止开发</button>:
+                <button className={task.workflow==='ready'?undefined:'primary'} disabled={busy||!!historical} onClick={()=>{
+                  selectSection('tasks');setContinuation(true);setGoal(['failed','blocked','interrupted'].includes(task.status)?'处理本任务的阻碍后继续完成目标，并重新验证。':'');
+                  requestAnimationFrame(()=>goalInput.current?.focus());
+                }}>继续此任务</button>}
+              {current?.workflow==='ready'&&!historical&&<PlanDecision key={task.task_id} task={task} busy={busy} error={error} onTaskSaved={taskSaved} onDecision={(snapshot,revision)=>void decide(snapshot,revision)}/>}
+            </div>
+          </div>
+          {waitingMcp&&!historical&&<p role="status">等待外部 Agent 领取。在已接入 ARC MCP 的对话中领取任务 <code>{task.task_id}</code>。 <button onClick={onSettings}>连接 Agent</button></p>}
+          {task.reading?.evidence&&<p aria-label="关联源码位置">关联源码 · <code>{task.reading.evidence.path}:{task.reading.evidence.line_start}–{task.reading.evidence.line_end}</code></p>}
+        </header>
+        {!historical&&(latestDispatch||panelAttempt)&&<DevelopmentActivity key={latestDispatch?.dispatch_id||panelAttempt?.attempt_id} dispatch={latestDispatch} attempt={panelAttempt} task={task} events={events} onSettings={onSettings}/>}
+        {section!=='tasks'?<EngineeringSections taskId={selectedId} projectId={project.project_id} section={section} onSection={selectSection} tasks={tasks} onTask={id=>selectTask(id,true)} onArchitecture={onArchitecture} onDevelop={newRequirement}/>:<>
         {continuation&&!historical&&<form className="development-form continuation-card" onSubmit={e=>{e.preventDefault();void start();}}>
           <div className="row between"><h3>继续当前任务</h3><small>{analysisModes[requestEngine].name} · 只读分析</small></div>
           <label htmlFor="development-goal">补充要求或修复目标</label>
@@ -352,6 +406,7 @@ export function EngineeringWorkspace({project,page,requestedTask,onTaskOpened,on
         <section id={`${task.task_id}-plan`} className="task-model-section"><header><span>03</span><div><h3>影响与方案</h3><p>查看实施步骤、允许修改的范围和关键取舍；计划不等同于实际变更。</p></div></header><div className="task-impact-facts"><span>范围 {(latestWriteScope??task.proposed_scope??task.scope).length} 个文件</span><span>已有改动重叠 {task.changes.filter(change=>change.ownership==='preexisting_overlap').length} 项</span><span>风险与遗留 {task.unresolved.length} 项</span></div>{!!task.steps?.length?<div className="development-steps" aria-label="修改方案与步骤">{task.steps.map(step=><article className={`development-step ${step.status==='superseded'?'superseded':''}`} data-step-id={step.step_id} key={step.step_id}><div className="row between"><strong>{step.title}</strong><span className="tag">{stepStateNames[step.status]}</span></div><p>{step.change}</p><p className="development-step-progress">{step.progress}</p><small>检查：{stateNames[step.verification_status??'not_run']}</small><ul>{step.criteria.map(criterion=><li data-criterion-id={criterion.criterion_id} key={criterion.criterion_id}>{criterion.text}<small>{criterion.evidence_ids.length?` · ${criterion.evidence_ids.length} 条关联证据`:' · 尚无证据'}</small></li>)}</ul>{step.unresolved.length>0&&<ul className="warning">{step.unresolved.map((item,index)=><li key={index}>{item}</li>)}</ul>}</article>)}</div>:<p className="muted">尚未保存实施步骤。</p>}{!!latestWriteScope?.length&&<details><summary>本次允许修改 · {latestWriteScope.length} 个文件</summary><ul>{latestWriteScope.map(file=><li key={file}><code>{file}</code></li>)}</ul></details>}{task.decisions.length>0&&<details><summary>修改依据与关键决定 · {task.decisions.length}</summary><ul>{task.decisions.map((item,i)=><li key={i}>{item}</li>)}</ul></details>}</section>
         <section id={`${task.task_id}-changes`} className="task-model-section"><header><span>04</span><div><h3>实际变更</h3><p>只展示 ARC 实际捕获的文件差异与执行活动，不用计划代替结果。</p></div><span className="tag">{task.changes.length} 个文件</span></header>{task.changes_status==='needs_review'&&<p className="warning">差异归属待核查，不能自动把当前全部差异归为本任务成果。</p>}{task.changes_status!=='needs_review'&&task.changes.length>0?<><ul className="engineering-changes">{task.changes.map(change=><li key={change.path}><div className="engineering-change-info"><strong>{change.path}</strong>{change.ownership==='preexisting_overlap'&&<span className="warning">含开始前已有改动，不能全部归为本任务</span>}<small>{change.before_sha256?.slice(0,12)||'新增'} → {change.after_sha256?.slice(0,12)||'删除'}</small></div><div className="engineering-change-action">{change.text_diff_unavailable?<small>仅记录内容哈希</small>:<button disabled={!!historical} onClick={()=>void action(async()=>setDiff(await api.invoke('engineering_diff',{task_id:task.task_id,path:change.path})))}>查看修改前后</button>}</div></li>)}</ul>{diff&&<TextDiffView path={diff.path} before={diff.before} after={diff.after} truncated={diff.truncated} onClose={()=>setDiff(null)}/>}</>:!inProgress&&<p className="muted">尚未捕获到可归属于本任务的文件变更。</p>}{attempts.length>0&&<details><summary>执行与活动 · {attempts.length} 次</summary>{attempts.map(item=><p key={item.attempt_id}>{item.provider_id} · {item.model} · {stateNames[item.status]}{item.error&&<span className="warning"> · {item.error}</span>}{item.log_path&&<button onClick={()=>void action(async()=>setLog((await api.invoke<{text:string}>('engineering_log',{task_id:task.task_id,path:item.log_path})).text))}>查看执行诊断</button>}</p>)}<ol className="engineering-events">{events.filter(event=>publicActivity(event)).slice(-30).map((event,i)=><li key={i}><small>{when(event.received_at)}</small><p>{publicActivity(event)}</p></li>)}</ol></details>}</section>
         <section id={`${task.task_id}-verification`} className="task-model-section"><header><span>05</span><div><h3>验证与遗留</h3><p>把验收条件连接到实际证据；未运行、失败和代码已变化都明确保留。</p></div><span className={`tag verification-${task.verification_status}`}>{stateNames[task.verification_status]}</span></header>{!task.verification.length?<p className="muted">尚未保存验证记录，不能视为通过。</p>:task.verification.map(item=><article className="engineering-verification" key={item.evidence_id}><strong>{verificationEvidenceLabel(item)} · {item.command}</strong><small>{item.origin==='observed'?'已观测命令执行':'Agent 上报，未独立执行核验'} · exit {item.exit_code??'未取得'} · {when(item.created_at)}</small>{item.step_id&&<small>步骤：{task.steps?.find(step=>step.step_id===item.step_id)?.title||item.step_id}{item.criterion_id?` · 条件 ${item.criterion_id}`:''}</small>}<small className="path">{item.cwd}</small>{item.note&&<p>{item.note}</p>}<details><summary>对应代码状态</summary><p className="path">{item.code_state.fingerprint}</p></details>{item.log_path&&<button onClick={()=>void action(async()=>setLog((await api.invoke<{text:string}>('engineering_log',{task_id:task.task_id,path:item.log_path})).text))}>查看验证日志</button>}</article>)}{task.unresolved.length>0?<div className="task-unresolved"><h4>待处理事项 · {task.unresolved.length}</h4><ul>{task.unresolved.map((item,i)=><li key={i}>{item}</li>)}</ul></div>:<p className="task-no-unresolved">没有单独记录的遗留事项；仍以实际验证覆盖范围为准。</p>}{log&&<section className="engineering-log"><div className="row between"><h3>验证日志</h3><button onClick={()=>setLog('')}>关闭日志</button></div><pre>{log}</pre></section>}</section><details className="task-additional-records"><summary>补充资料与独立文档</summary><p>简单任务无需单独文档。确有需要时，再补充实施方案、架构变更、详细设计或验证计划。</p><div className="row">{([['plan','实施方案'],['architecture','架构变更'],['design','详细设计'],['verification_plan','验证计划']] as [EngineeringSection,string][]).map(([id,label])=><button key={id} onClick={()=>selectSection(id)}>{label}</button>)}</div></details>
+        </>}
       </>}
     </section></div>}
   </main>;

@@ -2049,13 +2049,37 @@ dialog::backdrop {
   margin: 2px 0 0;
 }
 .engineering-requirement-header {
-  padding: 12px 22px;
-  background: var(--surface-tint);
+  margin-bottom: 12px;
+  padding: 0 0 10px;
   border-bottom: 1px solid var(--border);
 }
 .engineering-requirement-header h2 {
-  font-size: 16.5px;
-  line-height: 1.4;
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 580;
+  line-height: 1.45;
+}
+.task-header-meta, .task-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.task-header-meta { justify-content: space-between; }
+.task-header-meta .task-status-line, .task-header-actions .plan-decision { margin: 0; }
+.task-status-line .tag, .task-status-line small { white-space: nowrap; }
+.task-status-line small { font-size: 12px; }
+.task-status-line .verification-passed { color: var(--accent); background: var(--soft); }
+.task-status-line :is(.verification-failed, .verification-stale) { color: var(--amber); background: var(--amber-bg); }
+.task-header-actions > button, .task-header-actions .plan-decision > button {
+  min-height: 28px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.task-header-actions > button:not(.primary):not(:hover) {
+  color: var(--ink-secondary);
+  background: transparent;
+  border-color: transparent;
 }
 
 /* Engineering Materials: Paper Card & Right-Aligned Actions */
@@ -2124,19 +2148,26 @@ dialog::backdrop {
   padding: 0 0 10px;
   border-bottom: 1px solid var(--border-subtle);
 }
-.engineering-list > label {
-  margin-top: 10px;
+.engineering-list-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  margin: 9px 0;
+}
+.engineering-list-filters :is(input, select) {
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 7px;
   font-size: 12px;
-  color: var(--muted);
 }
 .engineering-task-list {
   gap: 7px;
   margin-top: 8px;
 }
 .engineering-task-row {
-  padding: 10px 12px;
-  gap: 4px;
-  border-radius: 9px;
+  padding: 8px 10px;
+  gap: 5px;
+  border-radius: 7px;
   border: 1px solid var(--border-subtle);
   background: var(--surface);
   box-shadow: var(--shadow-xs);
@@ -2151,17 +2182,27 @@ dialog::backdrop {
   box-shadow: inset 3px 0 var(--accent), var(--shadow-xs);
 }
 .engineering-task-row strong {
-  font-size: 13.5px;
-  font-weight: 600;
-  line-height: 1.45;
+  min-height: 2lh;
+  font-size: 13px;
+  font-weight: 580;
+  line-height: 1.4;
   -webkit-line-clamp: 2;
 }
-.engineering-task-status {
-  display: inline-flex;
+.engineering-task-meta {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  min-width: 0;
+  white-space: nowrap;
   font-size: 11.5px;
-  color: var(--ink-secondary);
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.engineering-task-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .task-status-dot {
   width: 7px;
@@ -2185,16 +2226,6 @@ dialog::backdrop {
 .engineering-task-row[data-task-status="failed"] .task-status-dot,
 .engineering-task-row[data-verification-status="failed"] .task-status-dot {
   background: var(--danger);
-}
-.engineering-task-summary {
-  font-size: 12px;
-  color: var(--muted);
-  -webkit-line-clamp: 1;
-}
-.engineering-task-row small {
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--muted);
 }
 
 /* Task Detail & Changed Files Row (No Full-Width Stretched Button!) */

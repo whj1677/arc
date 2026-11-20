@@ -158,7 +158,7 @@ export function PlanDecision({task,busy,error,onDecision,onTaskSaved}:{task:Engi
   const stale=snapshot.version!==task.version;
   const scope=snapshot.proposed_scope??snapshot.scope;
   const refresh=()=>{setSnapshot(task);setFeedback('');};
-  return <div className="plan-decision"><button type="button" onClick={()=>{refresh();dialog.current?.showModal();}}>审阅待确认方案</button>
+  return <div className="plan-decision"><button type="button" className="primary" onClick={()=>{refresh();dialog.current?.showModal();}}>审阅待确认方案</button>
     <dialog ref={dialog} aria-label="确认开发方案"><header><h3>确认开发方案 <small>v{snapshot.version}</small></h3><button type="button" onClick={()=>dialog.current?.close()}>稍后处理</button></header>
       <div className="engineering-approval">
         {stale&&<div role="alert">任务已更新至 v{task.version}，当前展示 v{snapshot.version}。<button disabled={busy} onClick={refresh}>查看最新版本</button></div>}

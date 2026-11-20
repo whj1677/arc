@@ -1,176 +1,135 @@
 .requirement-composer {
-  --composer-gutter: clamp(16px, 2.1vw, 32px);
-  container-type: inline-size;
+  --composer-gutter: clamp(14px, 1.5vw, 22px);
   width: 100%;
   max-width: 72rem;
+  min-width: 0;
   margin: 0 auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
   box-shadow: var(--shadow-xs);
   color: var(--ink);
-  font-size: 15px;
-  line-height: 1.7;
+  font-size: 13px;
+  line-height: 1.6;
 }
 .composer-heading, .composer-body, .composer-footer { padding-inline: var(--composer-gutter); }
-.composer-heading { padding-block: 20px 18px; border-bottom: 1px solid var(--border); }
-.requirement-composer .composer-heading h2 { margin: 0 0 16px; font-size: 22px; font-weight: 560; line-height: 1.45; }
-.composer-steps {
-  display: grid;
-  grid-template-columns: repeat(4,minmax(0,1fr));
-  gap: 10px;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.composer-steps li {
-  display: grid;
-  grid-template-columns: 27px minmax(0,1fr);
-  align-items: center;
-  gap: 6px 10px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.55;
-}
-.composer-steps li:not(:last-child)::after {
-  content: '';
-  grid-column: 2;
-  grid-row: 1;
-  height: 1px;
-  background: var(--border);
-}
-.composer-steps b {
-  display: grid;
-  place-items: center;
-  height: 24px;
-  border-radius: 5px;
-  background: var(--bg);
-  color: var(--muted);
-  font: 530 12px/1 var(--font-mono);
-}
-.composer-steps span { grid-column: 1/-1; }
-.composer-steps [aria-current=step] { color: var(--accent); font-weight: 580; }
-.composer-steps [aria-current=step] b { color: var(--surface); background: var(--accent); }
-
-.composer-body { padding-block: 19px 17px; }
-.composer-input-heading, .composer-footer, .composer-footer>div, .composer-starters {
+.composer-heading, .composer-footer, .composer-footer > div, .composer-phases,
+.composer-starters, .composer-scope-options, .composer-scope-editor,
+.composer-exec-strip, .composer-engine-controls, .composer-commands {
   display: flex;
   align-items: center;
-  gap: 8px;
   flex-wrap: wrap;
+  gap: 6px;
 }
-.composer-input-heading { justify-content: space-between; margin-bottom: 8px; }
-.composer-input-heading label { display: inline; margin: 0; font-size: 17px; font-weight: 560; }
-.composer-input-heading small, .composer-footer small { font-size: 12px; color: var(--muted); }
-.composer-input-heading kbd { font: 12px var(--font-mono); }
+.composer-heading, .composer-footer { justify-content: space-between; gap: 6px 14px; }
+.composer-heading { padding-block: 13px; border-bottom: 1px solid var(--border-subtle); }
+.requirement-composer .composer-heading h2 { margin: 0; font-size: 15px; font-weight: 580; }
+.composer-phases { margin: 0; padding: 0; list-style: none; font-size: 12px; color: var(--muted); gap: 2px 5px; }
+.composer-phases li { white-space: nowrap; }
+.composer-phases li[aria-current] { color: var(--ink-secondary); }
+
+.composer-body { padding-block: 16px; }
+.composer-goal-label, .requirement-composer .composer-boundaries h3 {
+  display: block;
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  font-weight: 580;
+}
 .composer-body textarea {
   display: block;
   width: 100%;
-  min-height: 8.5rem;
-  padding: 12px 14px;
-  border-color: var(--border-strong);
-  border-radius: var(--radius-md);
-  font-size: 16px;
-  line-height: 1.85;
+  min-height: 7rem;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  line-height: 1.65;
 }
-.composer-body textarea:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
-.composer-starters { margin-top: 9px; gap: 6px; }
-.composer-starters button {
-  min-height: 27px;
-  padding: 2px 11px;
+.composer-starters { margin-top: 7px; }
+.composer-starters button, .composer-scope-options > button {
+  min-height: 26px;
+  padding: 3px 10px;
   border-color: var(--border);
-  border-radius: 20px;
   color: var(--ink-secondary);
-  font-size: 13px;
+  font-size: 12px;
 }
-.composer-starters button:hover { background: var(--soft); border-color: var(--border-strong); color: var(--accent); }
-.composer-starters button[aria-pressed=true] {
+.composer-starters button { border-radius: 999px; }
+.composer-starters button:hover, .composer-scope-options > button:hover { background: var(--surface-tint); border-color: var(--border-strong); }
+.composer-starters button[aria-pressed=true], .composer-scope-options > button[aria-pressed=true] {
   border-color: var(--accent);
   background: var(--soft);
   color: var(--accent);
-  font-weight: 580;
 }
-.composer-boundaries.task-boundaries { padding: 13px 0; margin: 15px 0 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; }
-.composer-boundaries .boundary-heading { gap: 6px 12px; margin: 0; }
-.composer-boundaries .boundary-heading h4 { font-size: 15px; }
-.composer-boundaries .boundary-heading small { font-size: 13px; font-weight: 400; }
-.composer-boundaries .boundary-row { margin-top: 6px; }
-.composer-boundaries .boundary-add { padding: 3px 0; font-size: 13px; }
-.composer-boundaries .boundary-non_goals { color: var(--accent); }
-.composer-boundaries .boundary-form input { width: auto; }
+.composer-boundaries { margin: 15px 0; padding-top: 13px; border-top: 1px solid var(--border-subtle); }
+.composer-boundaries h3 small { color: var(--muted); font-size: 12px; font-weight: 400; }
+.composer-scope-options > button { border-radius: var(--radius-sm); max-width: 100%; text-align: left; overflow-wrap: anywhere; }
+.composer-scope::before { content: '+' / ''; display: inline-block; width: 1.2em; }
+.composer-scope[aria-pressed=true]::before { content: '✓' / ''; }
+.composer-scope-options .composer-custom { border-style: dashed; background: transparent; color: var(--muted); }
+.composer-scope-editor { flex: 1 1 23rem; min-width: 0; }
+.composer-scope-editor input { flex: 1 1 13rem; max-width: 33rem; padding: 5px 9px; }
+.composer-scope-editor button { min-height: 28px; padding: 3px 8px; }
+.composer-boundaries p { margin: 5px 0 0; }
 
-.composer-context {
-  padding: 13px 16px 11px;
-  background: var(--surface-tint);
+.composer-exec-strip {
+  gap: 5px 14px;
+  min-height: 56px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
+  background: var(--surface-tint);
+  color: var(--muted);
+  font-size: 12px;
 }
-.requirement-composer .composer-context h3 { margin: 0 0 8px; font-size: 15px; font-weight: 560; }
-.composer-context dl {
-  display: grid;
-  grid-template-columns: max-content minmax(0,1fr);
-  align-items: baseline;
-  gap: 6px 16px;
-  margin: 0;
-  font-size: 13px;
-}
-.composer-context dt, .composer-context>p { color: var(--muted); }
-.composer-context dt { margin: 0; }
-.composer-context dd { min-width: 0; margin: 0; color: var(--ink-secondary); display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; overflow-wrap: anywhere; }
 .composer-engines {
   display: inline-flex;
-  gap: 2px;
   padding: 2px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
   background: var(--surface);
 }
 .composer-engines button {
-  min-height: 25px;
-  padding: 2px 10px;
+  min-height: 23px;
+  padding: 2px 9px;
   border: 0;
-  background: transparent;
   border-radius: 4px;
+  background: transparent;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 .composer-engines button[aria-pressed=true], .composer-engine-current { background: var(--soft); color: var(--accent); font-weight: 580; }
-.composer-engine-current { padding: 1px 8px; border-radius: 10px; }
-.composer-settings, .composer-cancel {
-  min-height: 28px;
-  padding: 2px 4px;
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  font-size: 13px;
-}
-.composer-settings:hover, .composer-cancel:hover, .composer-boundaries .boundary-add:hover { text-decoration: underline; text-underline-offset: 3px; }
-.composer-command { display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; padding: 1px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); }
-.composer-command span { flex: none; color: var(--muted); font-size: 12px; }
-.composer-command code { min-width: 0; font-size: 12px; }
-.composer-binding { display: inline-flex; align-items: center; gap: 5px; }
+.composer-engine-current { padding: 3px 8px; border-radius: var(--radius-sm); }
+.composer-link { min-height: 26px; padding: 2px 4px; border: 0; background: transparent; color: var(--accent); font-size: 12px; }
+.composer-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.composer-binding { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .composer-binding::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
 .composer-binding.is-bound::before { background: var(--accent); }
-.composer-context>p { margin: 8px 0 0; font-size: 13px; }
-.composer-footer { justify-content: space-between; gap: 8px 16px; padding-block: 13px; border-top: 1px solid var(--border); }
-.composer-footer small { flex: 1 1 15rem; line-height: 1.7; }
-.composer-footer>div { margin-left: auto; justify-content: flex-end; }
-.composer-footer .primary { padding: 9px 15px; font-size: 14px; font-weight: 550; }
-.requirement-composer .composer-footer .primary:disabled {
-  border-color: var(--border);
-  background: var(--soft);
-  box-shadow: none;
-  color: var(--muted);
+.composer-commands { flex: 1 1 auto; min-width: 0; gap: 4px; overflow-wrap: anywhere; }
+.composer-command {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--surface);
+  white-space: nowrap;
 }
-@container (max-width: 490px) {
-  .composer-steps { gap: 7px; }
-  .composer-steps li { font-size: 12px; }
-  .composer-context { padding: 12px; }
-  .composer-context dl { gap: 7px 9px; }
+.composer-command code { max-width: 18ch; overflow: hidden; text-overflow: ellipsis; color: var(--ink-secondary); font-size: 11.5px; }
+
+.composer-footer { padding-block: 11px; border-top: 1px solid var(--border-subtle); }
+.composer-footer small { color: var(--muted); font-size: 12px; }
+.composer-footer > div { margin-left: auto; gap: 10px; }
+.composer-footer .primary {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 11px;
+  font-size: 13px;
+  font-weight: 550;
 }
-@container (max-width: 350px) {
-  .composer-steps { grid-template-columns: repeat(2,minmax(0,1fr)); }
-  .composer-steps li:nth-child(2)::after { display: none; }
-  .composer-context dl { grid-template-columns: minmax(0,1fr); gap: 3px; }
-  .composer-context dd+dt { margin-top: 5px; }
-}
+.composer-footer kbd { padding: 2px 4px; border: 1px solid currentColor; border-radius: 3px; opacity: .8; font: 10px/1.15 var(--font-mono); }
+.requirement-composer .composer-footer .primary:disabled { border-color: var(--border); background: var(--soft); box-shadow: none; color: var(--muted); }
