@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { Snapshot, WorkspaceData } from '../shared';
 import { fileCitations, filePurpose } from './file-map';
 import { SourceExcerpt } from './SourceExcerpt';
@@ -10,9 +10,26 @@ interface FileSummaryProps {
   path: string;
   ask: (question: string) => void;
   disabled?: boolean;
+  showSource?: boolean;
 }
 
-export function FileSummary({ data, projectId, snapshot, path, ask, disabled }: FileSummaryProps) {
+// The source IPC verifies the file hash against the requested frozen snapshot.
+function FrozenFile({ snapshotId, path }: { snapshotId: string; path: string }) {
+  const [source, setSource] = useState<{ text: string } | { error: string }>();
+  useEffect(() => {
+    let active = true;
+    window.arc.invoke<{ text: string }>('source', { source_snapshot_id: snapshotId, path })
+      .then(value => { if (active) setSource(value); })
+      .catch(reason => { if (active) setSource({ error: String(reason) }); });
+    return () => { active = false; };
+  }, [snapshotId, path]);
+  return <section className="question-source" aria-label="文件冻结源码">
+    <h3>冻结源码</h3>{!source ? <p role="status">正在读取文件…</p> : 'error' in source
+      ? <p role="alert">{source.error}</p> : <pre tabIndex={0}>{source.text}</pre>}
+  </section>;
+}
+
+export function FileSummary({ data, projectId, snapshot, path, ask, disabled, showSource }: FileSummaryProps) {
   const [expandedCitation, setExpandedCitation] = useState('');
   const file = snapshot.files.find(f => f.path === path);
   const folder = !file;
@@ -26,6 +43,7 @@ export function FileSummary({ data, projectId, snapshot, path, ask, disabled }: 
       <span className="eyebrow">{folder ? '文件夹作用' : '文件摘要'}</span>
       <h2>{path ? path.split('/').at(-1) : '工程根目录'}</h2>
       <p className="path">{path || snapshot.root_path}</p>
+      {file && showSource && <FrozenFile key={snapshot.source_snapshot_id + '/' + path} snapshotId={snapshot.source_snapshot_id} path={path} />}
       {purpose ? <>
         <p className="file-purpose">{purpose.node.description}</p>
         <p className="summary-state">{purpose.explanation.source_status === 'current' ? '来源引用 · 结论待核对' : '原快照说明 · 当前目录变化需复核'}</p>

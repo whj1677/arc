@@ -23,7 +23,7 @@ test('actual frozen-source MCP rejects traversal, absolute paths, unknown method
   try{
     await client.request('initialize',{});
     const {tools}=await client.request('tools/list',{});
-    assert.deepEqual(tools.map((tool:{name:string})=>tool.name),['arc_list_files','arc_search_source','arc_read_source']);
+    assert.deepEqual(tools.map((tool:{name:string})=>tool.name),['arc_list_files','arc_search_source','arc_read_source','list_modules','list_symbols','get_call_graph']);
     const allowed=await client.request('tools/call',{name:'arc_read_source',arguments:{path:'a & $(echo owned).c'}});
     assert.match(JSON.stringify(allowed),/harmless/);
     const inventory=JSON.parse((await client.request('tools/call',{name:'arc_list_files',arguments:{offset:1,limit:1}})).content[0].text);
@@ -114,10 +114,15 @@ test('first Codex overview bounds parallel discovery on a 2109-file manifest and
     const broad=await invoke('arc_search_source',{query:'boot'});
     assert.equal(broad.isError,true);
     assert.match(broad.content[0].text,/2109.*path_prefix/);
+    assert.equal((await invoke('get_call_graph',{symbol:'main',depth:4})).isError,true);
+    assert.equal((await invoke('not_a_tool',{})).isError,true);
+    assert.equal((await invoke('arc_read_source',{path:'out-of-scope.c'})).isError,true);
+    assert.equal((await invoke('arc_read_source',{path:'main.c',line_start:110})).isError,true);
     const search=await invoke('arc_search_source',{query:'boot',path:'main.c'});
     assert.equal(JSON.parse(search.content[0].text).matches[0].line,1);
+    assert.equal(JSON.parse(search.content[0].text).remaining_source_calls,overviewDiscoveryBudget.calls-1);
     const listings=await Promise.all(Array.from({length:overviewDiscoveryBudget.calls},()=>invoke('arc_list_files',{query:'main.c'})));
-    assert.equal(listings.filter(reply=>!reply.isError).length,overviewDiscoveryBudget.calls-4);
+    assert.equal(listings.filter(reply=>!reply.isError).length,overviewDiscoveryBudget.calls-3);
     assert.match(listings.at(-1).content[0].text,/只用于 arc_read_source/);
     const reads=await Promise.all(Array.from({length:3},()=>invoke('arc_read_source',{path:'main.c',line_count:400})));
     assert.deepEqual(reads.map(reply=>!!reply.isError),[false,false,true]);
@@ -127,6 +132,51 @@ test('first Codex overview bounds parallel discovery on a 2109-file manifest and
     assert.equal(last.remaining_source_calls,0);
     assert.match(reads[2].content[0].text,/立即输出 overview-1 JSON/);
   }finally{child.stdin.end();await new Promise(r=>child.once('close',r));}
+});
+
+test('MCP indexes the frozen snapshot and exposes paged symbols and directional call sites',async t=>{
+  await fs.mkdir('.test-data',{recursive:true});
+  const root=await fs.mkdtemp(path.resolve('.test-data','mcp-index-'));
+  const source=path.join(root,'source'),storage=path.join(root,'data');
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  for(const dir of ['app','core'])await fs.mkdir(path.join(source,dir),{recursive:true});
+  await fs.writeFile(path.join(source,'app','entry.c'),'int run() {\n  return launch();\n}\n');
+  await fs.writeFile(path.join(source,'core','boot.h'),'int launch(void);\n');
+  await fs.writeFile(path.join(source,'core','boot.c'),'int prepare() { return 0; }\nint launch() {\n  return prepare();\n}\n');
+  const snapshot=await capture(source,'index',storage,'');
+  const context=path.join(root,'context.json');
+  await fs.writeFile(context,JSON.stringify({storage,snapshot}));
+  await fs.writeFile(path.join(source,'core','boot.c'),'int replacement() { return 1; }');
+  const child=spawn(process.execPath,['dist/context-server.cjs',context],{windowsHide:true,stdio:['pipe','pipe','pipe']});
+  const client=new AcpConnection(child,()=>{});
+  async function call(name:string,args:object) {
+    const response=await client.request('tools/call',{name,arguments:args});
+    assert.equal(response.isError,undefined,response.content[0].text);
+    const result=JSON.parse(response.content[0].text);
+    assert.equal(result.source_snapshot_id,snapshot.source_snapshot_id);
+    return result;
+  }
+  try{
+    const [summary,symbols]=await Promise.all([
+      call('list_modules',{}),call('list_symbols',{dir:'core/',path:'core/boot.c',kind:'function',query:'Launch'}),
+    ]);
+    assert.equal(summary.indexed_file_count,3);
+    assert.equal(summary.parse_error_count,0);
+    assert.deepEqual(summary.modules.map((m:any)=>[m.dir,m.file_count,m.symbol_count]).sort(),[['app',1,1],['core',2,3]]);
+    assert.deepEqual(summary.module_edges,[{from:'app',to:'core',count:1}]);
+    assert.equal(symbols.total,1);
+    assert.deepEqual([symbols.symbols[0].qualified_name,symbols.symbols[0].start_line,symbols.symbols[0].end_line],['launch',2,4]);
+    const first=await call('list_symbols',{limit:1});
+    assert.equal(first.total,4);assert.equal(first.next_offset,1);
+    assert.equal((await call('list_symbols',{offset:1,limit:3})).next_offset,null);
+    const outgoing=await call('get_call_graph',{symbol:'run',direction:'outgoing',depth:1});
+    assert.deepEqual(outgoing.edges.map((e:any)=>[e.file,e.line,e.targets[0].file,e.targets[0].start_line]),[['app/entry.c',2,'core/boot.c',2]]);
+    const incoming=await call('get_call_graph',{symbol:'prepare',direction:'incoming'});
+    assert.deepEqual(incoming.edges.map((e:any)=>[e.caller.qualified_name,e.callee_name,e.line]),[['launch','prepare',3],['run','launch',2]]);
+    const both=await call('get_call_graph',{symbol:symbols.symbols[0].id,file:'core/boot.c',direction:'both'});
+    assert.equal(both.total,2);
+    assert.deepEqual((await call('get_call_graph',{symbol:'launch'})).edges,both.edges);
+  }finally{const closed=new Promise(r=>child.once('close',r));child.stdin.end();await closed;}
 });
 test('annotations cannot attach to objects outside original result; changed IDs never match names',async t=>{
   const root=path.resolve('.test-data','annotation-guard-'+Date.now()),service=new ArcService(root,path.resolve('.'));

@@ -1,4 +1,5 @@
 import React,{useLayoutEffect,useRef,useState} from 'react';
+import {edgeSelection} from './reading-target';
 import type {AnalysisResult} from '../shared';
 import {edgeCaption} from './flow-layout';
 import {edgeNames} from './Graph';
@@ -43,7 +44,7 @@ export function Composition({result,title,selected,select,zoom,search,expanded,t
   const open=!!query||expanded.includes('composition/'+id);
   return <div className="composition-branch" key={id} style={{'--branch-color':color} as React.CSSProperties}>
    <div className="composition-topic-group"><button className={`composition-topic ${selected===id?'selected':''}`} data-topic={id} data-owner={owner} data-color={color} data-zoom-anchor onClick={()=>select(id)}><strong>{node.label}</strong></button><div className="composition-topic-actions">{children.length>0&&depth<10&&<button className="composition-fold" aria-expanded={open} aria-label={`${open?'收起':'展开'} ${node.label} 的模块`} onClick={()=>toggle('composition/'+id)}>{open?'−':`+${children.length}`}</button>}{outgoing.length>0&&<button className="composition-fold composition-relations-toggle" aria-expanded={relationsOpen} aria-label={`${relationsOpen?'收起':'展开'} ${node.label} 的${variant==='dependencies'?'依赖':'关系'}`} onClick={()=>toggle('composition-links/'+id)}>↗{outgoing.length}</button>}</div></div>
-   {(children.length>0&&depth<10&&open||relationsOpen&&outgoing.length>0)&&<div className="composition-children">{open&&children.map(n=>render(n.node_id,color,id,depth+1))}{relationsOpen&&outgoing.map(e=>{const caption=edgeCaption(e);return <button key={e.edge_id} className={`composition-relation ${selected===e.edge_id?'selected':''} ${caption.data?'transfer':''}`} data-topic={'relation/'+e.edge_id} data-owner={id} data-edge-id={e.edge_id} data-color={color} data-zoom-anchor onClick={()=>select(e.edge_id)}><small>{caption.data?'数据传递':edgeNames[e.kind]}{caption.uncertain?' · 待确认':''}</small><strong>{caption.text}</strong><span>→ {result.nodes.find(n=>n.node_id===e.target_node_id)?.label}</span></button>;})}</div>}
+   {(children.length>0&&depth<10&&open||relationsOpen&&outgoing.length>0)&&<div className="composition-children">{open&&children.map(n=>render(n.node_id,color,id,depth+1))}{relationsOpen&&outgoing.map(e=>{const caption=edgeCaption(e);return <button key={e.edge_id} className={`composition-relation ${selected===edgeSelection(e.edge_id)?'selected':''} ${caption.data?'transfer':''}`} data-topic={'relation/'+e.edge_id} data-owner={id} data-edge-id={e.edge_id} data-color={color} data-zoom-anchor onClick={()=>select(edgeSelection(e.edge_id))}><small>{caption.data?'数据传递':edgeNames[e.kind]}{caption.uncertain?' · 待确认':''}</small><strong>{caption.text}</strong><span>→ {result.nodes.find(n=>n.node_id===e.target_node_id)?.label}</span></button>;})}</div>}
   </div>;
  };
  const heading={system:'工程组成',analysis:'功能与问题导图',modules:'模块导图',dependencies:'依赖导图'}[variant];

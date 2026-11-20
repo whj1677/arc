@@ -135,6 +135,13 @@ type Options = {
   resources: string;
 });
 
+export function dshWebPrompt(options: Pick<Options, 'prompt' | 'outputSchema' | 'submitResult'>): string {
+  const instructions = options.submitResult
+    ? '调用 arc_submit_result，把符合该工具合同的完整结果作为参数提交。工具确认后结束。'
+    : '最终只回复一个符合以下合同的 JSON 对象。\n' + JSON.stringify(options.outputSchema);
+  return instructions + '\n' + options.prompt;
+}
+
 export async function runDshWeb(options: Options): Promise<{ code: number; raw: string; stderr: string; protocol_error?: string; session_id?: string }> {
   const { run, profile, event } = options;
   const budget = options.timeoutMs ?? (options.toolFree ? 60000 : undefined);
@@ -154,9 +161,7 @@ export async function runDshWeb(options: Options): Promise<{ code: number; raw: 
       args: [path.join(options.resources, 'dist', 'context-server.cjs'), contextPath], failOnStartupError: true,
     } },
   ];
-  const prompt = options.prompt + (options.submitResult
-    ? '\n调用 arc_submit_result，把符合该工具合同的完整结果作为参数提交。工具确认后结束。'
-    : '\n最终只回复一个符合以下合同的 JSON 对象。\n' + JSON.stringify(options.outputSchema));
+  const prompt = dshWebPrompt(options);
   await Promise.all([
     !options.toolFree && fs.writeFile(contextPath, JSON.stringify({ storage: options.storage, snapshot: options.snapshot, resultSchema: options.submitResult ? options.outputSchema : undefined })),
     fs.writeFile(path.join(directory, 'prompt.txt'), prompt),

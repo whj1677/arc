@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import type {AnalysisResult} from '../src/shared';
 import {focusRelations,canShowSequence,architectureOnlyDependencies} from '../src/ui/graph-presentation';
+import {edgeSelection} from '../src/ui/reading-target';
 import {wheelZoom,clampZoom} from '../src/ui/zoom';
 import {edgeExplanation} from '../src/ui/presentation';
 const real=JSON.parse(fs.readFileSync('evidence/trade-readable-20261020/feature-result.json','utf8')) as AnalysisResult;
@@ -20,7 +21,7 @@ test('focus preserves exact endpoints, isolates returns and never invents adjace
   const focused=focusRelations(real.nodes,edges,first);
   assert.deepEqual(focused.main,edges.filter(e=>e.source_node_id===first&&e.kind!=='return'));
   assert.deepEqual(focused.returns,[returned]);
-  assert.deepEqual(focusRelations(real.nodes,edges,returned.edge_id).main,[returned]);
+  assert.deepEqual(focusRelations(real.nodes,edges,edgeSelection(returned.edge_id)).main,[returned]);
   assert.equal(JSON.stringify(edges),before);
 });
 test('architecture-only dependencies are explicitly incomplete, not silently expanded from other versions',()=>{

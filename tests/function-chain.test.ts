@@ -37,6 +37,16 @@ test('exact function references separate returns from side effects and resolve o
 
 import {functionCallMap} from '../src/ui/function-call-map';
 import {functionFocus} from '../src/ui/function-chain';
+import {edgeSelection,readingQuestionTarget} from '../src/ui/reading-target';
+import type {ReadingState} from '../src/shared';
+
+test('a function and call with the same ID keep distinct focus and reading targets',()=>{
+  const r=fixture([node('publish'),node('record')],[edge('publish','publish','record')]);
+  for(const [selected,kind,focus] of [['publish','node','publish'],[edgeSelection('publish'),'edge','record']]){
+    assert.equal(functionCallMap(r,'',selected).focus.selected,focus);
+    assert.deepEqual(readingQuestionTarget(r,{view:'functions',selected} as ReadingState,'feature',undefined).target,{kind,id:'publish'});
+  }
+});
 
 test('file lanes use explicit definitions, keep unknown files apart and distinguish declaration from implementation',()=>{
   const definition=(id:string,path:string,role='definition')=>({evidence_id:id,path,role});
@@ -69,7 +79,7 @@ test('selected walkthrough confines links to its entry and preserves per-step ca
   const map=functionCallMap(r,'one','b');assert.deepEqual(map.nodes.map(n=>n.node_id),['a','b']);assert.deepEqual(map.focus.entryPath,['a','b']);
   assert.deepEqual(map.links[0].callsites.map(e=>e.evidence_id),['right-call']);assert.deepEqual(functionCallMap(r,'missing').nodes,[]);
   assert.deepEqual(functionCallMap(r,'one',map.links[0].id).focus.entryPath,['a','b']);
-  assert.deepEqual(functionCallMap(r,'one','ab').focus.entryPath,['a','b']);
+  assert.deepEqual(functionCallMap(r,'one',edgeSelection('ab')).focus.entryPath,['a','b']);
   assert.deepEqual(functionCallMap(r,'one').focus.entryPath,['a']);
   const legacy=functionCallMap({...r,function_walkthroughs:undefined},'old','b');assert.equal(legacy.nodes.length,3);assert.equal(legacy.entry,undefined);
 });

@@ -1,6 +1,9 @@
 import type {AnalysisResult,ReadingState,ReadingTarget,Snapshot} from '../shared';
 import {selectedCallStep} from './function-sequence-model';
 
+// A slash cannot occur in a canonical object ID.
+export const edgeSelection = (id:string) => 'edge/' + id;
+
 export function readingQuestionTarget(result:AnalysisResult|undefined,reading:ReadingState,featureId:string,snapshot:Snapshot|undefined):{target:ReadingTarget;label:string}{
   const selection=reading.selected;
   if(reading.view==='files'||selection.startsWith('file:')){
@@ -16,7 +19,7 @@ export function readingQuestionTarget(result:AnalysisResult|undefined,reading:Re
   }
   const node=result?.nodes.find(n=>n.node_id===selection||(['step','role'].includes(kind)&&n.node_id===key));
   if(node)return {target:{kind:'node',id:node.node_id},label:node.kind==='function'?node.function_details?.symbol||node.label:node.label};
-  const edge=result?.edges.find(e=>e.edge_id===selection||(kind==='handoff'&&e.edge_id===key));
+  const edge=result?.edges.find(e=>edgeSelection(e.edge_id)===selection||e.edge_id===selection||(kind==='handoff'&&e.edge_id===key));
   if(edge)return {target:{kind:'edge',id:edge.edge_id},label:edge.label};
   const functionStep=result?selectedCallStep(result,selection):undefined;
   if(functionStep)return {target:{kind:'call_step',id:selection},label:functionStep.step.text};

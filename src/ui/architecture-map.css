@@ -1,19 +1,174 @@
-.architecture-map{width:100%;min-width:0;color:#e3eeee;padding:8px 0 12px}
-.architecture-map-heading{display:flex;justify-content:space-between;align-items:center;margin:4px 0 20px;padding:0 6px;gap:16px}.architecture-map-heading .eyebrow{font-size:10px;letter-spacing:2px;color:#91b4b8}.architecture-map-heading h2{font-size:21px;font-weight:600;letter-spacing:.4px;margin:8px 0 0}.architecture-map-heading p{font-size:12px;line-height:1.8;color:#adc3cd;margin:0}
-.architecture-map-canvas{display:block;overflow:visible;max-width:none;background:radial-gradient(ellipse at center,#16313c66,transparent 68%)}
-.architecture-container{fill:#16322f55;stroke:#416d61;stroke-width:1;stroke-dasharray:5 5}
-.architecture-map-node{position:relative;display:grid!important;grid-template-columns:12px minmax(0,1fr);align-content:center;align-items:center;column-gap:10px;row-gap:7px;width:100%;height:100%;box-sizing:border-box;padding:12px 17px!important;border:1px solid #466071!important;border-radius:15px!important;background:#192b38!important;color:#edf3f6!important;text-align:left;white-space:normal;box-shadow:0 6px 16px #060e1422}
-.architecture-map-node strong{font-size:17px!important;line-height:1.35;font-weight:600;overflow-wrap:anywhere}.architecture-map-node small{grid-column:2;display:block!important;font-size:11px!important;line-height:1.3;color:#b4cad6!important}.architecture-node-dot{width:7px;height:7px;background:#8db8e8;border-radius:50%;box-shadow:0 0 0 4px #8db8e812}.architecture-map-node.hub{background:#1a4038!important;border-color:#66ab96!important}.architecture-map-node.hub .architecture-node-dot{background:#8ce8c5}.architecture-map-node.internal{background:#15322f!important;border-color:#3c7866!important}.architecture-map-node.internal strong{font-size:15px!important}.architecture-map-node.external{background:#2b2a44!important;border-color:#7473a0!important}.architecture-map-node.external .architecture-node-dot{background:#c0b2ff}
-.architecture-map-node:hover{filter:brightness(1.15)}.architecture-map-node[aria-pressed=true]{border-color:#98f1d1!important;box-shadow:0 0 0 2px #98f1d133,0 8px 20px #0003}.architecture-map-node:focus-visible{outline:3px solid #b3f7df;outline-offset:-4px}
-.architecture-link{cursor:pointer;outline:none}.architecture-link-line{fill:none;stroke:#648f9c;stroke-width:1.8}.architecture-link-hit{fill:none;stroke:transparent;stroke-width:18}.architecture-link.uncertain .architecture-link-line{stroke-dasharray:6 4}.architecture-link.selected .architecture-link-line,.architecture-link:hover .architecture-link-line,.architecture-link:focus-visible .architecture-link-line{stroke:#9af3d3;stroke-width:2.8}.architecture-link-label{font-size:11px;fill:#bad2dc;paint-order:stroke;stroke:#101f28;stroke-width:5px;stroke-linejoin:round;pointer-events:none}.architecture-link.selected .architecture-link-label,.architecture-link:focus-visible .architecture-link-label{fill:#a5f1d8}
-.architecture-map-footer{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin:20px 6px 8px;color:#9fb7c3;font-size:11px}.architecture-map-note{font-size:11px;color:#9fb7c3;margin:12px 6px 0}.architecture-selected-links{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:18px 4px 0;padding:12px;border:1px solid #38585c;border-radius:10px;background:#162b30}.architecture-selected-links>span{font-size:12px;color:#c0d5d7}.architecture-selected-links button{font-size:12px;white-space:normal}.architecture-selected-links button[aria-pressed=true]{background:#255247;border-color:#80ceb0}.architecture-deeper{margin:12px 6px 0;background:transparent;color:#9ce7cc;font-size:12px}
-
-.architecture-map .architecture-map-heading{margin:0 0 12px;padding:0}
-.architecture-map .architecture-map-heading h2{margin:0;font-size:1.3rem}
-.architecture-map .architecture-map-heading p{margin:.2rem 0 0;color:var(--muted)}
-.architecture-viewport{overflow:auto;max-width:100%;border:1px solid var(--border);border-radius:10px;background-color:var(--surface);background-image:radial-gradient(var(--border) .8px,transparent .8px);background-size:16px 16px}
-.architecture-viewport .architecture-map-canvas{margin-inline:auto}
-.architecture-viewport .architecture-link-label{font-size:12px}
-.architecture-map .architecture-map-footer{margin:.6rem 0}
-.architecture-scope{border-top:1px solid var(--border);margin-top:1rem}
-.architecture-scope summary,.architecture-scope p{font-size:.82rem;color:var(--muted)}
+.architecture-map {
+  width: 100%;
+  min-width: 0;
+  color: var(--ink);
+  padding-block: 2px 12px;
+  font-synthesis: none;
+}
+.architecture-map-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+.architecture-view-switch {
+  display: inline-flex;
+  flex-wrap: wrap;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-tint);
+}
+.architecture-view-switch button {
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: 13px;
+  font-weight: 530;
+  white-space: normal;
+}
+.architecture-view-switch button[aria-pressed="true"] {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: var(--accent-hover);
+  box-shadow: var(--shadow-xs);
+}
+.architecture-map-stat, .architecture-map-footer, .architecture-scope {
+  font-size: 13px;
+  color: var(--muted);
+}
+.architecture-viewport {
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 2px;
+}
+.architecture-map-canvas { display: block; max-width: none; margin-inline: auto; }
+.architecture-layer rect { fill: var(--surface-tint); stroke: var(--border-subtle); }
+.architecture-layer text { fill: var(--ink); font: 560 16px var(--font-sans); }
+.architecture-layer tspan { fill: var(--muted); font-size: 12px; font-weight: 400; }
+.architecture-layer.tier-boundary text { fill: var(--blue); }
+.architecture-layer.tier-core text { fill: var(--accent); }
+.architecture-layer.tier-infrastructure text { fill: var(--amber); }
+.architecture-container {
+  fill: var(--soft);
+  fill-opacity: .55;
+  stroke: var(--border-strong);
+  stroke-dasharray: 4 3;
+}
+.architecture-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 5px;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  white-space: normal;
+  font: inherit;
+}
+.architecture-map .architecture-card:hover, .architecture-map .architecture-card[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--surface);
+  box-shadow: inset 3px 0 var(--accent);
+}
+.architecture-card:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.architecture-card-meta {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 19px;
+  white-space: nowrap;
+}
+.architecture-kind { padding-inline: 5px; border-radius: 3px; background: var(--soft); color: var(--accent); }
+.architecture-degree { padding-inline: 5px; border: 1px solid var(--border); border-radius: 3px; line-height: 17px; }
+.architecture-kind.kind-execution_boundary { background: var(--surface-tint); color: var(--blue); }
+.architecture-kind.kind-resource { background: var(--amber-bg); color: var(--amber); }
+.architecture-card-title, .architecture-card-copy {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.architecture-card-title { color: var(--ink); font-size: 16px; font-weight: 560; line-height: 1.4; }
+.architecture-card-copy { font-size: 14px; font-weight: 400; line-height: 1.5; color: var(--ink-secondary); }
+.architecture-card-files, .architecture-card-io {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.architecture-card-files code, .architecture-card-io span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.architecture-card-files code {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--surface-tint);
+  font: 12px/18px var(--font-mono);
+}
+.architecture-card-io span:first-child { flex: none; color: var(--ink-secondary); }
+.architecture-node-dimmed { opacity: .36; }
+.architecture-link { cursor: pointer; outline: none; }
+.architecture-link-line { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linejoin: round; }
+.architecture-link-hit { fill: none; stroke: transparent; stroke-width: 9; }
+.architecture-link.uncertain .architecture-link-line { stroke-dasharray: 5 3; }
+.architecture-link.dimmed { opacity: .22; }
+.architecture-link:is(.selected, .hovered, :focus-visible) .architecture-link-line {
+  stroke: var(--accent);
+  stroke-width: 2.6;
+}
+.architecture-edge-caption { pointer-events: none; }
+.architecture-edge-caption span {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--accent-hover);
+  font-size: 13px;
+  line-height: 21px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.architecture-map-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  min-height: 32px;
+  margin-block: 4px 12px;
+}
+.architecture-map-footer button { color: var(--accent); font-size: 13px; }
+.architecture-scope { margin-top: 16px; padding-block: 8px; border-top: 1px solid var(--border); }

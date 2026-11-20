@@ -1,7 +1,8 @@
 import type {AnalysisResult} from '../shared';
+import {edgeSelection} from './reading-target';
 type Edge=AnalysisResult['edges'][number];
 export function focusRelations(nodes:AnalysisResult['nodes'],edges:readonly Edge[],selected:string){
-  const chosen=edges.find(e=>e.edge_id===selected);
+  const chosen=edges.find(e=>edgeSelection(e.edge_id)===selected);
   const id=nodes.some(n=>n.node_id===selected)?selected:chosen?.source_node_id||nodes[0]?.node_id;
   const outgoing=edges.filter(e=>e.source_node_id===id&&e.kind!=='return');
   const main=outgoing.length?outgoing:edges.filter(e=>e.target_node_id===id&&e.kind!=='return');

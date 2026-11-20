@@ -65,6 +65,22 @@ test('one repair receives all bad source anchors while snapshot storage errors s
   await assert.rejects(prepareOverview(value,run,snapshot,path.join(storage,'missing')),error=>!(error instanceof OverviewValidationError));
 });
 
+test('frozen line ranges hydrate missing anchors and genuine 240-character delimiter drift only',async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-anchor-')),root=path.join(dir,'src'),storage=path.join(dir,'data');
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));await fs.mkdir(root);
+  const prefix='connect('.padEnd(235,'a')+'this',line=prefix+');';
+  await fs.writeFile(path.join(root,'sample.cpp'),line+'\nconst ErrorCode   result = status;\n  \n');
+  const snapshot=await capture(root,'fixture',storage,''),anchor={id:'ev',path:'sample.cpp',start:1,end:1};
+  const verify=(quote:string|undefined,start=1)=>compactEvidence([{...anchor,quote,start,end:start}],snapshot,storage);
+  for(const quote of [undefined,'',prefix+','])assert.equal((await verify(quote))[0].note,line.slice(0,240));
+  assert.equal((await verify('ErrorCode result',2))[0].note,'const ErrorCode   result = status;');
+  for(const invented of ['const ErrorCode temperature_placeholder',prefix.slice(0,-1)+'x,',prefix+'x',prefix.slice(1)+',']){
+    await assert.rejects(verify(invented),/引用原文不在/);
+  }
+  await assert.rejects(verify(undefined,3),/片段为空/);
+  await assert.rejects(verify(undefined,0),/行范围必须有效/);
+});
+
 test('compact overview verifies exact source and maps facts to the existing result without inventing IO or execution context',async t=>{
   const {value,run,snapshot,storage}=await fixture(t),original=structuredClone(value);
   const result=await prepareOverview(value,run,snapshot,storage);
@@ -81,6 +97,19 @@ test('compact overview verifies exact source and maps facts to the existing resu
   assert.deepEqual(await prepareOverview(value,run,snapshot,storage),result,'conversion is deterministic');
   const prompt=overviewPrompt(run,snapshot,promptContext(snapshot,[]));assert.match(prompt,/overview-1/);assert.match(prompt,/不表示同步完成/);assert.match(prompt,/unresolved/);
   const check=(schema:any)=>{if(schema&&typeof schema==='object'){if(schema.properties){assert.equal(schema.additionalProperties,false);assert.deepEqual(schema.required,Object.keys(schema.properties));}Object.values(schema).forEach(check);}};check(overviewSchema);
+});
+
+test('compact architecture preserves major components alongside nested modules above the old 16-node limit',async t=>{
+  const {value,run,snapshot,storage}=await fixture(t);
+  const nested=(parent_id:string)=>({...value,components:value.components.map(item=>item.id==='queue'?{...item,parent_id}:item)});
+  const input=nested('producer');
+  const extra=Array.from({length:14},(_,index)=>({...value.components[0],id:`module-${index}`}));
+  const result=await prepareOverview({...input,components:[...input.components,...extra]},run,snapshot,storage);
+  assert.deepEqual(result.architecture?.node_ids,[...input.components,...extra].map(node=>node.id));
+  assert.equal(result.nodes.find(node=>node.node_id==='queue')?.parent_node_id,'producer');
+  assert.ok(result.nodes.filter(node=>node.node_id!=='queue').every(node=>!Object.hasOwn(node,'parent_node_id')));
+  await assert.rejects(prepareOverview(nested('send-feature'),run,snapshot,storage),/parent_id 未引用架构组件/);
+  await assert.rejects(prepareOverview(nested('queue'),run,snapshot,storage),/父子循环/);
 });
 
 test('overview generates source-bound readings with the catalog, preserves a legacy draft without readings',async t=>{
@@ -124,14 +153,15 @@ test('overview prompt asks for module-by-module coverage within the first-turn b
   assert.match(prompt,/完成逐目录清点且证据足够后，提前停止并立即返回完整 JSON/);
   for(const provider_id of ['codex','dsh'] as const){
     const instructions=overviewPrompt({...current,provider_id},snapshot,promptContext(snapshot,[]));
-    assert.match(instructions,/先看 inventory\.source_directories/);
+    assert.match(instructions,/先用 list_modules.*list_symbols.*get_call_graph.*arc_search_source/);
+    assert.match(instructions,/返回结果前逐项核对 list_modules 的目录/);
     assert.match(instructions,/逐目录清点全部实质模块，不漏模块/);
     assert.match(instructions,/实际实现或公共接口的，都应纳入 features/);
     assert.match(instructions,/按模块独立职责拆分功能项/);
     assert.match(instructions,/4–6 条端到端主线写 steps，每条主线用 2–4 条短步骤/);
     assert.doesNotMatch(instructions,/30–70|20–50|目标各不超过 6 项|通常不超过 12 个/);
   }
-  assert.match(prompt,/arc_list_files.*并行用 arc_search_source.*并行用 arc_read_source/);
+  assert.match(prompt,/inventory\.source_directories.*entry_file_hints.*arc_list_files/);
   assert.match(prompt,/每个次要模块只需一处能确认入口与职责的短锚点/);
   assert.match(prompt,/库 \/ 内核 \/ SDK \/ 框架工程.*核心模块及其公共能力族/);
   assert.match(prompt,/示例 main\(\) 调用的少数 API/);

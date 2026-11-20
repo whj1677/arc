@@ -78,7 +78,7 @@ export interface CanvasPaneProps {
   selectReading: (id: string) => void;
   navigateFeature: (view: string) => void;
   readingStep: (stepId: string) => void;
-  chooseFile: (file: string) => void;
+  chooseFile: (file: string, indexSnapshotId?: string) => void;
   select: (id: string) => void;
   switchView: (view: string, overrides?: Partial<ReadingState>) => void;
   navigateView: (view: string) => void;
@@ -346,6 +346,7 @@ export function CanvasPane({
             {['system', 'map'].includes(reading.view) && (
               <>
                 <Architecture
+                  key={result.result_id}
                   result={result}
                   selected={reading.selected}
                   select={select}
@@ -353,6 +354,7 @@ export function CanvasPane({
                   search={search}
                   modules={() => switchView('modules', { stage: '' })}
                   inspect={inspectComponent}
+                  openFile={file => chooseFile(file, result.binding.source_snapshot_id)}
                 />
                 {!overviewSections && (
                   <div className="overview-feature-entry">

@@ -59,7 +59,9 @@ export async function makeOverviewReviewPrompt(result:AnalysisResult,snapshot:Sn
 ${edgeIds?.length===0?'本轮只复核摘要。只有 summary.text 和每条摘要断言的 statement 都得到各自引用的原始片段直接支持，才能给 supported。\n':''}每个输入 edge_id 必须且只能回答一次，禁止遗漏、重复、新建关系。核对源组件到目标组件的方向、kind、label 和 claim.statement 是否整体成立；任何一项不成立都不能给 supported。不得通过默默改变关系类型、方向或标签掩盖错误。
 ${overviewRelationSemantics}
 下列片段来自绑定冻结快照。若不足，可用 arc_read_source 读取该快照更多源码；但最终 supported 的 evidence_ids 必须是该输入边 evidence_ids 的非空子集，而且这些原始片段本身应足够支持结论。若只有新增位置能支持，仍选 uncertain，说明缺少原始依据；不得添加新证据 ID。uncertain/contradicted 可用空 evidence_ids。无需返回修正后的节点或边。
-待复核输入：${JSON.stringify(input)}`;
+若需核对跨模块关系，先用 list_symbols 和 get_call_graph 定位，再用 arc_read_source 核对调用点。支持结论仍须来自本条原始证据。
+待复核输入：
+${JSON.stringify(input)}`;
 }
 
 export function parseOverviewReview(value:unknown,result:AnalysisResult,edgeIds?:readonly string[],options?:{allowUnverifiedSummary?:boolean;allowUncertainSummary?:boolean}):OverviewReview{

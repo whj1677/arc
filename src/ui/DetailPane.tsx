@@ -1,4 +1,5 @@
 import React from 'react';
+import {edgeSelection} from './reading-target';
 import type {
   AnalysisResult,
   Annotation,
@@ -86,6 +87,7 @@ export interface DetailPaneProps {
   readingFile: (file: string) => void;
   readingStep: (stepId: string) => void;
   inspectComponent: (id: string) => void;
+  openFeature: (id: string) => void;
   askHere: () => void;
   reload: () => Promise<WorkspaceData>;
   showMcp: () => void;
@@ -152,6 +154,7 @@ export function DetailPane({
   readingFile,
   readingStep,
   inspectComponent,
+  openFeature,
   askHere,
   reload,
   showMcp,
@@ -260,7 +263,7 @@ export function DetailPane({
             ) : featureReading ? (
               <p>当前功能尚未有分析说明，可以直接提问。</p>
             ) : reading.view === 'files' && sourceSnapshot ? (
-              <FileSummary data={data} projectId={projectId} snapshot={sourceSnapshot} path={selectedFile}
+              <FileSummary data={data} projectId={projectId} snapshot={sourceSnapshot} path={selectedFile} showSource={reading.files_open}
                 disabled={project?.fictional || sourceSnapshot.source_snapshot_id !== (result?.binding.source_snapshot_id || project?.snapshot_id)}
                 ask={question => { summaryRequest.current?.(question); askHere(); }} />
             ) : reading.view === 'functions' && result && functionStep ? (
@@ -270,7 +273,8 @@ export function DetailPane({
             ) : businessReading && result ? (
               <StepDetail result={result} selected={reading.selected} select={select} />
             ) : systemReading && result ? (
-              <SystemDetail result={result} selected={reading.selected} select={select} inspect={inspectComponent} />
+              <SystemDetail result={result} selected={reading.selected} select={select} inspect={inspectComponent}
+                openEvidence={evidence} openFeature={openFeature} />
             ) : (
               <>
                 <span className="eyebrow">
@@ -332,7 +336,7 @@ export function DetailPane({
                       {result?.edges
                         .filter(e => e.source_node_id === selectedNode.node_id)
                         .map(e => (
-                          <button key={e.edge_id} onClick={() => select(e.edge_id)}>
+                          <button key={e.edge_id} onClick={() => select(edgeSelection(e.edge_id))}>
                             <span>{e.label}</span>
                             <small>
                               → {result.nodes.find(n => n.node_id === e.target_node_id)?.label}
@@ -433,7 +437,8 @@ export function DetailPane({
                           result_id: result?.result_id || null,
                           object_id: featureReading
                             ? readingGuide?.steps.find((s: any) => 'step:' + s.id === reading.selected)?.node_ids[0] || null
-                            : functionStep?.step.to_node_id || reading.selected || null,
+                            : functionStep?.step.to_node_id || selectedNode?.node_id || selectedEdge?.edge_id || null,
+                          object_kind: selectedEdge ? 'edge' : 'node',
                         });
                         setClue('');
                       }, '线索已保存，下次分析可引用')
@@ -457,7 +462,7 @@ export function DetailPane({
                           onClick={() =>
                             patch({
                               result_id: original.result_id,
-                              selected: a.object_id || '',
+                              selected: a.target?.kind === 'edge' ? edgeSelection(a.target.id) : a.object_id || '',
                               file: '',
                               evidence_id: '',
                               source_snapshot_id: original.binding.source_snapshot_id,
@@ -469,7 +474,7 @@ export function DetailPane({
                         </button>
                       )}
                       {match.startsWith('同源') && (
-                        <button onClick={() => patch({ selected: a.object_id || '', detail_tab: 'details' })}>定位对应对象</button>
+                        <button onClick={() => patch({ selected: a.target?.kind === 'edge' ? edgeSelection(a.target.id) : a.object_id || '', detail_tab: 'details' })}>定位对应对象</button>
                       )}
                     </article>
                   );

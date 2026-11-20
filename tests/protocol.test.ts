@@ -31,7 +31,7 @@ test('DSH result tool stages one schema-valid result in its run directory',async
   const client=new AcpConnection(child,()=>{});
   try{
     const {tools}=await client.request('tools/list',{});
-    assert.deepEqual(tools.map((tool:{name:string})=>tool.name),['arc_list_files','arc_search_source','arc_read_source','arc_submit_result']);
+    assert.deepEqual(tools.map((tool:{name:string})=>tool.name),['arc_list_files','arc_search_source','arc_read_source','list_modules','list_symbols','get_call_graph','arc_submit_result']);
     const submit=(args:object)=>client.request('tools/call',{name:'arc_submit_result',arguments:args});
     assert.equal((await submit({summary:123})).isError,true);
     await assert.rejects(fs.access(resultPath),{code:'ENOENT'});

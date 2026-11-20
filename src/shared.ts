@@ -6,6 +6,13 @@ export function isExecutionMode(value: unknown): value is ExecutionMode {
   return value === 'codex' || value === 'dsh' || value === 'codex_desktop' || value === 'mcp';
 }
 export interface SourceFile { path: string; content_sha256: string; bytes: number; line_count: number; encoding: string }
+export interface CodeIndexSummary {
+  modules: { dir: string; file_count: number; files: string[]; symbol_count: number; key_symbols: string[] }[];
+  module_edges: { from: string; to: string; count: number }[];
+  total_files: number;
+  total_symbols: number;
+  total_calls: number;
+}
 export interface Snapshot {
   source_snapshot_id: string; project_id: string; captured_at: string; root_path: string;
   files: SourceFile[]; excluded: { path: string; reason: string }[]; fingerprint: string;

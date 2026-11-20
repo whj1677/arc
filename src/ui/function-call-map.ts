@@ -1,5 +1,6 @@
 import type {AnalysisResult} from '../shared';
 import {functionSequence,callStepKey} from './function-sequence-model';
+import {edgeSelection} from './reading-target';
 import {functionChain,functionSource,functionFocus} from './function-chain';
 
 const nodeWidth=236, nodeHeight=158, columnPitch=432, rowPitch=204;
@@ -29,7 +30,7 @@ export function functionCallMap(result:AnalysisResult,pathId:string,selectedId='
   }
   const links=sequence?steps.filter(s=>s.from_node_id&&ids.has(s.from_node_id)&&ids.has(s.to_node_id)).map(s=>({id:callStepKey(sequence.path.id,s.id),from:s.from_node_id!,to:s.to_node_id,kind:s.kind,input:s.input,condition:s.condition,label:s.text,
     ...sourceLinks(s.from_node_id!,s.to_node_id,s.evidence_ids,edges.filter(e=>e.source_node_id===s.from_node_id&&e.target_node_id===s.to_node_id&&e.kind===(s.kind==='call'?'sync_call':'execution_boundary')))})):
-    edges.map(e=>({id:e.edge_id,from:e.source_node_id,to:e.target_node_id,kind:e.kind==='execution_boundary'?'dispatch':'call',input:'传入内容待确认',condition:e.condition||'',label:e.label,...sourceLinks(e.source_node_id,e.target_node_id,e.evidence_ids||[],[e])}));
+    edges.map(e=>({id:edgeSelection(e.edge_id),from:e.source_node_id,to:e.target_node_id,kind:e.kind==='execution_boundary'?'dispatch':'call',input:'传入内容待确认',condition:e.condition||'',label:e.label,...sourceLinks(e.source_node_id,e.target_node_id,e.evidence_ids||[],[e])}));
   const grouped=new Map<string,{path:string|null;nodes:typeof nodes}>();
   for(const n of nodes){const path=nodeSources.get(n.node_id)!.path,key=path===null?`unknown:${n.node_id}`:`file:${path}`;const group=grouped.get(key)||{path,nodes:[]};group.nodes.push(n);grouped.set(key,group);}
   const selfCalls=new Map<string,typeof links>();
@@ -83,7 +84,7 @@ export function functionCallMap(result:AnalysisResult,pathId:string,selectedId='
   const width=Math.max(660,...[...boxes.values()].map(b=>b.x+b.w+28),...[...routes.values()].map(route=>route.labelX+callLabelWidth+28));
   const height=Math.max(300,nextY,...[...routes.values()].map(route=>route.labelY+callLabelHeight(true)/2+20));
   for(const group of fileGroups)group.bounds.w=width-group.bounds.x*2;
-  const focusedNode=links.find(link=>link.id===selectedId||link.edgeIds.includes(selectedId))?.to||selectedId||sequence?.path.entry_node_id||'';
+  const focusedNode=links.find(link=>link.id===selectedId||link.edgeIds.some(id=>edgeSelection(id)===selectedId))?.to||selectedId||sequence?.path.entry_node_id||'';
   const focus=functionFocus(nodes,links,sequence?.path.entry_node_id,focusedNode);
   return {nodes,links,boxes,routes,entry:sequence?.path.entry_node_id,nodeSources,fileGroups,focus,width,height};
 }

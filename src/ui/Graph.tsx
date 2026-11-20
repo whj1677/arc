@@ -1,4 +1,5 @@
 import React from 'react';
+import {edgeSelection} from './reading-target';
 import type { AnalysisResult } from '../shared';
 import {flowLayout,flowSize} from './flow-layout';
 import {RelationRows} from './RelationRows';
@@ -26,7 +27,7 @@ export function Graph({result,selected,select,view,stage,expand,zoom,search,scop
   const focused=(scope|| (dense?'focus':'all'))==='focus';
   const focus=focusRelations(shown,completeEdges,selected);
   const scopeTools=<div className="graph-scope" role="group" aria-label="连线显示方式"><button aria-pressed={focused} onClick={()=>changeScope?.('focus')}>逐步查看</button><button aria-pressed={!focused} onClick={()=>changeScope?.('all')}>全部连线 · {completeEdges.length}</button></div>;
-  const relations=<details className="flow-relations"><summary>查看分支与关系 · {edges.length} 条</summary><p className="graph-note">只有关系明确表达的方向与条件有依据；列表位置不代表全局先后。{external.length>0&&`含 ${external.length} 个外部端点。`}</p><div className="relation-list" aria-label="可选关系">{edges.map(e=><button key={e.edge_id} className={selected===e.edge_id?'selected':''} onClick={()=>select(e.edge_id)}><span className="tag">{edgeNames[e.kind]}</span> {result.nodes.find(n=>n.node_id===e.source_node_id)?.label} → {result.nodes.find(n=>n.node_id===e.target_node_id)?.label}<strong>{e.label}</strong>{e.condition&&<small>条件：{e.condition}</small>}</button>)}</div></details>;
+  const relations=<details className="flow-relations"><summary>查看分支与关系 · {edges.length} 条</summary><p className="graph-note">只有关系明确表达的方向与条件有依据；列表位置不代表全局先后。{external.length>0&&`含 ${external.length} 个外部端点。`}</p><div className="relation-list" aria-label="可选关系">{edges.map(e=><button key={e.edge_id} className={selected===edgeSelection(e.edge_id)?'selected':''} onClick={()=>select(edgeSelection(e.edge_id))}><span className="tag">{edgeNames[e.kind]}</span> {result.nodes.find(n=>n.node_id===e.source_node_id)?.label} → {result.nodes.find(n=>n.node_id===e.target_node_id)?.label}<strong>{e.label}</strong>{e.condition&&<small>条件：{e.condition}</small>}</button>)}</div></details>;
   if(focused)return <div className="graph-wrap focused-graph">{scopeTools}<div className="focus-steps" aria-label="选择要看的步骤">{shown.map(n=><button key={n.node_id} aria-pressed={focus.id===n.node_id} onClick={()=>select(n.node_id)}>{n.label}</button>)}</div><p className="graph-note">当前步骤：{shown.find(n=>n.node_id===focus.id)?.label}。逐条查看实际端点与传递内容；步骤按钮的位置不代表执行顺序。</p><RelationRows result={result} edges={focus.main} selected={selected} select={select} zoom={zoom} label="当前步骤的关系"/>{focus.returns.length>0&&<details className="focus-returns"><summary>查看当前步骤的返回 · {focus.returns.length} 条</summary><RelationRows result={result} edges={focus.returns} selected={selected} select={select} zoom={zoom} label="当前步骤的返回关系"/></details>}{!focus.main.length&&<p>本结果没有分析当前步骤的其他连接。</p>}{relations}</div>;
   const {width,height,positions,routes}=flowLayout(shown,edges);
   return <div className="graph-wrap">
@@ -36,7 +37,7 @@ export function Graph({result,selected,select,view,stage,expand,zoom,search,scop
     <svg className="graph" data-zoom-surface width={width*zoom} height={height*zoom} viewBox={`0 0 ${width} ${height}`} role="group" aria-label="关键调用关系图">
       <defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="#acd0ff"/></marker><marker id="data-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="#88edd0"/></marker></defs>
       {routes.map(({edge,d,caption})=>{
-        return <g key={edge.edge_id} className={`wire ${selected===edge.edge_id?'chosen':''}`} onClick={()=>select(edge.edge_id)} tabIndex={0} role="button" aria-label={`${edgeNames[edge.kind]}：${edge.label}`} onKeyDown={e=>{if(e.key==='Enter')select(edge.edge_id);}}>
+        return <g key={edge.edge_id} className={`wire ${selected===edgeSelection(edge.edge_id)?'chosen':''}`} onClick={()=>select(edgeSelection(edge.edge_id))} tabIndex={0} role="button" aria-label={`${edgeNames[edge.kind]}：${edge.label}`} onKeyDown={e=>{if(e.key==='Enter')select(edgeSelection(edge.edge_id));}}>
           <title>{edgeNames[edge.kind]} · {edge.label} · {claimNames[edge.status]}</title>
           <path className="wire-hit" d={d}/><path data-edge-id={edge.edge_id} className={`wire-line ${edge.kind} ${caption.data?'data-transfer':''}`} d={d} markerEnd={`url(#${caption.data?'data-arrow':'arrow'})`}/>
         </g>;
@@ -54,7 +55,7 @@ export function Graph({result,selected,select,view,stage,expand,zoom,search,scop
       {routes.filter(r=>r.label).map(({edge,label,caption})=><g key={'label-'+edge.edge_id}>
         <line className="flow-label-leader" x1={label!.anchor.x} y1={label!.anchor.y} x2={label!.x+label!.width/2} y2={label!.y+label!.height/2}/>
         <foreignObject x={label!.x} y={label!.y} width={label!.width} height={label!.height} className="edge-label-box">
-          <button data-edge-id={edge.edge_id} data-label-kind={caption.data?'transfer':'relation'} className={`edge-label ${caption.data?'transfer':''} ${caption.uncertain?'uncertain':''} ${selected===edge.edge_id?'selected':''}`} aria-label={`${caption.data?'传递内容':'关系'}：${caption.text}${caption.uncertain?' · 待确认':''}`} title={`${caption.text}\n${caption.data?'明确的输出 → 输入映射':'关系说明；未建立明确输入输出映射'}${caption.uncertain?' · 待确认':''}`} onClick={()=>select(edge.edge_id)}><span>{caption.text}</span>{caption.uncertain&&<small>待确认</small>}</button>
+          <button data-edge-id={edge.edge_id} data-label-kind={caption.data?'transfer':'relation'} className={`edge-label ${caption.data?'transfer':''} ${caption.uncertain?'uncertain':''} ${selected===edgeSelection(edge.edge_id)?'selected':''}`} aria-label={`${caption.data?'传递内容':'关系'}：${caption.text}${caption.uncertain?' · 待确认':''}`} title={`${caption.text}\n${caption.data?'明确的输出 → 输入映射':'关系说明；未建立明确输入输出映射'}${caption.uncertain?' · 待确认':''}`} onClick={()=>select(edgeSelection(edge.edge_id))}><span>{caption.text}</span>{caption.uncertain&&<small>待确认</small>}</button>
         </foreignObject>
       </g>)}
     </svg>
@@ -72,9 +73,9 @@ function Sequence({result,nodes,selected,select,zoom}:{result:AnalysisResult;nod
     {participants.map((p,i)=><g key={p}><line x1={130+i*190} x2={130+i*190} y1="50" y2={height} stroke="#52647b" strokeDasharray="5 5"/><text x={130+i*190} y="25" textAnchor="middle" fill="#88edd0" fontSize="13">{p.slice(0,13)}</text></g>)}
     {result.edges.filter(e=>nodes.some(n=>n.node_id===e.source_node_id)&&nodes.some(n=>n.node_id===e.target_node_id)).map((edge,i)=>{
       const a=nx(edge.source_node_id),b=nx(edge.target_node_id),y=90+i*66;
-      return <g key={edge.edge_id} role="button" tabIndex={0} aria-label={`时序关系 ${edge.label}`} onClick={()=>select(edge.edge_id)} onKeyDown={e=>{if(e.key==='Enter')select(edge.edge_id);}} className={`wire ${selected===edge.edge_id?'chosen':''}`}>
+      return <g key={edge.edge_id} role="button" tabIndex={0} aria-label={`时序关系 ${edge.label}`} onClick={()=>select(edgeSelection(edge.edge_id))} onKeyDown={e=>{if(e.key==='Enter')select(edgeSelection(edge.edge_id));}} className={`wire ${selected===edgeSelection(edge.edge_id)?'chosen':''}`}>
         <title>{edge.label}</title><path d={a===b?`M${a},${y} h50 v25 h-50`:`M${a},${y} H${b}`} fill="none" className={`wire-line ${edge.kind}`} markerEnd="url(#sequence-arrow)"/>
-        <text x={Math.min(a,b)+8} y={y-9} fill={selected===edge.edge_id?'#88edd0':'#ced8e6'} fontSize="13">{edgeNames[edge.kind]} · {edge.label.slice(0,28)}</text>
+        <text x={Math.min(a,b)+8} y={y-9} fill={selected===edgeSelection(edge.edge_id)?'#88edd0':'#ced8e6'} fontSize="13">{edgeNames[edge.kind]} · {edge.label.slice(0,28)}</text>
       </g>;
     })}
   </svg></div>;

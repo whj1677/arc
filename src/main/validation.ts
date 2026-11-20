@@ -1,7 +1,7 @@
 import Ajv2020 from 'ajv/dist/2020';
 import schema from '../../contracts/analysis-result.schema.json';
 import type { AnalysisResult, Run, Snapshot, SourceEvidence } from '../shared';
-import { readSource, relativePath } from './snapshot';
+import { linesOf, readSource, relativePath } from './snapshot';
 import {overviewDiscoveryQuestion} from './architecture-analysis';
 import {validateReadingGuide} from './reading-guide-validation';
 import {validateFunctionWalkthroughs} from './function-walkthrough-validation';
@@ -15,7 +15,6 @@ export async function validateResult(value: unknown, run: Run, snapshot: Snapsho
   for (const key of Object.keys(run.binding) as (keyof typeof run.binding)[]) if(result.binding[key]!==run.binding[key]) errors.push(`冻结绑定不匹配：${key}`);
   if(result.provider.provider_id!==run.provider_id || result.provider.connection_id!==`local-${run.provider_id}`) errors.push('Provider 身份/连接不匹配');
   if (run.provider_id !== 'demo' && result.fictional) errors.push('真实通道不能返回演示身份');
-  const allIds = new Set<string>();
   const groups: Record<string,Map<string,any>> = {};
   for(const [key,list,idKey] of [
     ['node_ids',result.nodes,'node_id'],['edge_ids',result.edges,'edge_id'],['claim_ids',result.claims,'claim_id'],
@@ -23,7 +22,7 @@ export async function validateResult(value: unknown, run: Run, snapshot: Snapsho
     ['io_ids',result.nodes.flatMap(n=>[...n.inputs,...n.outputs]),'io_id']
   ] as const) {
     const map = new Map<string,any>();
-    for(const item of list) { const itemId=(item as any)[idKey]; if(allIds.has(itemId))errors.push(`重复 ID：${itemId}`);allIds.add(itemId);map.set(itemId,item); }
+    for(const item of list) { const itemId=(item as any)[idKey]; if(map.has(itemId))errors.push(`${idKey} 重复 ID：${itemId}`);map.set(itemId,item); }
     groups[key]=map;
   }
   groups.related_node_ids=groups.node_ids;
@@ -125,14 +124,15 @@ export async function validateResult(value: unknown, run: Run, snapshot: Snapsho
   return {structure:'passed',anchors:errors.length?'failed':'passed',semantic:'待核对：引用位置已检查，结论是否由该片段支持尚未人工确认',errors};
 }
 export async function validateEvidence(evidenceList:readonly SourceEvidence[],snapshot:Snapshot,storage:string) {
-  const errors:string[]=[],cache=new Map<string,any>();
+  const errors:string[]=[],cache=new Map<string,{content_sha256:string;lines:string[]}>();
   for(const evidence of evidenceList) {
     try {
       relativePath(evidence.path);
       if(evidence.source_snapshot_id!==snapshot.source_snapshot_id)throw new Error('快照身份错误');
-      let file=cache.get(evidence.path);if(!file){file=await readSource(storage,snapshot,evidence.path);cache.set(evidence.path,file);}
+      let file=cache.get(evidence.path);if(!file){const source=await readSource(storage,snapshot,evidence.path);file={content_sha256:source.content_sha256,lines:linesOf(source.text)};cache.set(evidence.path,file);}
       if(file.content_sha256!==evidence.content_sha256)throw new Error('完整文件哈希错误');
-      if(!Number.isInteger(evidence.line_start)||!Number.isInteger(evidence.line_end)||evidence.line_start<1||evidence.line_end<evidence.line_start||evidence.line_end>file.line_count)throw new Error('行范围错误');
+      if(!Number.isInteger(evidence.line_start)||!Number.isInteger(evidence.line_end)||evidence.line_start<1||evidence.line_end<evidence.line_start||evidence.line_end>file.lines.length)throw new Error('行范围错误');
+      if(!file.lines.slice(evidence.line_start-1,evidence.line_end).some(line=>line.trim()))throw new Error('指定源码片段为空');
     }catch(e){errors.push(`${evidence.evidence_id}: ${(e as Error).message}`);}
   }
   return errors;

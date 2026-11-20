@@ -89,6 +89,22 @@ test('feature graph rejects a wrong verbatim quote and an overlong frozen range'
   });
 });
 
+test('functions, calls and evidence may share an ID while duplicates in one collection fail', async t => {
+  const { run, snapshot, storage } = await fixture(t), draft = graphDraft();
+  const walk = draft.walkthroughs[0], fn = draft.functions[0], call = draft.calls[0];
+  fn.id = fn.definition_evidence_id = draft.evidence[0].id = call.id = 'publish';
+  fn.evidence_ids = walk.steps[0].evidence_ids = ['publish'];
+  walk.entry_function_id = walk.steps[0].to_function_id = walk.steps[1].from_function_id = call.from = 'publish';
+  const { quote, ...range } = draft.evidence[0];
+  const result = await prepareFeatureGraph({ ...draft, evidence: [range, ...draft.evidence.slice(1)] }, run, snapshot, storage);
+  assert.equal(result.nodes[0].node_id, 'publish');
+  assert.equal(result.edges[0].edge_id, 'publish');
+  assert.equal(result.evidence[0].evidence_id, 'publish');
+  assert.equal(result.evidence[0].note, lines.slice(5, 8).join('\n'));
+  draft.functions.push({ ...fn, definition_evidence_id: 'site' });
+  await assert.rejects(prepareFeatureGraph(draft, run, snapshot, storage), /node_id 重复 ID：publish/);
+});
+
 test('feature graph rejects broken cross-references and mismatched call/dispatch steps', async t => {
   const { prepare } = await fixture(t);
   const draft = graphDraft();

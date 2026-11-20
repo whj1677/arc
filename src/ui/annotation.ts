@@ -5,7 +5,8 @@ export function annotationTarget(a:Annotation,old:AnalysisResult|undefined,curre
   if(!a.result_id)return '场景线索';
   if(a.result_id===current?.result_id)return '当前说明批注';
   if(!old||!current||!a.object_id||a.source_snapshot_id!==current.binding.source_snapshot_id)return '待重新定位 · 保留原说明';
-  const find=(r:AnalysisResult)=>[...r.nodes,...r.edges].find(n=>('node_id'in n?n.node_id:n.edge_id)===a.object_id);
+  const kind=a.target?.kind??(old.nodes.some(n=>n.node_id===a.object_id)?'node':'edge');
+  const find=(r:AnalysisResult)=>kind==='edge'?r.edges.find(e=>e.edge_id===a.object_id):r.nodes.find(n=>n.node_id===a.object_id);
   const before=find(old),after=find(current);
   const anchors=(r:AnalysisResult,ids:readonly string[])=>r.evidence.filter(e=>ids.includes(e.evidence_id)).map(e=>JSON.stringify([e.path,e.symbol_id??null,e.line_start,e.line_end,e.content_sha256])).sort();
   if(!before||!after||before.kind!==after.kind||!before.evidence_ids.length)return '待重新定位 · 保留原说明';

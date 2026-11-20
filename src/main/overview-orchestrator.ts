@@ -361,7 +361,7 @@ export class OverviewOrchestrator {
     store.put('run', runId, current);
     const messages: Record<OverviewPhase, string> = {
       overview_review: '正在独立核对关系的方向、通信方式和源码依据；发现疑点后会自动补查。',
-      overview_research: '正在沿有疑点的关系补查调用点、装配位置和接收方源码，无需手工核对。',
+      overview_research: '正在通过符号和调用索引定位有疑点的关系，并核对调用点、装配位置和接收方源码。',
       overview_recheck: '补查已取得源码，正在独立复核修订关系；尚未发布新说明。',
     };
     const providerPhase = phase === 'summary_repair' ? undefined : phase;

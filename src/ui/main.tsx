@@ -28,7 +28,7 @@ import { timelineModel } from './timeline-model';
 import { savedBusinessPath } from './home-reading';
 import { EngineeringOverviewSections, EngineeringWorkspace } from './EngineeringWorkspace';
 import { WorkbenchNavigation } from './WorkbenchNavigation';
-import { readingQuestionTarget } from './reading-target';
+import { edgeSelection, readingQuestionTarget } from './reading-target';
 import { compactTitle, isLegacyOverview, modernReading } from './presentation';
 import { RunActivity } from './RunActivity';
 import {
@@ -54,6 +54,9 @@ import './reading-diagrams.css';
 import './function-chain.css';
 import './reading.css';
 import './feature-reading.css';
+import './architecture.css';
+import './architecture-map.css';
+import './code-modules.css';
 import './workbench.css';
 
 const api = window.arc;
@@ -79,7 +82,7 @@ function App() {
   const [data, setData] = useState(initialData);
   const [projectId, setProjectId] = useState('');
   const [scenarioId, setScenarioId] = useState('');
-  const [reading, setReading] = useState<ReadingState>(defaults);
+  const [storedReading, setReading] = useState<ReadingState>(defaults);
   const [loadedKey, setLoadedKey] = useState('');
   const [width, setWidth] = useState(window.innerWidth);
   const [error, setError] = useState('');
@@ -134,6 +137,16 @@ function App() {
     .filter(s => s.project_id === projectId && !s.archived && s.scenario_id !== project?.overview_scenario_id && userFeatures.some(f => f.feature_id === s.feature_id))
     .sort((a, b) => userFeatures.findIndex(f => f.feature_id === a.feature_id) - userFeatures.findIndex(f => f.feature_id === b.feature_id) || a.sort_order - b.sort_order);
 
+  const sceneExplanations = data.explanations.filter(e => e.scenario_id === scenarioId);
+  const explanation = sceneExplanations.find(e => e.result_id === storedReading.result_id) || (storedReading.result_id ? undefined : sceneExplanations.at(-1));
+  const result = explanation?.result;
+  // Older reading positions stored a bare edge ID while all IDs were globally unique.
+  const reading = useMemo(() => {
+    const id = storedReading.selected;
+    return id && result?.edges.some(e => e.edge_id === id) && !result.nodes.some(n => n.node_id === id)
+      ? { ...storedReading, selected: edgeSelection(id) } : storedReading;
+  }, [storedReading, result]);
+
   const analysisScope =
     (!scenarioId && reading.entrance === 'walk') || reading.view === 'capabilities'
       ? '功能目录'
@@ -143,9 +156,6 @@ function App() {
           ? '功能整体走读'
           : '具体场景';
   const snapshot = data.snapshots.find(s => s.source_snapshot_id === project?.snapshot_id);
-  const sceneExplanations = data.explanations.filter(e => e.scenario_id === scenarioId);
-  const explanation = sceneExplanations.find(e => e.result_id === reading.result_id) || (reading.result_id ? undefined : sceneExplanations.at(-1));
-  const result = explanation?.result;
   const hasCollaboration = hasCollaborationRoles(result);
   const overviewRun =
     result &&
@@ -175,7 +185,7 @@ function App() {
   const systemReading = overview && ['system', 'modules'].includes(reading.view);
 
   const selectedNode = result?.nodes.find(n => n.node_id === reading.selected);
-  const selectedEdge = result?.edges.find(n => n.edge_id === reading.selected);
+  const selectedEdge = result?.edges.find(n => edgeSelection(n.edge_id) === reading.selected);
   const functionStep = reading.view === 'functions' && result ? selectedCallStep(result, reading.selected) : undefined;
   const selectedCall =
     reading.view === 'functions' && result && selectedEdge && ['sync_call', 'execution_boundary'].includes(selectedEdge.kind)
@@ -724,7 +734,7 @@ function App() {
     }
     const paths = result.function_walkthroughs ?? [];
     if (!paths.length) {
-      select(edgeId);
+      select(edgeSelection(edgeId));
       return;
     }
     const current = reading.function_path ?? reading.reading_path ?? '';
@@ -767,12 +777,15 @@ function App() {
     setShowDetail(featureReading || reading.view === 'functions' || detailDrawer);
   }
 
-  function chooseFile(file: string) {
+  function chooseFile(file: string, indexSnapshotId?: string) {
     if (featureReading) {
       readingFile(file);
       return;
     }
-    switchView('files', { file, evidence_id: '', selected: '', source_snapshot_id: sourceSnapshotId, mode: 'normal', detail_tab: 'details' });
+    const folders = file.split('/').slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join('/'));
+    if (indexSnapshotId) setSearch('');
+    switchView('files', { file, evidence_id: '', selected: '', source_snapshot_id: indexSnapshotId || sourceSnapshotId, mode: 'normal', detail_tab: 'details',
+      ...(indexSnapshotId && { files_open: true, expanded: [...new Set([...reading.expanded, ...folders])] }) });
     setShowCatalog(false);
     if (detailDrawer) setShowDetail(true);
   }
@@ -1074,7 +1087,7 @@ function App() {
         (kind === 'edge' && original.result.edges.some(edge => edge.edge_id === id && ['sync_call', 'execution_boundary'].includes(edge.kind)));
       if (call || functionTarget) {
         position.view = 'functions';
-        position.selected = id;
+        position.selected = kind === 'edge' ? edgeSelection(id) : id;
         position.function_path = call?.path.id ?? '';
       } else if (kind === 'file' || kind === 'directory') {
         position.view = 'files';
@@ -1283,17 +1296,17 @@ function App() {
     }
   }
 
-  async function openCapability(nodeId: string) {
-    if (starting.current || !catalogExplanation) return;
+  async function openCapability(nodeId: string, catalog = catalogExplanation) {
+    if (starting.current || !catalog) return;
     starting.current = true;
     setPending(true);
     try {
       await action(async () => {
         const requestedProject = projectSwitch.current;
-        const opened = await api.invoke('feature_open', { project_id: projectId, result_id: catalogExplanation.result_id, node_id: nodeId, request_mcp: false });
+        const opened = await api.invoke('feature_open', { project_id: projectId, result_id: catalog.result_id, node_id: nodeId, request_mcp: false });
         const workspace = await reload();
         if (requestedProject !== projectSwitch.current) return;
-        const graph = catalogGraphState(workspace, catalogExplanation, nodeId);
+        const graph = catalogGraphState(workspace, catalog, nodeId);
         const automatic = !!graph.run?.overview_parent_run_id;
         const report = graph.ready ?? (!automatic ? graph.latest : undefined);
         emptyEntrance.current = 'walk';
@@ -1301,7 +1314,7 @@ function App() {
           entrance: 'walk',
           view: graph.ready || automatic ? 'functions' : 'timeline',
           mode: 'normal',
-          result_id: report?.result_id || catalogExplanation.result_id,
+          result_id: report?.result_id || catalog.result_id,
           selected: '',
           file: '',
           evidence_id: '',
@@ -1309,7 +1322,7 @@ function App() {
           function_path: graph.ready ? firstGraphPath(graph.ready.result) : '',
           function_mode: 'calls',
           reading_focus: '',
-          source_snapshot_id: report?.result.binding.source_snapshot_id || catalogExplanation.result.binding.source_snapshot_id,
+          source_snapshot_id: report?.result.binding.source_snapshot_id || catalog.result.binding.source_snapshot_id,
           detail_tab: 'details',
           catalog_hidden: true,
           pinned: false,
@@ -1612,6 +1625,7 @@ function App() {
       readingFile={readingFile}
       readingStep={readingStep}
       inspectComponent={inspectComponent}
+      openFeature={id => void openCapability(id, explanation)}
       askHere={askHere}
       reload={reload}
       showMcp={showMcp}

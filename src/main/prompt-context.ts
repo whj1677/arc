@@ -2,6 +2,7 @@ import type {Snapshot,Annotation,AnalysisResult,ReadingContext,ReadingQuestion,R
 import {relativePath} from './snapshot';
 
 export const overviewDiscoveryBudget = { calls: 64, searchFiles: 24, readLines: 80 } as const;
+export const indexDiscoveryInstructions = '先用 list_modules 清点模块及跨目录调用，用 list_symbols 按 dir、path 或 query 定位入口和定义，再按需用 get_call_graph 查上下游及调用行。静态匹配只提供线索，用 arc_read_source 核对实际定义和调用点。未索引的语言、动态调用或缺失的符号可用 arc_search_source 定向补查。';
 
 export function readingTarget(result:AnalysisResult|undefined,target:ReadingTarget,snapshot:Snapshot,feature:Feature) {
   if(!target||!['feature','node','edge','file','directory','step','role','handoff','call_step'].includes(target.kind)||typeof target.id!=='string'||!target.id.trim()||target.id.length>2000)throw Error('阅读对象无效');
@@ -73,7 +74,7 @@ export function listFrozenFiles(snapshot:Snapshot,args:{query?:string;offset?:nu
   return {source_snapshot_id:snapshot.source_snapshot_id,total:matches.length,offset,files,next_offset:next<matches.length?next:null,excluded_count:snapshot.excluded.length,build_config:snapshot.build_config};
 }
 
-const sourceFile=/\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|cs|swift|m|mm|vue|svelte|sql|proto)$/i;
+const sourceFile=/\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|ts|mts|cts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|cs|swift|m|mm|vue|svelte|sql|proto)$/i;
 const cppImplementation=/\.(?:c|cc|cpp|cxx)$/i;
 const cppHeader=/\.(?:h|hh|hpp|hxx)$/i;
 const headerFile=/\.(?:h|hh|hpp|hxx|d\.ts)$/i;

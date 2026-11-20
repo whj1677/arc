@@ -4,7 +4,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type {AnalysisResult,Snapshot} from '../src/shared';
-import {applyOverviewReview,makeOverviewReviewPrompt} from '../src/main/overview-review';
+import {applyOverviewReview,makeOverviewReviewPrompt,overviewReviewSchema} from '../src/main/overview-review';
+import {dshWebPrompt} from '../src/main/dsh-web';
 import {sha} from '../src/main/snapshot';
 
 const source='export const read = (db:Database) => db.get("item");\n';
@@ -71,6 +72,9 @@ test('review prompt carries frozen source excerpts, component labels and exact d
   await fs.writeFile(path.join(dir,'snapshots','frozen','src','read.ts'),source);
   const result=draft(),snapshot:Snapshot={source_snapshot_id:'frozen',project_id:'project',captured_at:'2026-11-13T00:00:00Z',root_path:path.join(dir,'unavailable-live-tree'),files:[{path:'src/read.ts',content_sha256:sha(source),bytes:Buffer.byteLength(source),line_count:1,encoding:'utf-8'}],excluded:[],fingerprint:'fingerprint',commit:null,dirty:null,build_config:'',consistency:'verified'};
   const prompt=await makeOverviewReviewPrompt(result,snapshot,dir),input=JSON.parse(prompt.split('待复核输入：')[1]);
+  const dshPrompt=dshWebPrompt({prompt,outputSchema:overviewReviewSchema});
+  assert.ok(dshPrompt.includes(JSON.stringify(overviewReviewSchema)));
+  assert.deepEqual(JSON.parse(dshPrompt.split('待复核输入：')[1]),input);
   assert.equal(input.draft_sha256,sha(JSON.stringify(result)));assert.equal(input.source_snapshot_id,'frozen');
   assert.equal(input.evidence.length,1);assert.match(input.evidence[0].source,/1: export const read/);
   assert.equal(input.components[0].label,'读取服务');assert.equal(input.relations[0].claims[0].statement,'数据库读取服务');

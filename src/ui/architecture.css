@@ -34,3 +34,24 @@
 .system-overview-dense .system-exchange strong{color:#91e5cb}
 @media(max-width:899px){.system-overview-dense{grid-template-columns:1fr}.system-overview-dense .system-components{display:grid!important;grid-template-columns:repeat(auto-fit,minmax(10em,1fr))!important}}
 .architecture-content-summary{color:var(--ink);margin:0 0 1rem;padding:.8rem 1rem;border:1px solid var(--border);border-radius:.6rem;background:var(--surface)}.architecture-content-summary p{margin:0 0 .55rem;line-height:1.75}.architecture-content-summary div{display:flex;flex-wrap:wrap;gap:.5rem}.architecture-content-summary span{color:var(--accent);font-size:.75rem}.architecture-content-summary small{display:block;margin-top:.45rem;color:var(--muted);line-height:1.6}
+
+.architecture-relations { margin-block: 16px; color: var(--ink); }
+.architecture-relations h3 { margin: 0 0 8px; font-size: 16px; font-weight: 560; }
+.architecture-table-scroll { overflow-x: auto; }
+.architecture-relations table { width: 100%; border-collapse: collapse; font-size: 14px; text-align: left; }
+.architecture-relations :is(th, td) { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.architecture-relations th { font-size: 13px; font-weight: 530; color: var(--muted); background: var(--surface-tint); }
+.architecture-relations tbody tr { cursor: pointer; }
+.architecture-relations tbody tr:is(:hover, :focus-within, .is-selected) { background: var(--soft); }
+.architecture-relations td { overflow-wrap: anywhere; color: var(--ink-secondary); }
+.architecture-relations td:nth-child(2) { width: 16%; min-width: 4em; font-size: 13px; }
+.architecture-relations td:last-child { width: 45%; }
+.architecture-relations td button {
+  min-height: 24px; padding: 0; border: 0; background: transparent; color: var(--accent);
+  text-align: left; white-space: normal; font: inherit; font-weight: 530;
+}
+.architecture-relations td small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
+
+.system-sources { display: grid; gap: 6px; }
+.system-sources .module-partner { width: 100%; overflow-wrap: anywhere; }
+.system-detail .module-purpose p { font-size: 15px; line-height: 1.75; }

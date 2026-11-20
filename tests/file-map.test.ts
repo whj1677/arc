@@ -63,6 +63,9 @@ test('directory tree and detail distinguish a scoped summary, a citation and an 
  assert.match(details('src'),/已在以下分析中引用（2 处）/);
  assert.match(details('src/task.c'),/完整的任务说明/);
  assert.match(details('src/include.h'),/用途尚未分析/);
+ const source=renderToStaticMarkup(createElement(FileSummary,{data,projectId:'p',snapshot,path:'src/include.h',ask:noop,showSource:true}));
+ assert.match(source,/aria-label="文件冻结源码"/);
+ assert.doesNotMatch(cited,/aria-label="文件冻结源码"/);
 });
 test('file mind map indexes actual folders and counts; purposes cannot leak from another snapshot or a partial citation',()=>{
  const files=['app/backend/server.py','app/backend/store.py','app/frontend/app.js','README.md'].map(path=>({path})) as SourceFile[];

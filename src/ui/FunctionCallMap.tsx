@@ -1,3 +1,4 @@
+import {edgeSelection} from './reading-target';
 import React,{useEffect,useId,useRef} from 'react';
 import type {AnalysisResult,SourceEvidence} from '../shared';
 import {functionCallMap,callLabelWidth,callLabelHeight} from './function-call-map';
@@ -20,7 +21,7 @@ export function FunctionCallMap({result,pathId,selected,select,search,zoom,evide
   useEffect(()=>{const frame=root.current?.querySelector<HTMLElement>('.reading-diagram-frame'),node=root.current?.querySelector<SVGElement>(`[data-function-node="${CSS.escape(m.focus.selected)}"]`);if(!frame||!node)return;const box=node.getBoundingClientRect(),viewport=frame.getBoundingClientRect();frame.scrollTo({top:frame.scrollTop+box.top-viewport.top-48,left:frame.scrollLeft+box.left-viewport.left-(frame.clientWidth-box.width)/2,behavior:'auto'});},[result.result_id,pathId,selected]);
   const marker='function-map-'+useId().replace(/:/g,'');
   const query=search.trim().toLowerCase();
-  const selectedLink=m.links.find(link=>link.id===selected||link.edgeIds.includes(selected));
+  const selectedLink=m.links.find(link=>link.id===selected||link.edgeIds.some(id=>edgeSelection(id)===selected));
   const selectedNode=m.nodes.some(node=>node.node_id===m.focus.selected);
   const nodeName=(id:string)=>{const node=m.nodes.find(item=>item.node_id===id);return node?functionInfo(result,node).details?.symbol||node.label:id;};
   const fileName=(path:string|null|undefined)=>path?.split('/').at(-1)||'文件待确认';
@@ -35,7 +36,7 @@ export function FunctionCallMap({result,pathId,selected,select,search,zoom,evide
   const linkLayers=m.links.map(link=>{
     const {d,labelX,labelY}=m.routes.get(link.id)!;
     const siblings=m.links.filter(item=>item.from===link.from&&item.to===link.to);
-    const expanded=selected===link.id||link.edgeIds.includes(selected),targetFile=m.nodeSources.get(link.to)?.path;
+    const expanded=selected===link.id||link.edgeIds.some(id=>edgeSelection(id)===selected),targetFile=m.nodeSources.get(link.to)?.path;
     const relation=link.fileRelation==='same-file'?'同文件':link.fileRelation==='cross-file'?'跨文件':'文件待确认';
     const height=callLabelHeight(expanded);
     const label=link.fileRelation==='cross-file'?fileName(targetFile)+' → '+nodeName(link.to):nodeName(link.to)+(siblings.length>1?' · '+(siblings.findIndex(item=>item.id===link.id)+1)+'/'+siblings.length:'');

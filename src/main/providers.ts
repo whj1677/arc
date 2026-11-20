@@ -10,7 +10,7 @@ import type { CodexPreferences, CodexReasoningEffortPreference, ProviderProfile,
 import { overviewIdleMinutes, overviewTotalMinutes } from '../shared';
 import { now } from './store';
 import { schema, transportSchema } from './validation';
-import {promptContext} from './prompt-context';
+import {indexDiscoveryInstructions,promptContext} from './prompt-context';
 import {readingAnswerTransportSchema,readingPrompt} from './reading-question';
 import {overviewSchema,overviewPrompt} from './overview-result';
 import {featureGraphPrompt} from './feature-graph-result';
@@ -237,14 +237,14 @@ ${run.development_task_id?`这是开发结束后的同功能复核。任务目�
 工程问题：${run.question}
 请求的不可变绑定：${JSON.stringify(run.binding)}
 provider 必须为 ${JSON.stringify({provider_id:run.provider_id,connection_id:`local-${run.provider_id}`,adapter_version:'0.1.0'})}。fictional=false，schema_version="1.0"，result_id 自行生成一个唯一字符串。
-输出完整 Arc JSON。关系类型 edges.kind 仅允许 ${schema.$defs.edge.properties.kind.enum.join("、")}；不存在 data_write，数据写入/发布使用有依据的 data_publish。关键函数/阶段用 nodes，真实关系用 edges；source_supported 只表示有来源。缺失实现/入口/trace 保留 gaps；不得猜测实际线程时序/耗时。同步返回用 related_call_edge_id 配对。feature_catalog.groups 引用有名称、一句话用途及依据的独立 stage 节点，scope 说明覆盖边界。目录节点数量按查证结果，不受下述流程节点建议限制。其他详细流程保持精简，优先 4–8 个关键节点，标题尽量 6–14 字，description 一两句说明职责；每节点明确输入输出，不在多处重复整段说明。功能/场景的已证实失败需用对应步骤的条件 control_flow 边和异常目标节点表达，关系必须用 flow_role 明确 main（连续正常主线）、alternative（正常条件分支）或 exception（异常），不能靠最长路径或错误名称猜主线；不仅把错误放入 outputs；正常复用或跳过是条件分支，不能标作失败。恢复建议与源码已实现行为分别标注。信息不明用 unknown/null。所有 IDs 唯一，所有引用必须存在。每项 source_supported 断言至少一个精确源码依据。source_snapshot_id 必须一致，证据哈希使用 arc_read_source 返回的原始文件完整哈希，行号从 1 开始。
+输出完整 Arc JSON。关系类型 edges.kind 仅允许 ${schema.$defs.edge.properties.kind.enum.join("、")}；不存在 data_write，数据写入/发布使用有依据的 data_publish。关键函数/阶段用 nodes，真实关系用 edges；source_supported 只表示有来源。缺失实现/入口/trace 保留 gaps；不得猜测实际线程时序/耗时。同步返回用 related_call_edge_id 配对。feature_catalog.groups 引用有名称、一句话用途及依据的独立 stage 节点，scope 说明覆盖边界。目录节点数量按查证结果，不受下述流程节点建议限制。其他详细流程保持精简，优先 4–8 个关键节点，标题尽量 6–14 字，description 一两句说明职责；每节点明确输入输出，不在多处重复整段说明。功能/场景的已证实失败需用对应步骤的条件 control_flow 边和异常目标节点表达，关系必须用 flow_role 明确 main（连续正常主线）、alternative（正常条件分支）或 exception（异常），不能靠最长路径或错误名称猜主线；不仅把错误放入 outputs；正常复用或跳过是条件分支，不能标作失败。恢复建议与源码已实现行为分别标注。信息不明用 unknown/null。同一集合内 ID 唯一，引用指向对应集合。建议函数用 fn-*、调用用 call-*、证据用 ev-*、走读路径用 w-*。每项 source_supported 断言至少一个精确源码依据。source_snapshot_id 必须一致，证据哈希使用 arc_read_source 返回的原始文件完整哈希，行号从 1 开始。
 若明确查证某输出被下一节点作为输入接收，在 edges.transfers 中以 source_output_id、target_input_id 绑定对应 I/O，并用 6–14 字业务短语 label 标出传递内容；claim_ids/evidence_ids 必须支持该映射，来源断言 targets 同时引用关系及两个 I/O。仅条件或顺序关系不强行填 transfers，不能把相邻节点的所有输入输出拼成传递。未知映射留空或省略。
 需要整文件或文件夹用途说明时，用 kind=resource 的节点，并以 source_scope={kind:file或folder,path:冻结快照相对路径} 明确标注范围。description 写该范围整体负责什么、主要内容及协作边界，证据和对应断言必须支持该范围。局部函数引用不能冒充文件级摘要；未读范围保持未知。
 architecture 只用于系统架构，不是函数调用图。首屏优先展示少量主要协作角色；架构节点 label 只写 6–16 字职责名称，可用“ · ”附简短技术栈；description 限一句业务职责。版本未知、路径、函数名、调用参数、证据不足的解释放到 claims.limitations / gaps / evidence，不堆进首屏标题和正文。内部工具或子模块通过 parent_node_id 放到次级，不把每个实现模块都平铺为系统组件。不能为了简化而伪造组件边界。功能走读没有高层系统组件时省略该可选字段（传输 Schema 要求时填 null）。提供 architecture 时，node_ids 只能引用 kind 为 stage、resource 或 execution_boundary 的真实系统组件，不能引用 function 或 decision；edge_ids 的两端必须都在 architecture.node_ids 中。内部函数保留在 nodes 中用 parent_node_id 关联，不能为满足架构字段伪造组件。
 用户线索节选（不是事实，省略部分未分析）：${JSON.stringify(context.clues)}
 先前说明节选（有来源上下文，不是原生会话续接）：${JSON.stringify(context.previous)}
 源码范围概览（仅帮助定位，不是完整清单）：${JSON.stringify(context.inventory)}
-使用 arc_list_files 按路径关键词查找，offset/limit 分页（最多 100 项），next_offset 非空可继续；所有 ${snapshot.files.length} 个授权文件均可查找，不限于上面的概览。先用 arc_search_source 搜索函数名，直接定位定义和调用点的文件、行号及整文件 SHA-256；已知文件时指定 path，已知目录时指定 path_prefix。再用 arc_read_source 按命中行号读取周围源码（每次最多 400 行），沿真实调用关系查证。避免在大文件中逐页盲翻或枚举整个工程。未读取、排除或未找到的范围保持未知。
+${indexDiscoveryInstructions} arc_read_source 提供冻结行号与整文件 SHA-256。arc_list_files 可查全部 ${snapshot.files.length} 个授权文件，offset/limit 分页（最多 100 项），next_offset 非空可继续。未读取、排除或未找到的范围保持未知。
 除最终 JSON 外不要生成附件。不要把 schema、prompt 或清单当成源码证据。`;
 }
 

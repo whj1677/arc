@@ -6,6 +6,7 @@ import type { GoalRefinement } from '../engineering';
 import type {
   AnalysisResult,
   Annotation,
+  CodeIndexSummary,
   Explanation,
   ExecutionMode,
   Feature,
@@ -27,6 +28,8 @@ import { hasFunctionGraphs, overviewTotalMinutes } from '../shared';
 import { explanationFreshness } from '../freshness';
 import { Store, id, now } from './store';
 import { capture, freshness, readSource, sha } from './snapshot';
+import { getCodeIndex } from './code-index';
+import { codeIndexSummary } from './code-index-query';
 import { makePrompt, probeProviders, redact, runCodex, runCodexPromptRefinement, stopTree, type ActiveProcess } from './providers';
 import { buildRefinementContext, goalRefinementSchema, parseGoalRefinement, refinementPrompt } from './prompt-refiner';
 import { normalizeTransport, schema, validateResult } from './validation';
@@ -78,6 +81,7 @@ export class ArcService {
   private localSlotsInUse = 0;
   private readonly localWaiters = new Map<string, { priority: boolean; resume: (acquired: boolean) => void }>();
   private checkingProviders = new Map<'codex' | 'dsh', Promise<ProviderProfile[]>>();
+  private recentCodeSummary?: { snapshotId: string; fingerprint: string; request: Promise<CodeIndexSummary> };
   private codexModels = loadCodexModelCatalog();
   private readonly freshnessState = new Map<string, ProjectFreshness>();
   private readonly checkingFreshness = new Map<string, Promise<ProjectFreshness>>();
@@ -535,12 +539,14 @@ export class ArcService {
     this.changed();
   }
 
-  annotate(scenarioId: string, body: string, resultId: string | null, objectId: string | null) {
+  annotate(scenarioId: string, body: string, resultId: string | null, objectId: string | null, objectKind?: 'node' | 'edge') {
     const scenario = this.store.get<Scenario>('scenario', scenarioId);
     const project = this.store.get<Project>('project', scenario.project_id);
     const result = resultId ? this.store.get<Explanation>('explanation', resultId) : null;
     if (result && result.scenario_id !== scenarioId) throw new Error('批注归属不匹配');
-    if (objectId && (!result || ![...result.result.nodes, ...result.result.edges].some(n => ('node_id' in n ? n.node_id : n.edge_id) === objectId))) {
+    const kind = objectKind ?? (result?.result.nodes.some(n => n.node_id === objectId) ? 'node' : 'edge');
+    if (objectId && !(kind === 'node' && result?.result.nodes.some(n => n.node_id === objectId) ||
+      kind === 'edge' && result?.result.edges.some(e => e.edge_id === objectId))) {
       throw new Error('批注对象不属于原说明');
     }
     const annotation: Annotation = {
@@ -549,6 +555,7 @@ export class ArcService {
       scenario_id: scenarioId,
       result_id: resultId,
       object_id: objectId,
+      ...(objectId && { target: { kind, id: objectId } }),
       source_snapshot_id: result?.result.binding.source_snapshot_id || project.snapshot_id,
       text: text(body),
       created_at: now(),
@@ -640,6 +647,20 @@ export class ArcService {
 
   async source(snapshotId: string, file: string) {
     return readSource(this.directory, this.store.get('snapshot', snapshotId), file);
+  }
+
+  async codeIndexSummary(snapshotId: string) {
+    const snapshot = this.store.get<Snapshot>('snapshot', snapshotId);
+    const recent = this.recentCodeSummary;
+    if (recent?.snapshotId === snapshotId && recent.fingerprint === snapshot.fingerprint) return recent.request;
+    const request = getCodeIndex(this.directory, snapshot).then(codeIndexSummary);
+    this.recentCodeSummary = {snapshotId, fingerprint: snapshot.fingerprint, request};
+    try {
+      return await request;
+    } catch (error) {
+      if (this.recentCodeSummary?.request === request) this.recentCodeSummary = undefined;
+      throw error;
+    }
   }
 
   reading(key: string, value?: ReadingState) {
@@ -1086,7 +1107,7 @@ export class ArcService {
         const repairPrompt = [
           `只修正以下 ARC 校验错误，输出完整、符合 ${format} Schema 的 JSON。`,
           (error as Error).message,
-          '每条 evidence 的 start..end（对应 line_start..line_end）必须是有效源码行，含首尾最多 40 行，并包含逐字匹配的 quote。用 arc_read_source / arc_list_files 核对源码。',
+          '每条 evidence 的 start..end（对应 line_start..line_end）必须是有效源码行，含首尾最多 40 行。可只给行号或提供该范围内的单行短锚点 quote。用 arc_read_source / arc_list_files 核对源码。',
           '上一轮草稿 JSON：',
           JSON.stringify(value),
         ].join('\n');

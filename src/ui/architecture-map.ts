@@ -1,42 +1,170 @@
-import type {AnalysisResult} from '../shared';
+import type { AnalysisResult } from '../shared';
 
-// Layout uses only declared containment and relationships; positions add no
-// execution order, service boundary or new connection to the analysis.
-export function architectureMap(result:AnalysisResult,search=''){
- const all=(result.architecture?.node_ids||[]).map(id=>result.nodes.find(n=>n.node_id===id)).filter(n=>!!n);
- const allIds=new Set(all.map(n=>n.node_id));
- const relationships=(result.architecture?.edge_ids||[]).map(id=>result.edges.find(e=>e.edge_id===id)).filter((e):e is AnalysisResult['edges'][number]=>!!e&&allIds.has(e.source_node_id)&&allIds.has(e.target_node_id));
- const q=search.trim().toLowerCase(),match=new Set(all.filter(n=>`${n.label} ${n.description}`.toLowerCase().includes(q)).map(n=>n.node_id));
- if(q)for(const e of relationships)if(e.label.toLowerCase().includes(q)){match.add(e.source_node_id);match.add(e.target_node_id);}
- // Keep declared ancestors so a search cannot silently turn an internal module
- // into an independent service.
- for(const id of [...match]){let n=all.find(n=>n.node_id===id);const seen=new Set<string>();while(n?.parent_node_id&&allIds.has(n.parent_node_id)&&!seen.has(n.parent_node_id)){seen.add(n.parent_node_id);match.add(n.parent_node_id);n=all.find(p=>p.node_id===n!.parent_node_id);}}
- const nodes=all.filter(n=>!q||match.has(n.node_id)),ids=new Set(nodes.map(n=>n.node_id));
- const edges=relationships.filter(e=>ids.has(e.source_node_id)&&ids.has(e.target_node_id));
- const owner=(id:string)=>{let n=nodes.find(n=>n.node_id===id)!;const seen=new Set([id]);while(n.parent_node_id&&ids.has(n.parent_node_id)&&!seen.has(n.parent_node_id)){seen.add(n.parent_node_id);n=nodes.find(p=>p.node_id===n.parent_node_id)!;}return n.node_id;};
- const groups=new Map<string,typeof nodes>();for(const n of nodes){const root=owner(n.node_id);groups.set(root,[...(groups.get(root)||[]),n]);}
- for(const [id,members]of groups)groups.set(id,[...members].sort((a,b)=>a.node_id===id?-1:b.node_id===id?1:0));
- const score=(id:string)=>edges.filter(e=>owner(e.source_node_id)===id||owner(e.target_node_id)===id).length+(groups.get(id)!.length-1)*2;
- const hub=[...groups.keys()].sort((a,b)=>score(b)-score(a))[0];
- const left:string[]=[],right:string[]=[];
- for(const id of groups.keys()){if(id===hub)continue;const touching=edges.filter(e=>(owner(e.source_node_id)===id&&owner(e.target_node_id)===hub)||(owner(e.target_node_id)===id&&owner(e.source_node_id)===hub));const toward=touching.some(e=>owner(e.source_node_id)===id),from=touching.some(e=>owner(e.source_node_id)===hub);const internalOnly=touching.length>0&&touching.every(e=>e.source_node_id!==hub&&e.target_node_id!==hub);(internalOnly||(toward&&!from)?left:right).push(id);}
- const groupHeight=(id:string)=>groups.get(id)!.length*78+(groups.get(id)!.length-1)*54;
- const stackHeight=(list:string[])=>list.reduce((sum,id)=>sum+groupHeight(id),0)+Math.max(0,list.length-1)*54;
- // Side placement is spatial, not data direction. Avoid a tall one-sided
- // fan-out hiding most collaborators below the fold; keep each parent group
- // intact and retain every arrow's original source/target.
- for(let i=0;i<groups.size;i++){
-  const from=stackHeight(right)>stackHeight(left)?right:left,to=from===right?left:right;
-  const before=Math.max(stackHeight(left),stackHeight(right));
-  const move=from.map((id,index)=>({id,index,height:Math.max(stackHeight(from.filter(v=>v!==id)),stackHeight([...to,id]))})).sort((a,b)=>a.height-b.height||b.index-a.index)[0];
-  if(!move||move.height>=before)break;
-  from.splice(move.index,1);to.push(move.id);
- }
- const height=Math.max(360,stackHeight(left)+64,stackHeight(right)+64,hub?groupHeight(hub)+64:0);
- const boxes=new Map<string,{x:number;y:number;width:number;height:number}>(),boundaries:{id:string;x:number;y:number;width:number;height:number}[]=[];
- function place(id:string,x:number,y:number){const members=groups.get(id)!;members.forEach((n,i)=>boxes.set(n.node_id,{x:x+(i?12:0),y:y+i*132,width:196-(i?24:0),height:78}));if(members.length>1)boundaries.push({id,x:x-14,y:y-16,width:224,height:groupHeight(id)+32});}
- function stack(list:string[],x:number){let y=(height-stackHeight(list))/2;for(const id of list){place(id,x,y);y+=groupHeight(id)+54;}}
- stack(left,24);stack(right,660);if(hub)place(hub,342,(height-groupHeight(hub))/2);
- const pairs=new Map<string,typeof edges>();for(const e of edges){const key=[e.source_node_id,e.target_node_id].sort().join('\0');pairs.set(key,[...(pairs.get(key)||[]),e]);}
- return {nodes,edges,boxes,boundaries,pairs:[...pairs.values()],hub,width:880,height};
+type Node = AnalysisResult['nodes'][number];
+type Box = { x: number; y: number; width: number; height: number };
+type Tier = 'boundary' | 'core' | 'infrastructure';
+
+const tierNames: Record<Tier, string> = {
+  boundary: '入口与外部边界',
+  core: '核心业务与控制层',
+  infrastructure: '基础资源与下游组件',
+};
+const cardWidth = 284;
+const inset = 16;
+
+function cardHeight(node: Node) {
+  // Two lines each for the title and responsibility, then only reserve rows with source or I/O.
+  return 148 + 24 * [node.evidence_ids?.length, node.inputs?.length, node.outputs?.length].filter(Boolean).length;
+}
+
+export function architectureMap(result: AnalysisResult, search = '', maxColumns = 3) {
+  const byId = new Map(result.nodes.map(node => [node.node_id, node]));
+  const byEdge = new Map(result.edges.map(edge => [edge.edge_id, edge]));
+  const all = (result.architecture?.node_ids ?? []).map(id => byId.get(id)).filter(node => !!node);
+  const allIds = new Set(all.map(node => node.node_id));
+  const relations = (result.architecture?.edge_ids ?? []).map(id => byEdge.get(id))
+    .filter((edge): edge is AnalysisResult['edges'][number] => !!edge && allIds.has(edge.source_node_id) && allIds.has(edge.target_node_id));
+
+  const query = search.trim().toLowerCase();
+  const matches = new Set(all.filter(node => (node.label + ' ' + node.description).toLowerCase().includes(query)).map(node => node.node_id));
+  if (query) {
+    for (const edge of relations) {
+      if (edge.label.toLowerCase().includes(query)) {
+        matches.add(edge.source_node_id);
+        matches.add(edge.target_node_id);
+      }
+    }
+  }
+
+  const rootOf = new Map<string, string>();
+  for (const node of all) {
+    let root = node;
+    while (root.parent_node_id && allIds.has(root.parent_node_id)) {
+      root = byId.get(root.parent_node_id)!;
+      if (matches.has(node.node_id)) matches.add(root.node_id);
+    }
+    rootOf.set(node.node_id, root.node_id);
+  }
+  const nodes = all.filter(node => matches.has(node.node_id));
+  const edges = relations.filter(edge => matches.has(edge.source_node_id) && matches.has(edge.target_node_id));
+  const children = new Map<string, Node[]>();
+  const tiers: Record<Tier, Node[]> = { boundary: [], core: [], infrastructure: [] };
+  const degrees = new Map<string, number>();
+  const upstream = new Set<string>(), downstream = new Set<string>(), connected = new Set<string>();
+  for (const edge of relations) {
+    const from = rootOf.get(edge.source_node_id)!, to = rootOf.get(edge.target_node_id)!;
+    for (const id of new Set([edge.source_node_id, edge.target_node_id])) degrees.set(id, (degrees.get(id) ?? 0) + 1);
+    connected.add(from);
+    connected.add(to);
+    if (from !== to) {
+      upstream.add(from);
+      downstream.add(to);
+    }
+  }
+  for (const node of nodes) {
+    if (node.parent_node_id && allIds.has(node.parent_node_id)) {
+      const siblings = children.get(node.parent_node_id) ?? [];
+      siblings.push(node);
+      children.set(node.parent_node_id, siblings);
+      continue;
+    }
+    const sends = upstream.has(node.node_id), receives = downstream.has(node.node_id);
+    const tier = node.kind === 'execution_boundary' ? 'boundary' : node.kind === 'resource' ? 'infrastructure'
+      : sends && !receives ? 'boundary' : receives && !sends ? 'infrastructure' : 'core';
+    tiers[tier].push(node);
+  }
+
+  const largestTier = Math.max(...Object.values(tiers).map(roots => roots.length));
+  const columns = Math.max(1, Math.min(maxColumns, largestTier));
+  const boxes = new Map<string, Box>();
+  const boundaries: (Box & { id: string })[] = [];
+  const layers: (Box & { id: Tier; title: string; roots: string[] })[] = [];
+  const positions = new Map<string, { col: number; row: number }>();
+  const rows: { tier: Tier; groups: Node[] }[] = [];
+  function mark(node: Node, col: number, row: number) {
+    positions.set(node.node_id, { col, row });
+    for (const child of children.get(node.node_id) ?? []) mark(child, col, row);
+  }
+  for (const tier of Object.keys(tiers) as Tier[]) {
+    const roots = tiers[tier].sort((a, b) => Number(connected.has(b.node_id)) - Number(connected.has(a.node_id)));
+    for (let start = 0; start < roots.length; start += columns) {
+      const groups = roots.slice(start, start + columns);
+      groups.forEach((root, col) => mark(root, col, rows.length));
+      rows.push({ tier, groups });
+    }
+  }
+
+  // Each column has a routing gutter. Cross-column links change columns only
+  // in the aisle below their source row, so paths never run across other cards.
+  const gutterTracks = Array<number>(columns).fill(0);
+  const aisleTracks = Array<number>(rows.length).fill(0);
+  const ports = new Map<string, number>();
+  function takePort(id: string) {
+    const next = (ports.get(id) ?? 0) + 1;
+    ports.set(id, next);
+    return next;
+  }
+  const tracks = edges.map(edge => {
+    const from = positions.get(edge.source_node_id)!, to = positions.get(edge.target_node_id)!;
+    const sourceTrack = ++gutterTracks[from.col];
+    return {
+      edge, from, to, sourceTrack,
+      targetTrack: from.col === to.col ? sourceTrack : ++gutterTracks[to.col],
+      aisle: from.col === to.col ? 0 : ++aisleTracks[from.row],
+      sourcePort: takePort(edge.source_node_id), targetPort: takePort(edge.target_node_id),
+    };
+  });
+
+  let width = inset + 4;
+  const xs = gutterTracks.map(count => {
+    const left = width;
+    width += cardWidth + 28 + count * 5;
+    return left;
+  });
+  const floors: number[] = [];
+  function place(node: Node, x: number, y: number, depth: number): number {
+    const indent = Math.min(depth, 4) * 8;
+    const box = { x: x + indent, y, width: cardWidth - indent * 2, height: cardHeight(node) };
+    boxes.set(node.node_id, box);
+    let bottom = y + box.height;
+    const nested = children.get(node.node_id) ?? [];
+    for (const child of nested) bottom = place(child, x, bottom + 18, depth + 1);
+    if (nested.length) {
+      boundaries.push({ id: node.node_id, x: box.x - 6, y: y - 6, width: box.width + 12, height: bottom - y + 12 });
+      bottom += 8;
+    }
+    return bottom;
+  }
+
+  let height = 8;
+  for (const [index, row] of rows.entries()) {
+    if (layers.at(-1)?.id !== row.tier) {
+      layers.push({ id: row.tier, title: tierNames[row.tier], roots: tiers[row.tier].map(node => node.node_id),
+        x: 4, y: height, width: width - 8, height: 0 });
+      height += 48;
+    }
+    const floor = Math.max(...row.groups.map((root, col) => place(root, xs[col], height, 0)));
+    floors.push(floor);
+    height = floor + 24 + aisleTracks[index] * 5;
+    const layer = layers.at(-1)!;
+    layer.height = height - layer.y - 6;
+  }
+
+  function portY(box: Box, id: string, slot: number) {
+    return Math.round(box.y + box.height * slot / ((ports.get(id) ?? 0) + 1));
+  }
+  const links = tracks.map(({ edge, from, to, sourceTrack, targetTrack, aisle, sourcePort, targetPort }) => {
+    const a = boxes.get(edge.source_node_id)!, b = boxes.get(edge.target_node_id)!;
+    const sy = portY(a, edge.source_node_id, sourcePort), ty = portY(b, edge.target_node_id, targetPort);
+    const sx = xs[from.col] + cardWidth + 8 + sourceTrack * 5;
+    const tx = xs[to.col] + cardWidth + 8 + targetTrack * 5;
+    const points = [[a.x + a.width, sy], [sx, sy]];
+    if (from.col !== to.col) {
+      const trackY = floors[from.row] + 8 + aisle * 5;
+      points.push([sx, trackY], [tx, trackY]);
+    }
+    points.push([tx, ty], [b.x + b.width, ty]);
+    return { edge, points };
+  });
+  return { nodes, edges, degrees, boxes, boundaries, layers, links, width, height };
 }
