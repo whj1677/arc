@@ -7,6 +7,7 @@ import type {
   ExecutionMode,
   Feature,
   Project,
+  ProjectFreshness,
   ProviderProfile,
   ReadingAnswer,
   ReadingAsk,
@@ -19,6 +20,7 @@ import type {
   WorkspaceData,
 } from '../shared';
 import { hasFunctionGraphs } from '../shared';
+import { explanationFreshness } from '../freshness';
 import { Store, id, now } from './store';
 import { capture, freshness, readSource, sha } from './snapshot';
 import { makePrompt, probeProviders, redact, runCodex, stopTree, type ActiveProcess } from './providers';
@@ -28,6 +30,7 @@ import { promptContext } from './prompt-context';
 import { readingAnswerSchema, validateReadingAnswer } from './reading-question';
 import { overviewDiscoveryQuestion, shallowOverviewQuestion } from './architecture-analysis';
 import { overviewSchema, prepareOverview } from './overview-result';
+import { featureGraphSchema, prepareFeatureGraph } from './feature-graph-result';
 import { parseDshReply } from './dsh';
 import { runDshWeb } from './dsh-web';
 import { EngineeringService } from './engineering-service';
@@ -69,6 +72,8 @@ export class ArcService {
   private localSlotsInUse = 0;
   private readonly localWaiters = new Map<string, { priority: boolean; resume: (acquired: boolean) => void }>();
   private checkingProviders = new Map<'codex' | 'dsh', Promise<ProviderProfile[]>>();
+  private readonly freshnessState = new Map<string, ProjectFreshness>();
+  private readonly checkingFreshness = new Map<string, Promise<ProjectFreshness>>();
   private readonly readingService: ReadingService;
   private readonly walkthroughs: WalkthroughRefreshCoordinator;
   private readonly overviews: OverviewOrchestrator;
@@ -174,6 +179,7 @@ export class ArcService {
       explanations: this.store.all('explanation'),
       providers: this.store.all('provider'),
       snapshots: this.store.all('snapshot'),
+      project_freshness: Object.fromEntries(this.freshnessState),
       questions: this.store.all('reading_question'),
       development_tasks: this.engineering.tasks(),
       requested_analysis: this.store.maybe('setting', 'mcp-requested-analysis') ?? undefined,
@@ -213,6 +219,7 @@ export class ArcService {
         this.store.put('project', projectId, project);
         this.store.put('snapshot', snapshot.source_snapshot_id, snapshot);
       });
+      this.freshnessState.set(projectId, { snapshot_id: project.snapshot_id, changed_files: [], checked_at: now() });
       if (!fictional) await this.engineering.connect(projectId);
       this.changed();
       return project;
@@ -506,14 +513,9 @@ export class ArcService {
         project.snapshot_id = snapshot.source_snapshot_id;
         project.build_config = snapshot.build_config;
         this.store.put('project', projectId, project);
-        for (const e of this.store.all<Explanation>('explanation')) {
-          if (e.result.binding.project_id === projectId) {
-            const old = this.store.get<Snapshot>('snapshot', e.result.binding.source_snapshot_id);
-            e.source_status = old.fingerprint === snapshot.fingerprint ? 'current' : 'needs_review';
-            this.store.put('explanation', e.result_id, e);
-          }
-        }
+        this.updateExplanationSources(snapshot, []);
       });
+      this.freshnessState.set(projectId, { snapshot_id: snapshot.source_snapshot_id, changed_files: [], checked_at: now() });
       this.changed();
       return snapshot;
     } finally {
@@ -522,26 +524,58 @@ export class ArcService {
     }
   }
 
-  async checkFreshness(projectId: string) {
+  private explanationSourceStatus(explanation: Explanation, snapshot: Snapshot, changes: string[] | undefined) {
+    if (!changes) return 'needs_review';
+    const boundId = explanation.result.binding.source_snapshot_id;
+    if (boundId !== snapshot.source_snapshot_id &&
+        this.store.get<Snapshot>('snapshot', boundId).fingerprint !== snapshot.fingerprint) return 'needs_review';
+    return changes.length && explanationFreshness(explanation, snapshot.source_snapshot_id, changes).kind === 'affected'
+      ? 'needs_review' : 'current';
+  }
+
+  private updateExplanationSources(snapshot: Snapshot, changes: string[] | undefined) {
+    for (const explanation of this.store.all<Explanation>('explanation')) {
+      if (explanation.result.binding.project_id !== snapshot.project_id) continue;
+      const status = this.explanationSourceStatus(explanation, snapshot, changes);
+      if (explanation.source_status !== status) {
+        this.store.put('explanation', explanation.result_id, { ...explanation, source_status: status });
+      }
+    }
+  }
+
+  checkFreshness(projectId: string): Promise<ProjectFreshness> {
+    const pending = this.checkingFreshness.get(projectId);
+    if (pending) return pending;
+    const check = this.scanFreshness(projectId).finally(() => this.checkingFreshness.delete(projectId));
+    this.checkingFreshness.set(projectId, check);
+    return check;
+  }
+
+  private async scanFreshness(projectId: string): Promise<ProjectFreshness> {
     const project = this.store.get<Project>('project', projectId);
     const snapshot = this.store.get<Snapshot>('snapshot', project.snapshot_id);
     let changes: string[];
     try {
-      await fs.access(project.root_path);
       changes = await freshness(snapshot);
-    } catch {
-      changes = ['来源无法检查'];
-    }
-    if (changes.length) {
-      for (const e of this.store.all<Explanation>('explanation')) {
-        if (e.result.binding.project_id === projectId) {
-          e.source_status = 'needs_review';
-          this.store.put('explanation', e.result_id, e);
-        }
+    } catch (error) {
+      if (this.store.get<Project>('project', projectId).snapshot_id === snapshot.source_snapshot_id) {
+        this.store.transaction(() => this.updateExplanationSources(snapshot, undefined));
+        this.freshnessState.delete(projectId);
+        this.changed();
       }
+      throw error;
     }
+    const currentId = this.store.get<Project>('project', projectId).snapshot_id;
+    if (currentId !== snapshot.source_snapshot_id) {
+      const updated = this.freshnessState.get(projectId);
+      if (updated?.snapshot_id === currentId) return updated;
+      throw new Error('检查期间工程快照已更新，请重新检查');
+    }
+    this.store.transaction(() => this.updateExplanationSources(snapshot, changes));
+    const state = { snapshot_id: currentId, changed_files: changes, checked_at: now() };
+    this.freshnessState.set(projectId, state);
     this.changed();
-    return changes;
+    return state;
   }
 
   async source(snapshotId: string, file: string) {
@@ -826,8 +860,11 @@ export class ArcService {
 
     const { annotations, previous } = this.analysisHistory(initial);
     const scenario = this.store.get<Scenario>('scenario', initial.binding.scenario_id);
-    const featureDetail = !!initial.overview_parent_run_id ||
-      (!initial.overview_format && !initial.reading_question_id && scenario.kind === 'feature_overview');
+    const featureDetail = !initial.overview_format && !initial.reading_question_id && scenario.kind === 'feature_overview';
+    if (featureDetail) {
+      freshRun.feature_graph_format = 'feature-graph-1';
+      this.store.put('run', runId, freshRun);
+    }
     const prompt = await makePrompt(initial, snapshot, this.directory, annotations, previous, featureDetail);
     this.event(runId, { type: 'local.stage', stage: 'launching', message: `只读任务已准备，正在启动 ${product}` });
     if (this.store.get<Run>('run', runId).status === 'cancelled' || this.closing) return;
@@ -862,12 +899,13 @@ export class ArcService {
       resources: this.resources,
       profile,
       prompt,
+      ...(featureDetail ? { outputSchema: featureGraphSchema } : {}),
       event: event => this.event(runId, event),
       shouldStart: () => canStart('queued'),
       started: active => started(active, 'queued'),
     };
     const result = provider === 'dsh'
-      ? await this.dshRunner({ ...options, outputSchema: initial.reading_question_id ? readingAnswerSchema : initial.overview_format ? overviewSchema : schema })
+      ? await this.dshRunner({ ...options, outputSchema: options.outputSchema ?? (initial.reading_question_id ? readingAnswerSchema : initial.overview_format ? overviewSchema : schema) })
       : await this.codexRunner(options);
     this.active.delete(runId);
 
@@ -878,16 +916,22 @@ export class ArcService {
       throw new Error(`${initial.provider_id} 未成功完成（exit=${result.code}）：${protocolError || result.stderr.slice(-2500)}`);
     }
 
+    const normalizeReply = (reply: unknown) => {
+      // The compact graph requires literal nulls (e.g. unconditional calls).
+      if (featureDetail) return reply;
+      const audit: string[] = [];
+      const value = normalizeTransport(reply, audit);
+      if (audit.length) this.event(runId, { type: 'local.format_normalization', changes: audit });
+      return value;
+    };
     let value: unknown;
     try {
-      const audit: string[] = [];
-      value = normalizeTransport(provider === 'dsh' ? parseDshReply(result.raw) : parseJsonReply(result.raw), audit);
-      if (audit.length) this.event(runId, { type: 'local.format_normalization', changes: audit });
+      value = normalizeReply(provider === 'dsh' ? parseDshReply(result.raw) : parseJsonReply(result.raw));
     } catch {
       throw new Error('真实返回不是合法 JSON，原始文件已保留；未生成正式关系图。');
     }
 
-    const repairValidation = async (repairPrompt: string, outputSchema?: typeof overviewSchema) => {
+    const repairValidation = async (repairPrompt: string, outputSchema?: object) => {
       const outputDirectory = path.join(this.directory, 'runs', runId, 'repair');
       try {
         const repair = await this.codexRunner({
@@ -903,30 +947,35 @@ export class ArcService {
         if (repair.code !== 0 || repair.protocol_error) {
           throw Error(`Codex 未成功完成修正（exit=${repair.code}）：${repair.protocol_error || repair.stderr.slice(-2500)}`);
         }
-        const audit: string[] = [];
-        const repairedValue = normalizeTransport(parseJsonReply(repair.raw), audit);
-        if (audit.length) this.event(runId, { type: 'local.format_normalization', changes: audit });
-        return repairedValue;
+        return normalizeReply(parseJsonReply(repair.raw));
       } finally {
         this.active.delete(runId);
       }
     };
 
     let semanticReview: string | undefined;
-    if (initial.overview_format) {
+    if (initial.overview_format || featureDetail) {
       run.status = 'validating';
       this.store.put('run', runId, run);
       this.changed();
-      let draft: Awaited<ReturnType<typeof prepareOverview>>;
+      const prepare = async (raw: unknown) => {
+        if (!featureDetail) return prepareOverview(raw, initial, snapshot, this.directory);
+        const audit: string[] = [];
+        const draft = await prepareFeatureGraph(raw, run, snapshot, this.directory, audit);
+        if (audit.length) this.event(runId, { type: 'local.format_normalization', changes: audit });
+        return draft;
+      };
+      let draft: AnalysisResult;
       try {
-        draft = await prepareOverview(value, initial, snapshot, this.directory);
+        draft = await prepare(value);
       } catch (error) {
         if (provider !== 'codex') throw error;
         if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
-        this.event(runId, { type: 'local.stage', stage: 'repairing_validation', message: '工程全貌校验发现偏差，正在让 Codex 定向修正（最多 1 轮）' });
+        const format = featureDetail ? 'feature-graph-1' : '工程全貌';
+        this.event(runId, { type: 'local.stage', stage: 'repairing_validation', message: `${format} 校验发现偏差，正在让 Codex 定向修正（最多 1 轮）` });
         if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
         const repairPrompt = [
-          '只修正以下 ARC 校验错误，输出完整、符合工程全貌 Schema 的 JSON。',
+          `只修正以下 ARC 校验错误，输出完整、符合 ${format} Schema 的 JSON。`,
           (error as Error).message,
           '每条 evidence 的 start..end（对应 line_start..line_end）必须是有效源码行，含首尾最多 40 行，并包含逐字匹配的 quote。用 arc_read_source / arc_list_files 核对源码。',
           '上一轮草稿 JSON：',
@@ -934,18 +983,23 @@ export class ArcService {
         ].join('\n');
         let repairedValue: unknown;
         try {
-          repairedValue = await repairValidation(repairPrompt, overviewSchema);
+          repairedValue = await repairValidation(repairPrompt, featureDetail ? featureGraphSchema : overviewSchema);
         } catch (repairError) {
           if ((repairError as { remoteUnknown?: boolean })?.remoteUnknown) throw repairError;
           if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
           throw repairError;
         }
         if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
-        draft = await prepareOverview(repairedValue, initial, snapshot, this.directory);
+        draft = await prepare(repairedValue);
       }
-      const checked = await this.overviews.finishOverview(initial, snapshot, profile, draft);
-      value = checked.result;
-      semanticReview = checked.semantic;
+      if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
+      if (initial.overview_format) {
+        const checked = await this.overviews.finishOverview(initial, snapshot, profile, draft);
+        value = checked.result;
+        semanticReview = checked.semantic;
+      } else {
+        value = draft;
+      }
     } else if (provider === 'codex') {
       const report = await this.validateRunResult(run, value, snapshot);
       if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
@@ -1038,12 +1092,11 @@ export class ArcService {
       throw new Error('结果 ID 与另一个运行冲突');
     }
 
-    const snapshot = this.store.get<Snapshot>('snapshot', run.binding.source_snapshot_id);
-    let changed = true;
+    let checked: ProjectFreshness | undefined;
     try {
-      changed = (await freshness(snapshot)).length > 0;
-    } catch {
-      // Missing workspace remains reviewable only as history.
+      checked = await this.checkFreshness(run.binding.project_id);
+    } catch (error) {
+      this.event(runId, { type: 'source.check_failed', reason: (error as Error).message });
     }
     const latest = this.store.get<Run>('run', runId);
     if (latest.status === 'completed') return latest;
@@ -1055,9 +1108,11 @@ export class ArcService {
       result_id: result.result_id,
       scenario_id: run.binding.scenario_id,
       created_at: now(),
-      source_status: !changed && current.fingerprint === snapshot.fingerprint ? 'current' : 'needs_review',
+      source_status: 'needs_review',
       result,
     };
+    explanation.source_status = this.explanationSourceStatus(explanation, current,
+      checked?.snapshot_id === project.snapshot_id ? checked.changed_files : undefined);
     const children = this.store.transaction(() => {
       run.status = 'completed';
       run.ended_at = now();
@@ -1079,7 +1134,8 @@ export class ArcService {
     if (run.status !== 'failed' || this.active.has(runId)) throw new Error('仅可重新校验已失败且已停止的原始返回');
     const raw = await fs.readFile(run.output_path, 'utf8');
     const audit: string[] = [];
-    const parsed = normalizeTransport(run.execution_mode === 'dsh' ? parseDshReply(raw) : parseJsonReply(raw), audit);
+    const reply = run.execution_mode === 'dsh' ? parseDshReply(raw) : parseJsonReply(raw);
+    const parsed = run.feature_graph_format ? reply : normalizeTransport(reply, audit);
     this.event(runId, {
       type: 'local.revalidation',
       reason: '重新校验首轮已保存原文，未派发外部请求',
@@ -1092,7 +1148,11 @@ export class ArcService {
     run.error = undefined;
     this.store.put('run', runId, run);
     try {
-      return await this.acceptResult(runId, parsed, undefined, false);
+      const value = run.feature_graph_format
+        ? await prepareFeatureGraph(parsed, run, this.store.get('snapshot', run.binding.source_snapshot_id), this.directory, audit)
+        : parsed;
+      if (run.feature_graph_format && audit.length) this.event(runId, { type: 'local.format_normalization', changes: audit });
+      return await this.acceptResult(runId, value, undefined, false);
     } catch (e) {
       this.fail(runId, e);
       throw e;
@@ -1178,6 +1238,7 @@ export class ArcService {
     await this.overviews.waitQueue();
     clearTimeout(timer);
     await this.walkthroughs.shutdown();
+    await Promise.allSettled(this.checkingFreshness.values());
     while (this.indexing.size) await new Promise(resolve => setTimeout(resolve, 20));
   }
 }

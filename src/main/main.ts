@@ -33,6 +33,9 @@ app.whenReady().then(async()=>{
   bridge=new ArcMcpBridge(service,resources);await bridge.start();
   window=new BrowserWindow({width:1440,height:900,minWidth:320,minHeight:560,title:'Arc · 工程理解工作台',backgroundColor:'#101923',show:false,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
   window.removeMenu();
+  const notifyFocus = () => window?.webContents.send('arc:event', { type: 'window_focus' });
+  window.on('focus', notifyFocus);
+  window.on('restore', notifyFocus);
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   window.webContents.on('will-navigate',event=>event.preventDefault());
   window.webContents.session.setPermissionRequestHandler((_w,_p,callback)=>callback(false));

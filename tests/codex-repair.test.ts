@@ -87,7 +87,7 @@ for(const outcome of ['completed','still invalid','invalid JSON','cancel before 
       }
     });
     t.after(async()=>{service.store.close();await fs.rm(dir,{recursive:true,force:true});});
-    const opened=await service.openProject(project),{scenario}=service.addFeature(opened.project_id,'函数链');
+    const opened=await service.openProject(project),{scenario}=service.addFeature(opened.project_id,'函数链','解释 calculate 的输入和返回值');
     service.store.put('provider','codex',{status:'available',checked_at:new Date().toISOString()});
     const run=await service.startRun(scenario.scenario_id,'codex','repair-test-key');
     const runId=run.binding.run_id;

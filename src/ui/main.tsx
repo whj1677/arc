@@ -2,11 +2,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client';
 import type { EngineeringTask } from '../engineering';
 import type { Project, ReadingState, Run, Scenario, SourceEvidence, WorkspaceData } from '../shared';
+import { hasFunctionGraphs } from '../shared';
+import { explanationFreshness } from '../freshness';
 import { discoveredFeature } from '../discovered-feature';
 import { functionCallMap } from './function-call-map';
 import { selectedCallStep } from './function-sequence-model';
-import { AnalysisModePicker, catalogGraphState } from './FeatureCatalog';
-import { analysisModes, waitingForAgent, type AnalysisMode } from './discovery-state';
+import { AnalysisModePicker } from './FeatureCatalog';
+import { analysisModes, catalogGraphState, waitingForAgent, type AnalysisMode } from './discovery-state';
 import { projectLabel } from './project-label';
 import { FeatureDevelopment, type FeatureDevelopmentDraft } from './FeatureDevelopment';
 import {
@@ -94,6 +96,7 @@ function App() {
   const modalRef = useRef<HTMLDialogElement>(null);
   const starting = useRef(false);
   const projectSwitch = useRef(0);
+  const freshnessChecks = useRef(new Map<string, number>());
   const navigation = useRef<{ scope: string; value: Partial<ReadingState> } | null>(null);
 
   const project = data.projects.find(p => p.project_id === projectId);
@@ -136,6 +139,9 @@ function App() {
   const engineeringReading = ['engineering', 'materials'].includes(reading.view);
   const projectHome = reading.view === 'home' && !project?.fictional;
   const catalogExplanation = data.explanations.filter(e => e.scenario_id === project?.overview_scenario_id && e.result.feature_catalog).at(-1);
+  const lastCheck = data.project_freshness?.[projectId];
+  const projectFreshness = lastCheck?.snapshot_id === project?.snapshot_id ? lastCheck : undefined;
+  const freshness = !catalogReading && explanation && project ? explanationFreshness(explanation, project.snapshot_id, projectFreshness?.changed_files ?? []) : undefined;
   const capabilityCount = catalogExplanation?.result.feature_catalog?.groups.reduce((n, g) => n + g.node_ids.length, 0) || 0;
   const featureReading = reading.entrance === 'walk' && !!scenarioId && ['timeline', 'collaboration', 'files'].includes(reading.view);
   const readingGuide = featureReading && result ? featureReadingModel(result) : undefined;
@@ -517,9 +523,34 @@ function App() {
   }, [reading, readingKey, loadedKey, projectId]);
 
   useEffect(() => {
-    if (!projectId) return;
-    void action(() => api.invoke('check_freshness', { project_id: projectId }));
-  }, [projectId, scenarioId]);
+    if (!projectId || project?.fictional !== false) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    function check() {
+      if (document.hidden) return;
+      clearTimeout(timer);
+      const delay = (freshnessChecks.current.get(projectId) ?? 0) + 5000 - Date.now();
+      if (delay > 0) {
+        timer = setTimeout(check, delay);
+        return;
+      }
+      freshnessChecks.current.set(projectId, Date.now());
+      void api.invoke('check_freshness', { project_id: projectId }).catch(error => {
+        if (active) setError(error.message);
+      });
+    }
+    check();
+    window.addEventListener('focus', check);
+    document.addEventListener('visibilitychange', check);
+    const unsubscribe = api.onEvent(event => { if (event.type === 'window_focus') check(); });
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      window.removeEventListener('focus', check);
+      document.removeEventListener('visibilitychange', check);
+      unsubscribe();
+    };
+  }, [projectId, project?.fictional, project?.snapshot_id]);
 
   useEffect(() => {
     let current = true;
@@ -622,6 +653,15 @@ function App() {
   }
 
   function chooseScenario(id: string, value?: Partial<ReadingState>) {
+    const scene = data.scenarios.find(s => s.scenario_id === id);
+    if (!value && scene?.kind === 'feature_overview') {
+      const graph = data.explanations.findLast(e => e.scenario_id === id && e.result.binding.question_revision_id === scene.question_revision_id && hasFunctionGraphs(e.result));
+      if (graph) value = {
+        entrance: 'walk', view: 'functions', function_mode: 'calls', function_path: firstGraphPath(graph.result),
+        result_id: graph.result_id, source_snapshot_id: graph.result.binding.source_snapshot_id,
+        mode: 'normal', detail_tab: 'details', selected: '', file: '', evidence_id: '', pinned: false,
+      };
+    }
     if (value) {
       if (id !== scenarioId) navigation.current = { scope: projectId + '/' + id, value };
       patch(value);
@@ -819,7 +859,7 @@ function App() {
     return binding && authorized && workspace_matches;
   }
 
-  async function requestAnalysis(overview = false) {
+  async function requestAnalysis(overview = false, refreshFirst = false) {
     if (starting.current || pending || running || !project) return;
     starting.current = true;
     setPending(true);
@@ -832,6 +872,7 @@ function App() {
           return;
         }
         const target = overview ? (await api.invoke<Scenario>('overview_create', { project_id: projectId })).scenario_id : scenarioId;
+        if (refreshFirst) await api.invoke('refresh', { project_id: projectId });
         await api.invoke('run_start', { scenario_id: target, mode: expandMode, submission_key: crypto.randomUUID() });
         await reload();
         if (activeReadingKey.current !== readingAtStart) return;
@@ -840,6 +881,7 @@ function App() {
           view: overview ? 'system' : keepFunctions ? 'functions' : 'timeline',
           detail_tab: expandMode === 'mcp' || expandMode === 'codex_desktop' ? 'agent' : 'details',
           mode: 'normal',
+          ...(refreshFirst ? { result_id: '', source_snapshot_id: '', selected: '', file: '', evidence_id: '', reading_path: '', function_path: '' } : {}),
         });
       });
     } finally {
@@ -1190,7 +1232,7 @@ function App() {
           function_path: graph.ready ? firstGraphPath(graph.ready.result) : '',
           function_mode: 'calls',
           reading_focus: '',
-          source_snapshot_id: catalogExplanation.result.binding.source_snapshot_id,
+          source_snapshot_id: report?.result.binding.source_snapshot_id || catalogExplanation.result.binding.source_snapshot_id,
           detail_tab: 'details',
           catalog_hidden: true,
           pinned: false,
@@ -1373,6 +1415,8 @@ function App() {
     <CatalogSidebar
       data={data}
       project={project}
+      catalogExplanation={catalogExplanation}
+      projectFreshness={projectFreshness}
       projectId={projectId}
       scenarioId={scenarioId}
       reading={reading}
@@ -1476,6 +1520,9 @@ function App() {
     <CanvasPane
       data={data}
       project={project}
+      freshness={freshness}
+      refreshSnapshot={() => void action(() => api.invoke('refresh', { project_id: projectId }))}
+      refreshAndAnalyze={() => void requestAnalysis(catalogReading || scenarioId === project?.overview_scenario_id, true)}
       projectId={projectId}
       scenario={scenario}
       snapshot={snapshot}
@@ -1742,9 +1789,11 @@ function App() {
                 ) : (
                   <span className="current-view">{catalogReading ? '功能总览' : currentView}</span>
                 )}
-                {!engineeringReading && activityRun?.status === 'completed' && (
-                  <button className="saved-analysis" onClick={showRun}>
-                    已保存说明 · 查看真实过程
+                {!engineeringReading && freshness && (
+                  <button className={`saved-analysis ${freshness.kind}`} onClick={showRun}>
+                    {freshness.kind === 'affected' ? '旧版本说明 · 所引源码已变更'
+                      : freshness.kind === 'other_changed' ? freshness.count ? '历史快照 · 工作区有其他改动' : '历史快照 · 已保存说明'
+                      : '已保存说明 · 查看真实过程'}
                   </button>
                 )}
               </div>

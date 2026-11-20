@@ -1,33 +1,19 @@
 import React,{useState,useEffect} from 'react';
-import {hasFunctionGraphs,type Explanation,type Run,type WorkspaceData} from '../shared';
+import type {Explanation,WorkspaceData} from '../shared';
+import {explanationFreshness} from '../freshness';
 import './feature-catalog.css';
 import {SourceExcerpt} from './SourceExcerpt';
-import {analysisModes,isAnalysisMode,waitingForAgent,type AnalysisMode} from './discovery-state';
-import {discoveredFeature} from '../discovered-feature';
+import {analysisModes,catalogGraphState,isAnalysisMode,type AnalysisMode} from './discovery-state';
 export function AnalysisModePicker({label,ariaLabel=label,mode,setMode}:{label:string;ariaLabel?:string;mode:AnalysisMode;setMode:(mode:AnalysisMode)=>void}){
   return <label>{label}<select aria-label={ariaLabel} value={mode} onChange={event=>{
     const next=event.target.value;if(isAnalysisMode(next))setMode(next);
   }}>{Object.entries(analysisModes).map(([id,item])=><option value={id} key={id}>{item.option}</option>)}</select></label>;
 }
-const graphStatuses:Record<string,string>={queued:'已排队',waiting_agent:'等待领取',running:'分析中',validating:'正在校验',cancel_requested:'正在停止',failed:'分析失败',blocked_external:'连接受阻',cancelled:'已停止',unknown:'状态待核查'};
-
-export function catalogGraphState(data:WorkspaceData,overview:Explanation,nodeId:string){
-  const catalog=overview.result,scope=catalog.binding;
-  const project=data.projects.find(item=>item.project_id===scope.project_id);
-  const feature=discoveredFeature(data.features,data.explanations,catalog,nodeId,project?.snapshot_id||'');
-  const scene=feature&&data.scenarios.find(s=>s.project_id===scope.project_id&&s.feature_id===feature.feature_id&&s.kind==='feature_overview');
-  const matches=(b:Run['binding'])=>!!scene&&b.project_id===scope.project_id&&b.feature_id===feature?.feature_id&&b.scenario_id===scene.scenario_id
-    &&b.source_snapshot_id===scope.source_snapshot_id&&b.question_revision_id===scene.question_revision_id;
-  const reports=data.explanations.filter(e=>e.scenario_id===scene?.scenario_id&&matches(e.result.binding));
-  const ready=reports.filter(e=>hasFunctionGraphs(e.result)).at(-1),latest=reports.at(-1);
-  const runs=data.runs.filter(r=>!r.reading_question_id&&matches(r.binding));
-  const run=runs.filter(r=>['queued','waiting_agent','running','validating','cancel_requested'].includes(r.status)).at(-1)??runs.at(-1);
-  const waiting=!!scene&&scope.source_snapshot_id===project?.snapshot_id&&waitingForAgent(data,scene.scenario_id);
-  const status=run&&graphStatuses[run.status]|| (waiting?'等待领取':latest&&!hasFunctionGraphs(latest.result)?'证据缺口':'');
-  return {ready,latest,run,status,archived:!!(feature?.archived||scene?.archived)};
-}
 export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mode,setMode,fillPending}:{explanation?:Explanation;data:WorkspaceData;projectId:string;busy:boolean;open:(id:string)=>void;discover:()=>void;mode:AnalysisMode;setMode:(mode:AnalysisMode)=>void;fillPending?:(nodeIds:string[])=>void}){
   const result=explanation?.result,catalog=result?.feature_catalog;
+  const project=data.projects.find(item=>item.project_id===projectId);
+  const checked=data.project_freshness?.[projectId];
+  const changedFiles=checked && checked.snapshot_id===project?.snapshot_id ? checked.changed_files : [];
   const [search,setSearch]=useState('');
   useEffect(()=>setSearch(''),[projectId]);
   const query=search.trim().toLocaleLowerCase();
@@ -61,8 +47,9 @@ export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mo
     <div className="capability-groups">{groups.map((group,i)=><section className="capability-group" key={i}><h3>{group.label}<small>{group.node_ids.length}</small></h3>{group.node_ids.map(id=>{
       const node=result!.nodes.find(n=>n.node_id===id);if(!node)return null;
       const graph=graphs.get(id)!;
-      const label=graph.archived?'已归档':[graph.ready?'双图就绪':'',graph.status].filter(Boolean).join(' · ')||(readings.get(id)?.steps.length?'阅读首轮步骤':'查看已有线索');
-      return <button className="capability-card" data-capability-id={id} key={id} disabled={busy||graph.archived} onClick={()=>open(id)}><span><strong>{node.label}</strong><small title={node.description}>{node.description}</small></span><span className="capability-state">{label}<b aria-hidden="true">↗</b></span></button>;
+      const affected=graph.ready && project && explanationFreshness(graph.ready,project.snapshot_id,changedFiles).kind==='affected';
+      const label=graph.archived?'已归档':[affected?'所引源码已变':graph.ready?'双图就绪':'',graph.status].filter(Boolean).join(' · ')||(readings.get(id)?.steps.length?'阅读首轮步骤':'查看已有线索');
+      return <button className="capability-card" data-capability-id={id} key={id} disabled={busy||graph.archived} onClick={()=>open(id)}><span><strong>{node.label}</strong><small title={node.description}>{node.description}</small></span><span className={`capability-state${affected ? ' affected' : ''}`}>{label}<b aria-hidden="true">↗</b></span></button>;
     })}</section>)}</div></>:<div className="discovery-empty"><h3>尚未生成工程功能目录</h3><p>分析工程后，这里展示已查明的功能入口、主要处理步骤、结果与源码依据，未查明的部分会标出。</p><p className="muted">{data.features.some(f=>f.project_id===projectId)?'原有手动功能和分析仍保留在左侧，不代表工程的全部功能。':'尚未分析目录，不按文件名猜测业务功能。'}</p></div>}
   </section>;
 }

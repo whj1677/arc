@@ -579,6 +579,17 @@ summary {
   padding: 2px 10px;
   min-height: 26px;
 }
+.reading-shell .workspace-bar .saved-analysis.affected,
+.capability-state.affected {
+  color: var(--amber);
+  background: var(--amber-bg);
+  border: 1px solid var(--amber-border);
+}
+.reading-shell .workspace-bar .saved-analysis.other_changed {
+  color: var(--muted);
+  background: var(--bg);
+  border-color: var(--border);
+}
 
 /* Segmented tabs in workspace bar */
 .reading-shell .feature-view-tabs {
@@ -684,6 +695,22 @@ summary {
   border-color: var(--border-subtle);
 }
 .feature-toggle > span { color: var(--muted); }
+.feature-status-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.feature-status-dot.affected { background: var(--amber); }
+.historical-features { margin: 8px 4px 0; border-top: 1px solid var(--border); }
+.historical-features > summary {
+  cursor: pointer;
+  padding: 10px 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.historical-features > summary:hover { color: var(--ink); }
 .reading-shell .scene-row {
   color: var(--ink-secondary);
   border-radius: 6px;
@@ -704,6 +731,27 @@ summary {
   position: relative;
   background: var(--bg);
 }
+.freshness-banner {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 7px 18px;
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.freshness-banner > span { min-width: 0; overflow-wrap: anywhere; }
+.freshness-banner.affected {
+  color: var(--amber);
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+}
+.freshness-banner button { font-size: 13px; }
+.freshness-banner.affected button { color: var(--amber); border-color: var(--amber-border); }
 .reading-shell .canvas-tools,
 .business-reader .canvas-tools,
 .system-reader .canvas-tools {

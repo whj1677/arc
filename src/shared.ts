@@ -51,6 +51,7 @@ export interface Run {
   reading_question_id?:string;
   reading_context?:ReadingContext;
   overview_format?:'overview-1';
+  feature_graph_format?:'feature-graph-1';
   dsh_overview_format?:'overview-1';
   dsh_function_format?:'function-1';
   repair_from_run_id?:string;
@@ -71,6 +72,7 @@ export function hasFunctionGraphs(result:AnalysisResult):boolean {
   }));
 }
 export interface Explanation { result_id: string; scenario_id: string; created_at: string; source_status: string; result: AnalysisResult }
+export interface ProjectFreshness { snapshot_id: string; changed_files: string[]; checked_at: string }
 export interface ProviderProfile { provider_id: ProviderId; requested_name: string; product: string; status: string; version?: string; path?: string; reason: string; transport: string; auth: string; capabilities: Record<string,string>; checked_at: string }
 export interface ReadingState {
   entrance: 'overview' | 'walk'; view: string; scenario_id: string; result_id: string;
@@ -91,7 +93,7 @@ export interface ReadingState {
   feature_reading_version?: number;
 }
 export interface AnalysisRequest { project_analysis?:true; project_id:string; scenario_id:string; source_snapshot_id:string; question_revision_id?:string; created_at?:string; development_task_id?:string }
-export interface WorkspaceData { projects: Project[]; features: Feature[]; scenarios: Scenario[]; revisions: Revision[]; annotations: Annotation[]; runs: Run[]; explanations: Explanation[]; providers: ProviderProfile[]; snapshots: Snapshot[]; requested_analysis?:AnalysisRequest; questions?:ReadingQuestion[]; development_tasks?:import('./engineering').EngineeringTask[]; default_engine?:ExecutionMode }
+export interface WorkspaceData { projects: Project[]; features: Feature[]; scenarios: Scenario[]; revisions: Revision[]; annotations: Annotation[]; runs: Run[]; explanations: Explanation[]; providers: ProviderProfile[]; snapshots: Snapshot[]; project_freshness?: Record<string, ProjectFreshness>; requested_analysis?:AnalysisRequest; questions?:ReadingQuestion[]; development_tasks?:import('./engineering').EngineeringTask[]; default_engine?:ExecutionMode }
 export interface ArcApi {
   invoke<T = any>(operation: string, args?: unknown): Promise<T>;
   onEvent(callback: (event: { type: string; [key: string]: any }) => void): () => void;

@@ -7,7 +7,7 @@ import {ArcService} from '../src/main/service';
 import {prepareOverview} from '../src/main/overview-result';
 import {sha} from '../src/main/snapshot';
 import type {runCodex} from '../src/main/providers';
-import {hasFunctionGraphs,type AnalysisResult,type Run,type Snapshot} from '../src/shared';
+import {hasFunctionGraphs,type Run} from '../src/shared';
 
 const entries=['read_value','write_value'];
 const source=['int record(void) { return 7; }',...entries.map(name=>`int ${name}(void) { return record(); }`)];
@@ -18,19 +18,18 @@ const overview={
   readings:entries.map(name=>({node_id:name,entry:name,outcome:'返回记录值',steps:[{text:'调用 record。',evidence_ids:[name+'-line']}],boundary:'仅静态调用'})),
   relations:[],evidence:source.map((quote,i)=>({id:i?entries[i-1]+'-line':'definition',path:'main.c',start:i+1,end:i+1,quote})),
 };
-function detail(run:Run,snapshot:Snapshot,name:string):AnalysisResult{
+function detail(name:string){
   const line=entries.indexOf(name)+2;
-  const nodes=[name,'record'].map(symbol=>({node_id:symbol,kind:'function' as const,label:symbol,description:symbol,
-    execution_context:{kind:'unknown' as const,identity:null,label:'未运行',status:'unknown' as const,claim_ids:[],evidence_ids:[]},
-    inputs:[],outputs:[],evidence_ids:['site'],claim_ids:['fact']}));
-  const first={id:'start',kind:'entry' as const,from_node_id:null,to_node_id:name,text:'由入口触发',input:'无',output:'进入函数',condition:'',evidence_ids:['site']};
-  return {schema_version:'1.0',fictional:false,result_id:'result-'+run.binding.run_id,binding:run.binding,
-    provider:{provider_id:run.provider_id,connection_id:'local-'+run.provider_id,adapter_version:'0.1.0'},
-    summary:{text:'调用 record 并返回',claim_ids:['fact']},coverage:{covered_scope:[name],unresolved_scope:[]},
-    nodes,edges:[{edge_id:'call-record',kind:'sync_call',source_node_id:name,target_node_id:'record',label:'读取记录',status:'source_supported',claim_ids:['fact'],evidence_ids:['site']}],
-    claims:[{claim_id:'fact',statement:'入口调用 record。',status:'source_supported',rationale:'函数体包含调用',limitations:[],evidence_ids:['site'],targets:{node_ids:[name,'record'],edge_ids:['call-record'],io_ids:[]}}],
-    evidence:[{evidence_id:'site',path:'main.c',source_snapshot_id:snapshot.source_snapshot_id,content_sha256:snapshot.files[0].content_sha256,line_start:line,line_end:line,role:'callsite',note:source[line-1]}],gaps:[],
-    function_walkthroughs:[{id:'path',label:name,trigger:name,entry_node_id:name,boundary:'仅静态调用',evidence_ids:['site'],steps:[first,{...first,id:'invoke',kind:'call',from_node_id:name,to_node_id:'record',text:'调用 record'}]}]};
+  const functions=[name,'record'].map(symbol=>({id:symbol,label:symbol,symbol,description:symbol,signature:null,
+    definition_evidence_id:symbol+'-def',evidence_ids:[symbol+'-def'],params:[],returns:'整数记录值',side_effects:[]}));
+  const first={id:'start',kind:'entry',from_function_id:null,to_function_id:name,text:'由入口触发',input:'无',output:'进入函数',condition:null,evidence_ids:[name+'-def']};
+  return {schema_version:'feature-graph-1',summary:{text:'调用 record 并返回',evidence_ids:['site']},scope:name,unresolved:[],functions,
+    calls:[{id:'call-record',kind:'sync_call',from:name,to:'record',label:'读取记录',condition:null,evidence_ids:['site']}],
+    evidence:[{id:'site',path:'main.c',start:line,end:line,quote:'return record();'},
+      {id:name+'-def',path:'main.c',start:line,end:line,quote:source[line-1]},
+      {id:'record-def',path:'main.c',start:1,end:1,quote:source[0]}],
+    walkthroughs:[{id:'path',label:name,trigger:name,entry_function_id:name,outcome:'返回记录值',boundary:'仅静态调用',
+      steps:[first,{...first,id:'invoke',kind:'call',from_function_id:name,to_function_id:'record',text:'调用 record',evidence_ids:['site']}]}]};
 }
 
 test('one project analysis schedules frozen feature graphs, continues after a failure and reuses ready graphs',async t=>{
@@ -51,7 +50,7 @@ test('one project analysis schedules frozen feature graphs, continues after a fa
     try{
       await new Promise(resolve=>setTimeout(resolve,10));
       if(name==='read_value'&&failOnce){failOnce=false;throw Error('controlled failure');}
-      return {code:0,stderr:'',raw:JSON.stringify(detail(options.run,options.snapshot,name))};
+      return {code:0,stderr:'',raw:JSON.stringify(detail(name))};
     }finally{active--;}
   };
   const service=new ArcService(path.join(temp,'data'),path.resolve('.'),undefined,runner);
@@ -109,7 +108,7 @@ test('local runs cap feature batches at two, skip cancelled waiters and prioriti
     try{
       await gate.release.promise;
       if(options.run.overview_format)return {code:1,stderr:'controlled stop',raw:''};
-      return {code:0,stderr:'',raw:JSON.stringify(detail(options.run,options.snapshot,entries[0]))};
+      return {code:0,stderr:'',raw:JSON.stringify(detail(entries[0]))};
     }finally{active--;}
   };
   const service=new ArcService(path.join(temp,'data'),path.resolve('.'),undefined,runner);

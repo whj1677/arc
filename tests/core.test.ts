@@ -254,7 +254,7 @@ test('feature walkthrough and scenario scopes stay explicit; hidden overview and
 test('新增源码也使旧说明待复核；校验途中取消不得发布',async()=>{
   const {service,project}=await context();const p=await service.openProject(project),{scenario}=service.addFeature(p.project_id,'冻结');
   await fs.writeFile(path.join(project,'added.c'),'new source\n');
-  assert.deepEqual(await service.checkFreshness(p.project_id),['added.c']);
+  assert.deepEqual((await service.checkFreshness(p.project_id)).changed_files,['added.c']);
   const run=fakeRun(service,scenario,p),snap=service.store.get<Snapshot>('snapshot',p.snapshot_id);
   const accepting=service.acceptResult(run.binding.run_id,resultFor(run,snap));
   run.status='cancel_requested';service.store.put('run',run.binding.run_id,run);
@@ -322,7 +322,7 @@ test('真实原始字节冻结，中文路径/CRLF/dirty 文件变化不污染�
   assert.equal(snapshot.files[0].content_sha256,sha(await fs.readFile(path.join(project,'source.c'))));
   await fs.writeFile(path.join(project,'source.c'),'changed');
   assert.match((await service.source(p.snapshot_id,'source.c')).text,/x \+ 3/);
-  assert.deepEqual(await service.checkFreshness(p.project_id),['source.c']);service.store.close();
+  assert.deepEqual((await service.checkFreshness(p.project_id)).changed_files,['source.c']);service.store.close();
 });
 test('同名工程、重复主题独立身份；SQLite 重开恢复输入、修订与阅读位置',async()=>{
   const {dir,service,project}=await context();const p=await service.openProject(project);const a=service.addFeature(p.project_id,'重复 <script>'),b=service.addFeature(p.project_id,'重复 <script>');

@@ -11,6 +11,7 @@ import type {
   SourceEvidence,
   WorkspaceData,
 } from '../shared';
+import type { ExplanationFreshness } from '../freshness';
 import { FunctionChain } from './FunctionChain';
 import { Graph } from './Graph';
 import { FeatureCatalog, CatalogFeatureReading } from './FeatureCatalog';
@@ -27,6 +28,9 @@ import { runEngineName } from './activity';
 import { ScrollPanel } from './workbench-primitives';
 
 export interface CanvasPaneProps {
+  freshness?: ExplanationFreshness;
+  refreshSnapshot: () => void;
+  refreshAndAnalyze: () => void;
   data: WorkspaceData;
   project?: Project;
   projectId: string;
@@ -82,6 +86,9 @@ export interface CanvasPaneProps {
 
 export function CanvasPane({
   data,
+  freshness,
+  refreshSnapshot,
+  refreshAndAnalyze,
   project,
   projectId,
   scenario,
@@ -186,6 +193,19 @@ export function CanvasPane({
 
   return (
     <main className="canvas">
+      {freshness?.kind === 'affected' ? (
+        <div className="freshness-banner affected" role="status">
+          <span>外部代码已变更（{freshness.files.slice(0, 3).join('、')}{freshness.files.length > 3 && ` 等 ${freshness.files.length} 个文件`}）· 当前展示为旧快照，非最新代码</span>
+          <button disabled={pending || !!indexes[projectId] || !!running || !!project?.fictional || scenario?.archived} onClick={refreshAndAnalyze}>
+            刷新快照并重析此功能
+          </button>
+        </div>
+      ) : freshness?.kind === 'other_changed' && freshness.count > 0 && (
+        <div className="freshness-banner" role="status">
+          <span>工作区另有 {freshness.count} 个文件改动，{explanation?.result.binding.source_snapshot_id === project?.snapshot_id || explanation?.source_status === 'current' ? '本功能所引源码未变' : '当前展示为历史快照'}</span>
+          <button className="quiet" disabled={pending || !!indexes[projectId] || !!project?.fictional} onClick={refreshSnapshot}>刷新快照</button>
+        </div>
+      )}
       {!preview && !catalogReading && (
         <div className="canvas-tools">
           <div className="row">
