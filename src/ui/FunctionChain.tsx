@@ -8,7 +8,7 @@ import {Diagram,shortLabel} from './ReadingDiagrams';
 
 const stepNames={entry:'入口',call:'调用',callback:'回调内调用',dispatch:'异步派发',return:'返回',work:'处理'};
 type FunctionChainMode='calls'|'time';
-export function FunctionChain({result,selected,select,zoom,search,pathId,onPath,evidence,mode:controlledMode,onModeChange,graphActions}:{result:AnalysisResult;selected:string;select:(id:string)=>void;zoom:number;search:string;pathId:string;onPath:(id:string,nodeId:string)=>void;evidence:(e:SourceEvidence)=>void;mode?:FunctionChainMode;onModeChange?:(mode:FunctionChainMode)=>void;graphActions?:React.ReactNode}){
+export function FunctionChain({result,selected,select,zoom,search,pathId,onPath,evidence,mode:controlledMode,onModeChange,graphActions,showModeSwitch=true}:{result:AnalysisResult;selected:string;select:(id:string)=>void;zoom:number;search:string;pathId:string;onPath:(id:string,nodeId:string)=>void;evidence:(e:SourceEvidence)=>void;mode?:FunctionChainMode;onModeChange?:(mode:FunctionChainMode)=>void;graphActions?:React.ReactNode;showModeSwitch?:boolean}){
   const [internalMode,setInternalMode]=useState<FunctionChainMode>('calls');
   const mode=controlledMode??internalMode;
   const changeMode=(next:FunctionChainMode)=>{if(controlledMode===undefined)setInternalMode(next);onModeChange?.(next);};
@@ -32,8 +32,10 @@ export function FunctionChain({result,selected,select,zoom,search,pathId,onPath,
   const query=search.trim().toLowerCase();
   const symbol=(id:string|null)=>{const n=participants.find(n=>n.node_id===id);return n?.function_details?.symbol||n?.label||'外部触发';};
   return <section className="function-chain function-diagram" aria-label="函数走读">
-    <div className="function-controls"><nav className="function-entry-paths" aria-label="选择函数入口">{paths.map(p=><button key={p.id} aria-pressed={p.id===path.id} className={p.id===path.id?'selected':''} onClick={()=>onPath(p.id,p.entry_node_id)}>{p.label}</button>)}</nav>
-    <nav className="function-view-mode" aria-label="函数图类型"><button aria-pressed={mode==='calls'} onClick={()=>changeMode('calls')}>函数调用链</button><button aria-pressed={mode==='time'} onClick={()=>changeMode('time')}>调用时间图</button></nav></div>
+    {(showModeSwitch||paths.length>1)&&<div className="function-controls">
+      <nav className="function-entry-paths" aria-label="选择函数入口">{paths.map(p=><button key={p.id} aria-pressed={p.id===path.id} className={p.id===path.id?'selected':''} onClick={()=>onPath(p.id,p.entry_node_id)}>{p.label}</button>)}</nav>
+      {showModeSwitch&&<nav className="function-view-mode" aria-label="函数图类型"><button aria-pressed={mode==='calls'} onClick={()=>changeMode('calls')}>函数调用链</button><button aria-pressed={mode==='time'} onClick={()=>changeMode('time')}>调用时间图</button></nav>}
+    </div>}
     {mode==='calls'?<FunctionCallMap result={result} pathId={path.id} selected={selected} select={select} search={search} zoom={zoom} evidence={evidence}/>:<>
     <div className="diagram-caption"><strong>从入口往下读 ↓</strong><span>按已确认说明排列的静态顺序，不是运行记录　┄ 返回　蓝色 异步 / 回调</span></div>
     <Diagram key={result.result_id+path.id} width={width} height={height} zoom={zoom} label="每个函数一个节点的调用时间图" header={participants.map(n=>{const full=symbol(n.node_id),parts=full.split('.'),file=functionInfo(result,n).definition?.path;return <foreignObject key={n.node_id} data-function-node={n.node_id} data-zoom-anchor x={x(n.node_id)-90} y="4" width="180" height="86"><button className={'fn-participant '+(selected===n.node_id?'selected':'')} onClick={()=>select(n.node_id)} title={full+(file?'\n'+file:'')}><small>{n.node_id===path.entry_node_id?'● 入口 · ':''}{parts.slice(0,-1).join('.')||file?.split('/').at(-1)||'函数'}</small><strong>{parts.at(-1)}</strong></button></foreignObject>;})}>

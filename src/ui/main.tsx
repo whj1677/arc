@@ -210,10 +210,10 @@ function App() {
       : undefined;
   const preview = featureSource && !catalogReading && !engineeringReading && project && discovery;
   const functionPreview = !!preview && reading.view === 'functions';
-  const previewGraphs = functionPreview && featureSource && discovery ? catalogGraphState(data, featureSource, discovery.node_id) : undefined;
-  const previewRun = previewGraphs?.run;
+  const previewGraphs = preview ? catalogGraphState(data, featureSource, preview.node_id) : undefined;
+  const previewRun = functionPreview ? previewGraphs?.run : undefined;
   const automaticRun = previewRun?.overview_parent_run_id;
-  const previewExplanation = previewGraphs?.ready ?? (!automaticRun ? previewGraphs?.latest : undefined);
+  const previewExplanation = functionPreview ? previewGraphs?.ready ?? (!automaticRun ? previewGraphs?.latest : undefined) : undefined;
 
   const bookmarkResult =
     bookmark?.projectId === projectId &&
@@ -330,7 +330,6 @@ function App() {
       evidence_id: '',
       reading_path: '',
       function_path: firstGraphPath(previewExplanation.result),
-      function_mode: 'calls',
       reading_focus: '',
       detail_tab: 'details',
       mode: 'normal',
@@ -1258,15 +1257,29 @@ function App() {
         ]
       : featureViews;
   const extraViews = reading.entrance === 'overview' ? [['composition', '组成导图']] : [];
+  const functionViewMode = reading.function_mode ?? 'calls';
+  const functionTabs = [['functions:calls', '函数调用链'], ['functions:time', '调用时间图']];
+  const previewTab = ['timeline', '功能说明'];
   const featureTabs = preview
-    ? [
-        ['timeline', '功能说明'],
-        ['functions', '函数走读'],
-      ]
+    ? previewGraphs?.ready ? [...functionTabs, previewTab] : [previewTab, ...functionTabs]
     : reading.entrance === 'walk' && !catalogReading && !engineeringReading && scenario && result && featureViews.some(([view]) => view === reading.view)
-      ? featureViews
+      ? [...functionTabs, ...featureViews.filter(([view]) => view !== 'functions')]
       : undefined;
-  const currentView = [...(featureTabs ?? primaryViews), ...extraViews, ['files', '文件组织']].find(([v]) => v === reading.view)?.[1] || (preview ? '功能说明' : '当前视图');
+  const activeFeatureTab = reading.view === 'functions' ? `functions:${functionViewMode}` : reading.view;
+  const currentView = [...(featureTabs ?? primaryViews), ...extraViews, ['files', '文件组织']].find(([v]) => v === (featureTabs ? activeFeatureTab : reading.view))?.[1] || (preview ? '功能说明' : '当前视图');
+
+  function navigateFeatureTab(tab: string) {
+    if (tab === activeFeatureTab) return;
+    if (tab === 'functions:calls' || tab === 'functions:time') {
+      const function_mode = tab === 'functions:time' ? 'time' : 'calls';
+      if (preview) patch({ view: 'functions', function_mode });
+      else {
+        if (reading.view !== 'functions') navigateFeature('functions');
+        patch({ function_mode });
+      }
+    } else if (preview) patch({ view: tab });
+    else navigateFeature(tab);
+  }
 
   function navigateView(view: string) {
     if (featureReading) {
@@ -1469,6 +1482,7 @@ function App() {
       sourceSnapshot={sourceSnapshot}
       reading={reading}
       setReading={setReading}
+      showModeSwitch={!featureTabs}
       patch={patch}
       loadedKey={loadedKey}
       search={search}
@@ -1717,14 +1731,9 @@ function App() {
                       <button
                         key={view}
                         type="button"
-                        className={view === 'functions' ? 'feature-functions-tab' : undefined}
-                        aria-current={reading.view === view ? 'page' : undefined}
-                        onClick={() => {
-                          if (reading.view !== view) {
-                            if (preview) patch({ view });
-                            else navigateFeature(view);
-                          }
-                        }}
+                        className={view.startsWith('functions:') ? 'feature-functions-tab' : undefined}
+                        aria-current={activeFeatureTab === view ? 'page' : undefined}
+                        onClick={() => navigateFeatureTab(view)}
                       >
                         {label}
                       </button>

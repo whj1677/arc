@@ -34,6 +34,7 @@ export interface CanvasPaneProps {
   snapshot?: Snapshot;
   sourceSnapshot?: Snapshot;
   reading: ReadingState;
+  showModeSwitch?: boolean;
   setReading: React.Dispatch<React.SetStateAction<ReadingState>>;
   patch: (value: Partial<ReadingState>) => void;
   loadedKey: string;
@@ -87,6 +88,7 @@ export function CanvasPane({
   snapshot,
   sourceSnapshot,
   reading,
+  showModeSwitch,
   setReading,
   patch,
   loadedKey,
@@ -371,6 +373,7 @@ export function CanvasPane({
                 )}
                 <FunctionChain
                   graphActions={graphActions}
+                  showModeSwitch={showModeSwitch}
                   mode={reading.function_mode || 'calls'}
                   onModeChange={function_mode => patch({ function_mode })}
                   result={result}
