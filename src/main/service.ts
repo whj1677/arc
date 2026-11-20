@@ -1,5 +1,7 @@
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+import type { GoalRefinement } from '../engineering';
 import type {
   AnalysisResult,
   Annotation,
@@ -23,7 +25,8 @@ import { hasFunctionGraphs } from '../shared';
 import { explanationFreshness } from '../freshness';
 import { Store, id, now } from './store';
 import { capture, freshness, readSource, sha } from './snapshot';
-import { makePrompt, probeProviders, redact, runCodex, stopTree, type ActiveProcess } from './providers';
+import { makePrompt, probeProviders, redact, runCodex, runCodexPromptRefinement, stopTree, type ActiveProcess } from './providers';
+import { buildRefinementContext, goalRefinementSchema, parseGoalRefinement, refinementPrompt } from './prompt-refiner';
 import { normalizeTransport, schema, validateResult } from './validation';
 import { discoveredFeature } from '../discovered-feature';
 import { promptContext } from './prompt-context';
@@ -188,6 +191,35 @@ export class ArcService {
 
   changed() {
     this.emit({ type: 'changed' });
+  }
+
+  async refineDevelopmentGoal(projectId: string, goal: string, nonGoals: string[], engine: GoalRefinement['engine']): Promise<GoalRefinement> {
+    const started = Date.now();
+    if (engine !== 'codex' && engine !== 'dsh') throw Error('提示词优化引擎无效。');
+    if (!Array.isArray(nonGoals) || nonGoals.length > 40) throw Error('不改范围最多可选择 40 项。');
+    const boundaries = nonGoals.map(item => text(item, 6000));
+    const prompt = refinementPrompt(text(goal), buildRefinementContext(this.store, projectId, boundaries));
+    const config = this.store.maybe<Record<string, string>>('settings', 'providers') ?? {};
+    let raw: string;
+    if (engine === 'codex') {
+      raw = await runCodexPromptRefinement(prompt, goalRefinementSchema, config.codex_path);
+    } else {
+      const [profile] = await probeProviders(config, 'dsh');
+      if (profile.status !== 'available') throw Error('本机 DSH 不可用：' + profile.reason);
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'arc-dsh-goal-'));
+      try {
+        const result = await this.dshRunner({
+          toolFree: true, profile, prompt, outputSchema: goalRefinementSchema,
+          run: { title: '优化提示词', output_path: path.join(directory, 'answer.json') },
+          timeoutMs: Math.max(0, 60000 - (Date.now() - started)), event: () => {}, started: () => {},
+        });
+        if (result.code !== 0) throw Error(result.stderr || 'DSH 提示词优化未完成。');
+        raw = result.raw;
+      } finally {
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    }
+    return { ...parseGoalRefinement(raw, boundaries, engine), engine, duration_ms: Date.now() - started };
   }
 
   async openProject(rootPath: string, fictional = false, buildConfig = '') {

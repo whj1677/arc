@@ -1,5 +1,6 @@
-import React,{useRef,useState} from 'react';
-import type {EngineeringContext,EngineeringTask} from '../engineering';
+import React,{useEffect,useRef,useState} from 'react';
+import type {EngineeringContext,EngineeringTask,GoalRefinement} from '../engineering';
+import {normalizeBoundaryText} from '../task-boundaries';
 import {analysisModes,type AnalysisMode} from './discovery-state';
 import {useProjectEnvironment} from './project-environment-store';
 import './requirement-composer.css';
@@ -16,6 +17,8 @@ const starters=[
 const commandLabels=[['build','构建'],['test','测试'],['typecheck','类型检查']] as const;
 
 interface ComposerProps {
+  projectId:string;
+  disabledProject:boolean;
   context:EngineeringContext|null;
   defaultEngine:AnalysisMode;
   onEngineChange:(mode:AnalysisMode)=>void;
@@ -30,16 +33,42 @@ interface ComposerProps {
   onCancel?:()=>void;
 }
 
-export function RequirementComposer({context,defaultEngine,onEngineChange,enginePending,onSettings,
+export function RequirementComposer({projectId,disabledProject,context,defaultEngine,onEngineChange,enginePending,onSettings,
   goal,onGoalChange,goalInput,disabled,busy,onSubmit,onCancel}:ComposerProps) {
   const {environment,error}=useProjectEnvironment(context?.workspace);
   const [nonGoals,setNonGoals]=useState<string[]>([]);
   const [adding,setAdding]=useState(false);
   const [value,setValue]=useState(''),[boundaryError,setBoundaryError]=useState('');
+  const [refinement,setRefinement]=useState<GoalRefinement|null>(null);
+  const [originalGoal,setOriginalGoal]=useState<string|null>(null);
+  const [refining,setRefining]=useState(false),[refineError,setRefineError]=useState('');
+  const requestSequence=useRef(0);
   const addButton=useRef<HTMLButtonElement>(null);
   const commands=commandLabels.filter(([key])=>environment?.effective_commands[key]);
   const bound=context?.workspace.status==='bound';
   const activeStarter=starters.find(([,starter])=>goal===starter)?.[0];
+  const scopeKeys=new Set(nonGoals.map(normalizeBoundaryText));
+
+  useEffect(()=>{
+    setRefinement(null);setRefineError('');setRefining(false);
+    if(!goal.trim())setOriginalGoal(null);
+    return ()=>{requestSequence.current++;};
+  },[projectId,goal]);
+
+  async function refineGoal(){
+    const sequence=++requestSequence.current;
+    setRefining(true);setRefineError('');setRefinement(null);
+    try{
+      const result=await window.arc.invoke<GoalRefinement>('development_refine_goal',{
+        project_id:projectId,goal,non_goals:nonGoals,engine:defaultEngine==='dsh'?'dsh':'codex',
+      });
+      if(sequence===requestSequence.current)setRefinement(result);
+    }catch(error){
+      if(sequence===requestSequence.current)setRefineError((error as Error).message);
+    }finally{
+      if(sequence===requestSequence.current)setRefining(false);
+    }
+  }
 
   function closeEditor(){
     setAdding(false);setValue('');setBoundaryError('');
@@ -47,7 +76,7 @@ export function RequirementComposer({context,defaultEngine,onEngineChange,engine
   }
   function withScope(text:string){
     if(!text)return nonGoals;
-    if(nonGoals.includes(text)){setBoundaryError('这条范围已添加。');return;}
+    if(scopeKeys.has(normalizeBoundaryText(text))){setBoundaryError('这条范围已添加。');return;}
     if(nonGoals.length>=40){setBoundaryError('最多可添加 40 项不改范围。');return;}
     return [...nonGoals,text];
   }
@@ -57,7 +86,8 @@ export function RequirementComposer({context,defaultEngine,onEngineChange,engine
   }
   function toggleScope(text:string){
     setBoundaryError('');
-    const next=nonGoals.includes(text)?nonGoals.filter(item=>item!==text):withScope(text);
+    const key=normalizeBoundaryText(text);
+    const next=scopeKeys.has(key)?nonGoals.filter(item=>normalizeBoundaryText(item)!==key):withScope(text);
     if(next)setNonGoals(next);
   }
 
@@ -66,7 +96,10 @@ export function RequirementComposer({context,defaultEngine,onEngineChange,engine
       e.preventDefault();
       if(disabled)return;
       const next=withScope(value.trim());
-      if(next)onSubmit({non_goals:next,revoked:[]});
+      if(next){
+        requestSequence.current++;setRefining(false);setRefineError('');setRefinement(null);
+        onSubmit({non_goals:next,revoked:[]});
+      }
     }}>
     <header className="composer-heading">
       <h2 id="requirement-composer-title">发起新需求</h2>
@@ -81,7 +114,7 @@ export function RequirementComposer({context,defaultEngine,onEngineChange,engine
         onChange={e=>onGoalChange(e.target.value)} onKeyDown={e=>{
           if(e.ctrlKey&&e.key==='Enter'&&!e.nativeEvent.isComposing){e.preventDefault();if(!disabled)e.currentTarget.form?.requestSubmit();}
         }}/>
-      <div className="composer-starters" role="group" aria-label="需求起草模板">{starters.map(([label,starter,addition])=>
+      <div className="composer-starters" role="group" aria-label="需求起草工具">{starters.map(([label,starter,addition])=>
         <button type="button" key={label} disabled={busy} aria-pressed={activeStarter===label} onClick={()=>{
           if(!goal.trim())onGoalChange(starter);
           else if(activeStarter===label)onGoalChange('');
@@ -89,13 +122,46 @@ export function RequirementComposer({context,defaultEngine,onEngineChange,engine
           else if(!goal.includes(addition))onGoalChange(goal+(goal.endsWith('\n')?'':'\n')+addition);
           goalInput.current?.focus();
         }}>{label}</button>
-      )}</div>
+      )}
+        <div className="composer-refine-actions">
+          {originalGoal!==null&&<button className="composer-link" type="button" disabled={busy} onClick={()=>{
+            onGoalChange(originalGoal);setOriginalGoal(null);goalInput.current?.focus();
+          }}>恢复原文</button>}
+          <button className="composer-refine-button" type="button" disabled={!goal.trim()||busy||refining||disabledProject}
+            onClick={()=>void refineGoal()}>{refining?'优化中…':'优化提示词'}</button>
+        </div>
+      </div>
+      {refineError&&<p className="composer-refine-error" role="alert">{refineError}</p>}
+      {refinement&&<section className="composer-refinement" aria-labelledby="refinement-title">
+        <header className="refinement-header">
+          <h3 id="refinement-title">优化建议</h3>
+          <small>{refinement.engine==='dsh'?'DSH':'Codex'} · {(refinement.duration_ms/1000).toFixed(1)}s</small>
+          <button type="button" className="composer-link" onClick={()=>setRefinement(null)}>收起</button>
+          <button type="button" className="primary" disabled={busy} onClick={()=>{
+            setOriginalGoal(goal);onGoalChange(refinement.refined_goal);setRefinement(null);goalInput.current?.focus();
+          }}>采用到输入框</button>
+        </header>
+        <p className="refinement-text">{refinement.refined_goal}</p>
+        {refinement.suggested_non_goals.length>0&&<div className="refinement-scopes" role="group" aria-label="推荐不改范围">
+          <span>推荐不改范围</span>
+          {refinement.suggested_non_goals.map(item=>{
+            const selected=scopeKeys.has(normalizeBoundaryText(item));
+            return <button type="button" key={item} disabled={busy} aria-pressed={selected} onClick={()=>toggleScope(item)}>
+              {selected?'✓':'+'} {item}
+            </button>;
+          })}
+        </div>}
+        {refinement.clarifications.length>0&&<div className="refinement-clarifications">
+          <span>建议顺手明确</span>
+          <ul>{refinement.clarifications.map((item,index)=><li key={index}>{item}</li>)}</ul>
+        </div>}
+      </section>}
       <section className="composer-boundaries" aria-labelledby="composer-scopes">
         <h3 id="composer-scopes">本轮不改范围 <small>（可选，派活与交付自检自动守卫）</small></h3>
         <div className="composer-scope-options">
-          {[...suggestedScopes,...nonGoals.filter(item=>!suggestedScopes.includes(item))].map(item=>
+          {[...suggestedScopes,...nonGoals.filter(item=>!suggestedScopes.includes(normalizeBoundaryText(item)))].map(item=>
             <button type="button" className="composer-scope" key={item} disabled={busy}
-              aria-pressed={nonGoals.includes(item)} onClick={()=>toggleScope(item)}>{item}</button>
+              aria-pressed={scopeKeys.has(normalizeBoundaryText(item))} onClick={()=>toggleScope(item)}>{item}</button>
           )}
           {adding?<div className="composer-scope-editor" onKeyDown={e=>{
             if(e.key==='Escape'&&!e.nativeEvent.isComposing){e.preventDefault();e.stopPropagation();closeEditor();}

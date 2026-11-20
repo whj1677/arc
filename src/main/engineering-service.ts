@@ -3,7 +3,7 @@ import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import type {ExecutionMode,Project,Snapshot,Explanation,Feature,Scenario} from '../shared';
-import {engineeringCategories,engineeringSectionCategories,type SaveEngineeringEntry,type EngineeringSectionCategory} from '../engineering';
+import {activeContextEntries,engineeringCategories,engineeringSectionCategories,type SaveEngineeringEntry,type EngineeringSectionCategory} from '../engineering';
 import type {CodeState,WorkspaceBinding,ContextEntry,ContextSource,EngineeringContext,EngineeringAnalysis,ContextRequest,EngineeringTask,CreateEngineeringTask,UpdateEngineeringTask,FinishEngineeringTask,DevelopmentAttempt,VerificationEvidence,TaskReadingBinding,WalkthroughUpdate,DevelopmentStep} from '../engineering';
 import {Store,id,now} from './store';
 import {capture,freshness,readSource,sha,relativePath,safeFile,workspaceFiles,workspaceGitDirectory} from './snapshot';
@@ -129,13 +129,9 @@ export class EngineeringService {
       this.reclassifyLegacy(projectId);
     }
     const contextState=cachedState?cachedContext!:this.store.get<{version:number}>('engineering_context_state',projectId);
-    const all=this.store.all<ContextEntry>(contextKind).filter(e=>e.project_id===projectId);
-    const replaced=new Set(all.filter(e=>e.status!=='superseded'&&e.supersedes).map(e=>e.supersedes));
-    // A direct correction of an original source also invalidates an aggregate
-    // that still quotes that original. Keep the other uncovered sources visible.
-    for(const entry of all.filter(e=>e.status!=='superseded'&&!replaced.has(e.entry_id)))if(entry.covered_entries?.some(source=>replaced.has(source)))replaced.add(entry.entry_id);
-    for(const entry of all.filter(e=>e.status!=='superseded'&&!replaced.has(e.entry_id)))for(const covered of entry.covered_entries??[])replaced.add(covered);
-    const entries=all.filter(e=>(input.entry_id?e.entry_id===input.entry_id:e.status!=='superseded'&&!replaced.has(e.entry_id))&&this.matchesContext(e,input));
+    const all=this.store.projectContextEntries(projectId);
+    const visible=input.entry_id?all.filter(e=>e.entry_id===input.entry_id):activeContextEntries(all);
+    const entries=visible.filter(e=>this.matchesContext(e,input));
     const categories:ContextEntry['category'][]=['rule','purpose','build','issue','architecture','module','interface','technology','decision','plan','design','verification_plan'];
     const groups=categories.map(category=>entries.filter(e=>e.category===category).sort((a,b)=>Number(b.origin==='user')-Number(a.origin==='user')||Number(b.key.startsWith('initial:'))-Number(a.key.startsWith('initial:'))||Number(b.status==='current')-Number(a.status==='current')||a.key.localeCompare(b.key)));
     const ordered:ContextEntry[]=[];for(let i=0;i<Math.max(...groups.map(group=>group.length));i++)for(const group of groups)if(group[i])ordered.push(group[i]);
@@ -208,7 +204,7 @@ export class EngineeringService {
   }
   private async initializeMaterialsActual(projectId:string,state:CodeState) {
     const project=this.store.get<Project>('project',projectId);
-    const explanation=project.overview_scenario_id?this.store.all<Explanation>('explanation').filter(e=>e.result.binding.project_id===projectId&&e.scenario_id===project.overview_scenario_id).sort((a,b)=>b.created_at.localeCompare(a.created_at))[0]:undefined;
+    const explanation=this.store.latestOverview(project);
     const stamp=state.fingerprint+':'+(explanation?.result_id??'waiting');
     if(this.store.maybe<string>('engineering_materials_state',projectId)===stamp)return;
     const snapshot=this.store.get<Snapshot>('snapshot',state.snapshot_id),entries=this.store.all<ContextEntry>(contextKind).filter(e=>e.project_id===projectId&&!e.task_id);

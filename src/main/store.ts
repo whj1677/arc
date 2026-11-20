@@ -2,6 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { Explanation, Project } from '../shared';
+import type { ContextEntry } from '../engineering';
 
 export const id = (prefix: string) => `${prefix}-${randomUUID()}`;
 export const now = () => new Date().toISOString();
@@ -24,6 +26,17 @@ export class Store {
     catch(error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
   }
   all<T = any>(kind: string): T[] { return this.db.prepare('SELECT json FROM objects WHERE kind=? ORDER BY rowid').all(kind).map((r: any) => JSON.parse(r.json)); }
+  latestOverview(project: Project): Explanation | undefined {
+    if (!project.overview_scenario_id) return;
+    const row = this.db.prepare(`SELECT json FROM objects WHERE kind='explanation'
+      AND json_extract(json,'$.scenario_id')=? AND json_extract(json,'$.result.binding.project_id')=?
+      ORDER BY json_extract(json,'$.created_at') DESC, rowid DESC LIMIT 1`).get(project.overview_scenario_id, project.project_id);
+    return row ? JSON.parse(String(row.json)) : undefined;
+  }
+  projectContextEntries(projectId: string): ContextEntry[] {
+    return this.db.prepare(`SELECT json FROM objects WHERE kind='engineering_context'
+      AND json_extract(json,'$.project_id')=? ORDER BY rowid`).all(projectId).map(row => JSON.parse(String(row.json)));
+  }
   get<T = any>(kind: string, key: string): T {
     const row = this.db.prepare('SELECT json FROM objects WHERE kind=? AND id=?').get(kind, key) as any;
     if (!row) throw new Error(`未找到 ${kind}：${key}`);

@@ -115,10 +115,6 @@ function waitForHost(child: ChildProcessWithoutNullStreams) {
 }
 
 type Options = {
-  run: Pick<Run, 'title' | 'output_path'> & { binding: { source_snapshot_id: string } };
-  snapshot: Snapshot;
-  storage: string;
-  resources: string;
   profile: ProviderProfile;
   prompt: string;
   outputSchema: object;
@@ -127,31 +123,41 @@ type Options = {
   started: (active: ActiveProcess) => void;
   shouldStart?: () => boolean;
   timeoutMs?: number;
-};
+} & ({
+  toolFree: true;
+  run: Pick<Run, 'title' | 'output_path'>;
+  submitResult?: false;
+} | {
+  toolFree?: false;
+  run: Pick<Run, 'title' | 'output_path'> & { binding: { source_snapshot_id: string } };
+  snapshot: Snapshot;
+  storage: string;
+  resources: string;
+});
 
 export async function runDshWeb(options: Options): Promise<{ code: number; raw: string; stderr: string; protocol_error?: string; session_id?: string }> {
-  const { run, snapshot, storage, resources, profile, event } = options;
-  const cwd = path.join(storage, 'snapshots', snapshot.source_snapshot_id);
+  const { run, profile, event } = options;
+  const deadline = options.toolFree ? Date.now() + (options.timeoutMs ?? 60000) : undefined;
   const directory = path.dirname(run.output_path);
+  const cwd = options.toolFree ? directory : path.join(options.storage, 'snapshots', options.snapshot.source_snapshot_id);
   const home = path.join(directory, 'dsh-web-home');
   const patch = path.join(home, 'arc-web.patch.yml');
   const contextPath = path.join(directory, 'source-context.json');
-  const [runtime, key, node] = await Promise.all([resolveDsh(profile.path), dshCredential(), locate('node')]);
+  const [runtime, key] = await Promise.all([resolveDsh(profile.path), dshCredential()]);
   if (!key) throw Error('缺少本机 DSH 登录凭据');
   await fs.mkdir(home, { recursive: true });
-  // The session uses one preset with only ARC's frozen-source tools.
-  const plugins = [
+  const plugins = options.toolFree ? [] : [
     { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: 'Use Arc tools to read the bound source snapshot and deliver the requested result.' } },
     { id: 'arc-source', name: '@deepseek-ai/dsh-mcp-client', config: {
-      serverName: 'arc-frozen-source', transport: 'stdio', command: node,
-      args: [path.join(resources, 'dist', 'context-server.cjs'), contextPath], failOnStartupError: true,
+      serverName: 'arc-frozen-source', transport: 'stdio', command: await locate('node'),
+      args: [path.join(options.resources, 'dist', 'context-server.cjs'), contextPath], failOnStartupError: true,
     } },
   ];
   const prompt = options.prompt + (options.submitResult
     ? '\n调用 arc_submit_result，把符合该工具合同的完整结果作为参数提交。工具确认后结束。'
     : '\n最终只回复一个符合以下合同的 JSON 对象。\n' + JSON.stringify(options.outputSchema));
   await Promise.all([
-    fs.writeFile(contextPath, JSON.stringify({ storage, snapshot, resultSchema: options.submitResult ? options.outputSchema : undefined })),
+    !options.toolFree && fs.writeFile(contextPath, JSON.stringify({ storage: options.storage, snapshot: options.snapshot, resultSchema: options.submitResult ? options.outputSchema : undefined })),
     fs.writeFile(path.join(directory, 'prompt.txt'), prompt),
     fs.writeFile(patch, dump([
       { id: 'agent-preset-registry', config: { default: preset } },
@@ -171,6 +177,11 @@ export async function runDshWeb(options: Options): Promise<{ code: number; raw: 
   let submitted = false, terminal = false, cancelled = false;
   let stopping: Promise<void> | undefined, sessionId: string | undefined, remote: DshRemote | undefined;
   const stop = () => stopping ??= stopTree(child);
+  let timedOut = false;
+  const timer = deadline === undefined ? undefined : setTimeout(() => {
+    timedOut = true;
+    void stop().catch(() => {}); // finally awaits the same stop operation
+  }, Math.max(0, deadline - Date.now()));
   const url = waitForHost(child);
   options.started({ child, cancel: async () => {
     cancelled = true;
@@ -187,8 +198,8 @@ export async function runDshWeb(options: Options): Promise<{ code: number; raw: 
     event({ type: 'session.started', thread_id: sessionId });
     const requestId = randomUUID();
     await fs.writeFile(path.join(directory, 'request.json'), JSON.stringify({
-      binding: run.binding, provider: 'dsh', transport: 'dsh web', session_id: sessionId, request_id: requestId,
-      source_fingerprint: snapshot.fingerprint,
+      ...(!options.toolFree && {binding: options.run.binding, source_fingerprint: options.snapshot.fingerprint}),
+      provider: 'dsh', transport: 'dsh web', session_id: sessionId, request_id: requestId,
     }, null, 2));
     if (cancelled) return { code: 1, raw: '', stderr: '' };
     submitted = true;
@@ -257,12 +268,14 @@ export async function runDshWeb(options: Options): Promise<{ code: number; raw: 
     }
     return { code: 1, raw, stderr: clean(stderr), session_id: sessionId };
   } catch (error) {
+    if (timedOut) throw Error('DSH 优化提示词超过 60 秒，请重试。');
     if (cancelled) return { code: 1, raw: '', stderr: clean(stderr), session_id: sessionId };
     const message = clean((error as Error).message);
     await fs.writeFile(path.join(directory, 'diagnostic.json'), JSON.stringify({ error: message, stderr: clean(stderr), session_id: sessionId }));
     if (error instanceof DshMalformedReply) throw error;
     throw Object.assign(Error(message), { remoteUnknown: submitted && !terminal });
   } finally {
+    clearTimeout(timer);
     await stop();
   }
 }

@@ -59,6 +59,40 @@
   background: var(--soft);
   color: var(--accent);
 }
+.composer-refine-actions, .refinement-header, .refinement-scopes {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.composer-refine-actions { margin-left: auto; }
+.composer-starters .composer-refine-button {
+  color: var(--accent);
+  border-color: var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-tint);
+}
+.composer-starters .composer-refine-button:disabled { color: var(--muted); border-color: var(--border); }
+.composer-starters .composer-link { padding-inline: 4px; color: var(--muted); }
+.composer-refine-error { margin: 8px 0 0; color: var(--danger); }
+.composer-refinement {
+  margin-top: 9px;
+  padding: 10px 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--soft) 58%, var(--surface));
+}
+.refinement-header { gap: 5px 8px; }
+.composer-refinement .refinement-header h3 { margin: 0; color: var(--accent); font-size: 14px; font-weight: 580; }
+.refinement-header small { padding: 1px 6px; border-radius: 4px; background: var(--soft); color: var(--muted); font-size: 12px; }
+.refinement-header .composer-link { margin-left: auto; color: var(--muted); }
+.refinement-header .primary, .refinement-scopes button { min-height: 26px; padding: 3px 9px; font-size: 12px; }
+.refinement-text { margin: 6px 0 0; font-size: 14px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.refinement-scopes, .refinement-clarifications { margin-top: 8px; color: var(--ink-secondary); font-size: 12px; }
+.refinement-scopes button { max-width: 100%; border-radius: 999px; background: var(--surface); color: var(--accent); text-align: left; }
+.refinement-scopes button[aria-pressed=true] { background: var(--soft); border-color: var(--accent); }
+.refinement-clarifications { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 8px; }
+.refinement-clarifications ul { margin: 0; padding-left: 1.2em; color: var(--muted); overflow-wrap: anywhere; }
 .composer-boundaries { margin: 15px 0; padding-top: 13px; border-top: 1px solid var(--border-subtle); }
 .composer-boundaries h3 small { color: var(--muted); font-size: 12px; font-weight: 400; }
 .composer-scope-options > button { border-radius: var(--radius-sm); max-width: 100%; text-align: left; overflow-wrap: anywhere; }

@@ -1,6 +1,14 @@
 import type { ExecutionMode,ProviderId,ReadingTarget } from './shared';
 import type {AnalysisNode,AnalysisEdge,AnalysisClaim,SourceEvidence,RunBinding} from '../contracts/agent-adapter';
 
+export interface GoalRefinement {
+  refined_goal: string;
+  suggested_non_goals: string[];
+  clarifications: string[];
+  engine: 'codex' | 'dsh';
+  duration_ms: number;
+}
+
 export interface WorkspaceAsset {path:string;sha256:string}
 export interface CompletionBinding {
   workspace_path:string;workspace_fingerprint:string;head:string|null;branch:string|null;git_common_dir:string|null;
@@ -43,6 +51,19 @@ export interface ContextEntry {
   source_version?:number;
   legacy_import?:LegacyImport;
 }
+export function activeContextEntries(entries: ContextEntry[]): ContextEntry[] {
+  const current = entries.filter(entry => entry.status !== 'superseded');
+  const replaced = new Set(current.map(entry => entry.supersedes).filter(id => id !== undefined));
+  // Correcting an individual source also invalidates aggregates that still quote it.
+  for (const entry of current.filter(entry => !replaced.has(entry.entry_id))) {
+    if (entry.covered_entries?.some(id => replaced.has(id))) replaced.add(entry.entry_id);
+  }
+  for (const entry of current.filter(entry => !replaced.has(entry.entry_id))) {
+    for (const id of entry.covered_entries ?? []) replaced.add(id);
+  }
+  return current.filter(entry => !replaced.has(entry.entry_id));
+}
+
 export interface EngineeringContext {
   material_sources?:MaterialSourceIndexEntry[];
   environment_brief?:string;

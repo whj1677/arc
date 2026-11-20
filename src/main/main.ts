@@ -67,6 +67,7 @@ app.whenReady().then(async()=>{
         case 'engineering_save_entry':value=await service.engineering.saveEntry(args,'user');break;
         case 'engineering_log':value=await service.engineering.readLog(args.task_id,args.path);break;
         case 'engineering_diff':value=await service.engineering.taskDiff(args.task_id,args.path);break;
+        case 'development_refine_goal':value=await service.refineDevelopmentGoal(args.project_id,args.goal,args.non_goals??[],selectedEngine(args.engine)==='dsh'?'dsh':'codex');break;
         case 'development_start':{
           const task=args.task_id?service.engineering.task(args.task_id):undefined;
           const previousMode=task?.execution_mode??(task?.analysis_channel==='dsh'?'dsh':undefined);

@@ -42,7 +42,7 @@ export function isSupportedCodexVersion(version:string):boolean {
   return !!parsed&&compareSemver(parsed,MIN_CODEX_SEMVER)>=0;
 }
 
-export function codexFeatureFlags(version:string):string[] {
+export function codexFeatureFlags(version:string,frozenSource=true):string[] {
   const parsed=parseCodexSemver(version);
   const modern=!!parsed&&compareSemver(parsed,[0,167,0])>=0;
   const legacyRemoved=new Set([
@@ -68,9 +68,9 @@ export function codexFeatureFlags(version:string):string[] {
       flags.push('-c',`features.${feature}=false`);
     }
     // Modern Codex releases route frozen-source MCP calls through Code Mode.
-    flags.push('-c','features.code_mode_host=true');
-    flags.push('-c','features.skip_host_skill_discovery=true');
+    flags.push('-c',`features.code_mode_host=${frozenSource}`);
   }
+  if(modern||!frozenSource)flags.push('-c','features.skip_host_skill_discovery=true');
   return flags;
 }
 
@@ -175,19 +175,20 @@ export async function probeProviders(config:Record<string,string>={},only?:'code
   return Promise.all([probeCodex(config.codex_path),probeDsh(config.dsh_path)]);
 }
 
-async function probeCodex(configured?:string):Promise<ProviderProfile> {
+async function probeCodex(configured?:string,cwd?:string):Promise<ProviderProfile> {
   const base={checked_at:now(),capabilities:{submit_task:'unknown',cancel_run:'unknown',restore:'unsupported',followup:'emulated: 新 run + 有来源上下文，不续接原会话',code_write:'unsupported'}};
   let file:string|undefined;
   try {
     file=await locate('codex',configured);
     // Verify CLI identity and semver floor before invoking any subcommands.
-    const version=(await exec(file,['--version'],{windowsHide:true,timeout:8000})).stdout.trim();
+    const options={cwd,env:cwd?codexChildEnvironment(process.env):undefined,windowsHide:true,timeout:8000};
+    const version=(await exec(file,['--version'],options)).stdout.trim();
     if(!version.startsWith('codex-cli '))throw new Error('程序输出不是 codex-cli，身份未验证');
     if(!isSupportedCodexVersion(version))throw new Error(`该 Codex 版本低于最低要求（≥ 0.163.0）：${version}。`);
     const [execHelpOut,mcpHelpOut,authOut]=await Promise.all([
-      exec(file,['exec','--help'],{windowsHide:true,timeout:8000}),
-      exec(file,['mcp','list','--help'],{windowsHide:true,timeout:8000}),
-      exec(file,['login','status'],{windowsHide:true,timeout:8000}).catch(()=>null),
+      exec(file,['exec','--help'],options),
+      exec(file,['mcp','list','--help'],options),
+      exec(file,['login','status'],options).catch(()=>null),
     ]);
     const help=execHelpOut.stdout;
     if(!help.includes('--output-schema')||!help.includes('--json')||!help.includes('read-only'))throw new Error('版本缺少所需 exec 能力');
@@ -310,19 +311,81 @@ architecture 只用于系统架构，不是函数调用图。首屏优先展示�
 // the same run_id within a short window, cutting redundant CLI spawns in multi-phase overviews.
 const runPreflightCache=new Map<string,{at:number;runtimeVersion:string;mcpDisableArgs:string[]}>();
 
-function buildMcpDisableArgs(inventory:unknown,nodePath:string):string[] {
+function buildMcpDisableArgs(inventory:unknown,inertCommand:string,keepServer?:string):string[] {
   if(!Array.isArray(inventory)||inventory.some(item=>typeof item?.name!=='string'))throw new Error('无法核验 Codex MCP 工具范围，未派发分析');
   const args:string[]=[];
-  for(const item of inventory)if(item.name!=='arc_frozen_source'){
+  for(const item of inventory)if(item.name!==keepServer){
     if(!/^[A-Za-z0-9_-]+$/.test(item.name))throw new Error('存在无法用当前 Codex 覆盖语法安全限制的 MCP 名称，未派发任务');
     // Runtime-injected servers may not have a TOML transport table. Give the
     // disabled override a valid inert transport, without copying any tokens.
-    if(item.transport?.type==='stdio')args.push('-c',`mcp_servers.${item.name}.command=${JSON.stringify(nodePath)}`);
+    if(item.transport?.type==='stdio')args.push('-c',`mcp_servers.${item.name}.command=${JSON.stringify(inertCommand)}`);
     else if(['streamable_http','http','sse'].includes(item.transport?.type))args.push('-c',`mcp_servers.${item.name}.url="http://127.0.0.1:1/disabled"`);
     else throw new Error('未知 MCP 传输，不能证明工具已被限制');
     args.push('-c',`mcp_servers.${item.name}.enabled=false`);
   }
   return args;
+}
+
+const readOnlyToolFlags=[
+  'shell_tool','unified_exec','apply_patch_freeform','multi_agent','multi_agent_v2','apps','browser_use','plugins',
+].flatMap(feature=>['-c',`features.${feature}=false`]);
+
+let refinementMcpCache:{key:string;expires:number;args:string[]}|undefined;
+
+async function refinementMcpArgs(program:string,version:string,cwd:string,env:NodeJS.ProcessEnv) {
+  // Codex merges MCP tables, even with mcp_servers={}. Invalidate the name
+  // inventory as soon as a user adds or replaces a server in their config.
+  const config=path.join(env.CODEX_HOME||path.join(os.homedir(),'.codex'),'config.toml');
+  const stamp=await fs.stat(config,{bigint:true}).then(
+    stat=>`${stat.ino}:${stat.ctimeNs}:${stat.mtimeNs}:${stat.size}`,
+    (error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return 'absent';throw error;},
+  );
+  const key=JSON.stringify([program,version,config,stamp]);
+  if(refinementMcpCache?.key===key&&Date.now()<refinementMcpCache.expires)return refinementMcpCache.args;
+  let inventory:unknown;
+  try {
+    const {stdout}=await exec(program,['mcp','list','--json'],{cwd,env,windowsHide:true,timeout:10000,maxBuffer:2*1024*1024});
+    inventory=JSON.parse(stdout);
+  } catch {
+    throw new Error('无法读取本机 Codex 的 MCP 配置，未启动提示词优化。');
+  }
+  const args=buildMcpDisableArgs(inventory,process.execPath);
+  refinementMcpCache={key,expires:Date.now()+60000,args};
+  return args;
+}
+
+export async function runCodexPromptRefinement(prompt:string,outputSchema:object,configuredPath?:string):Promise<string> {
+  const deadline=Date.now()+60000;
+  const cwd=await fs.mkdtemp(path.join(os.tmpdir(),'arc-goal-'));
+  try {
+    const profile=await probeCodex(configuredPath,cwd);
+    if(profile.status==='auth_required')throw new Error('请先登录本机 Codex 客户端或 CLI，再优化提示词。');
+    if(profile.status!=='available'||!profile.path)throw new Error(`本机 Codex 不可用：${profile.reason}`);
+    const env=codexChildEnvironment(process.env);
+    const disabledServers=await refinementMcpArgs(profile.path,profile.version!,cwd,env);
+    const schemaPath=path.join(cwd,'schema.json'),outputPath=path.join(cwd,'answer.json');
+    await fs.writeFile(schemaPath,JSON.stringify(outputSchema));
+    const timeout=deadline-Date.now();
+    if(timeout<=0)throw new Error('Codex 优化提示词超过 60 秒，请重试。');
+    const execution=exec(profile.path,[
+      'exec','--ephemeral','--json','--sandbox','read-only','--skip-git-repo-check','--color','never',
+      ...readOnlyToolFlags,...codexFeatureFlags(profile.version!,false),'-c','features.in_app_browser=false',
+      '-c','web_search="disabled"','-c','model_reasoning_effort="low"',...disabledServers,
+      '--output-schema',schemaPath,'--output-last-message',outputPath,'-',
+    ],{cwd,env,windowsHide:true,timeout});
+    // An early CLI exit (for example an expired login) can close stdin before it drains.
+    execution.child.stdin!.on('error',()=>{});
+    execution.child.stdin!.end(prompt);
+    await execution;
+    return await fs.readFile(outputPath,'utf8');
+  } catch(error) {
+    const failure=error as Error & {killed?:boolean;stderr?:string};
+    if(failure.killed&&Date.now()>=deadline)throw new Error('Codex 优化提示词超过 60 秒，请重试。');
+    const detail=redact(failure.stderr?.trim()||failure.message);
+    throw new Error(`优化提示词失败：${detail.slice(-600)}`);
+  } finally {
+    await fs.rm(cwd,{recursive:true,force:true});
+  }
 }
 
 export function reasoningEffortForRun(run:Pick<Run,'reading_question_id'|'reading_context'|'question'|'overview_format'>,phase?:OverviewPhase):'low'|'medium' {
@@ -368,7 +431,7 @@ export async function runCodex(options:{
       exec(profile.path!,['mcp','list','--json'],{cwd:workspace!,env,windowsHide:true,timeout:10000,maxBuffer:2*1024*1024}),
       fs.mkdir(runDir!,{recursive:true}),
     ]);
-    mcpDisableArgs=buildMcpDisableArgs(JSON.parse(inventoryOut.stdout),nodePath);
+    mcpDisableArgs=buildMcpDisableArgs(JSON.parse(inventoryOut.stdout),nodePath,'arc_frozen_source');
     if(preflightKey){
       runPreflightCache.set(preflightKey,{at:Date.now(),runtimeVersion,mcpDisableArgs});
       if(runPreflightCache.size>64)runPreflightCache.delete(runPreflightCache.keys().next().value!);
@@ -388,9 +451,7 @@ export async function runCodex(options:{
 
   const outputPath=options.outputPath??run.output_path;
   const args=['exec','--json','--sandbox','read-only','--skip-git-repo-check','--color','never','--cd',workspace!,
-    '-c','features.shell_tool=false','-c','features.unified_exec=false','-c','features.apply_patch_freeform=false',
-    '-c','features.multi_agent=false','-c','features.multi_agent_v2=false',
-    '-c','features.apps=false','-c','features.browser_use=false','-c','features.plugins=false',
+    ...readOnlyToolFlags,
     '-c',`mcp_servers.arc_frozen_source.command=${JSON.stringify(nodePath)}`,
     '-c',`mcp_servers.arc_frozen_source.args=${JSON.stringify([contextServer,contextPath])}`,
     '-c','mcp_servers.arc_frozen_source.enabled=true',

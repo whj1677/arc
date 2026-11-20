@@ -4,6 +4,8 @@ export function taskBoundaryKey(text:string) {
   return text.replace(/`+([^`]+)`+/g,'$1').replace(/\s+/g,' ').trim().replace(/[。.;；]+$/u,'').trimEnd();
 }
 
+export { taskBoundaryKey as normalizeBoundaryText };
+
 export function uniqueTaskBoundaries(items:string[]) {
   const seen=new Set<string>();
   return items.filter(item=>{

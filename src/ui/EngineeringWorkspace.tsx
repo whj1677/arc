@@ -356,7 +356,8 @@ export function EngineeringWorkspace({project,page,requestedTask,onTaskOpened,on
         tasksLoaded&&<div className="engineering-list-empty"><strong>暂无开发记录</strong><p>提交后，可在这里查看需求、方案、代码差异和验证记录。</p></div>}
     </aside><section className="engineering-task-detail" key={mode==='new'?'new':selectedId} aria-label="工程任务详情"
       onFocusCapture={mode==='new'?()=>setMode('new'):undefined}>
-      {mode==='new'||!task?<RequirementComposer context={context} defaultEngine={defaultEngine} onEngineChange={onEngineChange} enginePending={enginePending}
+      {mode==='new'||!task?<RequirementComposer projectId={project.project_id} disabledProject={project.fictional} context={context}
+        defaultEngine={defaultEngine} onEngineChange={onEngineChange} enginePending={enginePending}
         onSettings={onSettings} goal={goal} onGoalChange={setGoal} goalInput={goalInput} busy={busy} disabled={cannotStart}
         onSubmit={start} onCancel={tasks.length?()=>selectTask((current??visible[0]??tasks[0]).task_id):undefined}/>:<>
         <header className="engineering-requirement-header">
