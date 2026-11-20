@@ -19,6 +19,7 @@ import type {
   Revision,
   Run,
   Scenario,
+  ScenarioBreakdownResult,
   Snapshot,
   WorkspaceData,
 } from '../shared';
@@ -31,6 +32,7 @@ import { buildRefinementContext, goalRefinementSchema, parseGoalRefinement, refi
 import { normalizeTransport, schema, validateResult } from './validation';
 import { discoveredFeature } from '../discovered-feature';
 import { promptContext } from './prompt-context';
+import { proposeScenarios, scenarioTitleKey } from './scenario-breakdown';
 import { readingAnswerSchema, validateReadingAnswer } from './reading-question';
 import { overviewDiscoveryQuestion, shallowOverviewQuestion } from './architecture-analysis';
 import { overviewSchema, prepareOverview } from './overview-result';
@@ -80,6 +82,7 @@ export class ArcService {
   private readonly freshnessState = new Map<string, ProjectFreshness>();
   private readonly checkingFreshness = new Map<string, Promise<ProjectFreshness>>();
   private readonly readingService: ReadingService;
+  private readonly breakdowns = new Map<Promise<ScenarioBreakdownResult>, AbortController>();
   private readonly walkthroughs: WalkthroughRefreshCoordinator;
   private readonly overviews: OverviewOrchestrator;
 
@@ -447,13 +450,28 @@ export class ArcService {
     return { scenario_id: scenarioId, ...(developmentTaskId ? { development_task_id: developmentTaskId } : {}) };
   }
 
-  addScenario(featureId: string, question: string) {
-    const scene = this.insertScenario(featureId, question);
+  async breakdownFeature(featureId: string): Promise<ScenarioBreakdownResult> {
+    const feature = this.store.get<Feature>('feature', featureId);
+    const project = this.store.get<Project>('project', feature.project_id);
+    if (project.fictional) throw Error('演示工程不派发真实分析');
+    if (feature.archived) throw Error('请先恢复已归档功能');
+    const scenes = this.store.all<Scenario>('scenario').filter(s => s.feature_id === featureId);
+    if (scenes.some(s => s.scenario_id === project.overview_scenario_id)) throw Error('请选择要细化的业务功能');
+    const scene = scenes.find(s => s.kind === 'feature_overview') ?? scenes[0];
+    const snapshot = this.store.get<Snapshot>('snapshot', this.analysisSnapshot(scene));
+    const controller = new AbortController();
+    const task = proposeScenarios(this.store, this.resources, feature, scenes, snapshot, this.codexRunner, this.dshRunner, controller.signal);
+    this.breakdowns.set(task, controller);
+    try { return await task; } finally { this.breakdowns.delete(task); }
+  }
+
+  addScenario(featureId: string, question: string, title?: string, kind?: 'breakdown') {
+    const scene = this.insertScenario(featureId, question, title, kind);
     this.changed();
     return scene;
   }
 
-  private insertScenario(featureId: string, question: string) {
+  private insertScenario(featureId: string, question: string, title?: string, kind?: 'breakdown') {
     const feature = this.store.get<Feature>('feature', featureId);
     const q = text(question);
     if (feature.archived) throw new Error('请先恢复已归档功能，再添加场景');
@@ -461,11 +479,17 @@ export class ArcService {
     if (project.overview_scenario_id && this.store.get<Scenario>('scenario', project.overview_scenario_id).feature_id === featureId) {
       throw new Error('工程全貌不接收业务场景，请选择一个用户功能');
     }
+    const scenarioTitle = title === undefined ? q.slice(0, 100) : text(title, 300);
+    if (kind === 'breakdown' && this.store.all<Scenario>('scenario').some(s =>
+      s.feature_id === featureId && scenarioTitleKey(s.title) === scenarioTitleKey(scenarioTitle))) {
+      throw Error('该功能已包含同名子场景：' + scenarioTitle);
+    }
     const scenario: Scenario = {
       scenario_id: id('scenario'),
       feature_id: featureId,
       project_id: feature.project_id,
-      title: q.slice(0, 100),
+      title: scenarioTitle,
+      ...(kind === 'breakdown' && { kind }),
       question: q,
       question_revision_id: id('question'),
       archived: false,
@@ -901,7 +925,8 @@ export class ArcService {
 
     const { annotations, previous } = this.analysisHistory(initial);
     const scenario = this.store.get<Scenario>('scenario', initial.binding.scenario_id);
-    const featureDetail = !initial.overview_format && !initial.reading_question_id && scenario.kind === 'feature_overview';
+    const featureDetail = !initial.overview_format && !initial.reading_question_id &&
+      (scenario.kind === 'feature_overview' || scenario.kind === 'breakdown');
     if (featureDetail) {
       freshRun.feature_graph_format = 'feature-graph-1';
       this.store.put('run', runId, freshRun);
@@ -1313,12 +1338,13 @@ export class ArcService {
 
   async shutdown() {
     this.closing = true;
+    for (const controller of this.breakdowns.values()) controller.abort();
     for (const run of this.store.all<Run>('run')) this.overviews.cancelUnstartedChild(run);
     await this.development.shutdown();
     for (const controller of this.indexing.values()) controller.abort();
     await Promise.allSettled([...this.executing.keys()].map(k => this.cancel(k)));
     // Wait for real terminal events before the SQLite connection is closed.
-    const pending = Promise.allSettled([...this.executing.values()]);
+    const pending = Promise.allSettled([...this.executing.values(), ...this.breakdowns.keys()]);
     const timer = setTimeout(() => {
       for (const [runId, active] of this.active) {
         this.event(runId, { type: 'shutdown.local_disconnect', reason: '退出等待超过 12 秒；关闭自有子进程，远端终态以协议记录为准' });

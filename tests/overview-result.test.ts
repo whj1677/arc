@@ -116,7 +116,13 @@ test('a broad overview accepts more than eight capability groups and 120 source 
   const prompt=overviewPrompt(current,snapshot,promptContext(snapshot,[]));
   assert.ok(prompt.includes(`预算共 ${overviewDiscoveryBudget.calls} 次源码工具调用`));
   assert.match(prompt,/提前停止并立即返回完整 JSON/);
-  assert.doesNotMatch(prompt,/盘点每个有实质用途|30–70/);
+  for(const provider_id of ['codex','dsh'] as const){
+    const instructions=overviewPrompt({...current,provider_id},snapshot,promptContext(snapshot,[]));
+    assert.match(instructions,/先看 inventory\.source_directories/);
+    assert.match(instructions,/逐个核对每个有实质用途的子系统目录/);
+    assert.match(instructions,/4–6 个流程写 steps，每个流程用 2–4 条短步骤/);
+    assert.doesNotMatch(instructions,/目标各不超过 6 项|通常不超过 12 个/);
+  }
   assert.match(prompt,/arc_list_files.*arc_search_source.*arc_read_source/);
   assert.match(prompt,/库 \/ 内核 \/ SDK \/ 框架工程.*核心模块及其公共能力族/);
   assert.match(prompt,/示例 main\(\) 调用的少数 API/);

@@ -137,7 +137,8 @@ type Options = {
 
 export async function runDshWeb(options: Options): Promise<{ code: number; raw: string; stderr: string; protocol_error?: string; session_id?: string }> {
   const { run, profile, event } = options;
-  const deadline = options.toolFree ? Date.now() + (options.timeoutMs ?? 60000) : undefined;
+  const budget = options.timeoutMs ?? (options.toolFree ? 60000 : undefined);
+  const deadline = budget === undefined ? undefined : Date.now() + budget;
   const directory = path.dirname(run.output_path);
   const cwd = options.toolFree ? directory : path.join(options.storage, 'snapshots', options.snapshot.source_snapshot_id);
   const home = path.join(directory, 'dsh-web-home');
@@ -268,7 +269,7 @@ export async function runDshWeb(options: Options): Promise<{ code: number; raw: 
     }
     return { code: 1, raw, stderr: clean(stderr), session_id: sessionId };
   } catch (error) {
-    if (timedOut) throw Error('DSH 优化提示词超过 60 秒，请重试。');
+    if (timedOut) throw Error(options.toolFree ? 'DSH 优化提示词超过 60 秒，请重试。' : 'DSH 只读分析已达到执行时限');
     if (cancelled) return { code: 1, raw: '', stderr: clean(stderr), session_id: sessionId };
     const message = clean((error as Error).message);
     await fs.writeFile(path.join(directory, 'diagnostic.json'), JSON.stringify({ error: message, stderr: clean(stderr), session_id: sessionId }));

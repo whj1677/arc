@@ -54,7 +54,7 @@ export class Store {
     return this.db.prepare('INSERT OR IGNORE INTO events VALUES(?,?,?,?)').run(runId, eventId, sequence, JSON.stringify(value)).changes > 0;
   }
   events(runId: string) { return this.db.prepare('SELECT json FROM events WHERE run_id=? ORDER BY sequence').all(runId).map((r: any) => JSON.parse(r.json)); }
-  overviewReadLocations(runId: string) {
+  overviewReadLocations(runId: string,limit:number) {
     // Return one successful discovery read per file without loading all tool responses.
     return this.db.prepare(`WITH reads AS (
       SELECT sequence, json_extract(json,'$.item.arguments.path') AS path,
@@ -67,7 +67,7 @@ export class Store {
         AND json_extract(json,'$.item.status')='completed'
         AND json_extract(json,'$.item.error') IS NULL
         AND NOT coalesce(json_extract(json,'$.item.result.isError'),0)
-    ) SELECT path,start,count FROM reads WHERE path IS NOT NULL GROUP BY path ORDER BY min(sequence) LIMIT 12`).all(runId) as {path:string;start:number;count:number}[];
+    ) SELECT path,start,count FROM reads WHERE path IS NOT NULL GROUP BY path ORDER BY min(sequence) LIMIT ?`).all(runId,limit) as {path:string;start:number;count:number}[];
   }
   nextSequence(runId:string) { return Number((this.db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS n FROM events WHERE run_id=?').get(runId) as any).n); }
   backup(destination: string) {

@@ -13,7 +13,18 @@ export interface Snapshot {
 }
 export interface Project { project_id: string; name: string; root_path: string; snapshot_id: string; fictional: boolean; build_config: string; created_at: string; overview_scenario_id?:string }
 export interface Feature { feature_id: string; project_id: string; name: string; archived: boolean; sort_order: number; discovery?: {result_id:string;node_id:string;source_snapshot_id:string} }
-export interface Scenario { scenario_id: string; feature_id: string; project_id: string; title: string; question: string; question_revision_id: string; archived: boolean; sort_order: number; kind?: 'feature_overview' }
+export interface Scenario { scenario_id: string; feature_id: string; project_id: string; title: string; question: string; question_revision_id: string; archived: boolean; sort_order: number; kind?: 'feature_overview' | 'breakdown' }
+export interface ScenarioProposal {
+  title: string;
+  question: string;
+  rationale: string;
+  entry_hint: string;
+}
+export interface ScenarioBreakdownResult {
+  proposals: ScenarioProposal[];
+  engine: 'codex' | 'dsh';
+  duration_ms: number;
+}
 export interface Revision { question_revision_id: string; scenario_id: string; question: string; created_at: string }
 export interface Annotation { annotation_id: string; project_id: string; scenario_id: string; result_id: string | null; object_id: string | null; source_snapshot_id: string; text: string; created_at: string; target?: ReadingTarget }
 export interface ReadingTarget { kind:'feature'|'node'|'edge'|'file'|'directory'|'step'|'role'|'handoff'|'call_step'; id:string }

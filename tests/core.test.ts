@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {shallowOverviewQuestion} from '../src/main/architecture-analysis';
 import {ArcService,overviewQuestion} from '../src/main/service';
-import {capture,readSource,sha,relativePath,safeFile,freshness} from '../src/main/snapshot';
+import {capture,readSource,sha,relativePath,safeFile,freshness,workspaceFiles} from '../src/main/snapshot';
 import {validateResult,normalizeTransport} from '../src/main/validation';
 import {JsonLines} from '../src/main/providers';
 import {execFileSync} from 'node:child_process';
@@ -26,6 +26,29 @@ test('snapshot honors Git ignored untracked outputs and retains tracked sources 
  assert.deepEqual(await freshness(snap),[]);
  await fs.writeFile(path.join(root,'app/new.py'),'new source');assert.deepEqual(await freshness(snap),['app/new.py']);
  const nested=await capture(path.join(root,'app'),'app',path.join(dir,'nested'),'');assert.deepEqual(nested.files.map(f=>f.path),['main.py','new.py','tracked.generated.py']);
+});
+test('all snapshot walkers skip generated CMake directories from a non-Git wrapper',async t=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-cmake-')),root=path.join(dir,'wrapper'),repo=path.join(root,'bams_code');
+ t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+ await fs.mkdir(repo,{recursive:true});
+ execFileSync('git',['init',repo],{windowsHide:true,stdio:'ignore'});
+ const generated=['src/CMakeFiles','CMAKE-BUILD-debug','build_host','build/_deps'];
+ for(const name of generated){
+   const build=path.join(repo,name);await fs.mkdir(build,{recursive:true});
+   await fs.writeFile(path.join(build,'generated.cpp'),'int generated;');
+   if(name.startsWith('build'))await fs.writeFile(path.join(build,'CMakeCache.txt'),'cache');
+ }
+ await fs.mkdir(path.join(repo,'src/app'));
+ await fs.writeFile(path.join(repo,'src/app/controller.cpp'),'int controller;');
+ const snap=await capture(root,'wrapped',path.join(dir,'data'),'');
+ assert.equal(snap.commit,null);
+ assert.deepEqual(snap.files.map(file=>file.path),['bams_code/src/app/controller.cpp']);
+ for(const name of generated)assert.ok(snap.excluded.some(entry=>entry.path==='bams_code/'+name));
+ const initial=await workspaceFiles(root,snap);
+ for(const name of generated)await fs.writeFile(path.join(repo,name,'new.cpp'),'int changed;');
+ assert.deepEqual(await freshness(snap),[]);
+ assert.deepEqual(await workspaceFiles(root,snap),initial);
+ assert.deepEqual(initial.assets,[]);
 });
 test('source folders named build remain readable and freshness detects their additions outside Git',async()=>{
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-source-build-')),root=path.join(dir,'project');

@@ -101,6 +101,7 @@ test('new overview refuses a response without readings before requesting semanti
 
 test('discovery timeout synthesizes once from read source and a failed review retries from that checked draft', async t => {
   const phases: string[] = [];
+  const modules=Array.from({length:13},(_,i)=>`module${i}`);
   let failReview = true;
   const runner: typeof runCodex = async options => {
     phases.push(options.phase ?? (options.overviewSynthesis ? 'synthesis' : 'discovery'));
@@ -112,6 +113,7 @@ test('discovery timeout synthesizes once from read source and a failed review re
     }
     if (options.overviewSynthesis) {
       assert.ok(options.prompt.includes(overview.evidence[0].quote.split('\n')[1]));
+      for(const name of modules)assert.ok(options.prompt.includes(`void ${name}() {}`));
       await fs.mkdir(options.outputDirectory!, {recursive:true});
       const raw = JSON.stringify(overview);
       await fs.writeFile(options.outputPath!, raw);
@@ -119,9 +121,13 @@ test('discovery timeout synthesizes once from read source and a failed review re
     }
     options.event({type:'item.completed',item:{type:'mcp_tool_call',server:'arc_frozen_source',tool:'arc_read_source',
       status:'completed',arguments:{path:'入口.ts',line_start:2,line_count:1}}});
+    for(const name of modules)options.event({type:'item.completed',item:{type:'mcp_tool_call',server:'arc_frozen_source',tool:'arc_read_source',
+      status:'completed',arguments:{path:name+'.c',line_start:1,line_count:1}}});
     return {code:1, raw:'', stderr:'', protocol_error:'取证到期', timeout:'discovery'};
   };
-  const {service,scenario} = await fixture(t,runner);
+  const {service,scenario,project,snapshot} = await fixture(t,runner);
+  for(const name of modules)await fs.writeFile(path.join(snapshot.root_path,name+'.c'),`void ${name}() {}`);
+  await service.refresh(project.project_id);
   const first = await service.startRun(scenario.scenario_id,'codex','bounded-first-run');
   await Promise.all(service.executing.values());
   const failed = service.store.get<Run>('run',first.binding.run_id);

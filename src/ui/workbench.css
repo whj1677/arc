@@ -731,6 +731,20 @@ summary {
 }
 .catalog-management { border-color: var(--border); }
 
+.feature-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  min-width: 150px;
+}
+.feature-actions .feature-menu-item {
+  grid-column: 1 / -1;
+  text-align: left;
+  white-space: nowrap;
+  background: transparent;
+  border-color: transparent;
+}
+.feature-actions .feature-menu-item:hover { background: var(--soft); }
+
 /* Main Canvas & Floating Zoom Capsule */
 .reading-shell .canvas,
 .canvas {
@@ -1020,6 +1034,61 @@ dialog::backdrop {
   background: rgba(13, 43, 36, 0.42);
   backdrop-filter: blur(2px);
 }
+.breakdown-feature {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.breakdown-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  margin: 8px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.breakdown-choice:has(:checked) {
+  background: var(--surface-tint);
+  border-color: var(--border-strong);
+}
+.breakdown-choice input {
+  width: 16px;
+  height: 16px;
+  margin: 4px 0 0;
+  accent-color: var(--accent);
+}
+.breakdown-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.breakdown-copy strong {
+  font-size: 15px;
+  font-weight: 580;
+  overflow-wrap: anywhere;
+}
+.breakdown-copy code {
+  width: fit-content;
+  max-width: 100%;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--soft);
+  color: var(--accent-hover);
+  font-size: 12px;
+}
+.breakdown-copy code, .breakdown-rationale {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.breakdown-rationale {
+  color: var(--ink-secondary);
+  font-size: 14px;
+}
+.breakdown-form > .row { margin-top: 16px; }
 .drawer-back {
   background: var(--surface-tint);
   color: var(--ink-secondary);

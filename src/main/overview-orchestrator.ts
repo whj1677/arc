@@ -5,6 +5,7 @@ import type { AnalysisResult, Explanation, Feature, Project, ProviderProfile, Ru
 import { hasFunctionGraphs } from '../shared';
 import { Store, id, now } from './store';
 import { linesOf, readSource, sha } from './snapshot';
+import { overviewDiscoveryBudget } from './prompt-context';
 import { overviewPhaseDirectory, redact, type ActiveProcess, type OverviewPhase, type runCodex } from './providers';
 import { validateResult } from './validation';
 import { deferredCatalogDeclarationBoundary, deferredCatalogReadingBoundary, prepareOverview } from './overview-result';
@@ -82,14 +83,14 @@ export class OverviewOrchestrator {
     for (const previous of history.reverse()) {
       if (previous.binding.run_id !== parentId) continue;
       if (previous.status !== 'failed') break;
-      if (previous.overview_candidate_ready || this.host.store.overviewReadLocations(previous.binding.run_id).length) return previous;
+      if (previous.overview_candidate_ready || this.host.store.overviewReadLocations(previous.binding.run_id,1).length) return previous;
       parentId = previous.previous_run_id;
     }
   }
 
   async readExcerpts(runId: string, snapshot: Snapshot) {
     const excerpts = [];
-    for (const location of this.host.store.overviewReadLocations(runId)) {
+    for (const location of this.host.store.overviewReadLocations(runId,overviewDiscoveryBudget.calls)) {
       const file = await readSource(this.host.directory, snapshot, location.path);
       const start = location.start - 1;
       const lines = linesOf(file.text).slice(start, start + Math.min(location.count, 24));

@@ -29,6 +29,8 @@ export interface CatalogSidebarProps {
   chooseScenario: (scenarioId: string) => void;
   onHide: () => void;
   onOpenFeatureModal: () => void;
+  onAddScenario: (featureId: string) => void;
+  onBreakdown: (featureId: string) => void;
   onRenameFeature: (feature: Feature) => void;
   savePosition: (name: string, top: number, left: number) => void;
   action: <T>(fn: () => Promise<T>, message?: string) => Promise<T | undefined>;
@@ -56,6 +58,8 @@ export function CatalogSidebar({
   chooseScenario,
   onHide,
   onOpenFeatureModal,
+  onAddScenario,
+  onBreakdown,
   onRenameFeature,
   savePosition,
   action,
@@ -116,6 +120,8 @@ export function CatalogSidebar({
           <details className="feature-menu">
             <summary aria-label={`管理功能 ${feature.name}`}>⋯</summary>
             <div className="feature-actions">
+              <button className="feature-menu-item" disabled={feature.archived} onClick={() => onAddScenario(feature.feature_id)}>添加场景</button>
+              <button className="feature-menu-item" disabled={feature.archived} title={feature.archived ? '先恢复已归档功能，再添加子场景' : undefined} onClick={() => onBreakdown(feature.feature_id)}>细化拆分子场景</button>
               <button className="icon" aria-label={`重命名功能 ${feature.name}`} onClick={() => onRenameFeature(feature)}>
                 ✎
               </button>

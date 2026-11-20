@@ -189,16 +189,16 @@ function overviewDeadline(run:Pick<Run,'execution_started_at'>) {
 
 type CodexTimeout='idle'|'discovery'|'total';
 
-export function readingWatchdog(run:Pick<Run,'reading_question_id'|'overview_format'|'execution_started_at'>,stop:()=>Promise<void>,fail:(message:string,kind:CodexTimeout)=>void,event:(value:any)=>void,stopFailed:(error:unknown)=>void,discovery=false) {
+export function readingWatchdog(run:Pick<Run,'reading_question_id'|'overview_format'|'execution_started_at'>,stop:()=>Promise<void>,fail:(message:string,kind:CodexTimeout)=>void,event:(value:any)=>void,stopFailed:(error:unknown)=>void,discovery=false,timeoutMs?:number) {
   const minutes=run.overview_format?overviewTotalMinutes:run.reading_question_id?5:8;
   const label=run.overview_format?'首次分析':run.reading_question_id?'阅读追问':'功能与调用链分析';
-  const remaining=run.overview_format?overviewDeadline(run)-Date.now():minutes*60000;
+  const remaining=timeoutMs??(run.overview_format?overviewDeadline(run)-Date.now():minutes*60000);
   const discoveryMillis=4*60000;
   const limitDiscovery=discovery&&discoveryMillis<remaining;
   let idle:NodeJS.Timeout|undefined,closed=false;
   const total=setTimeout(()=>{
     if(limitDiscovery)expire('首次分析的源码取证已达到 4 分钟预算','discovery');
-    else expire(`${label}超过 ${minutes} 分钟执行期限`,'total');
+    else expire(timeoutMs===undefined?`${label}超过 ${minutes} 分钟执行期限`:'只读分析已达到执行时限','total');
   },Math.max(1,limitDiscovery?discoveryMillis:remaining));
   function close(){
     closed=true;
@@ -349,9 +349,10 @@ export async function runCodex(options:{
   run:Run;snapshot:Snapshot;storage:string;resources:string;profile:ProviderProfile;prompt:string;
   event:(value:any)=>void;started:(active:ActiveProcess)=>void;shouldStart?:()=>boolean;
   phase?:OverviewPhase;outputSchema?:object;outputDirectory?:string;outputPath?:string;reasoningEffort?:'low'|'medium';
-  overviewSynthesis?:boolean;preferences:CodexPreferences;
+  overviewSynthesis?:boolean;preferences:CodexPreferences;timeoutMs?:number;
 }):Promise<{code:number|null;raw:string;stderr:string;protocol_error?:string;timeout?:CodexTimeout}> {
   const {run,snapshot,storage,profile,prompt}=options;
+  const deadlineAt=options.timeoutMs===undefined?undefined:Date.now()+options.timeoutMs;
   const env=codexChildEnvironment(process.env);
   const runRoot=options.outputDirectory??(run?.binding?.run_id?path.join(storage,'runs',run.binding.run_id):undefined);
   const runDir=runRoot?path.join(runRoot,...(options.phase?[overviewPhaseDirectory[options.phase]]:[])):undefined;
@@ -428,6 +429,7 @@ export async function runCodex(options:{
   // Version, filesystem and MCP preparation can yield while the user cancels.
   // This final check and spawn run synchronously in the same event-loop turn.
   if(options.shouldStart&&!options.shouldStart())throw new Error('任务已取消，未启动 Codex 分析');
+  if(deadlineAt!==undefined&&Date.now()>=deadlineAt)throw new Error('只读分析已达到执行时限');
   if(run.overview_format&&Date.now()>=overviewDeadline(run))throw new Error(`首次分析已达到 ${overviewTotalMinutes} 分钟总时限，未启动下一阶段；已收原文保留。`);
   return new Promise((resolve,reject)=>{
     const child=spawn(profile.path!,args,{cwd:workspace,windowsHide:true,shell:false,env,stdio:['pipe','pipe','pipe']});
@@ -451,7 +453,7 @@ export async function runCodex(options:{
       void fs.writeFile(path.join(runDir!,'diagnostic.json'),JSON.stringify({code:null,stderr,protocol_error,stop_state:'unknown',ended_at:now()},null,2)).then(()=>reject(failure),diagnosticError=>{
         failure.message+=`；保存诊断失败：${redact((diagnosticError as Error).message)}`;reject(failure);
       });
-    },discovery);
+    },discovery,deadlineAt===undefined?undefined:deadlineAt-Date.now());
     options.started({child,cancel:stop});
     child.stdout.on('data',(chunk:Buffer)=>{try{parser.feed(chunk);}catch(e){protocol_error=(e as Error).message;void stop().catch(()=>{});}});
     child.stderr.on('data',(chunk:Buffer)=>{stderr=redact((stderr+chunk.toString('utf8')).slice(-24000));});

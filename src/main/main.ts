@@ -131,7 +131,8 @@ app.whenReady().then(async()=>{
         case 'feature_open':value=service.openDiscoveredFeature(args.project_id,args.result_id,args.node_id,args.request_mcp===true);break;
         case 'analysis_prepare':value=service.prepareAnalysis(args.scenario_id,undefined,true);break;
         case 'feature_add':value=service.addFeature(args.project_id,args.name,args.question);break;
-        case 'scenario_add':value=service.store.transaction(()=>service.addScenario(args.feature_id,args.question));break;
+        case 'feature_breakdown':value=await service.breakdownFeature(args.feature_id);break;
+        case 'scenario_add':value=service.store.transaction(()=>service.addScenario(args.feature_id,args.question,args.title,args.kind));break;
         case 'scenario_revise':value=service.reviseScenario(args.scenario_id,args.question);break;
         case 'organize':value=service.organize(args.kind,args.id,args.patch);break;
         case 'annotate':value=service.annotate(args.scenario_id,args.text,args.result_id??null,args.object_id??null);break;

@@ -45,6 +45,7 @@ import {
 import { SettingsModal } from './SettingsModal';
 import { CodexModelSelect } from './CodexModelSelect';
 import { EntityFormModal } from './EntityFormModal';
+import { ScenarioBreakdownForm } from './ScenarioBreakdownForm';
 import { CatalogSidebar } from './CatalogSidebar';
 import { DetailPane } from './DetailPane';
 import { CanvasPane } from './CanvasPane';
@@ -113,6 +114,7 @@ function App() {
   const readingScope = useRef('');
   const emptyEntrance = useRef<'overview' | 'walk'>('overview');
   const previousFocus = useRef<HTMLElement | null>(null);
+  const revealScenario = useRef('');
   const modalRef = useRef<HTMLDialogElement>(null);
   const starting = useRef(false);
   const projectSwitch = useRef(0);
@@ -217,6 +219,7 @@ function App() {
     [overviewSectionsVisible, project, data.scenarios, data.features, data.explanations],
   );
   const currentFeature = data.features.find(f => f.feature_id === scenario?.feature_id);
+  const breakdownFeature = modal === 'breakdown' && data.features.find(f => f.feature_id === formFeature);
   const discovery = currentFeature?.discovery;
   const graphRun = discovery && reading.view === 'timeline' && result ? sceneRuns.find(run => run.binding.run_id === result.binding.run_id && run.dsh_function_format) : undefined;
   const graphCatalog =
@@ -629,6 +632,17 @@ function App() {
   }, [modal]);
 
   useEffect(() => {
+    if (!scenarioId || revealScenario.current !== scenarioId || loadedKey !== readingKey) return;
+    const row = document.querySelector<HTMLElement>('.catalog .scene-row[aria-current="page"]');
+    if (row) {
+      const history = row.closest<HTMLDetailsElement>('details.historical-features');
+      if (history) history.open = true;
+      row.scrollIntoView({ block: 'nearest' });
+      revealScenario.current = '';
+    }
+  }, [scenarioId, loadedKey, readingKey]);
+
+  useEffect(() => {
     if (!result || reading.selected || featureReading || architectureReading || reading.view === 'functions') return;
     patch({ selected: (reading.view === 'timeline' ? timelineModel(result).ids[0] : result.nodes[0]?.node_id) || '' });
   }, [result?.result_id, reading.view, reading.selected, featureReading, architectureReading, patch]);
@@ -681,7 +695,7 @@ function App() {
 
   function chooseScenario(id: string, value?: Partial<ReadingState>) {
     const scene = data.scenarios.find(s => s.scenario_id === id);
-    if (!value && scene?.kind === 'feature_overview') {
+    if (!value && (scene?.kind === 'feature_overview' || scene?.kind === 'breakdown')) {
       const graph = data.explanations.findLast(e => e.scenario_id === id && e.result.binding.question_revision_id === scene.question_revision_id && hasFunctionGraphs(e.result));
       if (graph) value = {
         entrance: 'walk', view: 'functions', function_mode: 'calls', function_path: firstGraphPath(graph.result),
@@ -803,10 +817,12 @@ function App() {
     setShowDetail(false);
   }
 
-  function openModal(type: string) {
+  function openModal(type: string, featureId?: string) {
     setFormName('');
     setFormQuestion('');
-    if (type === 'scenario') setFormFeature(userFeatures.some(f => f.feature_id === scenario?.feature_id) ? scenario!.feature_id : userFeatures[0]?.feature_id || '');
+    if (featureId) setFormFeature(featureId);
+    else if (type === 'scenario') setFormFeature(userFeatures.some(f => f.feature_id === scenario?.feature_id) ? scenario!.feature_id : userFeatures[0]?.feature_id || '');
+    closePopovers();
     setModal(type);
   }
 
@@ -1135,6 +1151,8 @@ function App() {
                 : preview
                   ? '深入分析功能'
                   : '开始功能分析'
+              : scenario?.kind === 'breakdown'
+                ? result ? '重新生成场景双图' : '生成场景双图'
               : scenario
                 ? result
                   ? '重新分析场景'
@@ -1358,7 +1376,7 @@ function App() {
   const activeFeatureTab = reading.view === 'functions' ? `functions:${functionViewMode}` : reading.view;
   const workspaceTabs = overview && !engineeringReading ? overviewTabs : featureTabs;
   const activeTab = overview && reading.view === 'modules' ? 'system' : activeFeatureTab;
-  const currentView = (workspaceTabs ?? featureViews).find(([view]) => view === activeTab)?.[1] || (preview ? '功能说明' : '当前视图');
+  const currentView = (workspaceTabs ?? featureViews).find(([view]) => view === (workspaceTabs ? activeTab : reading.view))?.[1] || (preview ? '功能说明' : '当前视图');
 
   function navigateFeatureTab(tab: string) {
     if (tab === activeFeatureTab) return;
@@ -1501,6 +1519,8 @@ function App() {
         setShowCatalog(false);
       }}
       onOpenFeatureModal={() => openModal('feature')}
+      onAddScenario={id => openModal('scenario', id)}
+      onBreakdown={id => openModal('breakdown', id)}
       onRenameFeature={feature => {
         setRenameFeature(feature.feature_id);
         setFormName(feature.name);
@@ -1669,6 +1689,7 @@ function App() {
   const modalTitles: Record<string, string> = {
     feature: '添加功能',
     scenario: '添加场景',
+    breakdown: '细化拆分子场景',
     revise: '编辑问题 · 新建修订',
     featureRename: '重命名功能',
     rename: '重命名场景',
@@ -1769,13 +1790,15 @@ function App() {
                   </div>
                   <h1 title={overview ? project.name : scenario?.title}>
                     {overview ? projectLabel(project) : catalogReading ? '功能总览'
+                      : scenario?.kind === 'breakdown' ? scenario.title
                       : featureReading || reading.view === 'functions' ? `${currentFeature?.name || scenario?.title || '当前功能'} · ${currentView}`
                       : compactTitle(scenario?.title || '选择要理解的功能', 40)}
                   </h1>
                   <div className="scope-hint">
                     {!overview && <span className="tag">{analysisScope}</span>}
-                    <span title={overview ? result?.summary.text : undefined}>
+                    <span title={overview ? result?.summary.text : scenario?.kind === 'breakdown' ? scenario.question : undefined}>
                       {overview ? compactTitle(result?.summary.text || '系统组成、技术栈与组件关系', 100)
+                        : scenario?.kind === 'breakdown' ? compactTitle(scenario.question, 100)
                         : scenario?.kind === 'feature_overview' ? '这个功能的职责、关键调用与输入输出'
                         : '围绕当前问题核对调用、阶段和源码依据'}
                     </span>
@@ -1804,6 +1827,9 @@ function App() {
                       >
                         ＋ 场景
                       </button>
+                      {walkNavigation && !catalogReading && currentFeature && (
+                        <button disabled={currentFeature.archived} onClick={() => openModal('breakdown', currentFeature.feature_id)}>细化拆分子场景</button>
+                      )}
                       {scenario && (
                         <>
                           <button
@@ -2114,7 +2140,7 @@ function App() {
             if (pending) e.preventDefault();
             else setModal('');
           }}
-          aria-label={modal === 'settings' ? '连接 Agent' : '编辑'}
+          aria-label={modalTitles[modal] || '编辑'}
         >
           <div className="modal-heading">
             <h2>{modalTitles[modal]}</h2>
@@ -2155,6 +2181,20 @@ function App() {
               onOpenRenameScenario={title => {
                 setFormName(title);
                 setModal('rename');
+              }}
+            />
+          ) : breakdownFeature ? (
+            <ScenarioBreakdownForm
+              key={breakdownFeature.feature_id}
+              feature={breakdownFeature}
+              saving={pending}
+              setSaving={setPending}
+              onClose={() => setModal('')}
+              onAdded={async firstId => {
+                await reload();
+                revealScenario.current = firstId;
+                chooseScenario(firstId, { entrance: 'walk', view: 'functions', mode: 'normal', catalog_hidden: false });
+                if (width < 900) setShowCatalog(true);
               }}
             />
           ) : (

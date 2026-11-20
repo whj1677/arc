@@ -471,7 +471,7 @@ export function CanvasPane({
                       : `${runEngineName(running)} 正在读取冻结源码。`) + '完成后会保存说明与源码依据；你可以继续浏览。'
                 : latestRun?.status === 'failed'
                   ? '在右侧“分析进度”查看原因并重试，已有结果和原任务均保留。'
-                  : featurePurpose ||
+                  : (scenario?.kind === 'breakdown' ? scenario.question : featurePurpose) ||
                     scenario?.title ||
                     (reading.entrance === 'overview'
                       ? '直接在 ARC 内生成系统架构和功能目录，再选择功能深入；不用切换到外部对话。'

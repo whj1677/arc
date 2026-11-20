@@ -1,7 +1,7 @@
 import type {Snapshot,Annotation,AnalysisResult,ReadingContext,ReadingQuestion,ReadingTarget,Project,Feature,Scenario} from '../shared';
 import {relativePath} from './snapshot';
 
-export const overviewDiscoveryBudget = { calls: 12, searchFiles: 24, readLines: 80 } as const;
+export const overviewDiscoveryBudget = { calls: 64, searchFiles: 24, readLines: 80 } as const;
 
 export function readingTarget(result:AnalysisResult|undefined,target:ReadingTarget,snapshot:Snapshot,feature:Feature) {
   if(!target||!['feature','node','edge','file','directory','step','role','handoff','call_step'].includes(target.kind)||typeof target.id!=='string'||!target.id.trim()||target.id.length>2000)throw Error('阅读对象无效');
@@ -73,14 +73,85 @@ export function listFrozenFiles(snapshot:Snapshot,args:{query?:string;offset?:nu
   return {source_snapshot_id:snapshot.source_snapshot_id,total:matches.length,offset,files,next_offset:next<matches.length?next:null,excluded_count:snapshot.excluded.length,build_config:snapshot.build_config};
 }
 
+const sourceFile=/\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|cs|swift|m|mm|vue|svelte|sql|proto)$/i;
+const headerFile=/\.(?:h|hh|hpp|hxx|d\.ts)$/i;
+const nonSourceDirectory=/(?:^|\/)(?:tests?|gtest|glog|third_party|vendor|CMakeFiles|build)\//i;
+const preferredModule=/^(?:src|app|mid|hal|core|modules|services|components|pkg|internal|lib)$/i;
+
+function wrapperPrefix(snapshot:Snapshot) {
+  let prefix='';
+  for(const dir of (snapshot.files[0]?.path??'').split('/').slice(0,-1)){
+    const next=prefix+dir+'/';
+    if(preferredModule.test(dir)||!snapshot.files.every(file=>file.path.startsWith(next)))break;
+    prefix=next;
+  }
+  return prefix;
+}
+
+function moduleSamples(paths:string[]) {
+  const ordered=paths.sort((a,b)=>Number(headerFile.test(a))-Number(headerFile.test(b)));
+  const parents=new Set<string>(),samples=new Set<string>();
+  for(const file of ordered){
+    const parent=file.slice(0,file.lastIndexOf('/')+1);
+    if(parents.has(parent))continue;
+    parents.add(parent);
+    samples.add(file);
+    if(samples.size===6)return [...samples];
+  }
+  for(const file of ordered){samples.add(file);if(samples.size===6)break;}
+  return [...samples];
+}
+
+function sourceDirectories(snapshot:Snapshot,prefix:string) {
+  type Directory={dir:string;count:number;samples:string[]};
+  const groups=new Map<string,string[]>();
+  for(const file of snapshot.files){
+    if(!sourceFile.test(file.path)||nonSourceDirectory.test(file.path))continue;
+    const parts=file.path.slice(prefix.length).split('/');
+    const depth=Math.min(4,parts.length-1);
+    const dir=(prefix+parts.slice(0,depth).join('/')).replace(/\/$/,'')||'.';
+    let paths=groups.get(dir);
+    if(!paths){paths=[];groups.set(dir,paths);}
+    paths.push(parts.slice(depth).join('/'));
+  }
+  const priority=(dir:string)=>Number(dir.split('/').some(part=>preferredModule.test(part)));
+  const ranked=[...groups].sort(([a,filesA],[b,filesB])=>filesB.length-filesA.length||priority(b)-priority(a)||a.localeCompare(b));
+  const result:Directory[]=[], candidates:string[][]=[];
+  // Give each module a representative before spending the remaining bytes on
+  // more examples. Keep paths intact so each hint can be opened in the snapshot.
+  let remaining=4096-2;
+  for(const [dir,paths] of ranked){
+    const choices=moduleSamples(paths);
+    const entry={dir,count:paths.length,samples:choices.slice(0,1)};
+    const size=Buffer.byteLength(JSON.stringify(entry))+(result.length?1:0);
+    if(size>remaining)continue;
+    result.push(entry);
+    candidates.push(choices);
+    remaining-=size;
+    if(result.length===30)break;
+  }
+  for(let i=1;i<6;i++){
+    for(const [index,choices] of candidates.entries()){
+      const sample=choices[i];
+      if(!sample)continue;
+      const size=Buffer.byteLength(JSON.stringify(sample))+1;
+      if(size>remaining)continue;
+      result[index].samples.push(sample);
+      remaining-=size;
+    }
+  }
+  return result;
+}
+
 export function promptContext(snapshot:Snapshot,annotations:Annotation[],previous?:any) {
   const clipped=(value:unknown,max:number)=>{const text=typeof value==='string'?value:JSON.stringify(value??null);return text.length<=max?text:text.slice(0,max)+'…（上下文节选，非完整内容）';};
   const roots=new Map<string,number>();
-  for(const file of snapshot.files){const root=file.path.includes('/')?file.path.split('/')[0]+'/':'根目录文件';roots.set(root,(roots.get(root)||0)+1);}
+  const prefix=wrapperPrefix(snapshot);
+  for(const file of snapshot.files){const relative=file.path.slice(prefix.length);const root=relative.includes('/')?prefix+relative.split('/')[0]+'/':'根目录文件';roots.set(root,(roots.get(root)||0)+1);}
   const rootList=[...roots].sort((a,b)=>b[1]-a[1]).slice(0,20).map(([name,count])=>({name:clipped(name,180),count}));
-  const hints=snapshot.files.filter(f=>!f.path.includes('/')).slice(0,20).map(f=>clipped(f.path,180));
+  const hints=snapshot.files.filter(f=>!f.path.slice(prefix.length).includes('/')).slice(0,20).map(f=>clipped(f.path,180));
   const entryPattern=/(?:^|\/)(?:package\.json|cargo\.toml|pyproject\.toml|go\.mod|cmakelists\.txt|makefile|readme(?:\.[a-z0-9]+)?|(?:main|index|app|server|cli|init|entry)\.[a-z0-9]+)$/i;
-  const entryHints=snapshot.files.filter(f=>entryPattern.test(f.path)&&f.path.split('/').length<=4).slice(0,20).map(f=>clipped(f.path,180));
+  const entryHints=snapshot.files.filter(f=>entryPattern.test(f.path)&&!nonSourceDirectory.test(f.path)&&f.path.split('/').length<=5).slice(0,20).map(f=>clipped(f.path,180));
   const clues=annotations.slice(-12).map(a=>({text:clipped(a.text,600),source_snapshot_id:a.source_snapshot_id,result_id:a.result_id,object_id:a.object_id,target:a.target}));
-  return {inventory:{total_files:snapshot.files.length,excluded_count:snapshot.excluded.length,largest_roots:rootList,root_file_hints:hints,entry_file_hints:entryHints,inventory_is_partial:true},clues:{items:clues,omitted_count:Math.max(0,annotations.length-clues.length)},previous:previous?{result_id:previous.result_id,binding:previous.binding,summary_excerpt:clipped(previous.summary?.text??previous.summary,3000)}:null};
+  return {inventory:{total_files:snapshot.files.length,excluded_count:snapshot.excluded.length,largest_roots:rootList,root_file_hints:hints,entry_file_hints:entryHints,source_directories:sourceDirectories(snapshot,prefix),inventory_is_partial:true},clues:{items:clues,omitted_count:Math.max(0,annotations.length-clues.length)},previous:previous?{result_id:previous.result_id,binding:previous.binding,summary_excerpt:clipped(previous.summary?.text??previous.summary,3000)}:null};
 }

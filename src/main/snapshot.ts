@@ -30,9 +30,15 @@ export async function safeFile(root: string, file: string) {
   if (!(await fs.stat(resolved)).isFile()) throw new Error('不是普通文件');
   return resolved;
 }
-// A directory named build may contain authored source (for example server/build).
-// Generated build output is excluded by the project's Git ignore rules below.
-const ignored = new Set(['.git','node_modules','.arc-local','dist','release','.next','.venv','venv','.idea','.cache','.codex','.dsh','.tools','.test-data','.runtime','.work','.pytest_cache','__pycache__']);
+const ignored = new Set(['.git','node_modules','.arc-local','dist','release','.next','.venv','venv','.idea','.cache','.codex','.dsh','.tools','.test-data','.runtime','.work','.pytest_cache','__pycache__','CMakeFiles']);
+// A directory named build can contain authored source. Check the CMake marker
+// in the listing already needed for traversal, without stat'ing every child.
+async function sourceDirectoryEntries(directory:string) {
+  const name=path.basename(directory);
+  if(name==='CMakeFiles'||/^cmake-build-/i.test(name))return null;
+  const entries=await fs.readdir(directory,{withFileTypes:true});
+  return entries.some(entry=>entry.name==='CMakeCache.txt'&&entry.isFile())?null:entries;
+}
 const secret = /^(?:\.env(?:\..*)?|\.?auth\.json|\.?credentials(?:\..*)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|.*\.(?:pem|key|p12|pfx))$/i;
 export function decode(bytes: Uint8Array) {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
@@ -41,7 +47,8 @@ export function decode(bytes: Uint8Array) {
 export const linesOf = (text: string) => { const lines = text.split(/\r\n|\n|\r/); if (lines.at(-1) === '') lines.pop(); return lines; };
 async function ignoredByGit(root:string) {
   // Ask Git for ignored, untracked paths. Tracked files remain eligible even
-  // when they match a later ignore rule. Non-Git folders keep existing behavior.
+  // when they match a later ignore rule. A non-worktree root yields no Git
+  // exclusions; do not recurse into nested worktrees to discover their rules.
   const gitIgnored = new Set<string>();
   try {
     const {stdout}=await exec(await locate('git'),['-C',root,'ls-files','--others','--ignored','--exclude-standard','--directory','-z'],{windowsHide:true,timeout:10000,maxBuffer:8*1024*1024});
@@ -54,7 +61,7 @@ export async function workspaceFiles(root:string, snapshot?:Snapshot) {
   const gitIgnored=await ignoredByGit(root), files=new Map<string,string>(), assets:WorkspaceAsset[]=[];
   const textFiles=new Map(snapshot?.files.map(file=>[file.path,file.content_sha256]));
   async function walk(dir:string,prefix='') {
-    for(const entry of await fs.readdir(dir,{withFileTypes:true})){
+    for(const entry of await sourceDirectoryEntries(dir)??[]){
       const rel=prefix?`${prefix}/${entry.name}`:entry.name;
       if(gitIgnored.has(rel)||ignored.has(entry.name)||secret.test(entry.name)||entry.isSymbolicLink())continue;
       if(entry.isDirectory()){await walk(path.join(dir,entry.name),rel);continue;}
@@ -122,7 +129,8 @@ export async function capture(rootPath: string, projectId: string, storage: stri
   const abort = () => { if (signal?.aborted) throw new Error('索引已取消，未发布不完整快照'); };
   async function walk(directory: string, prefix = '') {
     abort();
-    const entries = await fs.readdir(directory, { withFileTypes: true });
+    const entries = await sourceDirectoryEntries(directory);
+    if(!entries){excluded.push({path:prefix||'.',reason:'CMake 生成目录，不进入源码快照'});return;}
     entries.sort((a,b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
       abort();
@@ -153,7 +161,7 @@ export async function capture(rootPath: string, projectId: string, storage: stri
   await walk(root); abort();
   const observed = new Set<string>();
   async function verify(directory: string, prefix = '') {
-    for (const entry of await fs.readdir(directory,{withFileTypes:true})) {
+    for (const entry of await sourceDirectoryEntries(directory)??[]) {
       abort();
       if (ignored.has(entry.name) || secret.test(entry.name) || entry.isSymbolicLink()) continue;
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
@@ -196,7 +204,7 @@ export async function freshness(snapshot: Snapshot) {
     catch { changes.push(file.path); }
   }
   async function additions(directory:string,prefix='') {
-    for(const entry of await fs.readdir(directory,{withFileTypes:true})){
+    for(const entry of await sourceDirectoryEntries(directory)??[]){
       if(ignored.has(entry.name)||secret.test(entry.name)||entry.isSymbolicLink())continue;
       const rel=prefix?`${prefix}/${entry.name}`:entry.name;
       if(gitIgnored.has(rel))continue;
