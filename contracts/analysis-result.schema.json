@@ -1413,6 +1413,10 @@
           "type": "string",
           "minLength": 1
         },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
         "impact": {
           "type": "string",
           "minLength": 1
@@ -1422,6 +1426,13 @@
           "minLength": 1
         },
         "related_node_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "related_edge_ids": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/id"

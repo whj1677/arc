@@ -504,9 +504,11 @@ export interface AnalysisGap {
   readonly kind: 'missing_implementation' | 'missing_entry' | 'missing_trace'
     | 'missing_contract' | 'unsupported_language' | 'out_of_scope' | 'other';
   readonly question: string;
+  readonly reason?: string;
   readonly impact: string;
   readonly suggested_action: string;
   readonly related_node_ids: readonly Id[];
+  readonly related_edge_ids?: readonly Id[];
   readonly claim_ids: readonly Id[];
   readonly evidence_ids: readonly Id[];
 }
