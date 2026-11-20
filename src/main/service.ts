@@ -784,7 +784,12 @@ export class ArcService {
     }
 
     const { annotations, previous } = this.analysisHistory(initial);
-    const prompt = await makePrompt(initial, snapshot, this.directory, annotations, previous, !!initial.overview_parent_run_id);
+    const featureDetail = !!initial.overview_parent_run_id || (
+      !initial.development_task_id &&
+      this.store.get<Scenario>('scenario', initial.binding.scenario_id).kind === 'feature_overview' &&
+      !!this.store.get<Feature>('feature', initial.binding.feature_id).discovery
+    );
+    const prompt = await makePrompt(initial, snapshot, this.directory, annotations, previous, featureDetail);
     this.event(runId, { type: 'local.stage', stage: 'launching', message: `只读任务已准备，正在启动 ${product}` });
     if (this.store.get<Run>('run', runId).status === 'cancelled' || this.closing) return;
     this.checkOverviewChild(initial);

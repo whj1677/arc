@@ -21,6 +21,8 @@ test('actual frozen-source MCP rejects traversal, absolute paths, unknown method
   const client=new AcpConnection(child,()=>{}),records:any[]=[];
   try{
     await client.request('initialize',{});
+    const {tools}=await client.request('tools/list',{});
+    assert.deepEqual(tools.map((tool:{name:string})=>tool.name),['arc_list_files','arc_search_source','arc_read_source']);
     const allowed=await client.request('tools/call',{name:'arc_read_source',arguments:{path:'a & $(echo owned).c'}});
     assert.match(JSON.stringify(allowed),/harmless/);
     const inventory=JSON.parse((await client.request('tools/call',{name:'arc_list_files',arguments:{offset:1,limit:1}})).content[0].text);
@@ -29,12 +31,67 @@ test('actual frozen-source MCP rejects traversal, absolute paths, unknown method
     for(const file of ['../outside.txt',path.join(root,'outside.txt'),'jump/outside.txt','javascript:alert(1)','file:///C:/Windows/win.ini']){
       const r=await client.request('tools/call',{name:'arc_read_source',arguments:{path:file}});
       assert.equal(r.isError,true,file);assert.ok(!JSON.stringify(r).includes('MCP_OUTSIDE_CANARY'));records.push({file,error:r});
+      const search=await client.request('tools/call',{name:'arc_search_source',arguments:{query:'MCP_OUTSIDE_CANARY',path:file}});
+      assert.equal(search.isError,true,file);assert.ok(!JSON.stringify(search).includes('MCP_OUTSIDE_CANARY'));
     }
+    const linkedPrefix=await client.request('tools/call',{name:'arc_search_source',arguments:{query:'MCP_OUTSIDE_CANARY',path_prefix:'jump/'}});
+    assert.equal(linkedPrefix.isError,true);assert.ok(!JSON.stringify(linkedPrefix).includes('MCP_OUTSIDE_CANARY'));
     const unknown=await client.request('tools/call',{name:'shell',arguments:{command:'echo forbidden'}});
     assert.equal(unknown.isError,true);
     assert.equal(await fs.readFile(path.join(source,'a & $(echo owned).c'),'utf8'),'int harmless = 42;\n');
     await fs.mkdir('evidence/remaining',{recursive:true});
     await fs.writeFile('evidence/remaining/mcp-adversarial.json',JSON.stringify({at:new Date().toISOString(),actual_mcp_process:true,records,unknown_tool:unknown,source_unchanged:true},null,2));
+  }finally{child.stdin.end();await new Promise(r=>child.once('close',r));}
+});
+test('frozen-source search locates literal matches in large files with stable evidence',async t=>{
+  const root=path.resolve('.test-data','mcp-search-'+Date.now()),source=path.join(root,'source'),storage=path.join(root,'data');
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const tasks='kernel/tasks.c',queue='kernel/queue.c',example='examples/example.c';
+  const definition='void vTaskSwitchContext(void) {';
+  const call='  vTaskSwitchContext();';
+  const longLine='  VTASKSWITCHCONTEXT();'+' '.repeat(320)+'// comment';
+  const tasksText=[...Array(6100).fill('// unrelated'),definition,longLine].join('\r\n')+'\r\n';
+  await fs.mkdir(path.join(source,'kernel'),{recursive:true});
+  await fs.mkdir(path.join(source,'examples'),{recursive:true});
+  await fs.writeFile(path.join(source,tasks),tasksText);
+  await fs.writeFile(path.join(source,queue),call+'\n');
+  await fs.writeFile(path.join(source,example),call+'\n');
+  const snapshot=await capture(source,'search',storage,'');
+  snapshot.files.push({path:'kernel/binary',content_sha256:'',bytes:0,line_count:0,encoding:'binary'});
+  const context=path.join(root,'context.json');
+  await fs.writeFile(context,JSON.stringify({storage,snapshot}));
+  await fs.writeFile(path.join(source,tasks),'// changed live source');
+  const child=spawn(process.execPath,['dist/context-server.cjs',context],{windowsHide:true,stdio:['pipe','pipe','pipe']});
+  const client=new AcpConnection(child,()=>{});
+  const invoke=(name:string,args:object)=>client.request('tools/call',{name,arguments:args});
+  const search=async(args:object)=>{
+    const result=await invoke('arc_search_source',args);
+    assert.equal(result.isError,undefined,result.content[0].text);
+    return JSON.parse(result.content[0].text);
+  };
+  try{
+    const query='vTaskSwitchContext(';
+    const first={path:tasks,content_sha256:sha(tasksText),line:6101,text:definition};
+    const second={...first,line:6102,text:longLine.slice(0,300)};
+    assert.deepEqual(await search({query,path:tasks}),{
+      source_snapshot_id:snapshot.source_snapshot_id,query,matches:[first,second],truncated:false,
+    });
+    assert.deepEqual((await search({query,path:tasks,case_sensitive:true})).matches,[first]);
+    const limited=await search({query,path:tasks,limit:1});
+    assert.deepEqual(limited.matches,[first]);assert.equal(limited.truncated,true);
+    const exact=await search({query,path:tasks,limit:2});
+    assert.equal(exact.truncated,false);
+    const scoped=await search({query,path_prefix:'kernel/',limit:3});
+    assert.deepEqual(scoped.matches,[{path:queue,content_sha256:sha(call+'\n'),line:1,text:call},first,second]);
+    assert.equal(scoped.truncated,false);
+    assert.equal((await search({query})).matches.length,4);
+    for(const args of [{path:'../secret'},{path_prefix:'../secret'},{path_prefix:'C:/kernel'},{path_prefix:'kernel\\'},{path_prefix:'/kernel'},{limit:61}]){
+      assert.equal((await invoke('arc_search_source',{query,...args})).isError,true,JSON.stringify(args));
+    }
+    const read=JSON.parse((await invoke('arc_read_source',{path:tasks,line_start:5702,line_count:400})).content[0].text);
+    assert.equal(read.lines.length,400);
+    assert.deepEqual(read.lines.at(-1),{line:first.line,text:first.text});
+    assert.equal((await invoke('arc_read_source',{path:tasks,line_count:401})).isError,true);
   }finally{child.stdin.end();await new Promise(r=>child.once('close',r));}
 });
 test('annotations cannot attach to objects outside original result; changed IDs never match names',async t=>{

@@ -26,7 +26,7 @@ export function catalogGraphState(data:WorkspaceData,overview:Explanation,nodeId
   const status=run&&graphStatuses[run.status]|| (waiting?'等待领取':latest&&!hasFunctionGraphs(latest.result)?'证据缺口':'');
   return {ready,latest,run,status,archived:!!(feature?.archived||scene?.archived)};
 }
-export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mode,setMode}:{explanation?:Explanation;data:WorkspaceData;projectId:string;busy:boolean;open:(id:string)=>void;discover:()=>void;mode:AnalysisMode;setMode:(mode:AnalysisMode)=>void}){
+export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mode,setMode,fillPending}:{explanation?:Explanation;data:WorkspaceData;projectId:string;busy:boolean;open:(id:string)=>void;discover:()=>void;mode:AnalysisMode;setMode:(mode:AnalysisMode)=>void;fillPending?:(nodeIds:string[])=>void}){
   const result=explanation?.result,catalog=result?.feature_catalog;
   const [search,setSearch]=useState('');
   useEffect(()=>setSearch(''),[projectId]);
@@ -35,6 +35,10 @@ export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mo
   const readings=new Map(catalog?.readings?.map(item=>[item.node_id,item]));
   const ids=[...new Set(catalog?.groups.flatMap(g=>g.node_ids))];
   const graphs=new Map(ids.map(id=>[id,catalogGraphState(data,explanation!,id)]));
+  const pendingIds=ids.filter(id=>{
+    const graph=graphs.get(id)!;
+    return !graph.archived&&!graph.ready&&!['已排队','等待领取','分析中','正在校验','正在停止'].includes(graph.status);
+  });
   const count=ids.length,items=[...graphs.values()],readyCount=items.filter(item=>item.ready&&!item.archived).length;
   const counts=new Map<string,number>();
   for(const item of items){
@@ -43,7 +47,10 @@ export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mo
   }
   return <section className="feature-catalog" aria-label="已发现的功能目录">
     <div className="feature-catalog-heading"><div><h2>系统有哪些功能</h2><p>工程分析会逐项核对函数调用。打开已就绪的功能可直接查看调用链和调用时间图，分析期间可先阅读已有步骤与源码。</p></div>{!catalog&&<button disabled={busy} onClick={discover}>{mode==='mcp'?'准备功能发现任务':'在 ARC 内发现功能'}</button>}</div>
-    {catalog?<><div className="discovery-coverage"><strong>已发现 {count} 项功能 · 双图就绪 {readyCount}/{count}</strong>
+    {catalog?<><div className="discovery-coverage"><div className="row between"><strong>已发现 {count} 项功能 · 双图就绪 {readyCount}/{count}</strong>
+      {pendingIds.length>0&&fillPending&&mode!=='mcp'&&explanation?.source_status==='current'&&(
+        <button className="secondary" disabled={busy} onClick={()=>fillPending(pendingIds)}>补齐未就绪双图（{pendingIds.length}）</button>
+      )}</div>
       {!!counts.size&&<p aria-label="功能分析状态">{[...counts].map(([label,n])=>`${label} ${n}`).join(' · ')}</p>}
       <details><summary>查看目录来源与覆盖范围</summary><p>{catalog.scope}</p></details>{explanation?.source_status!=='current'&&<small className="warning">来源已有变化：这是已保存的目录，详细分析仍须核对绑定快照。</small>}</div>
     <div className="discovery-mode"><AnalysisModePicker label="补查分析方式" ariaLabel="功能展开方式" mode={mode} setMode={setMode}/><small>{analysisModes[mode].description}</small></div>

@@ -1203,6 +1203,35 @@ function App() {
     }
   }
 
+  async function fillPending(nodeIds: string[]) {
+    if (starting.current || pending || catalogExplanation?.source_status !== 'current' || expandMode === 'mcp') return;
+    starting.current = true;
+    setPending(true);
+    try {
+      await action(async () => {
+        if (expandMode === 'codex_desktop' && !(await desktopReady(projectId))) {
+          showDesktop();
+          return;
+        }
+        const failures: string[] = [];
+        for (const nodeId of nodeIds) {
+          try {
+            const { scenario } = await api.invoke<{ scenario: Scenario }>('feature_open', { project_id: projectId, result_id: catalogExplanation.result_id, node_id: nodeId, request_mcp: false });
+            await api.invoke('run_start', { scenario_id: scenario.scenario_id, mode: expandMode, submission_key: crypto.randomUUID() });
+          } catch (error) {
+            const label = catalogExplanation.result.nodes.find(node => node.node_id === nodeId)?.label || nodeId;
+            failures.push(`${label}：${(error as Error).message}`);
+          }
+        }
+        await reload();
+        if (failures.length) throw Error(`部分双图任务提交失败：${failures.join('；')}`);
+      });
+    } finally {
+      starting.current = false;
+      setPending(false);
+    }
+  }
+
   const changeWidth = (side: 'left_width' | 'right_width', amount: number) =>
     patch({
       [side]: Math.min(
@@ -1469,6 +1498,7 @@ function App() {
       latestRun={latestRun}
       savePosition={savePosition}
       openCapability={openCapability}
+      fillPending={fillPending}
       requestAnalysis={requestAnalysis}
       readingPath={readingPath}
       selectReading={selectReading}

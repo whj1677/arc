@@ -64,6 +64,7 @@ export interface CanvasPaneProps {
   latestRun?: Run;
   savePosition: (name: string, top: number, left: number) => void;
   openCapability: (id: string) => Promise<void>;
+  fillPending: (nodeIds: string[]) => Promise<void>;
   requestAnalysis: (overview?: boolean) => Promise<void>;
   readingPath: (pathId: string) => void;
   selectReading: (id: string) => void;
@@ -116,6 +117,7 @@ export function CanvasPane({
   latestRun,
   savePosition,
   openCapability,
+  fillPending,
   requestAnalysis,
   readingPath,
   selectReading,
@@ -209,6 +211,7 @@ export function CanvasPane({
             projectId={projectId}
             busy={pending || !!indexes[projectId] || !!project?.fictional}
             open={id => void openCapability(id)}
+            fillPending={ids => void fillPending(ids)}
             discover={() => void requestAnalysis(true)}
             mode={expandMode}
             setMode={setAnalysisMode}
