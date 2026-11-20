@@ -352,6 +352,37 @@ async function researchReply(options:RunnerOptions,outcome:'resolved'|'unresolve
       proposal:outcome==='resolved'?{kind:'data_publish',label:'保存到内存记录',description:'submit 调用 save，将字符串加入 records 数组。',source_node_id:'submit',target_node_id:'store',evidence_ids:ids}:null}],evidence};
 }
 
+test('post-research recheck records summary uncertainty and rejects contradiction',async t=>{
+  for(const verdict of ['uncertain','contradicted'] as const)await t.test(verdict,async t=>{
+    const reason='冻结源码只支持部分摘要细节。';
+    const runner:typeof runCodex=async options=>{
+      if(!options.phase)return generation(options,researchOverview);
+      options.started(active());
+      if(options.phase==='overview_review')return phaseReply(options,reviewReply(options,true));
+      if(options.phase==='overview_research')return phaseReply(options,await researchReply(options));
+      assert.equal(options.phase,'overview_recheck');
+      assert.deepEqual(phaseInput(options).relations.map((edge:any)=>edge.edge_id),['save']);
+      return phaseReply(options,{...reviewReply(options),summary:{verdict,reason}});
+    };
+    const {service,scenario}=await fixture(t,runner);
+    const run=await service.startRun(scenario.scenario_id,'codex','post-research-summary-'+verdict);
+    await Promise.all(service.executing.values());
+    const outcome=service.store.get<Run>('run',run.binding.run_id),saved=service.data().explanations;
+    if(verdict==='contradicted'){
+      assert.equal(outcome.status,'failed');
+      assert.match(outcome.error!,/工程全貌摘要未通过语义复核（contradicted）/);
+      assert.equal(saved.length,0);
+      return;
+    }
+    assert.equal(outcome.status,'completed',outcome.error);
+    assert.equal(saved.length,1);
+    const result=saved[0].result;
+    assert.equal(result.edges.find(edge=>edge.edge_id==='save')?.label,'保存到内存记录');
+    assert.deepEqual(result.gaps.map(gap=>[gap.gap_id,gap.reason]),[['overview-review-summary',reason]]);
+    assert.ok(result.claims.some(claim=>claim.limitations.includes(`独立复核提示摘要仍有未完全覆盖的细节：${reason}`)));
+  });
+});
+
 test('automatic source research stays unpublished until only its repaired relation passes recheck',async t=>{
   const entered=signal(),release=signal(),phases:{id:string;source:string;phase:string;output:string}[]=[];
   const runner:typeof runCodex=async options=>{

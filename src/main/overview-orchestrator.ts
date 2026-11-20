@@ -494,11 +494,13 @@ export class OverviewOrchestrator {
             await this.runPhase(run, snapshot, profile, 'overview_recheck', await makeOverviewReviewPrompt(draft, snapshot, directory, research.resolved)),
             draft,
             research.resolved,
+            { allowUncertainSummary: true },
           )
         : undefined;
       resolved = recheck?.relations.filter(item => item.verdict === 'supported').length ?? 0;
       review = {
         ...review,
+        summary: recheck?.summary ?? review.summary,
         draft_sha256: sha(JSON.stringify(draft)),
         relations: review.relations.map(item => {
           const remaining = research.unresolved.get(item.edge_id);
