@@ -1819,7 +1819,7 @@ dialog::backdrop {
 .capability-groups {
   gap: 14px;
 }
-.capability-group, .overview-feature-entry {
+.capability-group, .overview-feature-entry, .catalog-unresolved {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -1834,13 +1834,14 @@ dialog::backdrop {
   font-weight: 600;
   margin: 0 2px 8px;
 }
-.capability-group h3 small {
+.capability-group h3 small, .catalog-unresolved h3 small {
   font-variant-numeric: tabular-nums;
   background: var(--bg);
   color: var(--muted);
   padding: 1px 7px;
   border-radius: 999px;
 }
+.catalog-unresolved p { color: var(--muted); }
 .capability-card {
   border-color: var(--border-subtle);
   border-radius: 8px;

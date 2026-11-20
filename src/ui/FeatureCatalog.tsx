@@ -1,7 +1,6 @@
 import React,{useState,useEffect} from 'react';
 import type {Explanation,WorkspaceData} from '../shared';
 import {explanationFreshness} from '../freshness';
-import './feature-catalog.css';
 import {SourceExcerpt} from './SourceExcerpt';
 import {analysisModes,catalogGraphState,isAnalysisMode,type AnalysisMode} from './discovery-state';
 export function AnalysisModePicker({label,ariaLabel=label,mode,setMode}:{label:string;ariaLabel?:string;mode:AnalysisMode;setMode:(mode:AnalysisMode)=>void}){
@@ -9,8 +8,20 @@ export function AnalysisModePicker({label,ariaLabel=label,mode,setMode}:{label:s
     const next=event.target.value;if(isAnalysisMode(next))setMode(next);
   }}>{Object.entries(analysisModes).map(([id,item])=><option value={id} key={id}>{item.option}</option>)}</select></label>;
 }
-export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mode,setMode,fillPending}:{explanation?:Explanation;data:WorkspaceData;projectId:string;busy:boolean;open:(id:string)=>void;discover:()=>void;mode:AnalysisMode;setMode:(mode:AnalysisMode)=>void;fillPending?:(nodeIds:string[])=>void}){
+export function CatalogUnresolved({items,addFeatureFromScope}:{items:string[];addFeatureFromScope?:(item:string)=>void}){
+  return <section className="catalog-unresolved" aria-label="未展开或待补充范围">
+    <h3>未展开 / 待补充范围 <small>{items.length}</small></h3>
+    <p>以下内容在首轮工程全貌中未完全展开；如需深入查证，可一键加入功能目录并生成双图。</p>
+    <ul>{items.map((item,index)=><li key={index}>
+      <span>{item}</span>
+      {addFeatureFromScope&&<button type="button" className="secondary" onClick={()=>addFeatureFromScope(item)}>补充为新功能</button>}
+    </li>)}</ul>
+  </section>;
+}
+
+export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mode,setMode,fillPending,addFeatureFromScope}:{explanation?:Explanation;data:WorkspaceData;projectId:string;busy:boolean;open:(id:string)=>void;discover:()=>void;mode:AnalysisMode;setMode:(mode:AnalysisMode)=>void;fillPending?:(nodeIds:string[])=>void;addFeatureFromScope?:(item:string)=>void}){
   const result=explanation?.result,catalog=result?.feature_catalog;
+  const unresolved=(result?.coverage.unresolved_scope||[]).map(item=>item.trim()).filter(Boolean);
   const project=data.projects.find(item=>item.project_id===projectId);
   const checked=data.project_freshness?.[projectId];
   const changedFiles=checked && checked.snapshot_id===project?.snapshot_id ? checked.changed_files : [];
@@ -32,7 +43,7 @@ export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mo
     if(label)counts.set(label,(counts.get(label)||0)+1);
   }
   return <section className="feature-catalog" aria-label="已发现的功能目录">
-    <div className="feature-catalog-heading"><div><h2>系统有哪些功能</h2><p>工程分析会逐项核对函数调用。打开已就绪的功能可直接查看调用链和调用时间图，分析期间可先阅读已有步骤与源码。</p></div>{!catalog&&<button disabled={busy} onClick={discover}>{mode==='mcp'?'准备功能发现任务':'在 ARC 内发现功能'}</button>}</div>
+    <div className="feature-catalog-heading"><div><h2>系统有哪些功能</h2><p>首轮目录依据源码列出已发现的能力。可先查看步骤与源码，再按需生成调用链和调用时间图。</p></div>{!catalog&&<button disabled={busy} onClick={discover}>{mode==='mcp'?'准备功能发现任务':'在 ARC 内发现功能'}</button>}</div>
     {catalog?<><div className="discovery-coverage"><div className="row between"><strong>已发现 {count} 项功能 · 双图就绪 {readyCount}/{count}</strong>
       {pendingIds.length>0&&fillPending&&mode!=='mcp'&&(
         <button className="primary" disabled={busy} onClick={()=>fillPending(pendingIds)}>
@@ -43,14 +54,15 @@ export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mo
       <details><summary>查看目录来源与覆盖范围</summary><p>{catalog.scope}</p></details>{explanation?.source_status!=='current'&&<small className="warning">来源已有变化：这是已保存的目录，详细分析仍须核对绑定快照。</small>}</div>
     <div className="discovery-mode"><AnalysisModePicker label="补查分析方式" ariaLabel="功能展开方式" mode={mode} setMode={setMode}/><small>{analysisModes[mode].description}</small></div>
     <div className="catalog-search"><input type="search" aria-label="搜索工程功能" placeholder="按功能名称或用途查找…" value={search} onChange={e=>setSearch(e.target.value)}/>{search&&<button onClick={()=>setSearch('')}>清除搜索</button>}<small>{query?`找到 ${groups.reduce((n,g)=>n+g.node_ids.length,0)} 项功能`:'点击功能卡片即可继续'}</small></div>
-    {!groups.length&&(count?<p role="status">没有匹配的功能，试试用途关键词或清除搜索。</p>:<section className="discovery-empty"><h3>本轮尚未确认功能入口</h3><p>{catalog.scope}</p>{Array.from(new Set([...result!.coverage.unresolved_scope,...result!.gaps.map(gap=>gap.question)])).filter(Boolean).map(reason=><p key={reason}>{reason}</p>)}</section>)}
+    {!groups.length&&(count?<p role="status">没有匹配的功能，试试用途关键词或清除搜索。</p>:<section className="discovery-empty"><h3>本轮尚未确认功能入口</h3><p>{catalog.scope}</p>{Array.from(new Set(result!.gaps.map(gap=>gap.question.trim()).filter(reason=>reason&&!unresolved.includes(reason)))).map(reason=><p key={reason}>{reason}</p>)}</section>)}
     <div className="capability-groups">{groups.map((group,i)=><section className="capability-group" key={i}><h3>{group.label}<small>{group.node_ids.length}</small></h3>{group.node_ids.map(id=>{
       const node=result!.nodes.find(n=>n.node_id===id);if(!node)return null;
       const graph=graphs.get(id)!;
       const affected=graph.ready && project && explanationFreshness(graph.ready,project.snapshot_id,changedFiles).kind==='affected';
       const label=graph.archived?'已归档':[affected?'所引源码已变':graph.ready?'双图就绪':'',graph.status].filter(Boolean).join(' · ')||(readings.get(id)?.steps.length?'阅读首轮步骤':'查看已有线索');
       return <button className="capability-card" data-capability-id={id} key={id} disabled={busy||graph.archived} onClick={()=>open(id)}><span><strong>{node.label}</strong><small title={node.description}>{node.description}</small></span><span className={`capability-state${affected ? ' affected' : ''}`}>{label}<b aria-hidden="true">↗</b></span></button>;
-    })}</section>)}</div></>:<div className="discovery-empty"><h3>尚未生成工程功能目录</h3><p>分析工程后，这里展示已查明的功能入口、主要处理步骤、结果与源码依据，未查明的部分会标出。</p><p className="muted">{data.features.some(f=>f.project_id===projectId)?'原有手动功能和分析仍保留在左侧，不代表工程的全部功能。':'尚未分析目录，不按文件名猜测业务功能。'}</p></div>}
+    })}</section>)}</div>
+    {unresolved.length>0&&<CatalogUnresolved items={unresolved} addFeatureFromScope={busy?undefined:addFeatureFromScope}/>}</>:<div className="discovery-empty"><h3>尚未生成工程功能目录</h3><p>分析工程后，这里展示已查明的功能入口、主要处理步骤、结果与源码依据，未查明的部分会标出。</p><p className="muted">{data.features.some(f=>f.project_id===projectId)?'原有手动功能和分析仍保留在左侧，不代表工程的全部功能。':'尚未分析目录，不按文件名猜测业务功能。'}</p></div>}
   </section>;
 }
 

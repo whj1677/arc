@@ -5,6 +5,7 @@ import {parseOverviewReview} from './overview-review';
 import {linesOf,readSource,sha} from './snapshot';
 import {validateResult} from './validation';
 import {overviewRelationSemantics} from './architecture-analysis';
+import {overviewRelationLimit} from './overview-result';
 
 const text=(maxLength:number)=>({type:'string',minLength:1,maxLength});
 const object=(properties:Record<string,object>)=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
@@ -13,7 +14,7 @@ const kinds=['execution_boundary','data_read','data_publish','dependency','queue
 export const overviewResearchSchema=object({
   schema_version:{type:'string',enum:['overview-research-1']},
   run_id:text(200),source_snapshot_id:text(200),draft_sha256:{type:'string',pattern:'^[a-f0-9]{64}$'},
-  relations:{type:'array',maxItems:20,items:object({edge_id:identifier,outcome:{type:'string',enum:['resolved','unresolved']},reason:text(400),checked_evidence_ids:ids,
+  relations:{type:'array',maxItems:overviewRelationLimit,items:object({edge_id:identifier,outcome:{type:'string',enum:['resolved','unresolved']},reason:text(400),checked_evidence_ids:ids,
     proposal:{anyOf:[{type:'null'},object({kind:{type:'string',enum:kinds},label:text(100),description:text(600),evidence_ids:ids,source_node_id:identifier,target_node_id:identifier})]}})},
   evidence:{type:'array',minItems:1,maxItems:60,items:object({id:identifier,path:text(2000),start:{type:'integer',minimum:1},end:{type:'integer',minimum:1},quote:text(240)})},
 });

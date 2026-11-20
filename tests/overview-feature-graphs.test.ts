@@ -4,19 +4,24 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {ArcService} from '../src/main/service';
-import {prepareOverview} from '../src/main/overview-result';
+import {deferredCatalogDeclarationBoundary,deferredCatalogReadingBoundary,prepareOverview} from '../src/main/overview-result';
 import {sha} from '../src/main/snapshot';
 import type {runCodex} from '../src/main/providers';
 import {hasFunctionGraphs,type Run} from '../src/shared';
 
 const entries=['read_value','write_value'];
-const source=['int record(void) { return 7; }',...entries.map(name=>`int ${name}(void) { return record(); }`)];
+const deferredEntry='clear_value';
+const declaredEntry='clone_value';
+const capabilities=[...entries,deferredEntry,declaredEntry];
+const source=['int record(void) { return 7; }',...capabilities.map(name=>`int ${name}(void)${name===declaredEntry?';':' { return record(); }'}`)];
 const overview={
   schema_version:'overview-1',summary:{text:'两个入口均调用 record。',evidence_ids:['definition']},
   scope:'main.c',unresolved:[],components:[{id:'component',kind:'stage',label:'读写接口',description:'对外提供读写入口。',inputs:[],outputs:[],evidence_ids:['definition']}],
-  features:[{label:'接口',items:entries.map(name=>({id:name,label:name,description:`从 ${name} 调用 record。`,evidence_ids:[name+'-line']}))}],
-  readings:entries.map(name=>({node_id:name,entry:name,outcome:'返回记录值',steps:[{text:'调用 record。',evidence_ids:[name+'-line']}],boundary:'仅静态调用'})),
-  relations:[],evidence:source.map((quote,i)=>({id:i?entries[i-1]+'-line':'definition',path:'main.c',start:i+1,end:i+1,quote})),
+  features:[{label:'接口',items:capabilities.map(name=>({id:name,label:name,description:name===declaredEntry?`声明 ${name} 入口。`:`从 ${name} 调用 record。`,evidence_ids:[name+'-line']}))}],
+  readings:[...entries.map(name=>({node_id:name,entry:name,outcome:'返回记录值',steps:[{text:'调用 record。',evidence_ids:[name+'-line']}],boundary:'仅静态调用'})),
+    {node_id:deferredEntry,entry:'',outcome:'',steps:[],boundary:deferredCatalogReadingBoundary},
+    {node_id:declaredEntry,entry:'',outcome:'',steps:[],boundary:deferredCatalogDeclarationBoundary}],
+  relations:[],evidence:source.map((quote,i)=>({id:i?capabilities[i-1]+'-line':'definition',path:'main.c',start:i+1,end:i+1,quote})),
 };
 function detail(name:string){
   const line=entries.indexOf(name)+2;
@@ -77,6 +82,12 @@ test('one project analysis schedules frozen feature graphs, continues after a fa
   const last=await analyze('project-pass-two',1);
   assert.deepEqual(attempts,['read_value','write_value','read_value']);assert.equal(peak,1);
   const saved=service.data().explanations.find(e=>e.result.binding.run_id===last.binding.run_id)!;
+  for(const entry of [deferredEntry,declaredEntry]){
+    assert.ok(saved.result.feature_catalog?.groups[0].node_ids.includes(entry));
+    const deferred=service.openDiscoveredFeature(project.project_id,saved.result_id,entry);
+    assert.equal(deferred.result_id,undefined);
+    assert.ok(deferred.scenario.question.includes(entry));
+  }
   for(const entry of entries){
     const opened=service.openDiscoveredFeature(project.project_id,saved.result_id,entry);
     assert.ok(opened.result_id);

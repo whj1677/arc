@@ -7,7 +7,7 @@ import { Store, id, now } from './store';
 import { sha } from './snapshot';
 import { overviewPhaseDirectory, redact, type ActiveProcess, type OverviewPhase, type runCodex } from './providers';
 import { validateResult } from './validation';
-import { prepareOverview } from './overview-result';
+import { deferredCatalogDeclarationBoundary, deferredCatalogReadingBoundary, prepareOverview } from './overview-result';
 import { applyOverviewReview, makeOverviewReviewInput, makeOverviewReviewPrompt, overviewReviewSchema, parseOverviewReview, type OverviewReview } from './overview-review';
 import { applyOverviewResearch, makeOverviewResearchPrompt, overviewResearchSchema } from './overview-research';
 import { parseDshReply } from './dsh';
@@ -162,9 +162,12 @@ export class OverviewOrchestrator {
     const runs = store.all<Run>('run');
     const children: Run[] = [];
     const ids = new Set(result.feature_catalog.groups.flatMap(group => group.node_ids));
+    const deferred = new Set(result.feature_catalog.readings?.filter(reading =>
+      !reading.steps.length && (reading.boundary === deferredCatalogReadingBoundary || reading.boundary === deferredCatalogDeclarationBoundary)
+    ).map(reading => reading.node_id));
 
     for (const node of result.nodes) {
-      if (!ids.has(node.node_id) || !node.label.trim()) continue;
+      if (!ids.has(node.node_id) || deferred.has(node.node_id) || !node.label.trim()) continue;
       const target = this.host.discoveredTarget(project, result, node, features, explanations, scenes);
       if (!target) continue;
       const { feature, scenario } = target;

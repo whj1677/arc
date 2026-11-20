@@ -18,6 +18,15 @@
 .catalog-reading-boundary{font-size:.85rem;margin:1rem 0;line-height:1.6}
 .catalog-reading-source{padding:1rem 0}.catalog-reading-source>button{float:right}.catalog-reading-source pre{overflow:auto}
 
+.catalog-unresolved{margin-top:16px;padding:12px 14px;line-height:1.55}
+.catalog-unresolved h3{display:flex;align-items:center;gap:8px;margin:0;font-size:14px;font-weight:580}
+.catalog-unresolved p{margin:4px 0 8px;font-size:13px}
+.catalog-unresolved ul{margin:0;padding:0;list-style:none}
+.catalog-unresolved li{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:8px 0;border-top:1px solid var(--border-subtle);font-size:14px}
+.catalog-unresolved li:last-child{padding-bottom:0}
+.catalog-unresolved li span{flex:1 1 18rem;min-width:0;overflow-wrap:anywhere}
+.catalog-unresolved li button{min-height:30px;padding:4px 10px;font-size:13px}
+
 .analysis-activity-panel{flex:none;border-bottom:1px solid var(--border);background:var(--soft)}
 .analysis-activity-panel .activity-disclosure{padding:.4rem 1rem;border:0;background:transparent;text-align:left;color:var(--accent);font-weight:600}
 .analysis-activity-panel>div{max-height:min(32vh,16rem);overflow:auto}

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {capture} from '../src/main/snapshot';
-import {compactEvidence,overviewSchema,prepareOverview,overviewPrompt,OverviewValidationError} from '../src/main/overview-result';
+import {compactEvidence,deferredCatalogReadingBoundary,overviewSchema,prepareOverview,overviewPrompt,OverviewValidationError} from '../src/main/overview-result';
 import {overviewDiscoveryQuestion} from '../src/main/architecture-analysis';
 import {promptContext} from '../src/main/prompt-context';
 import type {Run} from '../src/shared';
@@ -97,6 +97,28 @@ test('overview generates source-bound readings with the catalog, preserves a leg
   assert.deepEqual((await prepareOverview({...empty,unresolved:['只取得了队列实现，未找到对外业务入口。']},current,snapshot,storage)).feature_catalog?.readings,[]);
   const old=await prepareOverview(value,run,snapshot,storage);
   assert.equal(Object.hasOwn(old.feature_catalog!,'readings'),false);
+});
+
+test('a broad overview accepts more than eight capability groups and 120 source anchors',async t=>{
+  const {value,run,snapshot,storage}=await fixture(t);
+  const [group]=value.features,[feature]=group.items;
+  const groups=Array.from({length:9},(_,i)=>({label:`能力族 ${i+1}`,items:Array.from({length:13},(_,j)=>({
+    ...feature,id:`feature-${i}-${j}`,evidence_ids:[`anchor-${i*13+j}`],
+  }))}));
+  const evidence=[...value.evidence,...Array.from({length:121},(_,i)=>({...value.evidence[1],id:`anchor-${i}`}))];
+  const readings=groups.flatMap(({items})=>items.map(item=>({node_id:item.id,entry:'',outcome:'',steps:[],boundary:deferredCatalogReadingBoundary})));
+  const current={...run,question:overviewDiscoveryQuestion};
+  const result=await prepareOverview({...value,features:groups,evidence,readings},current,snapshot,storage);
+  assert.equal(result.feature_catalog?.groups.length,9);
+  assert.equal(result.feature_catalog?.groups[0].node_ids.length,13);
+  assert.equal(result.evidence.length,124);
+  assert.deepEqual(result.feature_catalog?.readings,readings);
+  const prompt=overviewPrompt(current,snapshot,promptContext(snapshot,[]));
+  assert.match(prompt,/arc_list_files.*arc_search_source.*arc_read_source/);
+  assert.match(prompt,/库 \/ 内核 \/ SDK \/ 框架工程.*核心模块及其公共能力族/);
+  assert.match(prompt,/示例 main\(\) 调用的少数 API/);
+  assert.match(prompt,/steps: \[\]、entry: ''、outcome: ''/);
+  assert.ok(prompt.includes(deferredCatalogReadingBoundary));
 });
 
 test('compact overview rejects paraphrased quote and changed frozen bytes',async t=>{

@@ -8,6 +8,7 @@ import { discoveredFeature } from '../discovered-feature';
 import { functionCallMap } from './function-call-map';
 import { selectedCallStep } from './function-sequence-model';
 import { AnalysisModePicker } from './FeatureCatalog';
+import './feature-catalog.css';
 import { analysisModes, catalogGraphState, waitingForAgent, type AnalysisMode } from './discovery-state';
 import { projectLabel } from './project-label';
 import { FeatureDevelopment, type FeatureDevelopmentDraft } from './FeatureDevelopment';
@@ -778,6 +779,14 @@ function App() {
     setFormQuestion('');
     if (type === 'scenario') setFormFeature(userFeatures.some(f => f.feature_id === scenario?.feature_id) ? scenario!.feature_id : userFeatures[0]?.feature_id || '');
     setModal(type);
+  }
+
+  function addFeatureFromScope(item: string) {
+    const scope = item.replace(/^(?:本次未(?:展开|追踪)?|未展开|未追踪)的?[\s：:，,]*/, '');
+    const title = scope.split(/[，,。；;：:！？!?\n]|\.\s/, 1)[0].trim();
+    setFormName(Array.from(title || item).slice(0, 24).join('').trimEnd());
+    setFormQuestion(`补充分析以下未覆盖模块或能力的核心入口、处理流程与函数调用链：${item}`);
+    setModal('feature');
   }
 
   async function openLocalProject(analyze: boolean) {
@@ -1559,6 +1568,7 @@ function App() {
       latestRun={latestRun}
       savePosition={savePosition}
       openCapability={openCapability}
+      addFeatureFromScope={addFeatureFromScope}
       fillPending={fillPending}
       requestAnalysis={requestAnalysis}
       readingPath={readingPath}
