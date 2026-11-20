@@ -49,7 +49,8 @@ const requirementPlan={summary:'Approve the change to the existing value',propos
   }],evidence_ids:[],unresolved:[]}],
 };
 
-async function runApprovedQualityGate(t:TestContext,hostRuns:('pass'|'fail'|'skip'|'partial')[],reviews:('approved'|'needs_fix')[],blockers:string[] = [],summary?:string,sandboxCommand='npm test') {
+async function runQualityGate(t:TestContext,hostRuns:('pass'|'fail'|'skip'|'partial')[],reviews:('approved'|'needs_fix')[],
+  {blockers=[],summary,sandboxCommand='npm test',fast=false,waitForHost=false,editAfterHost=false}:{blockers?:string[];summary?:string;sandboxCommand?:string;fast?:boolean;waitForHost?:boolean;editAfterHost?:boolean}={}) {
   const f=await fixture(),calls:string[]=[],feedback:string[]=[];
   const runner:typeof runDevelopmentCodex=async options=>{
     calls.push('edit');
@@ -58,6 +59,13 @@ async function runApprovedQualityGate(t:TestContext,hostRuns:('pass'|'fail'|'ski
     const needsRepair=hostRuns[0]==='fail'||reviews[0]==='needs_fix';
     await fs.writeFile(path.join(f.source,'main.ts'),`export const value=${needsRepair&&!feedback.length?0:2};\n`);
     const reply=completed(options.task.task_id);
+    if(waitForHost){
+      const waiting='等待 ARC 宿主在本机执行 npm test 并回填结果';
+      await options.saveSteps!(options.task.steps!.map(step=>step.step_id==='update'
+        ? {...step,status:'in_progress',progress:'修改已完成，'+waiting,unresolved:[waiting]}
+        : {...step,status:'completed',progress:'已回读确认 sum.mjs:1 的公开导出返回 a + b。代码修改完成，现有 npm run test 等待 ARC 宿主运行。',unresolved:[]}));
+      return {...reply,result:{...reply.result,unresolved:[waiting,'等待 ARC 宿主验证后仍需人工验收','仍需现场验收']}};
+    }
     if(!blockers.length&&!summary)return reply;
     await options.commandCompleted!({id:'sandbox',command:`pwsh.exe -Command "${sandboxCommand}"`,cwd:f.source,cwd_source:'task_workspace',exit_code:1,
       output:'spawn EPERM',completed_at:new Date().toISOString()});
@@ -74,9 +82,10 @@ async function runApprovedQualityGate(t:TestContext,hostRuns:('pass'|'fail'|'ski
     const skipped=status==='skip'||status==='partial'?['本机缺少 CMake，已跳过本地构建。']:[];
     if(status==='skip')return {commands:[],failed:[],skipped};
     const code=status==='fail'?1:0;
-    const command={id:'host-'+hostCount,command:'npm test',cwd:options.workspace,cwd_source:'task_workspace' as const,exit_code:code,
+    const command={id:'host-'+hostCount,command:waitForHost?'npm run test':'npm test',cwd:options.workspace,cwd_source:'task_workspace' as const,exit_code:code,
       output:'# tests 1\n# pass '+(1-code)+'\n# fail '+code+(code?'\nexpected 2, got 0':''),completed_at:new Date().toISOString()};
     await options.onCommand!(command);
+    if(editAfterHost)await fs.writeFile(path.join(f.source,'main.ts'),'export const value=3;\n');
     return {commands:[command],failed:code?[{command:command.command,exit_code:code,reason:'assertion failed',output:command.output}]:[],skipped};
   };
   const review:typeof reviewDevelopmentDiff=async options=>{
@@ -84,26 +93,34 @@ async function runApprovedQualityGate(t:TestContext,hostRuns:('pass'|'fail'|'ski
     const verdict=reviews[reviewCount++];
     assert.ok(verdict,'unexpected diff review');
     assert.deepEqual(options.writeScope,['main.ts']);
-    assert.match(options.verificationSummary,hostRuns[hostCount-1]==='skip'?/缺少 CMake/:/npm test/);
+    assert.match(options.verificationSummary,hostRuns[hostCount-1]==='skip'?/缺少 CMake/:/npm (?:run )?test/);
     return {verdict,summary:verdict==='approved'?'边界条件已覆盖':'缺少空值处理',notes:[],
       blocking_issues:verdict==='approved'?[]:[{file:'main.ts',issue:'空值导致异常',fix:'空值应返回 0'}]};
   };
+  const plan=structuredClone(requirementPlan);
+  if(waitForHost){
+    plan.requirement_package.behaviors[0].step_ids.push('check');
+    plan.steps.push({...plan.steps[0],step_id:'check',title:'Verify the updated export',criteria:[
+      {criterion_id:'signature',text:'Keep the public export',evidence_ids:[]},{criterion_id:'addition',text:'Return a + b',evidence_ids:[]}]});
+  }
   const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,configuration,
-    async()=>({code:0,raw:JSON.stringify(requirementPlan),stderr:''}),undefined,host,review);
+    async()=>({code:0,raw:JSON.stringify(plan),stderr:''}),undefined,host,review);
   t.after(async()=>{await development.shutdown();await f.close();});
   const input={project_id:f.project.project_id,goal:'修改 main.ts 的导出值',submission_key:'quality-plan'};
-  const task=await development.submit(input,'codex');
-  const finish=async()=>{await Promise.all([...development.executing.values()]);return f.service.engineering.task(task.task_id);};
-  const plan=await finish();
-  assert.deepEqual(calls,[]);
-  await development.submit({...input,submission_key:'quality-approve',task_id:task.task_id,expected_version:plan.version,
-    phase:'execution',scope:['main.ts']},'codex');
+  const task=fast?await development.start({...input,fast_mode:true,scope:['main.ts']}):await development.submit(input,'codex');
+  const finish=async()=>{await Promise.all([...development.executing.values()]);return f.service.engineering.currentTask(task.task_id);};
+  if(!fast){
+    const plan=await finish();
+    assert.deepEqual(calls,[]);
+    await development.submit({...input,submission_key:'quality-approve',task_id:task.task_id,expected_version:plan.version,
+      phase:'execution',scope:['main.ts']},'codex');
+  }
   const saved=await finish();
   return {saved,feedback,calls,directory:f.service.directory,stages:development.events(task.task_id).events.map(event=>event.stage)};
 }
 
 test('host failure gets one repair and recheck, with all observed receipts bound to the edited code',async t=>{
-  const {saved,feedback,calls,directory,stages}=await runApprovedQualityGate(t,['fail','pass'],['approved']);
+  const {saved,feedback,calls,directory,stages}=await runQualityGate(t,['fail','pass'],['approved']);
   assert.deepEqual(calls,['edit','host','edit','host','review']);
   assert.equal(stages.filter(stage=>stage==='host_verify_repair').length,1);
   assert.equal(feedback.length,1);
@@ -121,7 +138,7 @@ test('host failure gets one repair and recheck, with all observed receipts bound
 });
 
 test('a repeated host failure stays failed and never reaches the independent reviewer',async t=>{
-  const {saved,calls}=await runApprovedQualityGate(t,['fail','fail'],[]);
+  const {saved,calls}=await runQualityGate(t,['fail','fail'],[]);
   assert.deepEqual(calls,['edit','host','edit','host']);
   assert.equal(saved.status,'failed');assert.equal(saved.verification_status,'failed');
   assert.match(saved.unresolved.join('\n'),/npm test/);
@@ -129,15 +146,17 @@ test('a repeated host failure stays failed and never reaches the independent rev
 
 test('diff blockers trigger one bounded repair, another host check and a fresh independent verdict',async t=>{
   for(const finalVerdict of ['approved','needs_fix'] as const){
-    const {saved,feedback,calls,stages}=await runApprovedQualityGate(t,['pass','pass'],['needs_fix',finalVerdict]);
+    const {saved,feedback,calls,stages}=await runQualityGate(t,['pass','pass'],['needs_fix',finalVerdict]);
     assert.deepEqual(calls,['edit','host','review','edit','host','review']);
     assert.equal(stages.filter(stage=>stage==='delivery_review_repair').length,1);
     assert.equal(feedback.length,1);
     for(const detail of ['main.ts','空值导致异常','空值应返回 0'])assert.ok(feedback[0].includes(detail));
     if(finalVerdict==='approved'){
+      assert.deepEqual(saved.diff_review,{verdict:'approved',summary:'边界条件已覆盖',repaired:true});
       assert.equal(saved.status,'completed');assert.equal(saved.verification_status,'passed');
       assert.match(saved.decisions.join('\n'),/边界条件已覆盖/);
     }else{
+      assert.deepEqual(saved.diff_review,{verdict:'needs_fix',summary:'缺少空值处理'});
       assert.equal(saved.status,'blocked');
       assert.match(saved.unresolved.join('\n'),/空值导致异常/);
     }
@@ -145,12 +164,12 @@ test('diff blockers trigger one bounded repair, another host check and a fresh i
 });
 
 test('an unavailable toolchain reaches review without manufacturing a verification pass',async t=>{
-  const {saved,calls}=await runApprovedQualityGate(t,['skip'],['approved']);
+  const {saved,calls}=await runQualityGate(t,['skip'],['approved']);
   assert.deepEqual(calls,['edit','host','review']);
   assert.equal(saved.status,'completed');assert.equal(saved.verification_status,'not_run');
   assert.deepEqual(saved.verification,[]);
   assert.match(saved.decisions.join('\n'),/缺少 CMake/);
-  const mixed=await runApprovedQualityGate(t,['partial'],['approved']);
+  const mixed=await runQualityGate(t,['partial'],['approved']);
   assert.equal(mixed.saved.status,'completed');
   assert.equal(mixed.saved.verification[0].outcome,'passed');
   assert.equal(mixed.saved.verification_status,'partial');
@@ -166,7 +185,7 @@ test('only a resolved sandbox verification blocker can be promoted by a passing 
     ['pass',[sandbox],'缺少业务规则确认，尚未实现对应逻辑','npm test','blocked'],
     ['pass',['沙箱内 npm run build 遇到 EACCES，无法构建'],undefined,'npm run build','blocked'],
   ] as const){
-    const {saved,calls}=await runApprovedQualityGate(t,[host],['approved'],[...blockers],summary,sandboxCommand);
+    const {saved,calls}=await runQualityGate(t,[host],['approved'],{blockers:[...blockers],summary,sandboxCommand});
     assert.deepEqual(calls,['edit','host','review']);
     assert.equal(saved.status,expected,JSON.stringify({host,blockers,summary:saved.summary,unresolved:saved.unresolved}));
     if(expected==='completed'){
@@ -175,6 +194,43 @@ test('only a resolved sandbox verification blocker can be promoted by a passing 
       assert.deepEqual(saved.verification.map(v=>[v.step_id,v.criterion_id]),[['update','value'],['update','value']]);
       assert.equal(auditDelivery(saved,[]).verification.status,'passed');
     }else assert.ok(saved.unresolved.includes(blockers.at(-1)!));
+  }
+});
+
+test('passing final host receipts resolve waiting steps and preserve unrelated outstanding work',async t=>{
+  const {saved}=await runQualityGate(t,['fail','pass'],['approved'],{waitForHost:true});
+  assert.equal(saved.status,'completed');
+  assert.deepEqual(saved.diff_review,{verdict:'approved',summary:'边界条件已覆盖'});
+  assert.deepEqual(saved.unresolved,['仍需人工验收','仍需现场验收']);
+  const step=saved.steps![0],receipt=saved.verification.at(-1)!;
+  assert.equal(step.status,'completed');
+  assert.equal(step.verification_status,'passed');
+  assert.deepEqual(step.unresolved,[]);
+  assert.doesNotMatch(step.progress,/等待/);
+  assert.deepEqual(step.evidence_ids,[receipt.evidence_id]);
+  assert.deepEqual(step.criteria[0].evidence_ids,[receipt.evidence_id]);
+  const checked=saved.steps![1];
+  assert.equal(checked.status,'completed');
+  assert.equal(checked.progress,'已回读确认 sum.mjs:1 的公开导出返回 a + b。代码修改完成，ARC 宿主验证通过。');
+  assert.deepEqual(checked.evidence_ids,[receipt.evidence_id]);
+  assert.deepEqual(checked.criteria.map(c=>c.evidence_ids),[[receipt.evidence_id],[receipt.evidence_id]]);
+});
+
+test('fast direct edits skip review after a successful host recheck and keep review for missing tools',async t=>{
+  const passed=await runQualityGate(t,['fail','pass'],[],{fast:true});
+  assert.deepEqual(passed.calls,['edit','host','edit','host']);
+  assert.equal(passed.saved.fast_mode,true);
+  assert.equal(passed.saved.verification_status,'passed');
+  assert.equal(passed.saved.diff_review,undefined);
+  const drifted=await runQualityGate(t,['pass'],[],{fast:true,editAfterHost:true});
+  assert.equal(drifted.saved.status,'blocked');
+  assert.equal(drifted.saved.verification_status,'stale');
+  assert.match(drifted.saved.unresolved.join('\n'),/最终代码状态/);
+  for(const host of ['skip','partial'] as const){
+    const {saved,calls}=await runQualityGate(t,[host],['approved'],{fast:true});
+    assert.deepEqual(calls,['edit','host','review']);
+    assert.equal(saved.diff_review?.verdict,'approved');
+    assert.equal(saved.verification_status,host==='skip'?'not_run':'partial');
   }
 });
 

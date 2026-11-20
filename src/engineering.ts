@@ -131,6 +131,9 @@ export interface EngineeringTask {
   approval?:{reviewed_version:number;scope:string[]};
   analysis_channel?:'codex'|'kimi'|'dsh';
   execution_mode?:ExecutionMode;
+  fast_mode?:boolean;
+  diff_review?:{verdict:'approved'|'needs_fix';summary:string;repaired?:boolean};
+  rolled_back_at?:string;
   status:'pending'|'running'|'blocked'|'completed'|'failed'|'cancelled'|'interrupted';
   baseline:CodeState; end_state?:CodeState; diff_baseline?:CodeState; context_version:number;
   summary:string; decisions:string[]; unresolved:string[]; changes:FileChange[];
@@ -156,7 +159,15 @@ export interface DevelopmentAttempt {
 export interface ContextRequest {view?:'strict'|'execution';task_id?:string;project_id?:string; workspace_path?:string; cached?:boolean;refresh?:boolean;query?:string;entry_id?:string;result_id?:string;category?:ContextEntry['category'];offset?:number;limit?:number}
 export interface CreateEngineeringTask extends ContextRequest {
   goal:string; submission_key:string; task_id?:string; scope?:string[]; reading?:TaskReadingBinding;
+  fast_mode?:boolean;
   boundaries?:EngineeringTask['boundaries'];
+}
+export function developmentFileError(file:string) {
+  if(file.length>1000||/[\u0000-\u001f\u007f\\:*?\[\]{}<>|"~]/.test(file))return '请输入工程内具体文件的相对路径。';
+  const parts=file.split('/');
+  if(parts.some(part=>!part||/[. ]$/.test(part)||/^\.(?:git|codex|agents|aws|arc-local)$/i.test(part)))return '不允许授权 Git、Agent 元数据或非规范路径。';
+  if(/^(?:AGENTS(?:\.override)?\.md|\.gitmodules|\.gitattributes)$/i.test(parts.at(-1)!))return '不允许授权 Agent 规则或 Git 配置文件。';
+  return '';
 }
 export interface UpdateEngineeringTask {
   task_id:string; expected_version:number; submission_key:string; summary?:string;

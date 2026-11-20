@@ -171,6 +171,19 @@ function auditVerification(task: EngineeringTask, logs: Record<string, string>) 
   return {status: 'passed', passed, skipped, label: passed ? `通过 ${passed} 项${skipped ? ` · 跳过 ${skipped}` : ''}` : '命令成功'} as const;
 }
 
+function auditDiffReview(task: EngineeringTask): {status:'approved'|'repaired'|'needs_fix'|'none'; label:string; summary?:string} {
+  const saved = task.decisions.flatMap(line => {
+    const match = /^独立 Diff 审查（(approved|needs_fix)）[：:，\s]*([\s\S]*)$/.exec(line);
+    return match ? [{verdict:match[1], summary:match[2].trim()}] : [];
+  });
+  const final = task.diff_review ?? saved.at(-1);
+  if (!final) return {status:'none', label:''};
+  if (final.verdict === 'needs_fix') return {status:'needs_fix', label:'有阻断项', summary:final.summary};
+  if (task.diff_review?.repaired || (saved.some(review => review.verdict === 'needs_fix') && saved.some(review => review.verdict === 'approved')))
+    return {status:'repaired', label:'自修后通过', summary:final.summary};
+  return {status:'approved', label:'通过', summary:final.summary};
+}
+
 export function auditDelivery(task: EngineeringTask, contextEntries: (MaterialSourceIndexEntry & {status?: ContextEntry['status']})[], verificationLogs: Record<string, string> = {}) {
   const pathKey = (path: string) => path.replaceAll('\\', '/');
   const scope = new Set((task.approval?.scope ?? task.proposed_scope ?? task.scope).map(pathKey));
@@ -186,5 +199,5 @@ export function auditDelivery(task: EngineeringTask, contextEntries: (MaterialSo
   const changed = new Set(task.changes.map(change => pathKey(change.path)));
   const impacted_materials = contextEntries.filter(entry => entry.status !== 'superseded' && entry.sources.some(s => changed.has(pathKey(s.path))))
     .map(({entry_id, key, category}) => ({entry_id, key, category}));
-  return {scope: {status: scopeWarning ? 'warning' as const : 'ok' as const, out_of_scope, overlap}, verification: auditVerification(task, verificationLogs), redlines: {hits}, impacted_materials};
+  return {scope: {status: scopeWarning ? 'warning' as const : 'ok' as const, out_of_scope, overlap}, verification: auditVerification(task, verificationLogs), review:auditDiffReview(task), redlines: {hits}, impacted_materials};
 }

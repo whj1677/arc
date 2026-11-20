@@ -49,6 +49,43 @@ function onlySandboxVerificationBlocked(result:DevelopmentResult,verifiedCommand
     (s.status==='completed'||s.status==='blocked'&&s.unresolved.length>0)&&s.unresolved.flatMap(parts).every(resolved));
 }
 
+function stripHostWait(text:string,commands:string[]){
+  // Clear only clauses describing the host receipt. Keep independent acceptance work,
+  // including a follow-up in the same sentence ("验证后仍需人工验收").
+  const wait=/(?:等待|交由|由)\s*ARC\s*宿主.*(?:回填|执行|验证|补充|运行)/i;
+  return text.split(/(?<=[。；;，,])|(?<=\n)/).map(part=>{
+    const match=wait.exec(part);
+    if(!match)return part;
+    const subject=part.slice(0,match.index).trim().replace(/^现有\s*/,'');
+    if(subject&&!commands.includes(subject)&&!/^(?:验证|测试|构建)(?:结果|证据|回执)?$/.test(subject))return part;
+    const followUp=part.match(/(?:之?后|但|同时|并且|并)((?:仍|还|另|尚)?(?:需|须|待|应|要|人工|手动|修复).*)/);
+    if(followUp)return followUp[1];
+    return /尚未|仍未|失败|受阻|待确认/.test(part)?part:'';
+  }).join('');
+}
+function reconcileHostSteps(result:DevelopmentResult,current:EngineeringTask,receipts:VerificationEvidence[]){
+  const commands=receipts.map(item=>commandBody(item.command)),strip=(text:string)=>stripHostWait(text,commands);
+  result.unresolved=result.unresolved.map(strip).filter(Boolean);
+  const updates=new Map(result.steps?.map(step=>[step.step_id,step]));
+  const savedSteps=(current.steps??[]).filter(step=>!updates.has(step.step_id));
+  for(const step of [...savedSteps,...updates.values()]){
+    if(step.status!=='in_progress'&&step.status!=='completed')continue;
+    const progress=strip(step.progress),unresolved=step.unresolved.map(strip).filter(Boolean);
+    if(progress===step.progress&&step.unresolved.every((line,index)=>line===unresolved[index]))continue;
+    const matches=receipts.filter(item=>!item.step_id||item.step_id===step.step_id);
+    if(!matches.length)continue;
+    step.unresolved=unresolved;
+    if(!step.unresolved.length&&!/(?:仍需|尚需|还需|待确认|待验收|需人工|需手动)/.test(progress))step.status='completed';
+    if(progress!==step.progress)step.progress=progress.trimEnd()+'ARC 宿主验证通过。';
+    step.evidence_ids=[...new Set([...step.evidence_ids,...matches.map(item=>item.evidence_id)])];
+    for(const criterion of step.criteria){
+      if(!criterion.evidence_ids.length)criterion.evidence_ids=matches.filter(item=>!item.criterion_id||item.criterion_id===criterion.criterion_id).map(item=>item.evidence_id);
+    }
+    updates.set(step.step_id,step);
+  }
+  if(updates.size)result.steps=[...updates.values()];
+}
+
 export {commandBody} from '../delivery-audit';
 
 export class DevelopmentService {
@@ -74,7 +111,7 @@ export class DevelopmentService {
     try{
       const files=await resolveDevelopmentScope(workspace.root_path,input.scope);
       const scope=files.map(file=>path.relative(workspace.root_path,file).split(path.sep).join('/'));
-      const task=await this.engineering.createTask(input);
+      const task=await this.engineering.createTask({...input,scope});
       const attempt=this.engineering.startAttempt(task.task_id,{provider_id:'codex',model:'等待官方执行配置',origin:'arc',write_scope:scope});
       this.store.put('development_submission',input.submission_key,{task_id:task.task_id});
       this.launch(attempt);
@@ -140,7 +177,7 @@ export class DevelopmentService {
       await this.executeFrozen(attempt,task,context,profile,mode,preferences);
       return;
     }
-    const records:CommandRecord[]=[],hostRecords:CommandRecord[]=[];
+    const records:CommandRecord[]=[],hostReceipts=new Map<string,VerificationEvidence>();
     let captureQueue=Promise.resolve(),possibleWrite=0;
     const isStopped=()=>this.isStopped(attemptId);
     const checkRunning=()=>{if(isStopped())throw Error('执行已停止，拒绝迟到开发结果');};
@@ -154,11 +191,12 @@ export class DevelopmentService {
         const {label,skipped_flag,...metrics}=inspectVerificationOutput(command.command,command.exit_code,command.output);
         const record={command,state,log,stateVerified:atReceipt===possibleWrite,metrics:Object.keys(metrics).length?metrics:undefined};
         if(host){
-          hostRecords.push(record);
           const current=this.engineering.task(taskId);
           const criterion=current.steps?.find(step=>step.step_id===link?.step_id)?.criteria.find(c=>c.criterion_id===link?.criterion_id);
+          const receipt={...observedEvidence(record,true),...(criterion&&{step_id:link!.step_id,criterion_id:criterion.criterion_id})};
           this.engineering.updateTask({task_id:taskId,attempt_id:attemptId,expected_version:current.version,
-            submission_key:log,verification:[{...observedEvidence(record,true),...(criterion&&{step_id:link!.step_id,criterion_id:criterion.criterion_id})}]},true);
+            submission_key:log,verification:[receipt]},true);
+          hostReceipts.set(command.id,receipt);
           this.event(attemptId,{type:'local.stage',stage:'host_command',message:`${command.command} · ${label}`});
         }else records.push(record);
       });
@@ -212,9 +250,15 @@ export class DevelopmentService {
     result=gates.result;
     checkRunning();
     const end=await this.engineering.captureState(task.project_id,task.workspace_path),verification:VerificationEvidence[]=[];
+    const latestReceipts=(gates.host?.commands??[]).map(command=>hostReceipts.get(command.id)!)
+      .filter(item=>item.outcome==='passed'&&item.code_state_verified&&sameVerificationState(item.code_state,end));
+    const hostPassed=latestReceipts.length>0&&latestReceipts.length===gates.host?.commands.length&&!gates.host.failed.length;
     if(gates.reviewedState&&!sameVerificationState(gates.reviewedState,end)){
       result.status='blocked';result.unresolved.push('独立审查期间代码发生变化，最终差异待复核。');
-    }else if(gates.sandboxBlockResolved&&gates.host!.commands.every(c=>hostRecords.some(r=>r.command.id===c.id&&sameVerificationState(r.state,end)&&r.stateVerified))){
+    }else if(gates.skippedFastReview&&!hostPassed){
+      result.status='blocked';result.summary='最终代码与宿主验证回执不一致。';
+      result.unresolved.push('快速直改的宿主验证未覆盖最终代码状态，请重新验证。');
+    }else if(gates.sandboxBlockResolved&&hostPassed){
       decisions.push('沙箱中受限的验证已由 ARC 宿主执行通过。');
       result.status='completed';result.summary='已完成授权修改，ARC 宿主验证通过。';result.unresolved=[];
     }
@@ -225,7 +269,7 @@ export class DevelopmentService {
       if(observedCommands.has(key))continue;
       const matches=records.filter(record=>commandBody(record.command.command)===key);
       if(!matches.length){
-        if(!result.verification.includes(report)||hostRecords.some(r=>commandBody(r.command.command)===key))continue;
+        if(!result.verification.includes(report)||[...hostReceipts.values()].some(r=>commandBody(r.command)===key))continue;
         verification.push({evidence_id:id('verification'),command:report.command,cwd:task.workspace_path,
           outcome:report.outcome,exit_code:report.outcome==='passed'?0:null,origin:'self_reported',
           code_state:end,created_at:now(),code_state_verified:false,step_id:report.step_id,criterion_id:report.criterion_id,
@@ -257,7 +301,8 @@ export class DevelopmentService {
     }
     if(this.isStopped(attemptId))throw Error('执行已停止，拒绝迟到开发结果');
     const current=this.engineering.task(taskId);
-    const saved=await this.engineering.finishTask({task_id:taskId,attempt_id:attemptId,expected_version:current.version,submission_key:`${attemptId}:finish`,status:result.status,completion_binding:end.workspace_fingerprint?{workspace_path:task.workspace_path,workspace_fingerprint:end.workspace_fingerprint,head:end.head,branch:end.branch,git_common_dir:end.git_common_dir}:null,summary:result.summary,decisions:[...new Set(decisions)],unresolved:[...result.unresolved,...entryFailures],steps:result.steps,verification},()=>!this.isStopped(attemptId));
+    if(hostPassed)reconcileHostSteps(result,current,latestReceipts);
+    const saved=await this.engineering.finishTask({task_id:taskId,attempt_id:attemptId,expected_version:current.version,submission_key:`${attemptId}:finish`,status:result.status,completion_binding:end.workspace_fingerprint?{workspace_path:task.workspace_path,workspace_fingerprint:end.workspace_fingerprint,head:end.head,branch:end.branch,git_common_dir:end.git_common_dir}:null,summary:result.summary,decisions:[...new Set(decisions)],unresolved:[...result.unresolved,...entryFailures],steps:result.steps,verification},()=>!this.isStopped(attemptId),gates.diffReview);
     this.engineering.updateAttempt(attemptId,{status:saved.status==='completed'?'completed':'failed'});
     this.event(attemptId,{type:'local.stage',message:`开发结果已自动保存到原任务，验证状态：${saved.verification_status}。${entryFailures.length?`另有 ${entryFailures.length} 项工程条目未保存，详见未解决事项。`:''}`});
   }
@@ -296,7 +341,9 @@ export class DevelopmentService {
     };
     if(stopForFailure()||result.status==='failed')return {result};
 
-    if(this.diffReview){
+    let diffReview:EngineeringTask['diff_review'];
+    const fastVerified=task.fast_mode&&!task.workflow&&host?.commands.length&&!host.skipped.length;
+    if(this.diffReview&&!fastVerified){
       const review=this.diffReview;
       const inspect=async()=>{
         checkRunning();
@@ -307,6 +354,8 @@ export class DevelopmentService {
         const verdict=await review({task,context,workspace,writeScope,profile,preferences,
           baselineRoot:path.join(this.store.directory,'snapshots',context.code_state.snapshot_id),verificationSummary:summary||'没有本机验证回执。'});
         checkRunning();
+        const repaired=diffReview?.verdict==='needs_fix'&&verdict.verdict==='approved';
+        diffReview={verdict:verdict.verdict,summary:verdict.summary,...(repaired&&{repaired:true})};
         decisions.push(`独立 Diff 审查（${verdict.verdict}）：${verdict.summary}`,...verdict.notes);
         return verdict.blocking_issues.map(i=>`${i.file}：${i.issue}；修复要求：${i.fix}`);
       };
@@ -321,13 +370,13 @@ export class DevelopmentService {
         if(issues.length){
           if(result.status!=='failed'){result.status='blocked';result.summary='自动修复后，独立 Diff 审查仍有阻塞问题。';}
           result.unresolved.push(...issues);
-          return {result};
+          return {result,host,diffReview};
         }
       }
     }
     const sandboxBlockResolved=result.status==='blocked'&&!!host?.commands.length&&!host.skipped.length
       &&onlySandboxVerificationBlocked(result,host.commands.map(c=>c.command));
-    return {result,reviewedState,host,sandboxBlockResolved};
+    return {result,reviewedState,host,sandboxBlockResolved,diffReview,skippedFastReview:fastVerified};
   }
   private async executeFrozen(attempt:DevelopmentAttempt,task:EngineeringTask,context:EngineeringContext,profile:ProviderProfile,mode:LocalMode,preferences:CodexPreferences){
     const {attempt_id:attemptId}=attempt,{task_id:taskId}=task,planning=task.workflow==='analysis';

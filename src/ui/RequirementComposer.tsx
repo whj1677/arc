@@ -1,5 +1,6 @@
 import React,{useEffect,useRef,useState} from 'react';
-import type {EngineeringContext,EngineeringTask,GoalRefinement} from '../engineering';
+import {developmentFileError,type EngineeringContext,type EngineeringTask,type GoalRefinement} from '../engineering';
+import type {SourceFile} from '../shared';
 import {normalizeBoundaryText} from '../task-boundaries';
 import {analysisModes,type AnalysisMode} from './discovery-state';
 import {CodexModelSelect,type CodexModelSelection} from './CodexModelSelect';
@@ -7,8 +8,11 @@ import {useProjectEnvironment} from './project-environment-store';
 import './requirement-composer.css';
 
 type Boundaries=NonNullable<EngineeringTask['boundaries']>;
+export type RequirementSubmission=Boundaries & {fast_mode?:true;scope?:string[]};
 const suggestedScopes=['不改公开接口签名','不改构建与发布脚本','不引入新外部依赖'];
 const phases=['① 写目标与边界','② 只读出方案','③ 确认后开发','④ 自检交付'];
+const fastPhases=['① 写目标与目标文件','② 白名单沙箱改码','③ ARC 宿主实测验证'];
+const fileSeparator=/[,，\n]/;
 const starters=[
   ['新增功能','希望为谁新增什么功能？\n使用场景：\n预期结果：','新增功能的使用场景与预期结果：'],
   ['修复问题','遇到了什么问题？\n复现步骤：\n实际表现：\n预期表现：','问题的复现步骤、实际表现和预期表现：'],
@@ -21,6 +25,7 @@ interface ComposerProps {
   projectId:string;
   disabledProject:boolean;
   context:EngineeringContext|null;
+  snapshotFiles?:SourceFile[];
   defaultEngine:AnalysisMode;
   codexModel:CodexModelSelection;
   onEngineChange:(mode:AnalysisMode)=>void;
@@ -31,14 +36,22 @@ interface ComposerProps {
   goalInput:React.RefObject<HTMLTextAreaElement|null>;
   disabled:boolean;
   busy:boolean;
-  onSubmit:(boundaries:Boundaries)=>void;
+  onSubmit:(submission:RequirementSubmission)=>void;
   onCancel?:()=>void;
 }
 
-export function RequirementComposer({projectId,disabledProject,context,defaultEngine,codexModel,onEngineChange,enginePending,onSettings,
+export function RequirementComposer({projectId,disabledProject,context,snapshotFiles,defaultEngine,codexModel,onEngineChange,enginePending,onSettings,
   goal,onGoalChange,goalInput,disabled,busy,onSubmit,onCancel}:ComposerProps) {
   const {environment,error}=useProjectEnvironment(context?.workspace);
   const [nonGoals,setNonGoals]=useState<string[]>([]);
+  const [directEdit,setDirectEdit]=useState(false),[fileInput,setFileInput]=useState('');
+  const fastMode=defaultEngine==='codex'&&directEdit;
+  const fileParts=fileInput.split(fileSeparator);
+  const parsedFiles=[...new Set(fileParts.map(part=>part.trim().replaceAll('\\','/')).filter(Boolean))];
+  const fileError=parsedFiles.length>50?'每次最多指定 50 个文件。':parsedFiles.map(developmentFileError).find(Boolean);
+  const submitDisabled=disabled||(fastMode&&(!parsedFiles.length||!!fileError));
+  const query=fileParts.at(-1)!.trim().replaceAll('\\','/').toLowerCase();
+  const suggestions=fastMode&&query?snapshotFiles?.filter(file=>file.path.toLowerCase().includes(query)&&!parsedFiles.includes(file.path)&&!developmentFileError(file.path)).slice(0,5):undefined;
   const [adding,setAdding]=useState(false);
   const [value,setValue]=useState(''),[boundaryError,setBoundaryError]=useState('');
   const [refinement,setRefinement]=useState<GoalRefinement|null>(null);
@@ -96,16 +109,20 @@ export function RequirementComposer({projectId,disabledProject,context,defaultEn
   return <form className="requirement-composer" aria-labelledby="requirement-composer-title"
     onSubmit={e=>{
       e.preventDefault();
-      if(disabled)return;
+      if(submitDisabled)return;
       const next=withScope(value.trim());
       if(next){
         requestSequence.current++;setRefining(false);setRefineError('');setRefinement(null);
-        onSubmit({non_goals:next,revoked:[]});
+        onSubmit({non_goals:next,revoked:[],...(fastMode&&{fast_mode:true,scope:parsedFiles})});
       }
     }}>
     <header className="composer-heading">
       <h2 id="requirement-composer-title">发起新需求</h2>
-      <ol className="composer-phases" aria-label="需求开发流程">{phases.map((phase,index)=>
+      {defaultEngine==='codex'&&<span className="composer-engines" role="group" aria-label="开发模式">
+        <button type="button" disabled={busy} aria-pressed={!directEdit} onClick={()=>setDirectEdit(false)}>标准受控</button>
+        <button type="button" disabled={busy} aria-pressed={directEdit} onClick={()=>setDirectEdit(true)}>快速直改</button>
+      </span>}
+      <ol className="composer-phases" aria-label="需求开发流程">{(fastMode?fastPhases:phases).map((phase,index)=>
         <li key={phase} aria-current={index===0?'step':undefined}>{index>0&&<span aria-hidden="true">→ </span>}{phase}</li>
       )}</ol>
     </header>
@@ -114,7 +131,7 @@ export function RequirementComposer({projectId,disabledProject,context,defaultEn
       <textarea id="development-goal" aria-label="开发任务" ref={goalInput} value={goal} required disabled={busy}
         placeholder="描述当前行为、希望实现的修改，以及怎样判断已经完成。"
         onChange={e=>onGoalChange(e.target.value)} onKeyDown={e=>{
-          if(e.ctrlKey&&e.key==='Enter'&&!e.nativeEvent.isComposing){e.preventDefault();if(!disabled)e.currentTarget.form?.requestSubmit();}
+          if(e.ctrlKey&&e.key==='Enter'&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}
         }}/>
       <div className="composer-starters" role="group" aria-label="需求起草工具">{starters.map(([label,starter,addition])=>
         <button type="button" key={label} disabled={busy} aria-pressed={activeStarter===label} onClick={()=>{
@@ -158,6 +175,17 @@ export function RequirementComposer({projectId,disabledProject,context,defaultEn
           <ul>{refinement.clarifications.map((item,index)=><li key={index}>{item}</li>)}</ul>
         </div>}
       </section>}
+      {fastMode&&<div className="composer-targets">
+        <label className="composer-goal-label" htmlFor="development-files">指定允许修改的文件（必填，支持多个路径，用逗号或换行分隔）</label>
+        <textarea id="development-files" rows={2} required disabled={busy} value={fileInput} aria-invalid={!!fileError}
+          placeholder="例如：src/main.ts, tests/main.test.ts" onChange={e=>setFileInput(e.target.value)}/>
+        {fileError&&<p className="warning" role="alert">{fileError}</p>}
+        {!!suggestions?.length&&<div className="composer-scope-options" role="group" aria-label="匹配的工程文件">{suggestions.map(file=>
+          <button key={file.path} type="button" disabled={busy} onClick={()=>{
+            setFileInput([...fileParts.slice(0,-1).map(part=>part.trim()).filter(Boolean),file.path,''].join(', '));
+            document.getElementById('development-files')?.focus();
+          }}>{file.path}</button>)}</div>}
+      </div>}
       <section className="composer-boundaries" aria-labelledby="composer-scopes">
         <h3 id="composer-scopes">本轮不改范围 <small>（可选，派活与交付自检自动守卫）</small></h3>
         <div className="composer-scope-options">
@@ -197,9 +225,9 @@ export function RequirementComposer({projectId,disabledProject,context,defaultEn
         </div>
       </section>
     </div>
-    <div className="composer-footer"><small>先只读分析生成需求包，经你确认范围后再改代码</small>
+    <div className="composer-footer"><small>{fastMode?'仅允许修改指定文件。宿主未运行验证时，仍执行独立审查。':'先只读分析生成需求包，经你确认范围后再改代码'}</small>
       <div>{onCancel&&<button type="button" className="composer-link" disabled={busy} onClick={onCancel}>取消</button>}
-        <button type="submit" className="primary" aria-keyshortcuts="Control+Enter" disabled={disabled}>{busy?'正在提交…':'开始只读分析并生成需求包'}
+        <button type="submit" className="primary" aria-keyshortcuts="Control+Enter" disabled={submitDisabled}>{busy?'正在提交…':fastMode?'快速直改并验证':'开始只读分析并生成需求包'}
           <kbd aria-hidden="true">Ctrl+Enter</kbd></button></div>
     </div>
   </form>;

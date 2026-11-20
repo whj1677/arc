@@ -7,7 +7,7 @@ import {activeContextEntries,engineeringCategories,engineeringSectionCategories,
 import type {CodeState,WorkspaceBinding,ContextEntry,ContextSource,EngineeringContext,EngineeringAnalysis,ContextRequest,EngineeringTask,CreateEngineeringTask,UpdateEngineeringTask,FinishEngineeringTask,DevelopmentAttempt,VerificationEvidence,TaskReadingBinding,WalkthroughUpdate,DevelopmentStep} from '../engineering';
 import {Store,id,now} from './store';
 import {locate} from './executables';
-import {capture,freshness,readSource,sha,relativePath,safeFile,workspaceFiles,workspaceGitDirectory} from './snapshot';
+import {capture,fileSha256,freshness,readSource,sha,relativePath,rollbackPathAllowed,safeFile,workspaceFiles,workspaceGitDirectory} from './snapshot';
 import {exportEngineeringProject,restoreEngineeringProject} from './engineering-transfer';
 import {scanAecLegacy,type AecScan,type AecLegacyDocument} from './aec-migration';
 import {readingTarget} from './prompt-context';
@@ -24,6 +24,41 @@ const samePath=(a:string,b:string)=>process.platform==='win32'?path.resolve(a).t
 async function git(root:string,args:string[]) {return (await exec(await locate('git'),['-C',root,...args],{windowsHide:true,timeout:10000,maxBuffer:16*1024*1024})).stdout.trim();}
 function stateFiles(snapshot:Snapshot,state?:Pick<CodeState,'assets'>) {
   return new Map([...snapshot.files.map(f=>[f.path,f.content_sha256] as const),...(state?.assets??[]).map(f=>[f.path,f.sha256] as const)]);
+}
+async function rollbackFile(root:string,file:string,expected:string|null) {
+  let bytes:Buffer|null=null;
+  try {
+    const target=await safeFile(root,file);
+    if(!samePath(target,path.join(root,file)))throw Error('撤销路径已改变：'+file);
+    bytes=await fs.readFile(target);
+  } catch(error) {
+    if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;
+    // realpath reports ENOENT for a dangling link too. Check every existing segment
+    // before allowing a deleted file (and its missing parent directories) to return.
+    let segment=root;
+    for(const part of relativePath(file).split('/')){
+      segment=path.join(segment,part);
+      const stat=await fs.lstat(segment).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
+      if(!stat)break;
+      if(stat.isSymbolicLink()||!samePath(segment,await fs.realpath(segment)))throw Error('撤销路径包含符号链接或别名：'+file);
+    }
+  }
+  if((bytes===null?null:sha(bytes))!==expected)throw Error('文件在任务结束后发生变化，无法撤销：'+file);
+  return bytes;
+}
+
+async function replaceRollbackFile(root:string,file:string,expected:string|null,replacement:Buffer|null,mode?:number) {
+  const target=path.join(root,relativePath(file));
+  await rollbackFile(root,file,expected);
+  if(replacement===null){await fs.unlink(target);return;}
+  await fs.mkdir(path.dirname(target),{recursive:true});
+  const temporary=path.join(path.dirname(target),id('.arc-rollback'));
+  try {
+    await fs.writeFile(temporary,replacement,{flag:'wx',mode});
+    await rollbackFile(root,file,expected);
+    if(expected===null)await fs.copyFile(temporary,target,fs.constants.COPYFILE_EXCL);
+    else await fs.rename(temporary,target);
+  } finally {await fs.rm(temporary,{force:true});}
 }
 function boundaryList(value:unknown):string[] {
   if(!Array.isArray(value)||value.length>40)throw Error('每组边界最多可保存 40 项');
@@ -49,6 +84,7 @@ export class EngineeringService {
   private readonly capturing=new Map<string,Promise<CodeState>>();
   private readonly scanning=new Map<string,Promise<void>>();
   private readonly initializing=new Map<string,Promise<void>>();
+  private readonly rollingBack=new Set<string>();
   onTaskFinished:(task:EngineeringTask)=>void=()=>{};
   readonly environment:ProjectEnvironmentService;
   constructor(readonly store:Store,readonly changed:(event?:'engineering_changed')=>void=()=>{}) {
@@ -365,6 +401,7 @@ export class EngineeringService {
   tasks(input:{project_id?:string;query?:string;file?:string;status?:string}={}) {return this.store.all<EngineeringTask>(taskKind).filter(t=>(!input.project_id||t.project_id===input.project_id)&&(!input.status||t.status===input.status)&&(!input.file||t.changes.some(c=>c.path===input.file)||t.scope.includes(input.file))&&(!input.query||JSON.stringify([t.goal,t.summary,t.decisions,t.unresolved]).toLowerCase().includes(input.query.toLowerCase()))).sort((a,b)=>b.updated_at.localeCompare(a.updated_at));}
   task(taskId:string){const task=this.store.get<EngineeringTask>(taskKind,taskId);const base=task.diff_baseline??task.baseline,baseline=this.store.get<Snapshot>('snapshot',base.snapshot_id),baselineFiles=stateFiles(baseline,base),files=new Map(base.dirty.map(file=>[file,baselineFiles.get(file)??null]));for(const file of task.rebind_preexisting_files??[])files.set(file.path,file.sha256);task.preexisting_files=[...files].map(([path,sha256])=>({path,sha256}));return task;}
   private currentVerification(task:EngineeringTask,state?:CodeState|null):EngineeringTask {
+    if(task.rolled_back_at)state=null;
     const status=state===null?'stale':state?this.verificationStatus(task,state):task.verification_status==='passed'&&task.verification.some(e=>!e.code_state.workspace_fingerprint)?'partial':task.verification_status;
     const steps=task.steps?.map(step=>({...step,verification_status:this.currentStepStatus(task,step,state)}));
     return {...task,verification_status:status,...(steps?{steps}:{})};
@@ -506,21 +543,49 @@ export class EngineeringService {
       task.analysis_channel=submission.channel;
       if(task.requirement_package)task.boundaries=effectiveTaskBoundaries(task);
       delete task.approval;delete task.requirement_package;
+      delete task.fast_mode;delete task.diff_review;
       task.scope=[];task.proposed_scope=[];task.steps=[];task.summary='';task.decisions=[];task.unresolved=[];
       task.verification=[];task.verification_status='not_run';
     }
     task.workflow=submission.phase;task.status='pending';
     if(submission.executionMode)task.execution_mode=submission.executionMode;
   }
+  // Reading snapshots exclude binary and oversized files. Keep the exact bytes
+  // of individually scoped assets locally so an edit to one can be undone.
+  private async retainRollbackAssets(workspace:WorkspaceBinding,state:CodeState,scope:string[] = []) {
+    const allowed=new Set(scope);
+    const assets=state.assets?.filter(asset=>allowed.has(asset.path));
+    if(!assets?.length)return;
+    let directory=await fs.realpath(this.store.directory);
+    for(const part of ['rollback-assets',sha(workspace.project_id)]){
+      directory=path.join(directory,part);
+      await fs.mkdir(directory,{recursive:true});
+      if((await fs.lstat(directory)).isSymbolicLink())throw Error('撤销缓存目录不能使用符号链接');
+    }
+    for(const asset of assets){
+      const target=path.join(directory,asset.sha256);
+      const pending=path.join(directory,id('pending'));
+      try{
+        await fs.copyFile(await safeFile(workspace.root_path,asset.path),pending,fs.constants.COPYFILE_EXCL);
+        if(await fileSha256(pending)!==asset.sha256)throw Error('保存撤销基线期间文件发生变化：'+asset.path);
+        await fs.rename(pending,target);
+      }finally{await fs.rm(pending,{force:true});}
+    }
+  }
   async createTask(input:CreateEngineeringTask,submission?:RequirementSubmission):Promise<EngineeringTask> {
     const workspace=await this.resolve(input),reading=this.validateReading(workspace.project_id,input.reading);
     if(input.task_id){
       const prior=this.task(input.task_id);if(prior.workspace_id!==workspace.workspace_id)throw Error('任务属于另一个工作区');
       if(reading&&prior.reading&&(reading.feature_id!==prior.reading.feature_id||reading.scenario_id!==prior.reading.scenario_id))throw Error('已有任务不能改绑到另一个功能或场景');
-      await this.captureState(workspace.project_id,workspace.root_path);const task=this.task(input.task_id),key=this.receiptKey('continue',task.task_id,input.submission_key);if(this.store.maybe('engineering_receipt',key))return task;
+      const state=await this.captureState(workspace.project_id,workspace.root_path);
+      if(input.scope?.length)await this.retainRollbackAssets(workspace,state,input.scope);
+      const task=this.task(input.task_id),key=this.receiptKey('continue',task.task_id,input.submission_key);if(this.store.maybe('engineering_receipt',key))return task;
       const text=requireText(input.goal);this.store.transaction(()=>{
         if(submission)this.prepareRequirement(task,input,submission);
         else if(task.workflow)throw Error('请从原 ARC 需求的审阅或修订入口继续');
+        if(task.rolled_back_at){
+          task.diff_baseline=state;task.changes=[];delete task.end_state;delete task.rolled_back_at;delete task.diff_review;
+        }
         if(submission?.phase!=='execution'){task.requests??=[];task.requests.push({text,submission_key:input.submission_key,created_at:now()});}
         if(!task.reading&&reading)task.reading=reading;
         this.saveTask(task);this.store.put('engineering_receipt',key,task);submission?.onSaved(task);
@@ -528,9 +593,11 @@ export class EngineeringService {
     }
     const key=this.receiptKey('create',workspace.workspace_id,input.submission_key),existing=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(existing)return this.task(existing.task_id);
     const context=await this.context({project_id:workspace.project_id});
+    if(input.scope?.length)await this.retainRollbackAssets(workspace,context.code_state,input.scope);
     return this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return this.task(retry.task_id);
       const task:EngineeringTask={task_id:id('task'),project_id:workspace.project_id,workspace_id:workspace.workspace_id,workspace_path:workspace.root_path,...(reading?{reading}:{}),version:0,submission_key:input.submission_key,goal:requireText(input.goal),scope:(input.scope??[]).map(relativePath),status:'pending',baseline:context.code_state,context_version:context.version,summary:'',decisions:[],unresolved:[],changes:[],verification:[],verification_status:'not_run',attempt_ids:[],requests:[],created_at:now(),updated_at:now(),saved:'saved'};
       if(input.boundaries!==undefined)task.boundaries=normalizeTaskBoundaries(input.boundaries);
+      if(input.fast_mode===true&&!submission){task.fast_mode=true;task.execution_mode='codex';}
       if(submission)this.prepareRequirement(task,input,submission);
       this.saveTask(task);this.store.put('engineering_receipt',key,task);submission?.onSaved(task);this.changed();return task;});
   }
@@ -580,7 +647,7 @@ export class EngineeringService {
     if(attemptId&&this.store.maybe<DevelopmentAttempt>(attemptKind,attemptId)?.skipped_verification?.length)return 'partial';
     return checks.every(evidenceSupportsPass)?'passed':'partial';
   }
-  async finishTask(input:FinishEngineeringTask,maySave:()=>boolean=()=>true):Promise<EngineeringTask> {
+  async finishTask(input:FinishEngineeringTask,maySave:()=>boolean=()=>true,diffReview?:EngineeringTask['diff_review']):Promise<EngineeringTask> {
     const key=this.receiptKey('finish',input.task_id,input.submission_key),prior=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(prior)return prior;
     const task=this.task(input.task_id);this.checkUpdate(task,input);const workspace=await this.resolve({project_id:task.project_id});if(workspace.workspace_id!==task.workspace_id||!samePath(workspace.root_path,task.workspace_path))throw Error('任务绑定工作区已改变，拒绝写回');
     const binding=input.completion_binding;
@@ -605,6 +672,7 @@ export class EngineeringService {
       .map(p=>({path:p,before_sha256:beforeFiles.get(p)??null,after_sha256:afterFiles.get(p)??null,ownership:comparison.dirty.includes(p)||task.rebind_preexisting_files?.some(f=>f.path===p)?'preexisting_overlap' as const:'task_change' as const,...(assets.has(p)?{text_diff_unavailable:true}:{})}));
     const saved=this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;if(!maySave())throw Error('执行已停止，拒绝迟到开发结果');const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);if(input.decisions)current.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
       if(ownershipUnknown)current.unresolved=[...new Set([...current.unresolved,'无法确认提交完成时与采集时的代码状态一致。报告已保存，差异归属待核查。'])];
+      if(diffReview)current.diff_review=diffReview;
       if(input.requirement_package!==undefined)this.setRequirementPackage(current,input.requirement_package);
       if(input.proposed_scope)current.proposed_scope=input.proposed_scope.map(relativePath);
       if(input.steps)this.mergeSteps(current,input.steps);
@@ -632,8 +700,68 @@ export class EngineeringService {
     if(changed){const state=this.store.get<any>('engineering_context_state',projectId);state.version++;this.store.put('engineering_context_state',projectId,state);}
   }
   checkWorkspaceAvailable(workspace:Pick<WorkspaceBinding,'root_path'>) {
+    if(this.rollingBack.has(workspace.root_path))throw Error('此工作区正在撤销改动，请等待完成。');
     if(this.store.all<DevelopmentAttempt>(attemptKind).some(attempt=>samePath(attempt.workspace_path,workspace.root_path)&&['starting','running'].includes(attempt.status))||
       this.tasks().some(task=>task.status==='running'&&samePath(task.workspace_path,workspace.root_path)))throw Error('此工作区已有开发任务，请等待结束或停止后再继续。');
+  }
+  async rollbackTask(taskId:string):Promise<EngineeringTask> {
+    const task=this.task(taskId);
+    if(task.rolled_back_at)throw Error('本次任务改动已撤销');
+    if(!['completed','blocked','failed','cancelled','interrupted'].includes(task.status)||!task.changes.length||!task.end_state||task.changes_status==='needs_review')throw Error('此任务没有可安全撤销的已确认变更');
+    const preexisting=new Set(task.preexisting_files?.map(file=>file.path));
+    const overlap=task.changes.find(change=>change.ownership!=='task_change'||preexisting.has(change.path));
+    if(overlap)throw Error('文件含任务前已有改动，无法撤销：'+overlap.path);
+    const workspace=this.store.get<WorkspaceBinding>(workspaceKind,task.workspace_id),root=workspace.root_path;
+    if(workspace.status!=='bound'||workspace.project_id!==task.project_id||!samePath(root,task.workspace_path))throw Error('任务工作区未绑定或已改变');
+    this.checkWorkspaceAvailable(workspace);
+    this.rollingBack.add(root);
+    const prepared:{change:EngineeringTask['changes'][number];before:Buffer|null;after:Buffer|null;mode?:number}[]=[];
+    let applied=0;
+    try {
+      const baseline=task.diff_baseline??task.baseline,before=this.store.get<Snapshot>('snapshot',baseline.snapshot_id);
+      const end=this.store.get<Snapshot>('snapshot',task.end_state.snapshot_id);
+      if(!samePath(root,await fs.realpath(root))||!samePath(root,end.root_path)||end.project_id!==task.project_id||before.project_id!==task.project_id)throw Error('任务结束时的工作区与当前绑定不一致');
+      const common=await workspaceGitDirectory(root);
+      const branch=common?await git(root,['symbolic-ref','--short','-q','HEAD']).catch(error=>{if(error.code===1)return null;throw error;}):null;
+      if(common!==task.end_state.git_common_dir||branch!==task.end_state.branch)throw Error('任务结束后工作区仓库或分支已改变，无法撤销');
+      const afterFiles=stateFiles(end,task.end_state),beforeFiles=stateFiles(before,baseline);
+      const textFiles=new Set(before.files.map(file=>file.path));
+      for(const change of task.changes){
+        if(!rollbackPathAllowed(change.path))throw Error('路径不在可撤销的工程文件范围：'+change.path);
+        if(change.before_sha256===change.after_sha256||(beforeFiles.get(change.path)??null)!==change.before_sha256||(afterFiles.get(change.path)??null)!==change.after_sha256)throw Error('任务快照与变更记录不一致：'+change.path);
+        const after=await rollbackFile(root,change.path,change.after_sha256);
+        let original:Buffer|null=null;
+        if(change.before_sha256){
+          const source=textFiles.has(change.path)?`snapshots/${before.source_snapshot_id}/${change.path}`:`rollback-assets/${sha(task.project_id)}/${change.before_sha256}`;
+          try{original=await fs.readFile(await safeFile(this.store.directory,source));}
+          catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')throw Error('缺少可核验的任务前原始字节，无法撤销：'+change.path);throw error;}
+          if(sha(original)!==change.before_sha256)throw Error('任务前快照哈希不匹配：'+change.path);
+        }
+        const mode=after===null?undefined:(await fs.stat(await safeFile(root,change.path))).mode;
+        prepared.push({change,before:original,after,mode});
+      }
+      for(const file of prepared){
+        await replaceRollbackFile(root,file.change.path,file.change.after_sha256,file.before,file.mode);
+        applied++;
+      }
+      this.store.transaction(()=>{
+        if(this.task(taskId).version!==task.version)throw Error('撤销期间任务版本发生变化，请重新读取');
+        task.rolled_back_at=now();
+        task.verification_status='stale';
+        task.decisions.push(`已撤销本次任务改动（已将 ${prepared.length} 个文件恢复至任务前基线）`);
+        this.saveTask(task);
+        this.store.db.prepare('DELETE FROM objects WHERE kind=? AND id=?').run('engineering_state',workspace.workspace_id);
+      });
+    } catch(error) {
+      const failures:string[]=[];
+      for(const file of prepared.slice(0,applied).reverse()){
+        try{await replaceRollbackFile(root,file.change.path,file.change.before_sha256,file.after,file.mode);}
+        catch(recovery){failures.push(`${file.change.path}（${String(recovery)}）`);}
+      }
+      if(failures.length)throw Error(`${String(error)}；以下文件无法恢复至撤销前状态：${failures.join('、')}`);
+      throw error;
+    } finally {this.rollingBack.delete(root);}
+    this.changed();return task;
   }
   startAttempt(taskId:string,input:Pick<DevelopmentAttempt,'provider_id'|'model'|'origin'|'write_scope'>) {
     return this.store.transaction(()=>{const task=this.task(taskId);
@@ -658,12 +786,16 @@ export class EngineeringService {
     const project=this.store.get<Project>('project',projectId),snapshot=await capture(root,projectId,this.store.directory,project.build_config);
     const identity=await workspaceFiles(root,snapshot);
     const common=await workspaceGitDirectory(root);
-    this.store.transaction(()=>{workspace.root_path=root;workspace.status='bound';workspace.git_common_dir=common;workspace.rebound_at=now();this.store.put(workspaceKind,workspace.workspace_id,workspace);project.root_path=root;project.snapshot_id=snapshot.source_snapshot_id;this.store.put('snapshot',snapshot.source_snapshot_id,snapshot);this.store.put('project',projectId,project);this.store.db.prepare('DELETE FROM objects WHERE kind=? AND id=?').run('engineering_state',workspace.workspace_id);
+    this.store.transaction(()=>{this.checkWorkspaceAvailable(workspace);workspace.root_path=root;workspace.status='bound';workspace.git_common_dir=common;workspace.rebound_at=now();this.store.put(workspaceKind,workspace.workspace_id,workspace);project.root_path=root;project.snapshot_id=snapshot.source_snapshot_id;this.store.put('snapshot',snapshot.source_snapshot_id,snapshot);this.store.put('project',projectId,project);this.store.db.prepare('DELETE FROM objects WHERE kind=? AND id=?').run('engineering_state',workspace.workspace_id);
       for(const task of this.tasks({project_id:projectId})){const beforeState=task.end_state??task.baseline,before=this.store.get<Snapshot>('snapshot',beforeState.snapshot_id),beforeFiles=stateFiles(before,beforeState),afterFiles=stateFiles(snapshot,{assets:identity.assets}),preexisting=new Map((task.rebind_preexisting_files??[]).map(f=>[f.path,f.sha256]));for(const file of new Set([...beforeFiles.keys(),...afterFiles.keys()]))if(beforeFiles.get(file)!==afterFiles.get(file))preexisting.set(file,afterFiles.get(file)??null);task.rebind_preexisting_files=[...preexisting].map(([path,sha256])=>({path,sha256}));task.rebind_source_snapshot_id=snapshot.source_snapshot_id;task.workspace_path=root;this.saveTask(task);}
       for(const explanation of this.store.all<Explanation>('explanation'))if(explanation.result.binding.project_id===projectId){explanation.source_status=this.store.get<Snapshot>('snapshot',explanation.result.binding.source_snapshot_id).fingerprint===snapshot.fingerprint?'current':'needs_review';this.store.put('explanation',explanation.result_id,explanation);}
     });await this.context({project_id:projectId,refresh:true});this.changed();return workspace;
   }
-  async exportProject(projectId:string,filePath:string){await this.connect(projectId);return exportEngineeringProject(this.store,projectId,filePath);}
+  async exportProject(projectId:string,filePath:string){
+    const workspace=await this.connect(projectId);
+    if(!this.store.maybe('engineering_state',workspace.workspace_id))await this.captureState(projectId);
+    return exportEngineeringProject(this.store,projectId,filePath);
+  }
   async readLog(taskId:string,filePath:string){const task=this.task(taskId);this.checkLogPath(task,filePath);const allowed=task.verification.some(e=>e.log_path===filePath)||task.attempt_ids.some(a=>this.store.get<DevelopmentAttempt>(attemptKind,a).log_path===filePath);if(!allowed)throw Error('日志不属于此任务');const file=await safeFile(this.store.directory,filePath),stat=await fs.stat(file);if(stat.size>2*1024*1024)throw Error('日志超过 2 MiB 展示限制，请在数据目录查看');return {path:filePath,text:await fs.readFile(file,'utf8')};}
   async taskDiff(taskId:string,filePath:string){const task=this.task(taskId);relativePath(filePath);const change=task.changes.find(c=>c.path===filePath);if(!change||!task.end_state||task.changes_status==='needs_review')throw Error('文件不属于此任务已保存的差异');if(change.text_diff_unavailable)throw Error('已记录文件内容哈希，此文件没有文本差异');const beforeSnapshot=this.store.get<Snapshot>('snapshot',(task.diff_baseline??task.baseline).snapshot_id),afterSnapshot=this.store.get<Snapshot>('snapshot',task.end_state.snapshot_id);const before=change.before_sha256?(await readSource(this.store.directory,beforeSnapshot,filePath)).text:'',after=change.after_sha256?(await readSource(this.store.directory,afterSnapshot,filePath)).text:'';return {path:filePath,before:before.slice(0,200000),after:after.slice(0,200000),before_snapshot_id:beforeSnapshot.source_snapshot_id,after_snapshot_id:task.end_state.snapshot_id,truncated:before.length>200000||after.length>200000};}
   async restoreProject(filePath:string){const result=await restoreEngineeringProject(this.store,filePath);this.changed();return result;}

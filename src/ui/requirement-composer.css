@@ -47,6 +47,10 @@
   font-size: 14px;
   line-height: 1.65;
 }
+.composer-heading .composer-engines { margin-right: auto; }
+.composer-targets { margin-top: 12px; }
+.composer-targets textarea { min-height: 3.5rem; max-height: 10rem; font-family: var(--font-mono); }
+.composer-targets .composer-scope-options { margin-top: 5px; }
 .composer-starters { margin-top: 7px; }
 .composer-starters button, .composer-scope-options > button {
   min-height: 26px;

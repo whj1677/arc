@@ -207,6 +207,70 @@ test('context reads are bounded and details/search/page requests keep the same s
     const search=await f.service.context({project_id:'p',query:'Module 49 context'});assert.equal(search.entries.length,1);assert.match(search.entries[0].key,/module49/);
   }finally{await f.cleanup();}
 });
+
+test('task rollback restores frozen bytes and deleted files, removes additions and persists stale verification',async t=>{
+  const f=await fixture();try{
+    const original=Buffer.from('\ufeff// 原始字节\r\nexport const value = 1;\r\n');
+    const source=path.join(f.root,'sum.js'),deleted=path.join(f.root,'nested','empty.txt'),added=path.join(f.root,'new.bin'),asset=path.join(f.root,'asset.bin');
+    const assetBytes=Buffer.from([0,255,32,128]);
+    await fs.writeFile(asset,assetBytes);
+    await fs.writeFile(source,original);await fs.mkdir(path.dirname(deleted));await fs.writeFile(deleted,'');
+    const task=await f.service.createTask({project_id:'p',goal:'change files',submission_key:'begin',scope:['sum.js','asset.bin','nested/empty.txt']});
+    await fs.writeFile(asset,Buffer.from([0,4,3,2,1]));
+    await fs.writeFile(source,'changed\n');await fs.unlink(deleted);await fs.rmdir(path.dirname(deleted));await fs.writeFile(added,Buffer.from([0,255]));
+    const finished=await f.service.finishTask({task_id:task.task_id,expected_version:task.version,status:'completed',submission_key:'finish'});
+    const failedSave=t.mock.method(f.store,'putVersion',()=>{throw Error('simulated persistence failure');},{times:1});
+    await assert.rejects(f.service.rollbackTask(task.task_id),/simulated persistence failure/);
+    failedSave.mock.restore();
+    assert.equal(f.service.task(task.task_id).version,finished.version);
+    assert.deepEqual(await fs.readFile(added),Buffer.from([0,255]));
+    assert.equal(await fs.readFile(source,'utf8'),'changed\n');
+    await assert.rejects(fs.stat(deleted),{code:'ENOENT'});
+    const rolled=await f.service.rollbackTask(task.task_id);
+    assert.deepEqual(await fs.readFile(source),original);assert.deepEqual(await fs.readFile(asset),assetBytes);
+    assert.deepEqual(await fs.readFile(deleted),Buffer.alloc(0));
+    await assert.rejects(fs.stat(added),{code:'ENOENT'});
+    assert.ok(rolled.rolled_back_at);assert.equal(rolled.version,finished.version+1);
+    assert.equal(rolled.decisions.at(-1),'已撤销本次任务改动（已将 4 个文件恢复至任务前基线）');
+    assert.equal((await f.service.currentTask(task.task_id)).verification_status,'stale');
+    assert.equal(f.service.history('task',task.task_id).at(-1).rolled_back_at,rolled.rolled_back_at);
+    await assert.rejects(f.service.rollbackTask(task.task_id),/已撤销/);
+    await fs.writeFile(source,'edit between tasks');
+    const resumed=await f.service.createTask({project_id:'p',task_id:task.task_id,goal:'continue after rollback',scope:['sum.js'],submission_key:'resume'});
+    assert.ok(!resumed.rolled_back_at);
+    await fs.writeFile(source,'second task edit');
+    await f.service.finishTask({task_id:task.task_id,expected_version:resumed.version,status:'completed',submission_key:'finish-again'});
+    await f.service.rollbackTask(task.task_id);
+    assert.equal(await fs.readFile(source,'utf8'),'edit between tasks');
+  }finally{await f.cleanup();}
+});
+
+test('rollback preflights every file and refuses active work, later edits and dirty overlap',async()=>{
+  const f=await fixture(true);try{
+    const sum=path.join(f.root,'sum.js'),other=path.join(f.root,'other.js');
+    const task=await f.service.createTask({project_id:'p',goal:'change files',submission_key:'begin'});
+    await fs.writeFile(other,'task other');await fs.writeFile(sum,'task sum');
+    const finished=await f.service.finishTask({task_id:task.task_id,expected_version:task.version,status:'completed',submission_key:'finish'});
+    const second=await f.service.createTask({project_id:'p',goal:'continue editing',submission_key:'second'});
+    const attempt=f.service.startAttempt(second.task_id,{provider_id:'codex',model:'test',origin:'agent'});
+    await assert.rejects(f.service.rollbackTask(task.task_id),/已有开发任务/);
+    await fs.writeFile(sum,'later edit');
+    await f.service.finishTask({task_id:second.task_id,attempt_id:attempt.attempt_id,expected_version:f.service.task(second.task_id).version,status:'completed',submission_key:'second-finish'});
+    f.service.updateAttempt(attempt.attempt_id,{status:'completed'});
+    await assert.rejects(f.service.rollbackTask(task.task_id),/任务结束后发生变化.*sum.js/);
+    await assert.rejects(f.service.rollbackTask(second.task_id),/已有改动.*sum.js/);
+    assert.equal(await fs.readFile(other,'utf8'),'task other');assert.equal(await fs.readFile(sum,'utf8'),'later edit');
+    assert.equal(f.service.task(task.task_id).version,finished.version);
+    // A restored task record cannot grant write access to protected paths,
+    // even if its claimed end-state asset also names that path.
+    const forged=structuredClone(finished);
+    const file=finished.changes.find(item=>item.path==='sum.js')!;
+    forged.end_state!.assets=[{path:'.git/config',sha256:file.after_sha256!}];
+    forged.changes=[{...file,path:'.git/config',before_sha256:null}];
+    f.store.put('engineering_task',task.task_id,forged);
+    await assert.rejects(f.service.rollbackTask(task.task_id),/不在可撤销的工程文件范围/);
+  }finally{await f.cleanup();}
+});
 test('Agent reads the existing UI analysis on demand with identical frozen relationships and evidence, without republishing stale graphs',async()=>{
   const f=await fixture(),arc=new ArcService(f.store.directory,path.resolve('.')),bridge=new ArcMcpBridge(arc,path.resolve('.'));
   try{

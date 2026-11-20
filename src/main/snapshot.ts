@@ -10,6 +10,11 @@ import { id, now } from './store';
 import { locate } from './executables';
 const exec = promisify(execFile);
 export const sha = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
+export async function fileSha256(file:string) {
+  const hash=createHash('sha256');
+  for await(const bytes of createReadStream(file))hash.update(bytes);
+  return hash.digest('hex');
+}
 export function relativePath(value: string) {
   if (!value || value.includes('\\') || value.includes(':') || value.includes('\0') || path.posix.isAbsolute(value) || value.split('/').some(p => p === '..' || p === '.' || !p)) throw new Error('拒绝非规范或越界路径');
   return value;
@@ -40,6 +45,15 @@ async function sourceDirectoryEntries(directory:string) {
   return entries.some(entry=>entry.name==='CMakeCache.txt'&&entry.isFile())?null:entries;
 }
 const secret = /^(?:\.env(?:\..*)?|\.?auth\.json|\.?credentials(?:\..*)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|.*\.(?:pem|key|p12|pfx))$/i;
+// Rollback can recreate missing paths, including paths supplied by a restored
+// archive. Apply the same exclusions before consulting its saved manifests.
+export function rollbackPathAllowed(file:string) {
+  return relativePath(file).split('/').every(part=>
+    !ignored.has(part)&&!ignored.has(part.toLowerCase())&&!secret.test(part)&&
+    !/^(?:cmakefiles$|cmake-build-)/i.test(part)&&
+    !(process.platform==='win32'&&(/[. ]$/.test(part)||/~\d/.test(part)||/^(?:nul|con|aux|prn|com\d|lpt\d)(?:\.|$)/i.test(part)))
+  );
+}
 export function decode(bytes: Uint8Array) {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
   catch { throw new Error('非 UTF-8 文本，未提供可靠行定位'); }
@@ -67,11 +81,9 @@ export async function workspaceFiles(root:string, snapshot?:Snapshot) {
       if(entry.isDirectory()){await walk(path.join(dir,entry.name),rel);continue;}
       if(!entry.isFile())continue;
       const input=await safeFile(root,rel), before=await fs.stat(input);
-      const hash=createHash('sha256');
-      for await(const bytes of createReadStream(input))hash.update(bytes);
+      const digest=await fileSha256(input);
       const after=await fs.stat(input);
       if(before.size!==after.size||before.mtimeMs!==after.mtimeMs||before.ctimeMs!==after.ctimeMs||before.ino!==after.ino)throw Error(`采集期间文件变化：${rel}，请重试`);
-      const digest=hash.digest('hex');
       files.set(rel,digest);
       if(!snapshot)continue;
       if(textFiles.get(rel)===digest)textFiles.delete(rel);

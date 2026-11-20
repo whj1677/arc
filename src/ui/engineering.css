@@ -159,3 +159,7 @@
   .engineering-workspace .engineering-toolbar { flex-direction: row; align-items: center; }
   .engineering-workspace .engineering-toolbar-actions { align-self: center; }
 }
+.task-rollback { display: inline-flex; flex-wrap: wrap; gap: .35rem; }
+.task-rollback button { min-height: 26px; padding: .15rem .55rem; font-size: 13px; }
+.verification-history { margin-block: .65rem; color: var(--muted); }
+.verification-history > summary { cursor: pointer; }

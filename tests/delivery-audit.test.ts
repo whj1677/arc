@@ -48,6 +48,20 @@ const task: EngineeringTask = {
 const evidence: VerificationEvidence = {evidence_id:'e', command:'npm test', cwd:'/project', outcome:'passed', exit_code:0, origin:'observed',
   code_state:state, created_at:'now', log_path:'development/t/command.log'};
 
+test('independent review uses the final structured verdict and reads saved review decisions from older tasks', () => {
+  const audited = (diff_review?: EngineeringTask['diff_review'], decisions: string[] = []) =>
+    auditDelivery({...task, diff_review, decisions}, []).review;
+  const approved = '独立 Diff 审查（approved）：已核实边界';
+  const blocked = '独立 Diff 审查（needs_fix）：缺少空输入处理';
+  assert.deepEqual(audited(undefined, ['参考' + approved]), {status:'none', label:''});
+  assert.deepEqual(audited({verdict:'approved', summary:'已核实边界'}), {status:'approved', label:'通过', summary:'已核实边界'});
+  assert.deepEqual(audited({verdict:'approved', summary:'已修复', repaired:true}), {status:'repaired', label:'自修后通过', summary:'已修复'});
+  assert.deepEqual(audited({verdict:'needs_fix', summary:'仍需修复'}, [blocked, approved]), {status:'needs_fix', label:'有阻断项', summary:'仍需修复'});
+  assert.deepEqual(audited(undefined, [approved]), {status:'approved', label:'通过', summary:'已核实边界'});
+  assert.deepEqual(audited(undefined, [blocked, approved]), {status:'repaired', label:'自修后通过', summary:'已核实边界'});
+  assert.deepEqual(audited(undefined, [approved, blocked]), {status:'needs_fix', label:'有阻断项', summary:'缺少空输入处理'});
+});
+
 test('CTest uses the last aggregate and distinguishes zero tests from success', () => {
   const inspect = (output: string) => inspectVerificationOutput('ctest --test-dir build', 0, output);
   assert.deepEqual(inspect('30% tests passed, 7 tests failed out of 10\n100% tests passed, 0 tests failed out of 4'), {total:4, passed:4, failed:0, label:'通过 4 项'});

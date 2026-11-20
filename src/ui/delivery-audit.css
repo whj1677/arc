@@ -30,6 +30,9 @@
 .delivery-audit-details { margin-top: .55rem; color: var(--amber); font-size: 13px; overflow-wrap: anywhere; }
 .delivery-audit-details summary { cursor: pointer; }
 .delivery-audit-details p { margin: .35rem 0 0; }
+.delivery-review { margin-top: .45rem; color: var(--ink-secondary); font-size: 13px; }
+.delivery-review summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.delivery-review p { margin: .35rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .delivery-materials { margin-top: .65rem; padding-top: .55rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 14px; }
 .delivery-materials .quiet { margin-inline-start: auto; color: var(--accent); }
 .delivery-audit > [role=alert] { color: var(--danger); margin-bottom: 0; }

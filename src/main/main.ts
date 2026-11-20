@@ -75,12 +75,22 @@ app.whenReady().then(async()=>{
         case 'engineering_save_entry':value=await service.engineering.saveEntry(args,'user');break;
         case 'engineering_log':value=await service.engineering.readLog(args.task_id,args.path);break;
         case 'engineering_diff':value=await service.engineering.taskDiff(args.task_id,args.path);break;
+        case 'engineering_rollback':{
+          if(typeof args.task_id!=='string'||!args.task_id.trim()||args.task_id.length>300)throw Error('任务标识无效');
+          value=await service.engineering.rollbackTask(args.task_id);break;
+        }
         case 'development_refine_goal':value=await service.refineDevelopmentGoal(args.project_id,args.goal,args.non_goals??[],selectedEngine(args.engine)==='dsh'?'dsh':'codex');break;
         case 'development_start':{
           const task=args.task_id?service.engineering.task(args.task_id):undefined;
           const previousMode=task?.execution_mode??(task?.analysis_channel==='dsh'?'dsh':undefined);
           const mode=args.phase==='execution'?(previousMode??'codex_desktop'):selectedEngine(args.mode??previousMode);
-          value=mode==='codex'||mode==='dsh'?await service.development.submit(args,mode):await bridge.queueDevelopment(args,mode);
+          if(args.fast_mode!==undefined&&typeof args.fast_mode!=='boolean')throw Error('快速直改模式参数无效');
+          if(args.fast_mode){
+            if(mode!=='codex'||args.task_id||args.phase==='execution')throw Error('快速直改仅支持新建 Codex 任务');
+            value=await service.development.start({...args,scope:args.scope,fast_mode:true});
+          }else{
+            value=mode==='codex'||mode==='dsh'?await service.development.submit(args,mode):await bridge.queueDevelopment(args,mode);
+          }
           break;
         }
         case 'executor_sessions':{const workspace=await service.engineering.resolve({project_id:args.project_id});value=await bridge.dispatch.sessions(workspace.root_path,args.program);break;}

@@ -2055,6 +2055,7 @@ function App() {
                 <EngineeringWorkspace
                   key={project.project_id}
                   project={project}
+                  snapshotFiles={snapshot?.files}
                   page={reading.view === 'materials' ? 'materials' : 'records'}
                   requestedTask={requestedTask}
                   onTaskOpened={() => setRequestedTask('')}
