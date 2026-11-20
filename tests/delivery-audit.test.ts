@@ -48,6 +48,37 @@ const task: EngineeringTask = {
 const evidence: VerificationEvidence = {evidence_id:'e', command:'npm test', cwd:'/project', outcome:'passed', exit_code:0, origin:'observed',
   code_state:state, created_at:'now', log_path:'development/t/command.log'};
 
+test('CTest uses the last aggregate and distinguishes zero tests from success', () => {
+  const inspect = (output: string) => inspectVerificationOutput('ctest --test-dir build', 0, output);
+  assert.deepEqual(inspect('30% tests passed, 7 tests failed out of 10\n100% tests passed, 0 tests failed out of 4'), {total:4, passed:4, failed:0, label:'通过 4 项'});
+  assert.deepEqual(inspect('66% tests passed, 1 tests failed out of 3'), {total:3, passed:2, failed:1, label:'验证失败'});
+  assert.equal(inspect('0 tests failed out of 1').passed, 1);
+  for (const output of ['No tests were found!!!', '0 tests failed out of 0', ' \n']) {
+    assert.equal(inspect(output).suspicious_empty, true);
+  }
+});
+
+test('GoogleTest counts result totals and ignores individual case lines', () => {
+  const inspect = (output: string) => inspectVerificationOutput('./unit-tests', 0, output);
+  assert.equal(inspect('[  PASSED  ] 4 tests.').passed, 4);
+  assert.equal(inspect('\x1b[32m[PASSED]\x1b[0m 1 test.').passed, 1);
+  const mixed = '[  PASSED  ] 2 tests.\n[  FAILED  ] 1 test, listed below:\n[  FAILED  ] Suite.Bad\n[ SKIPPED ] 1 test.';
+  assert.deepEqual(inspect(mixed), {total:4, passed:2, failed:1, skipped:1, label:'验证失败'});
+  assert.deepEqual(inspect('[==========] 0 tests from 0 test suites ran. (0 ms total)\n[  PASSED  ] 0 tests.'),
+    {total:0, suspicious_empty:true, label:'空跑或跳过'});
+  for (const output of ['[==========] 0 tests from 0 test suites ran. (0 ms total)', '0 tests from 0 test suites ran.', '[SKIPPED] 2 tests.']) {
+    assert.equal(inspect(output).suspicious_empty, true);
+  }
+});
+
+test('delivery re-inspects stored CTest and GoogleTest logs over saved counters', () => {
+  const verified = {...task, verification_status:'passed' as const, verification:[{...evidence, command:'ctest', metrics:{passed:100}}]};
+  assert.equal(auditDelivery(verified, [], {e:'100% tests passed, 0 tests failed out of 1'}).verification.label, '通过 1 项');
+  assert.equal(auditDelivery(verified, [], {e:''}).verification.status, 'suspicious_empty');
+  assert.equal(auditDelivery(verified, [], {[evidence.log_path!]:'ctest\n'}).verification.status, 'suspicious_empty');
+  assert.equal(auditDelivery(verified, [], {e:'[  FAILED  ] 1 test, listed below:'}).verification.status, 'failed');
+});
+
 test('audits approved files and effective redlines and matches current materials by exact source path', () => {
   const step = {step_id:'s', title:'Keep view', change:'', status:'completed' as const, progress:'', criteria:[], evidence_ids:[], unresolved:[], created_at:'', updated_at:''};
   const changes = [{path:'ui/view.ts', ownership:'preexisting_overlap' as const, before_sha256:'a', after_sha256:'b'},

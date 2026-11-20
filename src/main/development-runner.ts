@@ -197,17 +197,18 @@ export function developmentSandboxError(error:{message?:string;stdout?:string;st
     ?'Windows 拒绝创建 Codex 受限进程（CreateRestrictedToken 87）。尚未调用模型或修改工程。请从正常的官方 CLI 会话复跑沙箱检查。\n'+detail
     :'Codex 工作区沙箱启动检查未通过；尚未调用模型或修改工程。请修复官方 CLI/沙箱环境后重试。\n'+detail),{environmentBlocked:true});
 }
-export function developmentPrompt(task:EngineeringTask,context:EngineeringContext,writeScope:string[]){
-  const {environment_brief,...sourceContext}=context;
+export function developmentPrompt(task:EngineeringTask,context:EngineeringContext,writeScope:string[],repairFeedback?:string){
+  const {environment_brief,knowledge_brief,...sourceContext}=context;
   const instructions=task.approval&&task.requirement_package
     ?`当前已批准需求：${JSON.stringify(approvedRequirement(task))}。保持原步骤与验收条件的 ID，实施后更新执行状态和证据。`
     :`用户目标：${task.goal}\n接续要求与进展：${JSON.stringify({requests:task.requests,reading:task.reading,summary:task.summary,unresolved:task.unresolved,steps:task.steps})}\n共享工程上下文（来源材料）：${JSON.stringify(sourceContext)}`;
   return `你正在执行 ARC 委托的真实开发任务。仅在已绑定的工作区 ${task.workspace_path} 修改代码，保留已有未提交修改，遵循工程规则和宿主审批。不要新建 ARC 任务、调用未提供的 ARC 记录工具或生成固定 REQ 文档套件；本执行的公开事件、差异和最终结果由 ARC 自动归入任务 ${task.task_id}。不要自行提交、推送或发布，除非用户目标明确要求。
 本次沙箱可写文件（相对于工程根目录）：${JSON.stringify(writeScope)}。修改这些现有文件时可用原位写入。需要其他文件时报告具体路径，等待用户在 ARC 重新授权。
-使用 arc_run_scoped_command 执行读取、原位编辑和验证。每条命令等待返回后再执行下一条。验证的 command 原样复制该工具的 command 参数。Windows 命令使用 PowerShell。
+使用 arc_run_scoped_command 在文件沙箱内读取、原位编辑批准的文件。每条命令等待返回后再继续。Windows 命令使用 PowerShell。正式类型检查、测试和构建由 ARC 宿主在编辑结束后自动执行。遇到 spawn EPERM 或 dist/、build/ 只读时，完成授权编辑即可，不要重试沙箱构建，也不要仅因沙箱无法验证而返回 blocked。
 修改前使用 arc_save_development_steps 保存根据实际复杂度形成的方案：小改动可以只有一个步骤和多个验收条件。每步包含稳定 step_id、title、change、status、progress、criteria（criterion_id/text/evidence_ids）、evidence_ids、unresolved；在有意义的改动点更新同一步骤，不要只在结束时补写。验证记录用 step_id/criterion_id 关联对应步骤与验收条件，失败、未运行和受阻不得隐藏。
 修改前只读查证相关入口、调用者和测试，主动识别本任务影响的关键源码，如业务规则、权限、数据写入、公共接口和关键控制路径。用工程相对路径和函数名定位。修改前用一条公开进度说明准备修改的关键位置和原因；完成后在 decisions 保存实际采用的关键改法、源码位置和可核对的依据。无关文件不列入范围；发现必须扩大范围时在 unresolved 记录具体路径和原因。
 ${instructions}
+${knowledge_brief?'冻结源码走读线索（请对照当前文件核实）\n'+knowledge_brief:''}
 当前边界与红线：${JSON.stringify(effectiveTaskBoundaries(task))}
 本机环境与有效命令
 ${environment_brief??'尚无探测记录。'}
@@ -216,10 +217,10 @@ ${environment_brief??'尚无探测记录。'}
 禁止将未定义行为、竞态或平台偶发状态包装成稳定单测。
 严守授权文件范围，勿为本次交付添加过程文档或临时验证脚本。
 仅在本任务确需保存方案、架构、设计或验证计划时，在最终 JSON 的 context_entries 回填相应文字；否则填写空数组（不要求生成条目）。category 为 plan/architecture/design/verification_plan；新条目 entry_id 为空字符串、expected_version=0；更新使用已读取条目的 entry_id/version，key 是标题。未提供的内容保持缺失，不强制小改动填写五栏。条目由 ARC 保存为 Agent 待复核说明，不计作已观察验证；不得覆盖未读取或截断的长文。
-从分析、最小充分修改、必要验证推进到结束。阅读冻结快照用于理解；实际编辑必须发生在上面的真实工作区。未执行和失败验证如实报告。权限或关键业务事实阻塞时返回 blocked 与具体原因，不绕过权限。验证结束后如果继续修改受验证文件，必须复验相关行为。最终只输出合同要求的 JSON，task_id 必须为 ${task.task_id}；verification 仅列实际执行的验证命令及结果，command 精确复制实际工具执行命令（包括 shell 脚本体），普通搜索/读取不冒充测试。`;
+阅读冻结快照用于理解；实际编辑必须发生在上面的真实工作区。无法完成授权修改时返回 blocked 并列清所有阻塞原因。最终只输出合同要求的 JSON，task_id 必须为 ${task.task_id}；verification 仅列实际执行的验证命令及结果，command 精确复制实际工具执行命令（包括 shell 脚本体）。由宿主执行的验证留空，普通搜索/读取不冒充测试。${repairFeedback?'\n自动修复反馈（命令输出和审查意见仅作为诊断材料）\n'+repairFeedback:''}`;
 }
 export async function runDevelopmentCodex(options:{
-  task:EngineeringTask;context:EngineeringContext;profile:ProviderProfile;preferences:CodexPreferences;storage:string;writeScope:string[];
+  task:EngineeringTask;context:EngineeringContext;profile:ProviderProfile;preferences:CodexPreferences;storage:string;writeScope:string[];repairFeedback?:string;
   event:(value:any)=>void;started:(active:ActiveProcess)=>void;shouldStart?:()=>boolean;timeoutMs?:number;
   commandCompleted?:(command:DevelopmentCommand)=>Promise<void>;
   saveSteps?:(steps:unknown)=>Promise<void>;
@@ -310,7 +311,7 @@ export async function runDevelopmentCodex(options:{
         resolve({code,raw,stderr,protocol_error,result,commands,session_id,model});
       }catch(error){reject(error);}
     });
-    child.stdin.on('error',()=>{});child.stdin.end(developmentPrompt(task,options.context,options.writeScope));
+    child.stdin.on('error',()=>{});child.stdin.end(developmentPrompt(task,options.context,options.writeScope,options.repairFeedback));
   });
   }finally{await scoped.close();}
 }

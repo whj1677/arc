@@ -34,12 +34,14 @@ test('approved prompts use current behaviors, boundaries and host commands witho
     steps:[{step_id:'now',title:'current-step',change:'implement',status:'pending',criteria:[{criterion_id:'verify',text:'check-current'}]},
       {title:'old-step',status:'superseded'}],
   } as EngineeringTask;
-  const context={environment_brief:'测试：npm run verify-local',entries:[{text:'old-material'}]} as EngineeringContext;
+  const context={environment_brief:'测试：npm run verify-local',knowledge_brief:'调用：readCart -> price (cart.ts)',entries:[{text:'old-material'}]} as EngineeringContext;
   for(const prompt of [developmentPrompt(task,context,task.approval!.scope),requirementPrompt(task,context)]){
+    assert.equal(prompt.split(context.knowledge_brief!).length,2);
     for(const expected of ['effective-behavior','current.ts','current-step','check-current','keep-current-decision','preserve-export','cancel-webhook','测试：npm run verify-local'])assert.ok(prompt.includes(expected),expected);
     for(const old of ['old-goal','old-summary','old-request','old-issue','old-assumption','removed-boundary','old-step','old-material'])assert.ok(!prompt.includes(old),old);
   }
-  const codex=developmentPrompt(task,context,task.approval!.scope);
+  const codex=developmentPrompt(task,context,task.approval!.scope,'npm test: expected 2, got 1');
+  assert.match(codex,/自动修复反馈[\s\S]*npm test: expected 2, got 1/);
   for(const guard of ['禁止空跑或跳过测试冒充通过','禁止将未定义行为','严守授权文件范围'])assert.ok(codex.includes(guard));
   const planning=requirementPrompt({...task,workflow:'analysis',boundaries:undefined},context);
   for(const expected of ['old-goal','old-request','old-material','assumptions','open_questions','non_goals','revoked','removed-boundary','npm run verify-local'])assert.ok(planning.includes(expected),expected);

@@ -1,4 +1,4 @@
-import {test} from 'node:test';
+import {test,type TestContext} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -8,6 +8,9 @@ import {ArcService} from '../src/main/service';
 import {DevelopmentService,commandBody} from '../src/main/development-service';
 import type {runDevelopmentCodex} from '../src/main/development-runner';
 import {developmentSandboxError} from '../src/main/development-runner';
+import type {runHostVerification} from '../src/main/development-verify';
+import type {reviewDevelopmentDiff} from '../src/main/development-review';
+import {auditDelivery,sameVerificationState} from '../src/delivery-audit';
 import type {ProviderProfile} from '../src/shared';
 import type {runCodex} from '../src/main/providers';
 import {DshMalformedReply,type runDshWeb} from '../src/main/dsh-web';
@@ -45,6 +48,135 @@ const requirementPlan={summary:'Approve the change to the existing value',propos
     criterion_id:'value',text:'The value is 2',evidence_ids:[],
   }],evidence_ids:[],unresolved:[]}],
 };
+
+async function runApprovedQualityGate(t:TestContext,hostRuns:('pass'|'fail'|'skip'|'partial')[],reviews:('approved'|'needs_fix')[],blockers:string[] = [],summary?:string,sandboxCommand='npm test') {
+  const f=await fixture(),calls:string[]=[],feedback:string[]=[];
+  const runner:typeof runDevelopmentCodex=async options=>{
+    calls.push('edit');
+    assert.deepEqual(options.writeScope,['main.ts']);
+    if(options.repairFeedback)feedback.push(options.repairFeedback);
+    const needsRepair=hostRuns[0]==='fail'||reviews[0]==='needs_fix';
+    await fs.writeFile(path.join(f.source,'main.ts'),`export const value=${needsRepair&&!feedback.length?0:2};\n`);
+    const reply=completed(options.task.task_id);
+    if(!blockers.length&&!summary)return reply;
+    await options.commandCompleted!({id:'sandbox',command:`pwsh.exe -Command "${sandboxCommand}"`,cwd:f.source,cwd_source:'task_workspace',exit_code:1,
+      output:'spawn EPERM',completed_at:new Date().toISOString()});
+    return {...reply,result:{...reply.result,status:'blocked',summary:summary??'沙箱中无法完成验证',unresolved:blockers,
+      verification:[{command:sandboxCommand,outcome:'blocked',note:blockers[0]??summary!,step_id:'update',criterion_id:'value'}]}};
+  };
+  let hostCount=0,reviewCount=0;
+  const host:typeof runHostVerification=async options=>{
+    calls.push('host');
+    const status=hostRuns[hostCount++];
+    assert.ok(status,'unexpected host verification');
+    assert.equal(options.workspace,f.source);
+    assert.equal(options.env.project_id,f.project.project_id);
+    const skipped=status==='skip'||status==='partial'?['本机缺少 CMake，已跳过本地构建。']:[];
+    if(status==='skip')return {commands:[],failed:[],skipped};
+    const code=status==='fail'?1:0;
+    const command={id:'host-'+hostCount,command:'npm test',cwd:options.workspace,cwd_source:'task_workspace' as const,exit_code:code,
+      output:'# tests 1\n# pass '+(1-code)+'\n# fail '+code+(code?'\nexpected 2, got 0':''),completed_at:new Date().toISOString()};
+    await options.onCommand!(command);
+    return {commands:[command],failed:code?[{command:command.command,exit_code:code,reason:'assertion failed',output:command.output}]:[],skipped};
+  };
+  const review:typeof reviewDevelopmentDiff=async options=>{
+    calls.push('review');
+    const verdict=reviews[reviewCount++];
+    assert.ok(verdict,'unexpected diff review');
+    assert.deepEqual(options.writeScope,['main.ts']);
+    assert.match(options.verificationSummary,hostRuns[hostCount-1]==='skip'?/缺少 CMake/:/npm test/);
+    return {verdict,summary:verdict==='approved'?'边界条件已覆盖':'缺少空值处理',notes:[],
+      blocking_issues:verdict==='approved'?[]:[{file:'main.ts',issue:'空值导致异常',fix:'空值应返回 0'}]};
+  };
+  const development=new DevelopmentService(f.service.engineering,f.service.store,path.resolve('.'),()=>{},runner,probe,configuration,
+    async()=>({code:0,raw:JSON.stringify(requirementPlan),stderr:''}),undefined,host,review);
+  t.after(async()=>{await development.shutdown();await f.close();});
+  const input={project_id:f.project.project_id,goal:'修改 main.ts 的导出值',submission_key:'quality-plan'};
+  const task=await development.submit(input,'codex');
+  const finish=async()=>{await Promise.all([...development.executing.values()]);return f.service.engineering.task(task.task_id);};
+  const plan=await finish();
+  assert.deepEqual(calls,[]);
+  await development.submit({...input,submission_key:'quality-approve',task_id:task.task_id,expected_version:plan.version,
+    phase:'execution',scope:['main.ts']},'codex');
+  const saved=await finish();
+  return {saved,feedback,calls,directory:f.service.directory,stages:development.events(task.task_id).events.map(event=>event.stage)};
+}
+
+test('host failure gets one repair and recheck, with all observed receipts bound to the edited code',async t=>{
+  const {saved,feedback,calls,directory,stages}=await runApprovedQualityGate(t,['fail','pass'],['approved']);
+  assert.deepEqual(calls,['edit','host','edit','host','review']);
+  assert.equal(stages.filter(stage=>stage==='host_verify_repair').length,1);
+  assert.equal(feedback.length,1);
+  for(const detail of ['npm test','assertion failed','expected 2, got 0'])assert.ok(feedback[0].includes(detail));
+  assert.equal(saved.status,'completed');
+  assert.equal(saved.verification_status,'passed');
+  assert.deepEqual(saved.verification.map(v=>[v.origin,v.exit_code,v.metrics?.passed]),[['observed',1,0],['observed',0,1]]);
+  const [old,current]=saved.verification;
+  assert.equal(sameVerificationState(old.code_state,saved.end_state!),false);
+  assert.ok(sameVerificationState(current.code_state,saved.end_state!));
+  assert.equal(current.code_state_verified,true);
+  const logs=Object.fromEntries(await Promise.all(saved.verification.map(async v=>[v.evidence_id,await fs.readFile(path.join(directory,v.log_path!),'utf8')])));
+  assert.match(logs[old.evidence_id],/expected 2, got 0/);
+  assert.equal(auditDelivery(saved,[],logs).verification.status,'passed');
+});
+
+test('a repeated host failure stays failed and never reaches the independent reviewer',async t=>{
+  const {saved,calls}=await runApprovedQualityGate(t,['fail','fail'],[]);
+  assert.deepEqual(calls,['edit','host','edit','host']);
+  assert.equal(saved.status,'failed');assert.equal(saved.verification_status,'failed');
+  assert.match(saved.unresolved.join('\n'),/npm test/);
+});
+
+test('diff blockers trigger one bounded repair, another host check and a fresh independent verdict',async t=>{
+  for(const finalVerdict of ['approved','needs_fix'] as const){
+    const {saved,feedback,calls,stages}=await runApprovedQualityGate(t,['pass','pass'],['needs_fix',finalVerdict]);
+    assert.deepEqual(calls,['edit','host','review','edit','host','review']);
+    assert.equal(stages.filter(stage=>stage==='delivery_review_repair').length,1);
+    assert.equal(feedback.length,1);
+    for(const detail of ['main.ts','空值导致异常','空值应返回 0'])assert.ok(feedback[0].includes(detail));
+    if(finalVerdict==='approved'){
+      assert.equal(saved.status,'completed');assert.equal(saved.verification_status,'passed');
+      assert.match(saved.decisions.join('\n'),/边界条件已覆盖/);
+    }else{
+      assert.equal(saved.status,'blocked');
+      assert.match(saved.unresolved.join('\n'),/空值导致异常/);
+    }
+  }
+});
+
+test('an unavailable toolchain reaches review without manufacturing a verification pass',async t=>{
+  const {saved,calls}=await runApprovedQualityGate(t,['skip'],['approved']);
+  assert.deepEqual(calls,['edit','host','review']);
+  assert.equal(saved.status,'completed');assert.equal(saved.verification_status,'not_run');
+  assert.deepEqual(saved.verification,[]);
+  assert.match(saved.decisions.join('\n'),/缺少 CMake/);
+  const mixed=await runApprovedQualityGate(t,['partial'],['approved']);
+  assert.equal(mixed.saved.status,'completed');
+  assert.equal(mixed.saved.verification[0].outcome,'passed');
+  assert.equal(mixed.saved.verification_status,'partial');
+  assert.equal(auditDelivery(mixed.saved,[]).verification.status,'partial');
+});
+
+test('only a resolved sandbox verification blocker can be promoted by a passing host receipt',async t=>{
+  const sandbox='沙箱内 npm test 遇到 spawn EPERM，无法运行测试';
+  for(const [host,blockers,summary,sandboxCommand,expected] of [
+    ['pass',[sandbox],undefined,'npm test','completed'],
+    ['pass',[sandbox,'业务规则缺少确认'],undefined,'npm test','blocked'],
+    ['skip',[sandbox],undefined,'npm test','blocked'],
+    ['pass',[sandbox],'缺少业务规则确认，尚未实现对应逻辑','npm test','blocked'],
+    ['pass',['沙箱内 npm run build 遇到 EACCES，无法构建'],undefined,'npm run build','blocked'],
+  ] as const){
+    const {saved,calls}=await runApprovedQualityGate(t,[host],['approved'],[...blockers],summary,sandboxCommand);
+    assert.deepEqual(calls,['edit','host','review']);
+    assert.equal(saved.status,expected,JSON.stringify({host,blockers,summary:saved.summary,unresolved:saved.unresolved}));
+    if(expected==='completed'){
+      assert.deepEqual(saved.unresolved,[]);assert.equal(saved.verification_status,'passed');
+      assert.deepEqual(saved.verification.map(v=>[v.origin,v.exit_code]),[['observed',1],['observed',0]]);
+      assert.deepEqual(saved.verification.map(v=>[v.step_id,v.criterion_id]),[['update','value'],['update','value']]);
+      assert.equal(auditDelivery(saved,[]).verification.status,'passed');
+    }else assert.ok(saved.unresolved.includes(blockers.at(-1)!));
+  }
+});
 
 test('direct Codex plans read-only and only runs approved execution with linked verification',async()=>{
   const f=await fixture();let plans=0,configured=0,executions=0;

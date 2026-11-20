@@ -4,6 +4,23 @@ import {effectiveTaskBoundaries,taskBoundaryKey} from './task-boundaries';
 type Metrics = NonNullable<VerificationEvidence['metrics']>;
 type Inspection = Metrics & {skipped_flag?: boolean; label: string};
 
+// Only strip a known shell wrapper; never match a test name as a substring of
+// an unrelated command (for example `echo npm test`).
+export function commandBody(value:string){
+  let body=value.trim();
+  const wrapped=body.match(/^(?:"(?:[^"]*[\\/])?(?:powershell|pwsh|bash|sh)(?:\.exe)?"|(?:\S*[\\/])?(?:powershell|pwsh|bash|sh)(?:\.exe)?)\s+(?:-[A-Za-z]+\s+)*?(?:-Command|-c)\s+([\s\S]+)$/i);
+  if(wrapped){
+    body=wrapped[1].trim();
+    // Codex prints the shell argument as adjacent shlex-quoted fragments.
+    // Decode the outer argument only. Quotes inside the script are significant.
+    if(/^(?:'[^']*'|"(?:[^"\\]|\\[\s\S])*")+$/.test(body)){
+      const fragments=body.matchAll(/'([^']*)'|"((?:[^"\\]|\\[\s\S])*)"/g);
+      body=Array.from(fragments,([,single,double])=>single??double.replace(/\\(["\\$\x60]|\r?\n)/g,(_,escaped)=>escaped.endsWith('\n')?'':escaped)).join('');
+    }
+  }
+  return body.replace(/\r\n/g,'\n').trim();
+}
+
 function summaryCounts(text: string): Metrics {
   const counts: Metrics = {};
   for (const match of text.matchAll(/(\d+)\s+(passed|failed|errors?|skipped|pending|todo|xfailed|xpassed|total)\b/gi)) {
@@ -61,6 +78,25 @@ function runnerCounts(output: string): Metrics {
   }
   goResults.push(...pending);
   if (goResults.length) return {total: goResults.length, passed: goResults.filter(s => s === 'PASS').length, failed: goResults.filter(s => s === 'FAIL').length, skipped: goResults.filter(s => s === 'SKIP').length};
+  const ctestSummary = /^(?:\d+%\s+tests passed,\s*)?(\d+) tests failed out of (\d+)$/;
+  const ctest = lines.findLast(line => ctestSummary.test(line))?.match(ctestSummary);
+  if (ctest) {
+    const failed = Number(ctest[1]), total = Number(ctest[2]);
+    return {total, passed: total - failed, failed};
+  }
+  const gtest = {total: 0, passed: 0, failed: 0, skipped: 0};
+  let hasSummary = false;
+  for (const line of lines) {
+    const match = /^\[\s*(PASSED|FAILED|SKIPPED)\s*\]\s+(\d+)\s+tests?\b/.exec(line);
+    if (match) {
+      hasSummary = true;
+      const count = Number(match[2]);
+      gtest[match[1].toLowerCase() as 'passed' | 'failed' | 'skipped'] += count;
+      gtest.total += count;
+    }
+  }
+  if (gtest.total === 0 && lines.some(line => /^(?:\[=+\]\s+)?0 tests from 0 test suites ran\./.test(line))) return {total: 0};
+  if (hasSummary) return gtest;
   return {};
 }
 
@@ -70,12 +106,12 @@ export function inspectVerificationOutput(command: string, exitCode: number | nu
   const text = output.replace(/\x1b\[[\d;]*m/g, '');
   const counts = runnerCounts(text);
   const skippedFlag = skipOption.test(command) || /(?:^|\n)\s*(?:\[INFO\]\s*)?Tests are skipped\./im.test(text);
-  const noTests = /(?:^|\n)\s*(?:=+\s*|\[INFO\]\s*)?(?:no tests? (?:ran|found|to run)|no test files found|collected 0 items)\b/im.test(text);
+  const noTests = /(?:^|\n)\s*(?:=+\s*|\[INFO\]\s*)?(?:no tests? (?:ran|found|to run|were found)|no test files found|collected 0 items)\b/im.test(text);
   const goPackages = text.split(/\r?\n/).filter(line => /^(ok|FAIL|\?)\s+/.test(line));
   const goEmpty = goPackages.length > 0 && goPackages.every(line => /\[(?:no test files|no tests to run)\]|\(cached\)/.test(line));
   const gradleTasks = [...text.matchAll(/^> Task (?:[\w:.-]*:)?test(?: (NO-SOURCE|SKIPPED|UP-TO-DATE|FROM-CACHE))?\s*$/gim)];
   const gradleEmpty = gradleTasks.length > 0 && gradleTasks.every(match => match[1]);
-  const silentTest = !text.trim() && /\b(?:node\s+--test|pytest|jest|vitest|go\s+test|(?:npm|yarn|pnpm)\s+(?:run\s+)?test)\b/i.test(command);
+  const silentTest = !text.trim() && /\b(?:node\s+--test|pytest|jest|vitest|go\s+test|ctest|(?:npm|yarn|pnpm)\s+(?:run\s+)?test)\b/i.test(command);
   const empty = skippedFlag || silentTest || counts.total === 0 || (counts.total !== undefined && counts.total === counts.skipped)
     || (counts.total === undefined && (noTests || goEmpty || gradleEmpty));
   if (counts.total === undefined && (noTests || goEmpty || gradleEmpty)) counts.total = 0;
@@ -115,9 +151,12 @@ function auditVerification(task: EngineeringTask, logs: Record<string, string>) 
   for (const item of task.verification) {
     if (!sameVerificationState(item.code_state, state)) continue;
     if (item.origin === 'observed' && (logs[item.evidence_id] !== undefined || (item.log_path && logs[item.log_path] !== undefined))) {
-      const output = logs[item.evidence_id] ?? logs[item.log_path!];
-      latest.set(item.command, {...item, metrics: inspectVerificationOutput(item.command, item.exit_code, output)});
-    } else latest.set(item.command, item);
+      const log = logs[item.evidence_id] ?? logs[item.log_path!];
+      // ARC command logs start with the executed command, followed by its output.
+      const header = item.command + '\n';
+      const output = log.startsWith(header) ? log.slice(header.length) : log;
+      latest.set(commandBody(item.command), {...item, metrics: inspectVerificationOutput(item.command, item.exit_code, output)});
+    } else latest.set(commandBody(item.command), item);
   }
   const checks = [...latest.values()];
   const empty = checks.some(e => e.origin === 'observed' && (e.metrics?.suspicious_empty || skipOption.test(e.command)));

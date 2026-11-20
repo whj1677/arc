@@ -67,6 +67,7 @@ export function activeContextEntries(entries: ContextEntry[]): ContextEntry[] {
 export interface EngineeringContext {
   material_sources?:MaterialSourceIndexEntry[];
   environment_brief?:string;
+  knowledge_brief?:string;
   project_id:string; workspace:WorkspaceBinding; version:number; code_state:CodeState;
   entries:ContextEntry[]; analysis_refs:{result_id:string; source_snapshot_id:string; status:string;summary:string;architecture?:boolean}[];
   analysis?:EngineeringAnalysis;
@@ -123,7 +124,7 @@ export interface RequirementPackage {
 export interface EngineeringTask {
   task_id:string; project_id:string; workspace_id:string; workspace_path:string;
   reading?:TaskReadingBinding; walkthrough?:WalkthroughUpdate;
-  version:number; submission_key:string; goal:string; scope:string[];
+  version:number; submission_key:string; title?:string; goal:string; scope:string[];
   workflow?:'analysis'|'ready'|'execution'; proposed_scope?:string[];
   requirement_package?:RequirementPackage;
   boundaries?:{non_goals:string[];revoked:string[]};
@@ -142,6 +143,7 @@ export interface EngineeringTask {
   origin?:'legacy_import'; legacy_import?:LegacyImport;
 }
 export interface DevelopmentAttempt {
+  skipped_verification?:string[];
   attempt_id:string; task_id:string; project_id:string; workspace_id:string; workspace_path:string;
   provider_id:ProviderId; model:string; origin:'arc'|'agent';
   status:'starting'|'running'|'completed'|'failed'|'cancelled'|'interrupted';

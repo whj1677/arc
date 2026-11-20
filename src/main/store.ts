@@ -33,6 +33,16 @@ export class Store {
       ORDER BY json_extract(json,'$.created_at') DESC, rowid DESC LIMIT 1`).get(project.overview_scenario_id, project.project_id);
     return row ? JSON.parse(String(row.json)) : undefined;
   }
+  developmentExplanations(project: Project): Explanation[] {
+    if (!project.overview_scenario_id) return [];
+    return this.db.prepare(`SELECT json FROM objects WHERE kind='explanation'
+      AND json_extract(json,'$.result.binding.project_id')=?
+      AND (json_extract(json,'$.scenario_id')=? AND json_type(json,'$.result.feature_catalog')='object'
+        OR json_extract(json,'$.source_status')='current' AND json_extract(json,'$.result.binding.source_snapshot_id')=?
+          AND json_array_length(json,'$.result.function_walkthroughs')>0)
+      ORDER BY json_extract(json,'$.created_at') DESC, rowid DESC`)
+      .all(project.project_id, project.overview_scenario_id, project.snapshot_id).map(row => JSON.parse(String(row.json)));
+  }
   projectContextEntries(projectId: string): ContextEntry[] {
     return this.db.prepare(`SELECT json FROM objects WHERE kind='engineering_context'
       AND json_extract(json,'$.project_id')=? ORDER BY rowid`).all(projectId).map(row => JSON.parse(String(row.json)));

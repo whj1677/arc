@@ -12,7 +12,8 @@ import {exportEngineeringProject,restoreEngineeringProject} from './engineering-
 import {scanAecLegacy,type AecScan,type AecLegacyDocument} from './aec-migration';
 import {readingTarget} from './prompt-context';
 import {ProjectEnvironmentService,formatEnvironmentBrief} from './env-probe';
-import {evidenceFailed,evidenceSupportsPass,sameVerificationState} from '../delivery-audit';
+import {buildDevelopmentKnowledgeBrief} from './development-knowledge';
+import {commandBody,evidenceFailed,evidenceSupportsPass,sameVerificationState} from '../delivery-audit';
 import type {Dispatch} from './external-dispatch';
 import {effectiveTaskBoundaries,taskBoundaryKey,uniqueTaskBoundaries} from '../task-boundaries';
 export {sameVerificationState} from '../delivery-audit';
@@ -165,7 +166,10 @@ export class EngineeringService {
     const entries=[...context.entries];
     while(context.next_offset!==null){context=await this.context({project_id:projectId,task_id:taskId,view:'execution',limit:40,offset:context.next_offset});entries.push(...context.entries);}
     const environment_brief=formatEnvironmentBrief(await this.projectEnvironment(projectId));
-    return {...context,environment_brief,entries:entries.map(e=>({...e,text:this.store.get<ContextEntry>(contextKind,e.entry_id).text,truncated:false})),next_offset:null};
+    const task=this.store.get<EngineeringTask>(taskKind,taskId);
+    const query=[task.title,task.goal,...(task.requests??[]).map(request=>request.text)].join('\n');
+    const knowledge_brief=buildDevelopmentKnowledgeBrief(this.store,projectId,query,[...task.scope,...(task.proposed_scope??[])]);
+    return {...context,environment_brief,knowledge_brief,entries:entries.map(e=>({...e,text:this.store.get<ContextEntry>(contextKind,e.entry_id).text,truncated:false})),next_offset:null};
   }
   async projectEnvironment(projectId:string,refresh=false){
     const workspace=await this.resolve({project_id:projectId});
@@ -436,7 +440,7 @@ export class EngineeringService {
   private currentStepStatus(task:EngineeringTask,step:DevelopmentStep,state?:CodeState|null):DevelopmentStep['verification_status'] {
     const ids=new Set([...step.evidence_ids,...step.criteria.flatMap(criterion=>criterion.evidence_ids)]),linked=task.verification.filter(item=>item.step_id===step.step_id||ids.has(item.evidence_id));
     if(!linked.length)return 'not_run';if(state===null)return 'stale';if(!state)return 'partial';const current=linked.filter(item=>sameVerificationState(item.code_state,state));if(!current.length)return 'stale';
-    const latest=new Map<string,VerificationEvidence>();for(const item of current)latest.set(item.command,item);const checks=[...latest.values()];
+    const latest=new Map<string,VerificationEvidence>();for(const item of current)latest.set(commandBody(item.command),item);const checks=[...latest.values()];
     if(checks.some(evidenceFailed))return 'failed';return checks.every(evidenceSupportsPass)?'passed':'partial';
   }
   private validateReading(projectId:string,input?:TaskReadingBinding):TaskReadingBinding|undefined {
@@ -533,7 +537,7 @@ export class EngineeringService {
   saveWalkthrough(taskId:string,update:WalkthroughUpdate,expectedUpdateId?:string):EngineeringTask {
     return this.store.transaction(()=>{const task=this.task(taskId);if(!task.reading)throw Error('任务没有关联的功能走读');if(expectedUpdateId!==undefined&&task.walkthrough?.update_id!==expectedUpdateId)return task;task.walkthrough=update;this.saveTask(task);this.changed();return task;});
   }
-  updateTask(input:UpdateEngineeringTask):EngineeringTask {
+  updateTask(input:UpdateEngineeringTask,hostReceipt=false):EngineeringTask {
     const key=this.receiptKey('update',input.task_id,input.submission_key),prior=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(prior)return prior;
     return this.store.transaction(()=>{const task=this.task(input.task_id);this.checkUpdate(task,input);
       if(input.summary!==undefined)task.summary=requireText(input.summary);
@@ -542,7 +546,7 @@ export class EngineeringService {
       if(input.proposed_scope)task.proposed_scope=input.proposed_scope.map(relativePath);
       if(input.steps)this.mergeSteps(task,input.steps);
       if(input.requirement_package!==undefined)this.validatePackage(task);
-      if(input.verification)for(const evidence of input.verification){this.checkEvidence(task,evidence);if(!task.verification.some(e=>e.evidence_id===evidence.evidence_id))task.verification.push(evidence);}
+      if(input.verification)for(const evidence of input.verification){this.checkEvidence(task,evidence,hostReceipt);if(!task.verification.some(e=>e.evidence_id===evidence.evidence_id))task.verification.push(evidence);}
       this.checkStepEvidence(task);
       if(input.status)task.status=input.status;task.verification_status=this.verificationStatus(task,task.end_state??task.baseline);
       this.saveTask(task);this.store.put('engineering_receipt',key,task);this.changed();return task;});
@@ -555,12 +559,12 @@ export class EngineeringService {
     if(input.attempt_id){const attempt=this.store.get<DevelopmentAttempt>(attemptKind,input.attempt_id);if(attempt.task_id!==task.task_id||task.attempt_ids.at(-1)!==attempt.attempt_id||['cancelled','interrupted'].includes(attempt.status))throw Error('此执行已取消、被替代或不属于此任务，拒绝迟到结果');}
     if(task.status==='cancelled'&&input.status&&input.status!=='cancelled')throw Error('已取消任务不能由迟到结果恢复，请显式重试执行');
   }
-  private checkEvidence(task:EngineeringTask,e:VerificationEvidence) {
+  private checkEvidence(task:EngineeringTask,e:VerificationEvidence,hostReceipt=false) {
     requireText(e.evidence_id,300);requireText(e.command);if(!samePath(e.cwd,task.workspace_path))throw Error('验证工作目录与任务不一致');
     const source=this.store.get<Snapshot>('snapshot',e.code_state.snapshot_id);if(source.project_id!==task.project_id||source.fingerprint!==e.code_state.fingerprint)throw Error('验证代码状态不属于此工程');
     if(!['observed','self_reported'].includes(e.origin)||!['passed','failed','blocked','not_run'].includes(e.outcome))throw Error('验证状态无效');
     if(e.outcome==='passed'&&e.exit_code!==0)throw Error('通过的命令必须有零退出码');if(e.log_path)this.checkLogPath(task,e.log_path);
-    if(task.approval&&!(e.step_id&&e.criterion_id)&&!task.steps?.some(step=>step.criteria.some(criterion=>criterion.evidence_ids.includes(e.evidence_id))))throw Error('需求执行的验证证据须关联批准的步骤与验收条件');
+    if(task.approval&&!hostReceipt&&!(e.step_id&&e.criterion_id)&&!task.steps?.some(step=>step.criteria.some(criterion=>criterion.evidence_ids.includes(e.evidence_id))))throw Error('需求执行的验证证据须关联批准的步骤与验收条件');
     if(e.step_id){const step=task.steps?.find(item=>item.step_id===e.step_id);if(!step)throw Error('验证证据引用了不存在的步骤');if(e.criterion_id&&!step.criteria.some(item=>item.criterion_id===e.criterion_id))throw Error('验证证据引用了不存在的验收条件');}
     else if(e.criterion_id)throw Error('验收条件关联必须同时指定步骤');
   }
@@ -570,8 +574,11 @@ export class EngineeringService {
     if(task.changes_status==='needs_review')return 'stale';
     const current=task.verification.filter(e=>sameVerificationState(e.code_state,state));
     if(!current.length&&task.verification.some(e=>!e.code_state.workspace_fingerprint&&e.code_state.fingerprint===state.fingerprint&&e.code_state.head===state.head))return 'partial';
-    if(!current.length)return 'stale';const latest=new Map<string,VerificationEvidence>();for(const e of current)latest.set(e.command,e);const checks=[...latest.values()];
-    if(checks.some(evidenceFailed))return 'failed';if(checks.every(evidenceSupportsPass))return 'passed';return 'partial';
+    if(!current.length)return 'stale';const latest=new Map<string,VerificationEvidence>();for(const e of current)latest.set(commandBody(e.command),e);const checks=[...latest.values()];
+    if(checks.some(evidenceFailed))return 'failed';
+    const attemptId=task.attempt_ids.at(-1);
+    if(attemptId&&this.store.maybe<DevelopmentAttempt>(attemptKind,attemptId)?.skipped_verification?.length)return 'partial';
+    return checks.every(evidenceSupportsPass)?'passed':'partial';
   }
   async finishTask(input:FinishEngineeringTask,maySave:()=>boolean=()=>true):Promise<EngineeringTask> {
     const key=this.receiptKey('finish',input.task_id,input.submission_key),prior=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(prior)return prior;
@@ -607,6 +614,7 @@ export class EngineeringService {
         else {this.validatePackage(current);current.workflow='ready';current.status='pending';}
       }
       for(const evidence of input.verification??[]){this.checkEvidence(current,evidence);if(!current.verification.some(e=>e.evidence_id===evidence.evidence_id))current.verification.push(evidence);}
+      current.verification.sort((a,b)=>a.created_at.localeCompare(b.created_at));
       this.checkStepEvidence(current);
       if(!analyzing&&current.reading&&(input.status==='completed'||current.changes.length>0)){
         const previous=current.walkthrough,result=previous?.result_id?this.store.maybe<Explanation>('explanation',previous.result_id):null,unchanged=attemptFiles?[...new Set([...attemptFiles.keys(),...afterFiles.keys()])].every(file=>attemptFiles.get(file)===afterFiles.get(file)):current.changes.length===0;
