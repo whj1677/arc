@@ -196,6 +196,7 @@ export function DetailPane({
           ['history', '历史'],
         ];
 
+  const summaryRequest = React.useRef<(question: string) => void>(null);
   const restoreKey =
     loadedKey +
     ':' +
@@ -259,7 +260,9 @@ export function DetailPane({
             ) : featureReading ? (
               <p>当前功能尚未有分析说明，可以直接提问。</p>
             ) : reading.view === 'files' && sourceSnapshot ? (
-              <FileSummary data={data} projectId={projectId} snapshot={sourceSnapshot} path={selectedFile} ask={askHere} />
+              <FileSummary data={data} projectId={projectId} snapshot={sourceSnapshot} path={selectedFile}
+                disabled={project?.fictional || sourceSnapshot.source_snapshot_id !== (result?.binding.source_snapshot_id || project?.snapshot_id)}
+                ask={question => { summaryRequest.current?.(question); askHere(); }} />
             ) : reading.view === 'functions' && result && functionStep ? (
               <FunctionStepDetail result={result} selection={functionStep} select={select} evidence={evidence} />
             ) : reading.view === 'functions' && result && selectedNode?.kind === 'function' ? (
@@ -479,6 +482,7 @@ export function DetailPane({
         {project && (
           <div hidden={reading.detail_tab !== 'questions'}>
             <ReadingQuestions
+              summaryRequest={summaryRequest}
               data={data}
               projectId={projectId}
               scenarioId={scenarioId}

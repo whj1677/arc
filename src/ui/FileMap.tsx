@@ -1,10 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import type { SourceFile } from '../shared';
-import { fileIndex, type FileTopic } from './file-map';
+import { fileIndex, type FileTopic, type SourceCoverage } from './file-map';
 
 interface FileMapProps {
   files: readonly SourceFile[];
-  analyzedPaths: ReadonlySet<string>;
+  analyzedPaths: SourceCoverage;
   title: string;
   expanded: readonly string[];
   toggle: (path: string) => void;
@@ -24,8 +24,8 @@ export function FileMap({ files, analyzedPaths, title, expanded, toggle, selecte
   let visible = 0;
 
   const matches = (topic: FileTopic): boolean =>
-    (!filterAnalyzed || topic.analyzedCount > 0) &&
-    (!query || topic.path.toLowerCase().includes(query) || topic.children.some(matches));
+    ((!filterAnalyzed || analyzedPaths.has(topic.path) || topic.analyzedCount > 0) &&
+      (!query || topic.path.toLowerCase().includes(query))) || topic.children.some(matches);
 
   const renderChildren = (topic: FileTopic, depth: number): React.ReactNode => {
     const children = topic.children.filter(matches);
@@ -43,7 +43,7 @@ export function FileMap({ files, analyzedPaths, title, expanded, toggle, selecte
   };
 
   function renderRow(topic: FileTopic, label: string) {
-    const analyzed = analyzedPaths.has(topic.path);
+    const analyzed = analyzedPaths.get(topic.path);
     return (
       <button
         className={`filemap-select${selected === topic.path ? ' selected' : ''}${analyzed ? ' is-analyzed' : ''}`}
@@ -55,9 +55,11 @@ export function FileMap({ files, analyzedPaths, title, expanded, toggle, selecte
         <span className="filemap-icon" aria-hidden="true" />
         <strong>{label}</strong>
         {topic.folder && <small aria-label={`${topic.count} 个文本文件`}>{topic.count}</small>}
-        {topic.folder && topic.analyzedCount > 0 ? (
-          <span className="filemap-badge">{topic.analyzedCount}/{topic.count} 已分析</span>
-        ) : analyzed && <span className="filemap-badge">已分析</span>}
+        {analyzed ? (
+          <span className="filemap-badge">{analyzed === 'explained' ? '已解释' : '已引用'}</span>
+        ) : topic.folder && topic.analyzedCount > 0 && (
+          <span className="filemap-badge">{topic.analyzedCount}/{topic.count} 已涉及</span>
+        )}
       </button>
     );
   }
@@ -93,7 +95,7 @@ export function FileMap({ files, analyzedPaths, title, expanded, toggle, selecte
       {analyzedPaths.size > 0 && (
         <div className="filemap-filters" role="group" aria-label="源码目录筛选">
           <button aria-pressed={!filterAnalyzed} onClick={() => setAnalyzedOnly(false)}>全部文件（{root.count}）</button>
-          <button aria-pressed={filterAnalyzed} onClick={() => setAnalyzedOnly(true)}>已分析（{root.analyzedCount}）</button>
+          <button aria-pressed={filterAnalyzed} onClick={() => setAnalyzedOnly(true)}>已涉及（{root.analyzedCount}）</button>
         </div>
       )}
       <div className="filemap-tree">

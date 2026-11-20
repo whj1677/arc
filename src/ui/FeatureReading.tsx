@@ -1,6 +1,6 @@
 import React from 'react';
 import type {AnalysisResult,ReadingGuide,SourceEvidence} from '../shared';
-import {guideItem,guideItemTitle,guidePathForStep} from './feature-reading-model';
+import {guideItem,guideItemTitle,guidePathForStep,hasCollaborationRoles} from './feature-reading-model';
 import {timelineModel} from './timeline-model';
 import {BusinessDiagram,CollaborationDiagram,FilesDiagram} from './ReadingDiagrams';
 
@@ -11,15 +11,16 @@ export function FeatureReading({result,guide:g,view,pathId,selected,focus,search
   const ordered=!!result.reading_guide||timelineModel(result).ordered,query=search.trim().toLowerCase();
   const visibleFiles=g.files.filter(f=>!query||(f.path+f.title+f.description).toLowerCase().includes(query));
   const primary=path.files.flatMap(p=>visibleFiles.filter(f=>f.path===p)),other=visibleFiles.filter(f=>!path.files.includes(f.path));
+  const collaborationLink=hasCollaborationRoles(result)&&<button onClick={()=>onNavigate('collaboration')}>协作关系 →</button>;
   const common={guide:g,path,selected,search,zoom,onSelect};
   return <section className="feature-reading" aria-label={view==='timeline'?'业务流程':view==='collaboration'?'协作关系':'相关文件'}>
     <nav className="fr-paths" aria-label="选择业务入口">{g.paths.map(p=><button key={p.id} aria-pressed={path.id===p.id} onClick={()=>onPath(p.id)} title={p.entry}><strong>{p.label}</strong></button>)}</nav>
-    {!!guideItemTitle(g,focus)&&<div className="fr-context"><span>接着阅读：{guideItemTitle(g,focus)}</span><button onClick={()=>focus.startsWith('step:')?onStep(focus.slice(5)):onNavigate('collaboration',focus)}>返回{focus.startsWith('step:')?'这个步骤':'这项协作'} ↗</button></div>}
+    {(focus.startsWith('step:')||hasCollaborationRoles(result))&&!!guideItemTitle(g,focus)&&<div className="fr-context"><span>接着阅读：{guideItemTitle(g,focus)}</span><button onClick={()=>focus.startsWith('step:')?onStep(focus.slice(5)):onNavigate('collaboration',focus)}>返回{focus.startsWith('step:')?'这个步骤':'这项协作'} ↗</button></div>}
     <div className="fr-heading"><h2>{view==='timeline'?'一次操作，如何走到结果':view==='collaboration'?'谁与谁配合，交接什么':path.label+' · 文件分工'}</h2><span>{view==='timeline'?(ordered?'从左往右 → 先后顺序':'先后关系未确认 · 不连顺序线'):view==='collaboration'?'箭头表示交接方向 · 不表示执行顺序':'只展示本功能引用的文件'}</span></div>
     <p className="fr-entry-caption">{path.entry}</p>
-    {view==='timeline'&&<><BusinessDiagram {...common} result={result} ordered={ordered}/><div className="fr-next"><button onClick={()=>onNavigate('collaboration')}>协作关系 →</button><button onClick={()=>onNavigate('files')}>相关文件 →</button></div></>}
+    {view==='timeline'&&<><BusinessDiagram {...common} result={result} ordered={ordered}/><div className="fr-next">{collaborationLink}<button onClick={()=>onNavigate('files')}>相关文件 →</button></div></>}
     {view==='collaboration'&&<><CollaborationDiagram {...common}/><div className="fr-next"><button onClick={()=>onNavigate('timeline')}>业务时间图 →</button><button onClick={()=>onNavigate('files')}>相关文件 →</button></div></>}
-    {view==='files'&&<>{query&&<p className="muted">本功能内匹配到 {visibleFiles.length} 个文件</p>}<FilesDiagram files={primary} label={path.label} selected={selected} zoom={zoom} onSelect={onSelect}/>{other.length>0&&<details className="fr-other-files" key={result.result_id+path.id+!!query} open={query?true:undefined}><summary>本功能其他入口引用 · {other.length} 个文件</summary><FilesDiagram files={other} label="本功能其他入口" selected={selected} zoom={zoom} onSelect={onSelect}/></details>}<div className="fr-next"><button onClick={()=>onNavigate('timeline')}>业务时间图 →</button><button onClick={()=>onNavigate('collaboration')}>协作关系 →</button></div></>}
+    {view==='files'&&<>{query&&<p className="muted">本功能内匹配到 {visibleFiles.length} 个文件</p>}<FilesDiagram files={primary} label={path.label} selected={selected} zoom={zoom} onSelect={onSelect}/>{other.length>0&&<details className="fr-other-files" key={result.result_id+path.id+!!query} open={query?true:undefined}><summary>本功能其他入口引用 · {other.length} 个文件</summary><FilesDiagram files={other} label="本功能其他入口" selected={selected} zoom={zoom} onSelect={onSelect}/></details>}<div className="fr-next"><button onClick={()=>onNavigate('timeline')}>业务时间图 →</button>{collaborationLink}</div></>}
     <details className="fr-coverage"><summary>路径边界与尚未确认的内容</summary><p>{path.intro}</p>{path.boundary&&<p>{path.boundary}</p>}<p>{result.summary.text}</p>{result.coverage.unresolved_scope.map((text,i)=><p key={i}>{text}</p>)}</details>
   </section>;
 }

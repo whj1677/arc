@@ -1,5 +1,5 @@
 import type {CodeState, ContextEntry, EngineeringTask, MaterialSourceIndexEntry, VerificationEvidence} from './engineering';
-import {effectiveTaskBoundaries} from './task-boundaries';
+import {effectiveTaskBoundaries,taskBoundaryKey} from './task-boundaries';
 
 type Metrics = NonNullable<VerificationEvidence['metrics']>;
 type Inspection = Metrics & {skipped_flag?: boolean; label: string};
@@ -139,8 +139,11 @@ export function auditDelivery(task: EngineeringTask, contextEntries: (MaterialSo
   const overlap = task.changes.filter(change => change.ownership === 'preexisting_overlap').map(change => change.path);
   const scopeWarning = !!(out_of_scope.length || overlap.length || task.changes_status === 'needs_review');
   const sourceTexts = [task.summary, ...(task.steps ?? []).filter(s => s.status !== 'superseded').flatMap(s =>
-    [s.title, s.change, s.progress, ...s.criteria.map(c => c.text), ...s.unresolved]), ...task.changes.map(change => change.path)].map(text => text.toLowerCase());
-  const hits = effectiveTaskBoundaries(task).revoked.filter(term => sourceTexts.some(text => text.includes(term.toLowerCase())));
+    [s.title, s.change, s.progress, ...s.criteria.map(c => c.text), ...s.unresolved]), ...task.changes.map(change => change.path)].map(text => taskBoundaryKey(text).toLowerCase());
+  const hits = effectiveTaskBoundaries(task).revoked.filter(term => {
+    const key = taskBoundaryKey(term).toLowerCase();
+    return key && sourceTexts.some(text => text.includes(key));
+  });
   const changed = new Set(task.changes.map(change => pathKey(change.path)));
   const impacted_materials = contextEntries.filter(entry => entry.status !== 'superseded' && entry.sources.some(s => changed.has(pathKey(s.path))))
     .map(({entry_id, key, category}) => ({entry_id, key, category}));

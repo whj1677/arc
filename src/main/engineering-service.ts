@@ -13,7 +13,7 @@ import {readingTarget} from './prompt-context';
 import {ProjectEnvironmentService,formatEnvironmentBrief} from './env-probe';
 import {evidenceFailed,evidenceSupportsPass,sameVerificationState} from '../delivery-audit';
 import type {Dispatch} from './external-dispatch';
-import {effectiveTaskBoundaries} from '../task-boundaries';
+import {effectiveTaskBoundaries,taskBoundaryKey,uniqueTaskBoundaries} from '../task-boundaries';
 export {sameVerificationState} from '../delivery-audit';
 
 const exec=promisify(execFile), workspaceKind='engineering_workspace', contextKind='engineering_context', taskKind='engineering_task', attemptKind='development_attempt';
@@ -25,7 +25,7 @@ function stateFiles(snapshot:Snapshot,state?:Pick<CodeState,'assets'>) {
 }
 function boundaryList(value:unknown):string[] {
   if(!Array.isArray(value)||value.length>40)throw Error('每组边界最多可保存 40 项');
-  return [...new Set(value.map(item=>requireText(item,6000)))];
+  return uniqueTaskBoundaries(value.map(item=>requireText(item,6000)));
 }
 function normalizeTaskBoundaries(input:NonNullable<EngineeringTask['boundaries']>) {
   return {non_goals:boundaryList(input.non_goals),revoked:boundaryList(input.revoked)};
@@ -485,9 +485,9 @@ export class EngineeringService {
     // Keep edits made while planning and include newly proposed redlines in the review.
     if(task.boundaries){
       for(const key of ['non_goals','revoked'] as const){
-        const previous=task.requirement_package?.[key]??[];
-        const proposed=boundaryList(pkg[key]??[]).filter(item=>!previous.includes(item));
-        task.boundaries[key]=boundaryList([...new Set([...task.boundaries[key],...proposed])]);
+        const previous=new Set(task.requirement_package?.[key]?.map(taskBoundaryKey));
+        const proposed=boundaryList(pkg[key]??[]).filter(item=>!previous.has(taskBoundaryKey(item)));
+        task.boundaries[key]=boundaryList(uniqueTaskBoundaries([...task.boundaries[key],...proposed]));
       }
     }
     task.requirement_package=pkg;

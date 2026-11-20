@@ -39,6 +39,9 @@ export function featureReadingPosition(r:ReadingState):ReadingState {
 }
 
 export const featureViews=[['timeline','业务流程'],['collaboration','协作关系'],['functions','函数走读'],['files','相关文件']];
+export function hasCollaborationRoles(result?:AnalysisResult){
+  return !!result?.reading_guide?.roles?.length;
+}
 
 // Business paths are shared by the three reading pages. Auxiliary function
 // paths must not replace that selection when the user returns from a helper.

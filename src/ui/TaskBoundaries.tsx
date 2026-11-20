@@ -1,6 +1,6 @@
 import React,{useRef,useState} from 'react';
 import type {EngineeringTask} from '../engineering';
-import {effectiveTaskBoundaries} from '../task-boundaries';
+import {effectiveTaskBoundaries,taskBoundaryKey} from '../task-boundaries';
 import './task-boundaries.css';
 
 const labels={non_goals:'本轮不改',revoked:'已撤销红线'} as const;
@@ -38,7 +38,8 @@ export function TaskBoundaries({task,title='当前边界与红线',readOnly=fals
   async function add() {
     const text=value.trim();
     if(!text)return;
-    if(boundaries[kind].includes(text)){setError('这条边界已存在。');return;}
+    const key=taskBoundaryKey(text);
+    if(boundaries[kind].some(item=>taskBoundaryKey(item)===key)){setError('这条边界已存在。');return;}
     if(await save({...boundaries,[kind]:[...boundaries[kind],text]}))closeEditor();
   }
   const locked=saving||disabled;

@@ -2,7 +2,6 @@ import React from 'react';
 import { hasFunctionGraphs, type Explanation, type Feature, type Project, type ReadingState, type WorkspaceData } from '../shared';
 import { discoveredFeature } from '../discovered-feature';
 import { explanationFreshness } from '../freshness';
-import { featureViews } from './feature-reading-model';
 import { compactTitle, sceneStatus } from './presentation';
 import { ScrollPanel } from './workbench-primitives';
 
@@ -20,6 +19,7 @@ export interface CatalogSidebarProps {
   catalogReading: boolean;
   preview: unknown;
   featureTabs?: readonly (readonly [string, string])[] | string[][];
+  availableViews: readonly string[][];
   archiveVisible: boolean;
   setArchiveVisible: (visible: boolean) => void;
   featureOpen: (featureId: string) => boolean;
@@ -46,6 +46,7 @@ export function CatalogSidebar({
   catalogReading,
   preview,
   featureTabs,
+  availableViews,
   archiveVisible,
   setArchiveVisible,
   featureOpen,
@@ -191,7 +192,7 @@ export function CatalogSidebar({
         {!catalogReading && !preview && !featureTabs && (
           <nav className="catalog-views" aria-label="当前功能视图">
             <span className="catalog-label">当前功能视图</span>
-            {featureViews.map(viewButton)}
+            {availableViews.map(viewButton)}
           </nav>
         )}
         <span className="catalog-label">已展开的功能与场景</span>

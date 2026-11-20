@@ -13,7 +13,9 @@ function isRepoMeta({ name, folder }: FileTopic) {
   return name.startsWith('.') || (!folder && /^(?:license(?:\.md)?|cspell\.config\.yaml|.*\.url)$/i.test(name));
 }
 
-export function fileIndex(files: readonly SourceFile[], analyzedPaths: ReadonlySet<string> = new Set()) {
+export type SourceCoverage = ReadonlyMap<string, 'explained' | 'referenced'>;
+
+export function fileIndex(files: readonly SourceFile[], analyzedPaths: SourceCoverage = new Map()) {
   const root: FileTopic = { path: '', name: '工程根目录', folder: true, children: [], count: 0, analyzedCount: 0 };
   const index = new Map<string, FileTopic>([['', root]]);
 
@@ -48,8 +50,8 @@ export function analyzedSourcePaths(
   projectId: string,
   snapshotId: string | undefined,
   activeResult?: AnalysisResult,
-): ReadonlySet<string> {
-  const paths = new Set<string>();
+): SourceCoverage {
+  const paths = new Map<string, 'explained' | 'referenced'>();
   if (!snapshotId) return paths;
   const results = explanations.map(explanation => explanation.result);
   if (activeResult && !results.includes(activeResult)) results.push(activeResult);
@@ -57,14 +59,22 @@ export function analyzedSourcePaths(
   for (const result of results) {
     if (result.binding.project_id !== projectId || result.binding.source_snapshot_id !== snapshotId) continue;
     for (const evidence of result.evidence) {
-      if (evidence.source_snapshot_id === snapshotId) paths.add(evidence.path);
+      if (evidence.source_snapshot_id === snapshotId && !paths.has(evidence.path)) paths.set(evidence.path, 'referenced');
     }
     for (const node of result.nodes) {
-      if (node.source_scope) paths.add(node.source_scope.path);
+      if (node.source_scope) paths.set(node.source_scope.path, 'explained');
     }
   }
   return paths;
 }
 export function filePurpose(data:WorkspaceData,projectId:string,snapshotId:string,path:string,folder:boolean){
  return data.explanations.filter(e=>e.result.binding.project_id===projectId&&e.result.binding.source_snapshot_id===snapshotId).toSorted((a,b)=>b.created_at.localeCompare(a.created_at)).flatMap(explanation=>explanation.result.nodes.filter(n=>n.source_scope?.kind===(folder?'folder':'file')&&n.source_scope.path===path).map(node=>({node,explanation}))).at(0);
+}
+
+export function fileCitations(data: WorkspaceData, projectId: string, snapshotId: string, path: string, folder: boolean) {
+  return data.explanations
+    .filter(({ result }) => result.binding.project_id === projectId && result.binding.source_snapshot_id === snapshotId)
+    .flatMap(explanation => explanation.result.evidence
+      .filter(e => e.source_snapshot_id === snapshotId && (folder ? !path || e.path.startsWith(path + '/') : e.path === path))
+      .map(evidence => ({ explanation, evidence })));
 }

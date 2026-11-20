@@ -8,6 +8,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {Store} from '../src/main/store';
 import {capture,readSource,workspaceGitDirectory} from '../src/main/snapshot';
 import {EngineeringService} from '../src/main/engineering-service';
+import {effectiveTaskBoundaries} from '../src/task-boundaries';
 import {requirementPrompt} from '../src/main/dsh-development';
 import {scanAecLegacy} from '../src/main/aec-migration';
 import type {VerificationEvidence} from '../src/engineering';
@@ -107,13 +108,18 @@ test('cached project pages reuse both SQLite records and a fresh check still rea
 test('initial boundaries are normalized, persisted and included in the first analysis prompt',async()=>{
   const f=await fixture();
   try{
+    const nonGoals=['不修改 `tasks.c` 或任何调度器核心逻辑。','不修改 tasks.c  或任何调度器核心逻辑','保留 vTaskDelete'];
+    const revoked=[' 旧导出；','旧导出;','旧导出.'];
     const task=await f.service.createTask({
       project_id:'p',goal:'改进计算',submission_key:'initial',
-      boundaries:{non_goals:[' 保留登录界面 ','保留登录界面'],revoked:[' 撤销旧导出 ']},
+      boundaries:{non_goals:nonGoals,revoked},
     },{phase:'analysis',channel:'codex',checkAvailable:()=>{},onSaved:()=>{}});
     const saved=f.service.task(task.task_id);
     assert.equal(saved.workflow,'analysis');
-    assert.deepEqual(saved.boundaries,{non_goals:['保留登录界面'],revoked:['撤销旧导出']});
+    assert.deepEqual(saved.boundaries,{non_goals:[nonGoals[0],nonGoals[2]],revoked:['旧导出；']});
+    const legacy={non_goals:nonGoals,revoked:revoked.map(item=>item.trim())};
+    assert.deepEqual(effectiveTaskBoundaries({...saved,boundaries:legacy}),saved.boundaries);
+    assert.deepEqual(effectiveTaskBoundaries({...saved,boundaries:undefined,requirement_package:{behaviors:[],...legacy}}),saved.boundaries);
     const prompt=requirementPrompt(saved,await f.service.context({project_id:'p',task_id:task.task_id}));
     assert.ok(prompt.includes(JSON.stringify(saved.boundaries)));
   }finally{await f.cleanup();}

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, clipboard } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { matchesUiUrl } from './ipc-origin';
 import {ArcMcpBridge} from './mcp-bridge';
 import { ArcService } from './service';
 import { redact } from './providers';
@@ -42,7 +43,7 @@ app.whenReady().then(async()=>{
   const ui=pathToFileURL(path.join(__dirname,'ui','index.html')).href;
   ipcMain.handle('arc:invoke',async(event,operation:string,args:any={})=>{
     try {
-      if(event.sender!==window?.webContents||event.senderFrame!==window.webContents.mainFrame||!event.senderFrame.url.startsWith(ui))throw new Error('IPC 来源不可信');
+      if(event.sender!==window?.webContents||event.senderFrame!==window.webContents.mainFrame||!matchesUiUrl(event.senderFrame.url,ui))throw new Error('IPC 来源不可信');
       if(JSON.stringify(args).length>200000)throw new Error('请求超过大小限制');
       let value:any;
       switch(operation){

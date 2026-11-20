@@ -22,6 +22,7 @@ import {
   guideEvidenceIds,
   guideItemTitle,
   guidePathForStep,
+  hasCollaborationRoles,
 } from './feature-reading-model';
 import { timelineModel } from './timeline-model';
 import { savedBusinessPath } from './home-reading';
@@ -142,6 +143,7 @@ function App() {
   const sceneExplanations = data.explanations.filter(e => e.scenario_id === scenarioId);
   const explanation = sceneExplanations.find(e => e.result_id === reading.result_id) || (reading.result_id ? undefined : sceneExplanations.at(-1));
   const result = explanation?.result;
+  const hasCollaboration = hasCollaborationRoles(result);
   const overviewRun =
     result &&
     data.runs.find(
@@ -346,6 +348,12 @@ function App() {
   const indexTasks = Object.values(indexes);
 
   const patch = useCallback((value: Partial<ReadingState>) => setReading(r => ({ ...r, ...value })), []);
+
+  useEffect(() => {
+    if (reading.entrance === 'walk' && reading.view === 'collaboration' && result && !hasCollaboration && loadedKey === readingKey) {
+      setReading(r => featureViewPosition(r, 'timeline', result.binding.source_snapshot_id) ?? r);
+    }
+  }, [reading.entrance, reading.view, result, hasCollaboration, loadedKey, readingKey]);
 
   useEffect(() => {
     if (!previewExplanation || loadedKey !== readingKey) return;
@@ -1039,7 +1047,7 @@ function App() {
       } else if (kind === 'file' || kind === 'directory') {
         position.view = 'files';
         position.selected = 'file:' + id;
-      } else if (kind === 'role' || kind === 'handoff' || kind === 'edge') {
+      } else if (hasCollaborationRoles(original.result) && (kind === 'role' || kind === 'handoff' || kind === 'edge')) {
         position.view = 'collaboration';
         position.selected = (kind === 'role' ? 'role:' : 'handoff:') + id;
       } else if (kind === 'step' || kind === 'node') {
@@ -1321,10 +1329,11 @@ function App() {
   const functionViewMode = reading.function_mode ?? 'calls';
   const functionTabs = [['functions:calls', '函数调用链'], ['functions:time', '调用时间图']];
   const previewTab = ['timeline', '功能说明'];
+  const availableFeatureViews = featureViews.filter(([view]) => view !== 'collaboration' || hasCollaboration);
   const featureTabs = preview
     ? previewGraphs?.ready ? [...functionTabs, previewTab] : [previewTab, ...functionTabs]
     : reading.entrance === 'walk' && !catalogReading && !engineeringReading && scenario && result && featureViews.some(([view]) => view === reading.view)
-      ? [...functionTabs, ...featureViews.filter(([view]) => view !== 'functions')]
+      ? [...functionTabs, ...availableFeatureViews.filter(([view]) => view !== 'functions')]
       : undefined;
   const activeFeatureTab = reading.view === 'functions' ? `functions:${functionViewMode}` : reading.view;
   const workspaceTabs = overview && !engineeringReading ? overviewTabs : featureTabs;
@@ -1459,6 +1468,7 @@ function App() {
       catalogReading={catalogReading}
       preview={preview}
       featureTabs={featureTabs}
+      availableViews={availableFeatureViews}
       archiveVisible={archiveVisible}
       setArchiveVisible={setArchiveVisible}
       featureOpen={featureOpen}
@@ -1582,7 +1592,6 @@ function App() {
       data={data}
       project={project}
       freshness={freshness}
-      refreshSnapshot={() => void action(() => api.invoke('refresh', { project_id: projectId }))}
       refreshAndAnalyze={() => void requestAnalysis(catalogReading || scenarioId === project?.overview_scenario_id, true)}
       projectId={projectId}
       scenario={scenario}
@@ -1928,11 +1937,11 @@ function App() {
               !waitingMcp &&
               !running &&
               completedExplanation &&
-              (!architectureReading || completedExplanation.result_id !== result?.result_id || explanation?.source_status !== 'current') && (
+              completedExplanation.result_id !== result?.result_id && (
                 <div className="result-status">
                   <span>
-                    {completedExplanation.result_id === result?.result_id ? '正在查看已保存的分析结果' : '本次分析已保存；当前仍在阅读旧版'}
-                    {explanation?.source_status !== 'current' ? ' · 来源待核对' : ''}
+                    本次分析已保存{result ? '；当前仍在阅读旧版' : ''}
+                    {explanation && explanation.source_status !== 'current' ? ' · 来源待核对' : ''}
                   </span>
                   <button onClick={viewCompleted}>查看本次分析结果</button>
                 </div>

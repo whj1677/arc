@@ -1,4 +1,4 @@
-import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
+import React,{useEffect,useState} from 'react';
 import type {DevelopmentAttempt,EngineeringTask} from '../engineering';
 import type {Dispatch} from '../main/external-dispatch';
 import {TaskBoundaries} from './TaskBoundaries';
@@ -7,6 +7,14 @@ import {verificationEvidenceLabel} from '../delivery-audit';
 export type ActivityEvent={attempt_id:string;received_at:string;type:string;message?:string;item?:{type:string;text?:string;command?:string;aggregated_output?:string;exit_code?:number}};
 const receiptNames:Record<Dispatch['state'],string>={queued:'已排队，等待发送',sending:'正在发送',awaiting_claim:'已发送，等待 Agent 领取',running:'Agent 已领取',completed:'回填完成',blocked:'派发受阻',unknown:'派发状态待核对',cancelled:'派发已取消'};
 const executionNames:Record<DevelopmentAttempt['status'],string>={starting:'准备执行',running:'执行中',completed:'执行结束',failed:'执行失败',cancelled:'已取消',interrupted:'执行中断'};
+
+export function taskDetailStage(task:EngineeringTask){
+  if(task.workflow==='ready')return 'approval';
+  if(task.status!=='pending'&&task.status!=='running')return 'delivery';
+  if(task.workflow==='analysis')return 'analysis';
+  if(task.workflow==='execution'||task.status==='running'||task.attempt_ids.length||task.changes.length||task.verification.length)return 'delivery';
+  return 'pending';
+}
 
 export function publicActivity(event:ActivityEvent){
   if(event.type==='local.stage'||event.type==='error')return event.message;
@@ -29,10 +37,10 @@ export function DevelopmentActivity({task,attempt,dispatch,events,onSettings}:{t
   const stepIsLatest=step?.progress&&(!latest||step.updated_at>=latest.at);
   const backfilled=terminal||task.workflow==='ready';
   const at=[dispatch?.last_activity,dispatch?.claimed_at,dispatch?.sent_at,dispatch?.created_at,attempt?.ended_at,attempt?.started_at,latest?.at,step?.updated_at,backfilled?task.updated_at:undefined].filter((s):s is string=>!!s).sort().at(-1);
-  const message=dispatch?.error||attempt?.error||(backfilled?task.summary:'')||(stepIsLatest?step.progress:latest?.text)||'尚未收到本轮的公开输出。';
+  const message=(backfilled?task.summary:'')||dispatch?.error||attempt?.error||(stepIsLatest?step.progress:latest?.text)||'尚未收到本轮的公开输出。';
   return <section className="development-activity" aria-label="执行动态">
     <div className="development-activity-heading"><button type="button" aria-expanded={expanded} onClick={()=>setExpanded(!expanded)}>执行动态 {expanded?'▴':'▾'}</button>
-      <span role="status">{attempt?.provider_id==='dsh'?'DeepSeek Harness · ':''}{receipt}{task.workflow==='ready'?' · 方案待确认':''}</span>
+      {!backfilled&&<span role="status">{attempt?.provider_id==='dsh'?'DeepSeek Harness · ':''}{receipt}</span>}
       {at&&<time dateTime={at} title={new Date(at).toLocaleString()}>最近记录 {new Date(at).toLocaleTimeString()}</time>}
     </div>
     {expanded&&<div className="development-activity-body"><p>{message.length>240?message.slice(0,240)+'…':message}</p>
@@ -111,28 +119,15 @@ export function SavedRequirementPackage({task,readOnly=false,onSaved}:{task:Engi
 }
 
 function ApprovalGroup({title,items,format='bullets',empty}:{title:string;items:string[];format?:'bullets'|'numbered'|'files';empty?:string}){
-  const [expanded,setExpanded]=useState(false),[clipped,setClipped]=useState(false);
-  const preview=useRef<HTMLDivElement>(null);
-  useLayoutEffect(()=>{
-    const box=preview.current;
-    if(expanded||!box)return;
-    const measure=()=>setClipped(box.scrollHeight>box.clientHeight+1);
-    measure();
-    const observer=new ResizeObserver(measure);
-    observer.observe(box);
-    if(box.firstElementChild)observer.observe(box.firstElementChild);
-    return ()=>observer.disconnect();
-  },[expanded,items]);
+  const [expanded,setExpanded]=useState(false);
   const List=format==='numbered'?'ol':'ul';
   const filenames=format==='files'?items.map(path=>path.split('/').at(-1)||path):[];
   const distinctFiles=new Set(filenames).size===filenames.length;
   const abbreviated=format==='files'&&distinctFiles&&items.some((path,index)=>path!==filenames[index]);
   return <section>
     <div className="approval-group-title"><h4>{title}</h4><span>{items.length} {format==='files'?'个文件':'项'}</span></div>
-    {items.length?<div ref={preview} className="approval-preview" data-expanded={expanded}>
-      <List className={format==='files'?'approval-file-list':undefined}>{items.map((item,index)=><li key={index}>{format==='files'?<code title={item}>{abbreviated&&!expanded?filenames[index]:item}</code>:item}</li>)}</List>
-    </div>:<p>{empty}</p>}
-    {(clipped||expanded||abbreviated)&&<button type="button" className="approval-expand" aria-label={expanded?'收起'+title:abbreviated?'查看全部'+title+'的完整路径':'查看全部'+title} aria-expanded={expanded} onClick={()=>setExpanded(!expanded)}>{expanded?'收起':abbreviated?'查看完整路径':'查看全部'}</button>}
+    {items.length?<List className={format==='files'?'approval-file-list':undefined}>{items.map((item,index)=><li key={index}>{format==='files'?<code title={item}>{abbreviated&&!expanded?filenames[index]:item}</code>:item}</li>)}</List>:<p>{empty}</p>}
+    {abbreviated&&<button type="button" className="approval-expand" aria-expanded={expanded} onClick={()=>setExpanded(!expanded)}>{expanded?'收起完整路径':'查看完整路径'}</button>}
   </section>;
 }
 
@@ -153,23 +148,23 @@ function ApprovalOverview({snapshot,scope,disabled,onSaved,onSavingChange}:{snap
 
 export function PlanDecision({task,busy,error,onDecision,onTaskSaved}:{task:EngineeringTask;busy:boolean;error:string;onDecision:(snapshot:EngineeringTask,revision?:string)=>void;onTaskSaved?:(task:EngineeringTask)=>void}){
   const [snapshot,setSnapshot]=useState(task),[feedback,setFeedback]=useState('');
-  const [saving,setSaving]=useState(false),dialog=useRef<HTMLDialogElement>(null);
-  useEffect(()=>{dialog.current?.showModal();},[]);
+  const [saving,setSaving]=useState(false);
   const stale=snapshot.version!==task.version;
   const scope=snapshot.proposed_scope??snapshot.scope;
   const refresh=()=>{setSnapshot(task);setFeedback('');};
-  return <div className="plan-decision"><button type="button" className="primary" onClick={()=>{refresh();dialog.current?.showModal();}}>审阅待确认方案</button>
-    <dialog ref={dialog} aria-label="确认开发方案"><header><h3>确认开发方案 <small>v{snapshot.version}</small></h3><button type="button" onClick={()=>dialog.current?.close()}>稍后处理</button></header>
-      <div className="engineering-approval">
+  return <section className="plan-decision engineering-approval" aria-label="审阅待确认方案">
+      <header><h3>审阅待确认方案 <small>v{snapshot.version}</small></h3></header>
+      <div className="plan-review-body">
         {stale&&<div role="alert">任务已更新至 v{task.version}，当前展示 v{snapshot.version}。<button disabled={busy} onClick={refresh}>查看最新版本</button></div>}
         {error&&<p role="alert">{error}</p>}
         <ApprovalOverview snapshot={snapshot} scope={scope} disabled={busy||stale} onSavingChange={setSaving}
           onSaved={updated=>{setSnapshot(updated);onTaskSaved?.(updated);}}/>
-        {snapshot.requirement_package?<><label>修订意见<textarea aria-label="修订意见" placeholder="说明要补充的行为、验证方法或需要调整的文件范围" rows={2} value={feedback} onChange={event=>setFeedback(event.target.value)}/></label>
+      </div>
+      <footer className="plan-review-actions">
+        {snapshot.requirement_package?<><label>修订意见<textarea aria-label="修订意见" placeholder="需要补充或调整什么？" rows={1} value={feedback} onChange={event=>setFeedback(event.target.value)}/></label>
           <div className="row"><button disabled={busy||saving||stale||!feedback.trim()} onClick={()=>onDecision(snapshot,feedback.trim())}>退回补充</button>
           <button className="primary" disabled={busy||saving||stale||!scope.length} onClick={()=>onDecision(snapshot)}>按此方案执行</button></div></>:
           <button disabled={busy||stale} onClick={()=>onDecision(snapshot,'根据当前目标和既有资料重新进行只读分析，生成完整需求包。')}>重新分析并生成需求包</button>}
-      </div>
-    </dialog>
-  </div>;
+      </footer>
+  </section>;
 }

@@ -1,5 +1,5 @@
-import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
-import type {WorkspaceData,ReadingTarget,ReadingQuestion,SourceEvidence,Run} from '../shared';
+import React,{useEffect,useImperativeHandle,useLayoutEffect,useRef,useState} from 'react';
+import type {WorkspaceData,ReadingTarget,ReadingQuestion,ReadingAsk,SourceEvidence,Run} from '../shared';
 import {analysisModes,isAnalysisMode,type AnalysisMode} from './discovery-state';
 import {RunActivity} from './RunActivity';
 import {SourceExcerpt} from './SourceExcerpt';
@@ -10,7 +10,7 @@ const activeStatuses=['queued','running','validating','cancel_requested'];
 const retryStatuses=['failed','blocked_external','cancelled','unknown'];
 const sameTarget=(a:ReadingTarget,b:ReadingTarget)=>a.kind===b.kind&&a.id===b.id;
 
-export function ReadingQuestions({data,projectId,scenarioId,resultId,target,targetLabel,featureId,featureLabel,snapshotId,disabled,reload,settings,desktopSettings}:Props){
+export function ReadingQuestions({data,projectId,scenarioId,resultId,target,targetLabel,featureId,featureLabel,snapshotId,disabled,reload,settings,desktopSettings,summaryRequest}:Props & {summaryRequest?:React.Ref<(question:string)=>void>}){
   const baseKey=[projectId,scenarioId,resultId,target.kind,target.id].join('/');
   const [wholeScope,setWholeScope]=useState<Record<string,boolean>>({}),[drafts,setDrafts]=useState<Record<string,string>>({});
   const mode=data.default_engine??'codex';
@@ -35,7 +35,8 @@ export function ReadingQuestions({data,projectId,scenarioId,resultId,target,targ
   const previous=questions.find(q=>q.question_id===replyTo[contextKey])||questions.at(-1);
   const sourceId=sourceMode==='latest'?'':previous?.source_snapshot_id||snapshotId;
   const snapshot=data.snapshots.find(s=>s.source_snapshot_id===sourceId),draft=drafts[contextKey]||'';
-  const activeQuestion=questions.find(q=>{const run=data.runs.find(r=>r.binding.run_id===q.run_id);return run&&[...activeStatuses,'waiting_agent'].includes(run.status);}),busy=!!activeQuestion;
+  const isActive=(q:ReadingQuestion)=>data.runs.some(run=>run.binding.run_id===q.run_id&&[...activeStatuses,'waiting_agent'].includes(run.status));
+  const activeQuestion=questions.find(isActive),busy=!!activeQuestion;
   const answered=questions.filter(q=>q.answer),latestAnswer=answered.at(-1);
   function reveal(element:HTMLElement|null|undefined){
     const panel=root.current?.closest<HTMLElement>('.panel-scroll');
@@ -60,12 +61,30 @@ export function ReadingQuestions({data,projectId,scenarioId,resultId,target,targ
     catch(reason){setErrors(e=>({...e,[key]:(reason as Error).message}));}
     finally{setSavingMode(false);}
   }
-  async function send(event:React.FormEvent){
-    event.preventDefault();if(!draft.trim()||disabled||busy||savingMode||submitting.current.has(contextKey))return;
-    const key=contextKey;submitting.current.add(key);setSending(s=>({...s,[key]:true}));setErrors(e=>({...e,[key]:''}));
-    const request={project_id:projectId,scenario_id:previous?.scenario_id||scenarioId||undefined,result_id:scopedResultId,target:previous?.target||selectedTarget,question:draft,source_mode:sourceMode,mode,correction,submission_key:crypto.randomUUID(),previous_question_id:previous?.question_id};
-    try{const submitted=await window.arc.invoke<ReadingQuestion>('reading_ask',request);setDrafts(d=>({...d,[key]:''}));setReplyTo(v=>({...v,[key]:''}));if(activeContext.current===key){setSourceMode('bound');setCorrection(false);setRevealQuestion({key,id:submitted.question_id});}await reload();}catch(reason){setErrors(e=>({...e,[key]:(reason as Error).message}));}finally{submitting.current.delete(key);setSending(s=>({...s,[key]:false}));}
+  async function submit(key:string, request:Omit<ReadingAsk,'project_id'|'mode'|'submission_key'>, onSaved?:()=>void){
+    if(disabled||submitting.current.has(key))return;
+    submitting.current.add(key);setSending(s=>({...s,[key]:true}));setErrors(e=>({...e,[key]:''}));
+    try{
+      const submitted=await window.arc.invoke<ReadingQuestion>('reading_ask',{...request,project_id:projectId,mode,submission_key:crypto.randomUUID()});
+      onSaved?.();
+      await reload();
+      if(activeContext.current===key){setSourceMode('bound');setCorrection(false);setRevealQuestion({key,id:submitted.question_id});}
+    }catch(reason){setErrors(e=>({...e,[key]:(reason as Error).message}));}finally{submitting.current.delete(key);setSending(s=>({...s,[key]:false}));}
   }
+  async function send(event:React.FormEvent){
+    event.preventDefault();if(!draft.trim()||busy||savingMode)return;
+    const key=contextKey;
+    await submit(key,{scenario_id:previous?.scenario_id||scenarioId||undefined,result_id:scopedResultId,target:previous?.target||selectedTarget,question:draft,source_mode:sourceMode,correction,previous_question_id:previous?.question_id},()=>{
+      setDrafts(d=>({...d,[key]:''}));setReplyTo(v=>({...v,[key]:''}));
+    });
+  }
+  useImperativeHandle(summaryRequest,()=>question=>{
+    setWholeScope(v=>({...v,[baseKey]:false}));
+    setResultScopes(v=>({...v,[baseKey]:'current'}));
+    const pending=(data.questions || []).find(q=>q.project_id===projectId&&q.scenario_id===scenarioId&&q.result_id===resultId&&sameTarget(q.target,target)&&isActive(q));
+    if(pending)setRevealQuestion({key:baseKey,id:pending.question_id});
+    else void submit(baseKey,{scenario_id:scenarioId||undefined,result_id:resultId,target,question,source_mode:'bound'});
+  });
   async function retry(question:ReadingQuestion){
     const key=contextKey;if(savingMode||submitting.current.has(key))return;submitting.current.add(key);setSending(s=>({...s,[key]:true}));setErrors(e=>({...e,[key]:''}));
     try{await window.arc.invoke('reading_retry',{question_id:question.question_id,mode,submission_key:crypto.randomUUID()});if(activeContext.current===key)setRevealQuestion({key,id:question.question_id});await reload();}catch(reason){setErrors(e=>({...e,[key]:(reason as Error).message}));}finally{submitting.current.delete(key);setSending(s=>({...s,[key]:false}));}

@@ -1,7 +1,11 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import type {AnalysisResult,Explanation,Project,Scenario} from '../src/shared';
-import {componentReading,savedBusinessPath} from '../src/ui/home-reading';
+import {componentReading,contextSummary,savedBusinessPath} from '../src/ui/home-reading';
+
+test('material summaries preserve source identifiers and inline code when removing Markdown',()=>{
+  assert.equal(contextSummary({text:'# 构建\n**cmake_minimum_required** 使用 `FREERTOS_PORT` 和 `char *p`。'}),'构建 cmake_minimum_required 使用 FREERTOS_PORT 和 char *p。');
+});
 
 test('recommend a component with documented inputs and outputs ahead of the first listed component',()=>{
   const io={availability:'specified',evidence_ids:['cart']};

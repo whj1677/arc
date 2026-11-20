@@ -1,4 +1,13 @@
 import type {AnalysisResult,Explanation,Project,Scenario} from '../shared';
+import type {ContextEntry} from '../engineering';
+
+export function contextSummary(item?:Pick<ContextEntry,'text'|'truncated'>,limit=200){
+  if(!item)return '';
+  const value=item.text.replace(/^#{1,6}[ \t]+/gm,'')
+    .replace(/`([^`\n]+)`|(\*{1,2})(?=\S)([^*\n]*?\S)\2/g,(_match,code,_marker,emphasis)=>code??emphasis)
+    .replace(/\s+/g,' ').trim();
+  return value.slice(0,limit)+(item.truncated||value.length>limit?'…':'');
+}
 
 export function savedBusinessPath(project:Project,scenarios:readonly Scenario[],explanations:readonly Explanation[]){
   const available=scenarios.filter(s=>s.project_id===project.project_id&&!s.archived&&s.scenario_id!==project.overview_scenario_id);

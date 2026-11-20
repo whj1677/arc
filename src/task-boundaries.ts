@@ -1,9 +1,24 @@
 import type {EngineeringTask} from './engineering';
 
+export function taskBoundaryKey(text:string) {
+  return text.replace(/`+([^`]+)`+/g,'$1').replace(/\s+/g,' ').trim().replace(/[。.;；]+$/u,'').trimEnd();
+}
+
+export function uniqueTaskBoundaries(items:string[]) {
+  const seen=new Set<string>();
+  return items.filter(item=>{
+    const key=taskBoundaryKey(item);
+    if(seen.has(key))return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function effectiveTaskBoundaries(task:EngineeringTask) {
-  return task.boundaries??{
-    non_goals:task.requirement_package?.non_goals??[],
-    revoked:task.requirement_package?.revoked??[],
+  const bounds=task.boundaries??task.requirement_package;
+  return {
+    non_goals:uniqueTaskBoundaries(bounds?.non_goals??[]),
+    revoked:uniqueTaskBoundaries(bounds?.revoked??[]),
   };
 }
 

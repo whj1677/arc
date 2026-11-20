@@ -54,11 +54,11 @@ test('audits approved files and effective redlines and matches current materials
     {path:'legacy/export.ts', ownership:'task_change' as const, before_sha256:null, after_sha256:'c'}];
   const entry = {entry_id:'doc', key:'view design', category:'design' as const, sources:[{path:'ui/view.ts'}]};
   const audit = auditDelivery({...task, approval:{reviewed_version:2, scope:['ui/view.ts']}, proposed_scope:changes.map(c=>c.path), changes,
-    requirement_package:{behaviors:[], revoked:['removed term']}, boundaries:{non_goals:[], revoked:['legacy/export','old plan','sync','rollout','removed term 2']},
+    requirement_package:{behaviors:[], revoked:['removed term']}, boundaries:{non_goals:[], revoked:['`legacy/export`；','legacy/export','old plan','sync','rollout','removed term 2']},
     summary:'SYNC done', steps:[{...step, change:'rollout'}, {...step, step_id:'old', title:'old plan', status:'superseded'}]},
     [entry, {...entry, entry_id:'obsolete', status:'superseded'}, {...entry, entry_id:'other', sources:[{path:'ui/view.tsx'}]}]);
   assert.deepEqual(audit.scope, {status:'warning', out_of_scope:['legacy/export.ts'], overlap:['ui/view.ts']});
-  assert.deepEqual(audit.redlines.hits, ['legacy/export','sync','rollout']);
+  assert.deepEqual(audit.redlines.hits, ['`legacy/export`；','sync','rollout']);
   assert.deepEqual(audit.impacted_materials, [{entry_id:'doc', key:'view design', category:'design'}]);
 });
 
