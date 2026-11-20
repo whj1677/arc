@@ -48,8 +48,8 @@ export interface ReadingAsk {
   project_id:string;scenario_id?:string;result_id?:string|null;target:ReadingTarget;question:string;
   source_mode?:'bound'|'latest';mode?:ExecutionMode;submission_key:string;correction?:boolean;previous_question_id?:string;
 }
-export const overviewTotalMinutes = 10;
-export const overviewIdleMinutes = 3;
+export const overviewTotalMinutes = 15;
+export const overviewIdleMinutes = 6;
 export interface Run {
   binding: RunBinding; provider_id: ProviderId; status: string; created_at: string; ended_at?: string;
   execution_mode?: ExecutionMode;

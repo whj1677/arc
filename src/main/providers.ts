@@ -193,11 +193,11 @@ export function readingWatchdog(run:Pick<Run,'reading_question_id'|'overview_for
   const minutes=run.overview_format?overviewTotalMinutes:run.reading_question_id?5:8;
   const label=run.overview_format?'首次分析':run.reading_question_id?'阅读追问':'功能与调用链分析';
   const remaining=timeoutMs??(run.overview_format?overviewDeadline(run)-Date.now():minutes*60000);
-  const discoveryMillis=4*60000;
+  const discoveryMillis=8*60000;
   const limitDiscovery=discovery&&discoveryMillis<remaining;
   let idle:NodeJS.Timeout|undefined,closed=false;
   const total=setTimeout(()=>{
-    if(limitDiscovery)expire('首次分析的源码取证已达到 4 分钟预算','discovery');
+    if(limitDiscovery)expire('首次分析的源码取证已达到 8 分钟预算','discovery');
     else expire(timeoutMs===undefined?`${label}超过 ${minutes} 分钟执行期限`:'只读分析已达到执行时限','total');
   },Math.max(1,limitDiscovery?discoveryMillis:remaining));
   function close(){

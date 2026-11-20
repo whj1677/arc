@@ -69,7 +69,7 @@ test('a reading timeout reports a rejected stop instead of continuing to wait si
   t.mock.timers.tick(5*60*1000);await Promise.resolve();
   assert.deepEqual(failures,[stopError]);assert.equal(events[0].stage,'timeout');
 });
-test('an overview without work events stops after three minutes even if the CLI keeps reconnecting',t=>{
+test('an overview without work events stops after six minutes even if the CLI keeps reconnecting',t=>{
   t.mock.timers.enable({apis:['setTimeout','Date']});
   let stopped=0,reason='';
   const watchdog=readingWatchdog({overview_format:'overview-1'},async()=>{stopped++;},(_,kind)=>{reason=kind;},()=>{},()=>{});
@@ -77,13 +77,13 @@ test('an overview without work events stops after three minutes even if the CLI 
   watchdog.progress('item.completed');
   t.mock.timers.tick(120000);
   watchdog.progress('error');
-  t.mock.timers.tick(59999);assert.equal(stopped,0);
+  t.mock.timers.tick(4*60000-1);assert.equal(stopped,0);
   t.mock.timers.tick(1);assert.equal(stopped,1);assert.equal(reason,'idle');
   watchdog.progress('turn.completed');
   t.mock.timers.tick(600000);assert.equal(stopped,1);
 });
 
-test('active overview phases share ten minutes from execution and exclude time in the queue',t=>{
+test('active overview phases share fifteen minutes from execution and exclude time in the queue',t=>{
   t.mock.timers.enable({apis:['setTimeout','Date']});
   const created_at=new Date().toISOString();
   t.mock.timers.tick(20*60000);
@@ -91,20 +91,20 @@ test('active overview phases share ten minutes from execution and exclude time i
   let stopped=0,reason='';
   const startPhase=()=>readingWatchdog(run,async()=>{stopped++;},(_,kind)=>{reason=kind;},()=>{},()=>{});
   const draft=startPhase();
-  for(let i=0;i<4;i++){t.mock.timers.tick(120000);draft.progress('item.completed');}
+  for(let i=0;i<4;i++){t.mock.timers.tick(3*60000);draft.progress('item.completed');}
   draft.close();
   startPhase();
-  t.mock.timers.tick(120000-1);assert.equal(stopped,0);
+  t.mock.timers.tick(3*60000-1);assert.equal(stopped,0);
   t.mock.timers.tick(1);assert.equal(stopped,1);assert.equal(reason,'total');
 });
 
-test('an active first discovery stops at four minutes and reserves the remaining budget for synthesis and review',t=>{
+test('an active first discovery stops at eight minutes and reserves the remaining budget for synthesis and review',t=>{
   t.mock.timers.enable({apis:['setTimeout','Date']});
   const run={overview_format:'overview-1' as const,execution_started_at:new Date().toISOString()};
   let reason='';
   const watchdog=readingWatchdog(run,async()=>{},(_,kind)=>{reason=kind;},()=>{},()=>{},true);
-  t.mock.timers.tick(120000);watchdog.progress('item.completed');
-  t.mock.timers.tick(120000-1);assert.equal(reason,'');
+  t.mock.timers.tick(4*60000);watchdog.progress('item.completed');
+  t.mock.timers.tick(4*60000-1);assert.equal(reason,'');
   t.mock.timers.tick(1);assert.equal(reason,'discovery');
 });
 
