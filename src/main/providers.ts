@@ -7,6 +7,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { StringDecoder } from 'node:string_decoder';
 import type { ProviderProfile, Run, Snapshot, Annotation } from '../shared';
+import { overviewIdleMinutes, overviewTotalMinutes } from '../shared';
 import { now } from './store';
 import { schema, transportSchema } from './validation';
 import {promptContext} from './prompt-context';
@@ -270,14 +271,42 @@ export function codexChildEnvironment(parent:NodeJS.ProcessEnv) {
   return env;
 }
 
-export function readingWatchdog(run:Pick<Run,'reading_question_id'|'overview_format'> & Partial<Pick<Run,'created_at'>>,stop:()=>Promise<void>,fail:(message:string)=>void,event:(value:any)=>void,stopFailed:(error:unknown)=>void) {
-  const minutes=run.overview_format?10:run.reading_question_id?5:8;
-  const elapsed=run.overview_format&&run.created_at?Date.now()-Date.parse(run.created_at):0;
-  return setTimeout(()=>{
-    const message=`${run.overview_format?'首次分析':run.reading_question_id?'阅读追问':'功能与调用链分析'}超过 ${minutes} 分钟执行期限；已请求停止，问题、公开进度和已收原文保留，可重试这个问题。`;
-    fail(message);event({type:'local.stage',stage:'timeout',message});
+function overviewDeadline(run:Pick<Run,'execution_started_at'>) {
+  return (run.execution_started_at?Date.parse(run.execution_started_at):Date.now())+overviewTotalMinutes*60000;
+}
+
+type CodexTimeout='idle'|'discovery'|'total';
+
+export function readingWatchdog(run:Pick<Run,'reading_question_id'|'overview_format'|'execution_started_at'>,stop:()=>Promise<void>,fail:(message:string,kind:CodexTimeout)=>void,event:(value:any)=>void,stopFailed:(error:unknown)=>void,discovery=false) {
+  const minutes=run.overview_format?overviewTotalMinutes:run.reading_question_id?5:8;
+  const label=run.overview_format?'首次分析':run.reading_question_id?'阅读追问':'功能与调用链分析';
+  const remaining=run.overview_format?overviewDeadline(run)-Date.now():minutes*60000;
+  const discoveryMillis=4*60000;
+  const limitDiscovery=discovery&&discoveryMillis<remaining;
+  let idle:NodeJS.Timeout|undefined,closed=false;
+  const total=setTimeout(()=>{
+    if(limitDiscovery)expire('首次分析的源码取证已达到 4 分钟预算','discovery');
+    else expire(`${label}超过 ${minutes} 分钟执行期限`,'total');
+  },Math.max(1,limitDiscovery?discoveryMillis:remaining));
+  function close(){
+    closed=true;
+    clearTimeout(total);
+    clearTimeout(idle);
+  }
+  function expire(reason:string,kind:CodexTimeout){
+    close();
+    const message=kind==='discovery'?`${reason}，正在停止取证，已取得的原文保留。`:`${reason}；已请求停止，问题、公开进度和已收原文保留，可重试这个问题。`;
+    fail(message,kind);event({type:'local.stage',stage:'timeout',timeout:kind,message});
     void stop().catch(stopFailed);
-  },Math.max(1,minutes*60*1000-elapsed));
+  }
+  function armIdle(){
+    clearTimeout(idle);
+    idle=setTimeout(()=>expire(`首次分析连续 ${overviewIdleMinutes} 分钟没有收到 Codex 工作进度`,'idle'),overviewIdleMinutes*60000);
+  }
+  if(run.overview_format)armIdle();
+  return {close,progress(type:string){
+    if(!closed&&run.overview_format&&['thread.started','turn.started','item.started','item.updated','item.completed','turn.completed'].includes(type))armIdle();
+  }};
 }
 
 export async function makePrompt(run:Run,snapshot:Snapshot,storage:string,annotations:Annotation[],previous?:unknown,featureDetail=false) {
@@ -394,21 +423,22 @@ export function reasoningEffortForRun(run:Pick<Run,'reading_question_id'|'readin
     const broad=run.reading_context?.target.kind==='feature'||run.reading_context?.target.kind==='directory';
     return broad?'medium':'low';
   }
-  return run.overview_format||run.question===overviewDiscoveryQuestion?'medium':'low';
+  return !run.overview_format&&run.question===overviewDiscoveryQuestion?'medium':'low';
 }
 
 export async function runCodex(options:{
   run:Run;snapshot:Snapshot;storage:string;resources:string;profile:ProviderProfile;prompt:string;
   event:(value:any)=>void;started:(active:ActiveProcess)=>void;shouldStart?:()=>boolean;
   phase?:OverviewPhase;outputSchema?:object;outputDirectory?:string;outputPath?:string;reasoningEffort?:'low'|'medium';
-}):Promise<{code:number|null;raw:string;stderr:string;protocol_error?:string}> {
+  overviewSynthesis?:boolean;
+}):Promise<{code:number|null;raw:string;stderr:string;protocol_error?:string;timeout?:CodexTimeout}> {
   const {run,snapshot,storage,profile,prompt}=options;
   const env=codexChildEnvironment(process.env);
   const runRoot=options.outputDirectory??(run?.binding?.run_id?path.join(storage,'runs',run.binding.run_id):undefined);
   const runDir=runRoot?path.join(runRoot,...(options.phase?[overviewPhaseDirectory[options.phase]]:[])):undefined;
   const workspace=snapshot?.source_snapshot_id?path.join(storage,'snapshots',snapshot.source_snapshot_id):undefined;
   const preflightKey=run?.binding?.run_id&&workspace?JSON.stringify([run.binding.run_id,workspace,profile.path,profile.version]):'';
-  const cached=options.phase&&preflightKey?runPreflightCache.get(preflightKey):undefined;
+  const cached=options.phase&&!options.overviewSynthesis&&preflightKey?runPreflightCache.get(preflightKey):undefined;
   const cacheFresh=!!cached&&Date.now()-cached.at<5*60*1000;
 
   let runtimeVersion:string;
@@ -431,8 +461,8 @@ export async function runCodex(options:{
       exec(profile.path!,['mcp','list','--json'],{cwd:workspace!,env,windowsHide:true,timeout:10000,maxBuffer:2*1024*1024}),
       fs.mkdir(runDir!,{recursive:true}),
     ]);
-    mcpDisableArgs=buildMcpDisableArgs(JSON.parse(inventoryOut.stdout),nodePath,'arc_frozen_source');
-    if(preflightKey){
+    mcpDisableArgs=buildMcpDisableArgs(JSON.parse(inventoryOut.stdout),nodePath,options.overviewSynthesis?undefined:'arc_frozen_source');
+    if(preflightKey&&!options.overviewSynthesis){
       runPreflightCache.set(preflightKey,{at:Date.now(),runtimeVersion,mcpDisableArgs});
       if(runPreflightCache.size>64)runPreflightCache.delete(runPreflightCache.keys().next().value!);
     }
@@ -442,6 +472,9 @@ export async function runCodex(options:{
   const schemaPath=path.join(runDir!,'transport-schema.json');
   const contextPath=path.join(runRoot!,'source-context.json');
   const contextServer=path.join(options.resources,'dist','context-server.cjs');
+  const discovery=!!run.overview_format&&!options.phase&&!options.outputDirectory&&!options.overviewSynthesis;
+  const contextArgs=[contextServer,contextPath];
+  if(discovery)contextArgs.push('overview-discovery');
   const writes:Promise<unknown>[]=[
     fs.writeFile(schemaPath,JSON.stringify(options.outputSchema??(options.phase?transportSchema(options.phase==='overview_research'?overviewResearchSchema:overviewReviewSchema):run.overview_format?overviewSchema:run.reading_question_id?readingAnswerTransportSchema():transportSchema()))),
   ];
@@ -452,17 +485,19 @@ export async function runCodex(options:{
   const outputPath=options.outputPath??run.output_path;
   const args=['exec','--json','--sandbox','read-only','--skip-git-repo-check','--color','never','--cd',workspace!,
     ...readOnlyToolFlags,
-    '-c',`mcp_servers.arc_frozen_source.command=${JSON.stringify(nodePath)}`,
-    '-c',`mcp_servers.arc_frozen_source.args=${JSON.stringify([contextServer,contextPath])}`,
-    '-c','mcp_servers.arc_frozen_source.enabled=true',
+    ...(options.overviewSynthesis?['-c','features.in_app_browser=false','-c','project_doc_max_bytes=0']:[
+      '-c',`mcp_servers.arc_frozen_source.command=${JSON.stringify(nodePath)}`,
+      '-c',`mcp_servers.arc_frozen_source.args=${JSON.stringify(contextArgs)}`,
+      '-c','mcp_servers.arc_frozen_source.enabled=true',
+    ]),
     '--output-schema',schemaPath,'--output-last-message',outputPath];
 
   const effort=options.reasoningEffort??reasoningEffortForRun(run,options.phase);
   args.push('-c',`model_reasoning_effort=${JSON.stringify(effort)}`);
-  if(!run.reading_question_id&&run.question===overviewDiscoveryQuestion&&!options.phase){
+  if(!run.reading_question_id&&run.question===overviewDiscoveryQuestion&&!options.phase&&!options.overviewSynthesis){
     options.event({type:'local.stage',stage:'overview_discovery',message:'正在查证入口与主要组件，生成架构、功能目录及可直接阅读的步骤；随后自动复核，遇疑点继续补查。'});
   }
-  args.push(...codexFeatureFlags(runtimeVersion));
+  args.push(...codexFeatureFlags(runtimeVersion,!options.overviewSynthesis));
   args.push('-c','web_search="disabled"');
   args.push(...mcpDisableArgs);
   args.push('-');
@@ -474,17 +509,19 @@ export async function runCodex(options:{
   // Version, filesystem and MCP preparation can yield while the user cancels.
   // This final check and spawn run synchronously in the same event-loop turn.
   if(options.shouldStart&&!options.shouldStart())throw new Error('任务已取消，未启动 Codex 分析');
+  if(run.overview_format&&Date.now()>=overviewDeadline(run))throw new Error(`首次分析已达到 ${overviewTotalMinutes} 分钟总时限，未启动下一阶段；已收原文保留。`);
   return new Promise((resolve,reject)=>{
     const child=spawn(profile.path!,args,{cwd:workspace,windowsHide:true,shell:false,env,stdio:['pipe','pipe','pipe']});
-    let stderr='',protocol_error:string|undefined,settled=false;
+    let stderr='',protocol_error:string|undefined,timeout:CodexTimeout|undefined,settled=false;
     const turnErrors=new CodexTurnErrors();
     const parser=new JsonLines(frame=>{
+      deadline.progress(frame.type);
       options.event(frame);
       turnErrors.accept(frame);
     });
     // Overview phases share one deadline. Other runs get a fresh budget at spawn.
     const stop=async()=>{await stopTree(child);};
-    const deadline=readingWatchdog(run,stop,message=>{protocol_error=message;},options.event,error=>{
+    const deadline=readingWatchdog(run,stop,(message,kind)=>{protocol_error=message;timeout=kind;},options.event,error=>{
       // taskkill may reject just after a normal close. The terminal outcome
       // already recorded in that case must win over this late stop response.
       if(settled)return;
@@ -495,21 +532,21 @@ export async function runCodex(options:{
       void fs.writeFile(path.join(runDir!,'diagnostic.json'),JSON.stringify({code:null,stderr,protocol_error,stop_state:'unknown',ended_at:now()},null,2)).then(()=>reject(failure),diagnosticError=>{
         failure.message+=`；保存诊断失败：${redact((diagnosticError as Error).message)}`;reject(failure);
       });
-    });
+    },discovery);
     options.started({child,cancel:stop});
     child.stdout.on('data',(chunk:Buffer)=>{try{parser.feed(chunk);}catch(e){protocol_error=(e as Error).message;void stop().catch(()=>{});}});
     child.stderr.on('data',(chunk:Buffer)=>{stderr=redact((stderr+chunk.toString('utf8')).slice(-24000));});
-    child.once('error',error=>{clearTimeout(deadline);if(!settled){settled=true;reject(error);}});
+    child.once('error',error=>{deadline.close();if(!settled){settled=true;reject(error);}});
     child.once('close',async code=>{
-      clearTimeout(deadline);
+      deadline.close();
       if(settled)return;settled=true;
       try {parser.end();}catch(e){protocol_error=(e as Error).message;}
       protocol_error??=turnErrors.failure(code);
       let raw='';
       try {const stat=await fs.stat(outputPath);if(stat.size>2*1024*1024)throw new Error('结果超过 2 MiB');raw=await fs.readFile(outputPath,'utf8');}catch(e){if(code===0)protocol_error??=(e as Error).message;}
       try {
-        await fs.writeFile(path.join(runDir!,'diagnostic.json'),JSON.stringify({code,stderr,protocol_error,ended_at:now()},null,2));
-        resolve({code,raw,stderr,protocol_error});
+        await fs.writeFile(path.join(runDir!,'diagnostic.json'),JSON.stringify({code,stderr,protocol_error,timeout,ended_at:now()},null,2));
+        resolve({code,raw,stderr,protocol_error,timeout});
       } catch (error) {
         reject(error);
       }

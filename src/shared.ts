@@ -37,6 +37,8 @@ export interface ReadingAsk {
   project_id:string;scenario_id?:string;result_id?:string|null;target:ReadingTarget;question:string;
   source_mode?:'bound'|'latest';mode?:ExecutionMode;submission_key:string;correction?:boolean;previous_question_id?:string;
 }
+export const overviewTotalMinutes = 10;
+export const overviewIdleMinutes = 3;
 export interface Run {
   binding: RunBinding; provider_id: ProviderId; status: string; created_at: string; ended_at?: string;
   execution_mode?: ExecutionMode;
@@ -51,6 +53,8 @@ export interface Run {
   reading_question_id?:string;
   reading_context?:ReadingContext;
   overview_format?:'overview-1';
+  execution_started_at?:string;
+  overview_candidate_ready?:boolean;
   feature_graph_format?:'feature-graph-1';
   dsh_overview_format?:'overview-1';
   dsh_function_format?:'function-1';

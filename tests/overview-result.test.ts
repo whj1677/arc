@@ -6,7 +6,7 @@ import path from 'node:path';
 import {capture} from '../src/main/snapshot';
 import {compactEvidence,deferredCatalogReadingBoundary,overviewSchema,prepareOverview,overviewPrompt,OverviewValidationError} from '../src/main/overview-result';
 import {overviewDiscoveryQuestion} from '../src/main/architecture-analysis';
-import {promptContext} from '../src/main/prompt-context';
+import {overviewDiscoveryBudget,promptContext} from '../src/main/prompt-context';
 import type {Run} from '../src/shared';
 
 async function fixture(t:TestContext){
@@ -114,6 +114,9 @@ test('a broad overview accepts more than eight capability groups and 120 source 
   assert.equal(result.evidence.length,124);
   assert.deepEqual(result.feature_catalog?.readings,readings);
   const prompt=overviewPrompt(current,snapshot,promptContext(snapshot,[]));
+  assert.ok(prompt.includes(`预算共 ${overviewDiscoveryBudget.calls} 次源码工具调用`));
+  assert.match(prompt,/提前停止并立即返回完整 JSON/);
+  assert.doesNotMatch(prompt,/盘点每个有实质用途|30–70/);
   assert.match(prompt,/arc_list_files.*arc_search_source.*arc_read_source/);
   assert.match(prompt,/库 \/ 内核 \/ SDK \/ 框架工程.*核心模块及其公共能力族/);
   assert.match(prompt,/示例 main\(\) 调用的少数 API/);

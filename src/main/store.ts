@@ -51,6 +51,21 @@ export class Store {
     return this.db.prepare('INSERT OR IGNORE INTO events VALUES(?,?,?,?)').run(runId, eventId, sequence, JSON.stringify(value)).changes > 0;
   }
   events(runId: string) { return this.db.prepare('SELECT json FROM events WHERE run_id=? ORDER BY sequence').all(runId).map((r: any) => JSON.parse(r.json)); }
+  overviewReadLocations(runId: string) {
+    // Return one successful discovery read per file without loading all tool responses.
+    return this.db.prepare(`WITH reads AS (
+      SELECT sequence, json_extract(json,'$.item.arguments.path') AS path,
+        coalesce(json_extract(json,'$.item.arguments.line_start'),1) AS start,
+        coalesce(json_extract(json,'$.item.arguments.line_count'),160) AS count
+      FROM events WHERE run_id=? AND json_extract(json,'$.phase') IS NULL
+        AND json_extract(json,'$.type')='item.completed'
+        AND json_extract(json,'$.item.server')='arc_frozen_source'
+        AND json_extract(json,'$.item.tool')='arc_read_source'
+        AND json_extract(json,'$.item.status')='completed'
+        AND json_extract(json,'$.item.error') IS NULL
+        AND NOT coalesce(json_extract(json,'$.item.result.isError'),0)
+    ) SELECT path,start,count FROM reads WHERE path IS NOT NULL GROUP BY path ORDER BY min(sequence) LIMIT 12`).all(runId) as {path:string;start:number;count:number}[];
+  }
   nextSequence(runId:string) { return Number((this.db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS n FROM events WHERE run_id=?').get(runId) as any).n); }
   backup(destination: string) {
     // VACUUM INTO makes a consistent SQLite backup, including committed WAL state.

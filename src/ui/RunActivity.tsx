@@ -1,5 +1,6 @@
 import React,{useEffect,useState} from 'react';
 import type {Run} from '../shared';
+import {overviewIdleMinutes,overviewTotalMinutes} from '../shared';
 import {activity,runChannel,runEngineName,activeStatuses} from './activity';
 import {AnalysisError} from './AnalysisError';
 
@@ -15,7 +16,7 @@ export function RunActivity({run,events,detailed=false,collapsible=false,open,st
       <div className="row">{open&&<button onClick={open}>查看真实过程</button>}{a.active&&<button disabled={run.status==='cancel_requested'} onClick={stop}>{stopLabel}</button>}</div>
     </div>
     {!manual&&<p className="muted" aria-label="本次分析通道">{runChannel(run)}</p>}
-    {a.active&&!manual&&run.origin!=='mcp'&&<p className="muted">{run.provider_id==='dsh'?'本次任务通过本机 DSH Web 执行，可随时停止。':run.overview_format?(run.overview_from_result_id?'沿用原说明的冻结源码，自动补查尚未确认的关系并复核，合计限时 5 分钟。新结果保存为新版本，当前阅读位置保留。':'首次分析、必要的关系补查与复核合计限时 5 分钟，可随时停止。ARC 会自动补查未确认的关系，未通过复核的关系不会画入工程图。'):run.reading_question_id?'本次追问执行限时 5 分钟，可随时停止；超时后保留问题与诊断，支持重试。':'Arc 不设完整工程分析总时限，可手动停止；连接故障仍会如实显示。'}</p>}
+    {a.active&&!manual&&run.origin!=='mcp'&&<p className="muted">{run.provider_id==='dsh'?'本次任务通过本机 DSH Web 执行，可随时停止。':run.overview_format?`${run.overview_from_result_id?'正在用原说明的冻结源码补查关系。':'首轮集中核对代表性入口，已读源码可用于生成草稿。'}独立复核通过后保存。执行总限时 ${overviewTotalMinutes} 分钟，单阶段连续 ${overviewIdleMinutes} 分钟无工作事件会停止。`:run.reading_question_id?'本次追问执行限时 5 分钟，可随时停止；超时后保留问题与诊断，支持重试。':'本次功能与调用链分析执行限时 8 分钟，可随时停止。'}</p>}
     {a.active&&<p className={a.reconnecting||a.stalled?'warning':'muted'}>{a.reconnecting?'已收到连接失败 / 重连事件，不能视为正在正常分析。可等待连接恢复或停止本次任务。':run.status==='waiting_agent'?'尚未收到领取回执。':a.stalled?`已 ${a.quiet} 未收到新事件，无法确认 Agent 当前是否仍在分析。可继续等待或停止。`:`最近活动距今 ${a.quiet} · 以下依据真实事件，不估算完成百分比。`}</p>}
     {error&&<p className="warning">过程记录暂时读取失败：{error}。正在重试，不能据此判断 Agent 是否已停止。</p>}
     {run.error&&<AnalysisError error={run.error}/>}

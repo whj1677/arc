@@ -1,6 +1,8 @@
 import type {Snapshot,Annotation,AnalysisResult,ReadingContext,ReadingQuestion,ReadingTarget,Project,Feature,Scenario} from '../shared';
 import {relativePath} from './snapshot';
 
+export const overviewDiscoveryBudget = { calls: 12, searchFiles: 24, readLines: 80 } as const;
+
 export function readingTarget(result:AnalysisResult|undefined,target:ReadingTarget,snapshot:Snapshot,feature:Feature) {
   if(!target||!['feature','node','edge','file','directory','step','role','handoff','call_step'].includes(target.kind)||typeof target.id!=='string'||!target.id.trim()||target.id.length>2000)throw Error('阅读对象无效');
   if(target.kind==='feature'){

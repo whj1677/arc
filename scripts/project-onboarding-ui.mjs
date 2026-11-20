@@ -204,7 +204,7 @@ try{
   run=data.runs.find(item=>item.binding.run_id===run.binding.run_id);
   assert.equal(run.overview_format,'overview-1','Acceptance must use the compact, independently reviewed overview. Set ARC_VERIFY_FRESH_OVERVIEW=1 for an older saved result.');
   const request=JSON.parse(await fs.readFile(path.join(env.ARC_DATA_DIR,'runs',run.binding.run_id,'request.json'),'utf8'));
-  assert.ok(request.args.includes('model_reasoning_effort="medium"'),'Built-in overview must use its scoped discovery depth.');
+  assert.ok(request.args.includes('model_reasoning_effort="low"'),'Built-in overview must use its scoped discovery depth.');
   const explanation=data.explanations.find(e=>e.result.binding.run_id===run.binding.run_id);assert.ok(explanation);
   assert.ok(explanation.result.architecture?.node_ids.length,'Whole project must have a source-backed architecture.');
   assert.ok(explanation.result.feature_catalog?.groups.some(g=>g.node_ids.length),'Whole project must have a feature catalog.');

@@ -21,7 +21,7 @@ import type {
   Snapshot,
   WorkspaceData,
 } from '../shared';
-import { hasFunctionGraphs } from '../shared';
+import { hasFunctionGraphs, overviewTotalMinutes } from '../shared';
 import { explanationFreshness } from '../freshness';
 import { Store, id, now } from './store';
 import { capture, freshness, readSource, sha } from './snapshot';
@@ -846,6 +846,10 @@ export class ArcService {
         return;
       }
       if (this.store.get<Run>('run', runId).status !== 'queued') return;
+      if (initial.overview_format && initial.provider_id === 'codex') {
+        initial.execution_started_at = now();
+        this.store.put('run', runId, initial);
+      }
       await this.executeLocal(initial);
     } finally {
       this.releaseLocalSlot();
@@ -897,7 +901,27 @@ export class ArcService {
       freshRun.feature_graph_format = 'feature-graph-1';
       this.store.put('run', runId, freshRun);
     }
-    const prompt = await makePrompt(initial, snapshot, this.directory, annotations, previous, featureDetail);
+    let prompt = await makePrompt(initial, snapshot, this.directory, annotations, previous, featureDetail);
+    const retry = provider === 'codex' && initial.overview_format ? this.overviews.retrySource(initial) : undefined;
+    let savedCandidate: string | undefined;
+    let inheritedEvidence = false;
+    if (retry) {
+      freshRun.previous_run_id = retry.binding.run_id;
+      this.store.put('run', runId, freshRun);
+      if (retry.overview_candidate_ready) {
+        savedCandidate = await fs.readFile(retry.output_path, 'utf8');
+        await fs.mkdir(path.dirname(initial.output_path), { recursive: true });
+        await fs.writeFile(initial.output_path, savedCandidate);
+        this.event(runId, { type: 'local.stage', stage: 'overview_resume', message: '已恢复同一冻结快照的草稿，正在重新校验并独立复核。' });
+      } else {
+        const excerpts = await this.overviews.readExcerpts(retry.binding.run_id, snapshot);
+        if (excerpts.length) {
+          inheritedEvidence = true;
+          prompt += '\n上次在同一快照已读的源码节选，可直接引用，按需补查。start 为首行号，长行及末尾可能截短：' + JSON.stringify(excerpts);
+          this.event(runId, { type: 'local.stage', stage: 'overview_resume', message: `已恢复上次读取的 ${excerpts.length} 个文件的冻结源码节选。` });
+        }
+      }
+    }
     this.event(runId, { type: 'local.stage', stage: 'launching', message: `只读任务已准备，正在启动 ${product}` });
     if (this.store.get<Run>('run', runId).status === 'cancelled' || this.closing) return;
     this.checkOverviewChild(initial);
@@ -936,13 +960,35 @@ export class ArcService {
       shouldStart: () => canStart('queued'),
       started: active => started(active, 'queued'),
     };
-    const result = provider === 'dsh'
+    let candidatePath = initial.output_path;
+    let result = savedCandidate !== undefined ? { code: 0, raw: savedCandidate, stderr: '' } : provider === 'dsh'
       ? await this.dshRunner({ ...options, outputSchema: options.outputSchema ?? (initial.reading_question_id ? readingAnswerSchema : initial.overview_format ? overviewSchema : schema) })
       : await this.codexRunner(options);
     this.active.delete(runId);
 
-    const run = this.store.get<Run>('run', runId);
+    let run = this.store.get<Run>('run', runId);
     if (this.localResultStopped(run)) return;
+    if (initial.overview_format && 'timeout' in result && (result.timeout === 'idle' || result.timeout === 'discovery') &&
+        Date.now() < Date.parse(initial.execution_started_at!) + (overviewTotalMinutes - 1) * 60000) {
+      const excerpts = await this.overviews.readExcerpts(runId, snapshot);
+      if (excerpts.length || inheritedEvidence) {
+        run = this.store.get<Run>('run', runId);
+        if (this.localResultStopped(run)) return;
+        run.status = 'validating';
+        this.store.put('run', runId, run);
+        this.event(runId, { type: 'local.stage', stage: 'overview_synthesis', message: '取证阶段已停止，正在用已读源码生成首轮草稿，随后独立复核。' });
+        const directory = path.join(path.dirname(initial.output_path), 'synthesis');
+        candidatePath = path.join(directory, 'result.json');
+        result = await this.codexRunner({
+          ...options, overviewSynthesis: true, outputDirectory: directory, outputPath: candidatePath,
+          prompt: prompt + '\n取证已结束，工具已关闭。仅用本任务提供的已读冻结源码生成完整 JSON，缺口写入 unresolved。start 为首行号，长行及末尾可能截短。\n' + JSON.stringify(excerpts),
+          shouldStart: () => canStart('validating'), started: active => started(active, 'validating'),
+        });
+        this.active.delete(runId);
+        run = this.store.get<Run>('run', runId);
+        if (this.localResultStopped(run)) return;
+      }
+    }
     const protocolError = 'protocol_error' in result ? result.protocol_error : undefined;
     if (result.code !== 0 || protocolError) {
       throw new Error(`${initial.provider_id} 未成功完成（exit=${result.code}）：${protocolError || result.stderr.slice(-2500)}`);
@@ -1023,9 +1069,16 @@ export class ArcService {
         }
         if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
         draft = await prepare(repairedValue);
+        candidatePath = path.join(this.directory, 'runs', runId, 'repair', 'result.json');
       }
       if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
       if (initial.overview_format) {
+        if (provider === 'codex') {
+          const current = this.store.get<Run>('run', runId);
+          current.overview_candidate_ready = true;
+          current.output_path = candidatePath;
+          this.store.put('run', runId, current);
+        }
         const checked = await this.overviews.finishOverview(initial, snapshot, profile, draft);
         value = checked.result;
         semanticReview = checked.semantic;

@@ -4,7 +4,7 @@ import Ajv2020 from 'ajv/dist/2020';
 import type { AnalysisResult, Explanation, Feature, Project, ProviderProfile, Run, Scenario, Snapshot } from '../shared';
 import { hasFunctionGraphs } from '../shared';
 import { Store, id, now } from './store';
-import { sha } from './snapshot';
+import { linesOf, readSource, sha } from './snapshot';
 import { overviewPhaseDirectory, redact, type ActiveProcess, type OverviewPhase, type runCodex } from './providers';
 import { validateResult } from './validation';
 import { deferredCatalogDeclarationBoundary, deferredCatalogReadingBoundary, prepareOverview } from './overview-result';
@@ -68,6 +68,34 @@ export class OverviewOrchestrator {
 
   async waitQueue(): Promise<void> {
     await this.overviewQueue;
+  }
+
+  retrySource(run: Run): Run | undefined {
+    const history = this.host.store.all<Run>('run').filter(candidate =>
+      candidate.binding.run_id !== run.binding.run_id && candidate.overview_format && !candidate.overview_from_result_id && !candidate.origin &&
+      (candidate.execution_mode ?? candidate.provider_id) === 'codex' &&
+      candidate.binding.scenario_id === run.binding.scenario_id &&
+      candidate.binding.source_snapshot_id === run.binding.source_snapshot_id &&
+      candidate.binding.question_revision_id === run.binding.question_revision_id
+    );
+    let parentId = run.previous_run_id ?? history.at(-1)?.binding.run_id;
+    for (const previous of history.reverse()) {
+      if (previous.binding.run_id !== parentId) continue;
+      if (previous.status !== 'failed') break;
+      if (previous.overview_candidate_ready || this.host.store.overviewReadLocations(previous.binding.run_id).length) return previous;
+      parentId = previous.previous_run_id;
+    }
+  }
+
+  async readExcerpts(runId: string, snapshot: Snapshot) {
+    const excerpts = [];
+    for (const location of this.host.store.overviewReadLocations(runId)) {
+      const file = await readSource(this.host.directory, snapshot, location.path);
+      const start = location.start - 1;
+      const lines = linesOf(file.text).slice(start, start + Math.min(location.count, 24));
+      if (lines.length) excerpts.push({ path: file.path, start: location.start, lines: lines.map(line => line.slice(0, 200)).join('\n').slice(0, 1600) });
+    }
+    return excerpts;
   }
 
   async researchOverview(resultId: string, submissionKey: string): Promise<Run> {
@@ -287,7 +315,7 @@ export class OverviewOrchestrator {
     const { store, directory } = this.host;
     const explanation = store.get<Explanation>('explanation', run.overview_from_result_id!);
     const previous = store.get<Run>('run', explanation.result.binding.run_id);
-    const prevDir = path.dirname(previous.output_path);
+    const prevDir = path.join(directory, 'runs', previous.binding.run_id);
     const readOptional = async (file: string) => {
       try {
         return JSON.parse(await fs.readFile(file, 'utf8'));

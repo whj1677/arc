@@ -6,6 +6,7 @@ import {spawn} from 'node:child_process';
 import {ArcService} from '../src/main/service';
 import {capture,sha} from '../src/main/snapshot';
 import {AcpConnection} from '../src/main/providers';
+import {overviewDiscoveryBudget} from '../src/main/prompt-context';
 import {annotationTarget} from '../src/ui/annotation';
 test('actual frozen-source MCP rejects traversal, absolute paths, unknown methods and junctions',async t=>{
   const root=path.resolve('.test-data','mcp-adversarial-'+Date.now()),source=path.join(root,'source'),storage=path.join(root,'data');
@@ -92,6 +93,39 @@ test('frozen-source search locates literal matches in large files with stable ev
     assert.equal(read.lines.length,400);
     assert.deepEqual(read.lines.at(-1),{line:first.line,text:first.text});
     assert.equal((await invoke('arc_read_source',{path:tasks,line_count:401})).isError,true);
+  }finally{child.stdin.end();await new Promise(r=>child.once('close',r));}
+});
+test('first Codex overview bounds parallel discovery on a 2109-file manifest and reserves direct reads',async t=>{
+  await fs.mkdir('.test-data',{recursive:true});
+  const root=await fs.mkdtemp(path.resolve('.test-data','mcp-overview-')),source=path.join(root,'source'),storage=path.join(root,'data');
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  await fs.mkdir(source);
+  await fs.writeFile(path.join(source,'main.c'),'int main(void) { return boot(); }\n'+'// other\n'.repeat(100));
+  const snapshot=await capture(source,'overview',storage,'');
+  const entry=snapshot.files[0];
+  // Only the real entry should be opened. A broad search must reject this manifest before file I/O.
+  snapshot.files.push(...Array.from({length:2108},(_,i)=>({...entry,path:`lib/module${i}.c`})));
+  const context=path.join(root,'context.json');
+  await fs.writeFile(context,JSON.stringify({storage,snapshot}));
+  const child=spawn(process.execPath,['dist/context-server.cjs',context,'overview-discovery'],{windowsHide:true,stdio:['pipe','pipe','pipe']});
+  const client=new AcpConnection(child,()=>{});
+  const invoke=(name:string,args:object)=>client.request('tools/call',{name,arguments:args});
+  try{
+    const broad=await invoke('arc_search_source',{query:'boot'});
+    assert.equal(broad.isError,true);
+    assert.match(broad.content[0].text,/2109.*path_prefix/);
+    const search=await invoke('arc_search_source',{query:'boot',path:'main.c'});
+    assert.equal(JSON.parse(search.content[0].text).matches[0].line,1);
+    const listings=await Promise.all(Array.from({length:overviewDiscoveryBudget.calls},()=>invoke('arc_list_files',{query:'main.c'})));
+    assert.equal(listings.filter(reply=>!reply.isError).length,overviewDiscoveryBudget.calls-4);
+    assert.match(listings.at(-1).content[0].text,/只用于 arc_read_source/);
+    const reads=await Promise.all(Array.from({length:3},()=>invoke('arc_read_source',{path:'main.c',line_count:400})));
+    assert.deepEqual(reads.map(reply=>!!reply.isError),[false,false,true]);
+    const last=JSON.parse(reads[1].content[0].text);
+    assert.equal(last.lines[0].text,'int main(void) { return boot(); }');
+    assert.equal(last.lines.length,overviewDiscoveryBudget.readLines);
+    assert.equal(last.remaining_source_calls,0);
+    assert.match(reads[2].content[0].text,/立即输出 overview-1 JSON/);
   }finally{child.stdin.end();await new Promise(r=>child.once('close',r));}
 });
 test('annotations cannot attach to objects outside original result; changed IDs never match names',async t=>{

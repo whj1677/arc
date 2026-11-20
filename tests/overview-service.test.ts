@@ -99,6 +99,76 @@ test('new overview refuses a response without readings before requesting semanti
   assert.equal(service.data().explanations.length,0);assert.equal(calls,2);
 });
 
+test('discovery timeout synthesizes once from read source and a failed review retries from that checked draft', async t => {
+  const phases: string[] = [];
+  let failReview = true;
+  const runner: typeof runCodex = async options => {
+    phases.push(options.phase ?? (options.overviewSynthesis ? 'synthesis' : 'discovery'));
+    assert.equal(options.shouldStart?.(), true);
+    options.started(active());
+    if (options.phase) {
+      if (failReview) return {code:1, raw:'', stderr:'review offline'};
+      return phaseReply(options, reviewReply(options));
+    }
+    if (options.overviewSynthesis) {
+      assert.ok(options.prompt.includes(overview.evidence[0].quote.split('\n')[1]));
+      await fs.mkdir(options.outputDirectory!, {recursive:true});
+      const raw = JSON.stringify(overview);
+      await fs.writeFile(options.outputPath!, raw);
+      return {code:0, raw, stderr:''};
+    }
+    options.event({type:'item.completed',item:{type:'mcp_tool_call',server:'arc_frozen_source',tool:'arc_read_source',
+      status:'completed',arguments:{path:'入口.ts',line_start:2,line_count:1}}});
+    return {code:1, raw:'', stderr:'', protocol_error:'取证到期', timeout:'discovery'};
+  };
+  const {service,scenario} = await fixture(t,runner);
+  const first = await service.startRun(scenario.scenario_id,'codex','bounded-first-run');
+  await Promise.all(service.executing.values());
+  const failed = service.store.get<Run>('run',first.binding.run_id);
+  assert.equal(failed.status,'failed');assert.match(failed.error!,/review offline/);
+  assert.equal(failed.overview_candidate_ready,true);
+  assert.equal(await fs.readFile(failed.output_path,'utf8'),JSON.stringify(overview));
+  assert.equal(service.data().explanations.length,0);
+  failReview = false;
+  const retry = await service.startRun(scenario.scenario_id,'codex','bounded-retry-run');
+  await Promise.all(service.executing.values());
+  const completed = service.store.get<Run>('run',retry.binding.run_id);
+  assert.deepEqual(phases,['discovery','synthesis','overview_review','overview_review']);
+  assert.equal(completed.status,'completed',completed.error);
+  assert.equal(completed.previous_run_id,first.binding.run_id);
+  assert.deepEqual(service.data().explanations[0].result.binding,retry.binding);
+});
+
+test('rerunning a legacy timeout retains same-snapshot reads across a subsequent attempt without new reads', async t => {
+  let attempt = 0, syntheses = 0;
+  const runner: typeof runCodex = async options => {
+    options.started(active());
+    if (options.phase) return phaseReply(options,reviewReply(options));
+    if (options.overviewSynthesis) {
+      syntheses++;
+      assert.ok(options.prompt.includes('export function submit'));
+      return {code:1,raw:'',stderr:'offline'};
+    }
+    if (++attempt === 1) {
+      options.event({type:'item.completed',item:{type:'mcp_tool_call',server:'arc_frozen_source',tool:'arc_read_source',
+        status:'completed',arguments:{path:'入口.ts'}}});
+      return {code:1,raw:'',stderr:'首次分析超过 10 分钟执行期限'};
+    }
+    assert.ok(options.prompt.includes('export function submit'));
+    if (attempt === 2) return {code:1,raw:'',stderr:'',timeout:'idle'};
+    return phaseReply(options,overview);
+  };
+  const {service,scenario} = await fixture(t,runner);
+  for (const suffix of ['legacy','idle','retry']) {
+    const run = await service.startRun(scenario.scenario_id,'codex','bounded-run-'+suffix);
+    await Promise.all(service.executing.values());
+    const saved = service.store.get<Run>('run',run.binding.run_id);
+    assert.equal(saved.status,suffix==='retry'?'completed':'failed',saved.error);
+  }
+  assert.equal(syntheses,1);
+  assert.equal(service.data().explanations.length,1);
+});
+
 test('cancelling during review preparation rejects its late startup and never publishes the draft',async t=>{
   const entered=signal(),release=signal();let mayStart:boolean|undefined,stopped=false;
   const runner:typeof runCodex=async options=>{

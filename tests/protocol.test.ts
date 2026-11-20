@@ -52,9 +52,9 @@ for(const {label,run,minutes} of [
 ]){
   test(`${label} gets ${minutes} minutes even after ten minutes in the queue`,t=>{
     t.mock.timers.enable({apis:['setTimeout','Date']});
-    const created_at=new Date(Date.now()-10*60*1000).toISOString();
+    const queued={...run,created_at:new Date(Date.now()-10*60*1000).toISOString()};
     const events:any[]=[];let stopped=0,error='';
-    readingWatchdog({...run,created_at},async()=>{stopped++;},message=>{error=message;},event=>events.push(event),()=>assert.fail('stopping should succeed'));
+    readingWatchdog(queued,async()=>{stopped++;},message=>{error=message;},event=>events.push(event),()=>assert.fail('stopping should succeed'));
     t.mock.timers.tick(minutes*60*1000-1);assert.equal(stopped,0);assert.equal(error,'');
     t.mock.timers.tick(1);assert.equal(stopped,1);
     assert.match(error,new RegExp(`${label}超过 ${minutes} 分钟.*已收原文保留`));
@@ -69,16 +69,43 @@ test('a reading timeout reports a rejected stop instead of continuing to wait si
   t.mock.timers.tick(5*60*1000);await Promise.resolve();
   assert.deepEqual(failures,[stopError]);assert.equal(events[0].stage,'timeout');
 });
-test('overview generation and relation review share the same ten-minute deadline',t=>{
+test('an overview without work events stops after three minutes even if the CLI keeps reconnecting',t=>{
   t.mock.timers.enable({apis:['setTimeout','Date']});
-  const run={overview_format:'overview-1' as const,created_at:new Date().toISOString()};
-  let stopped=0;
-  const first=readingWatchdog(run,async()=>{stopped++;},()=>{},()=>{},()=>{});
-  t.mock.timers.tick(120000);clearTimeout(first);
-  let error='';
-  readingWatchdog(run,async()=>{stopped++;},message=>{error=message;},()=>{},()=>{});
-  t.mock.timers.tick(8*60*1000-1);assert.equal(stopped,0);
-  t.mock.timers.tick(1);assert.equal(stopped,1);assert.match(error,/首次分析超过 10 分钟/);
+  let stopped=0,reason='';
+  const watchdog=readingWatchdog({overview_format:'overview-1'},async()=>{stopped++;},(_,kind)=>{reason=kind;},()=>{},()=>{});
+  t.mock.timers.tick(120000);
+  watchdog.progress('item.completed');
+  t.mock.timers.tick(120000);
+  watchdog.progress('error');
+  t.mock.timers.tick(59999);assert.equal(stopped,0);
+  t.mock.timers.tick(1);assert.equal(stopped,1);assert.equal(reason,'idle');
+  watchdog.progress('turn.completed');
+  t.mock.timers.tick(600000);assert.equal(stopped,1);
+});
+
+test('active overview phases share ten minutes from execution and exclude time in the queue',t=>{
+  t.mock.timers.enable({apis:['setTimeout','Date']});
+  const created_at=new Date().toISOString();
+  t.mock.timers.tick(20*60000);
+  const run={overview_format:'overview-1' as const,created_at,execution_started_at:new Date().toISOString()};
+  let stopped=0,reason='';
+  const startPhase=()=>readingWatchdog(run,async()=>{stopped++;},(_,kind)=>{reason=kind;},()=>{},()=>{});
+  const draft=startPhase();
+  for(let i=0;i<4;i++){t.mock.timers.tick(120000);draft.progress('item.completed');}
+  draft.close();
+  startPhase();
+  t.mock.timers.tick(120000-1);assert.equal(stopped,0);
+  t.mock.timers.tick(1);assert.equal(stopped,1);assert.equal(reason,'total');
+});
+
+test('an active first discovery stops at four minutes and reserves the remaining budget for synthesis and review',t=>{
+  t.mock.timers.enable({apis:['setTimeout','Date']});
+  const run={overview_format:'overview-1' as const,execution_started_at:new Date().toISOString()};
+  let reason='';
+  const watchdog=readingWatchdog(run,async()=>{},(_,kind)=>{reason=kind;},()=>{},()=>{},true);
+  t.mock.timers.tick(120000);watchdog.progress('item.completed');
+  t.mock.timers.tick(120000-1);assert.equal(reason,'');
+  t.mock.timers.tick(1);assert.equal(reason,'discovery');
 });
 
 test('long analysis waits beyond the former limit and accepts a later terminal reply',async t=>{
@@ -169,6 +196,6 @@ test('Codex semver capability check supports modern versions and picks version-a
   assert.equal(reasoningEffortForRun({question:overviewDiscoveryQuestion},'overview_review'),'low');
   assert.equal(reasoningEffortForRun({question:overviewDiscoveryQuestion},'overview_research'),'low');
   assert.equal(reasoningEffortForRun({question:'分析此功能的调用链'}),'low');
-  assert.equal(reasoningEffortForRun({question:'分析工程全貌',overview_format:'overview-1'}),'medium');
+  assert.equal(reasoningEffortForRun({question:'分析工程全貌',overview_format:'overview-1'}),'low');
   assert.equal(reasoningEffortForRun({question:overviewDiscoveryQuestion}),'medium');
 });
