@@ -1729,7 +1729,7 @@ dialog::backdrop {
 .function-map-focus { gap: 6px; margin: 8px 0; padding: 10px; }
 .function-map-focus summary { padding: 4px 0; font-size: 12px; }
 
-.composition-root, .composition-topic, .composition-relation, .walk-nav-scene, .filemap-select {
+.composition-root, .composition-topic, .composition-relation, .walk-nav-scene {
   background: var(--surface);
   border-color: var(--border);
   color: var(--ink);
@@ -1742,8 +1742,24 @@ dialog::backdrop {
 .composition-connectors path { stroke: #8cab91; }
 .composition-intro h2, .composition-root strong { color: var(--accent-hover); }
 .composition-children .composition-topic { background: var(--surface); }
-.filemap-select[data-file-kind="file"], .composition-fold { background: var(--surface-tint); color: var(--ink-secondary); }
-.filemap-select > span, .composition-relation span, .composition-relation small, .walk-nav-feature summary, .file-summary .summary-state, .file-summary .file-scope-meta, .fr-paths small, .fr-lanes h3, .fr-arrow small { color: var(--muted); }
+.composition-fold { background: var(--surface-tint); color: var(--ink-secondary); }
+.composition-relation span, .composition-relation small, .walk-nav-feature summary, .file-summary .summary-state, .file-summary .file-scope-meta, .fr-paths small, .fr-lanes h3, .fr-arrow small { color: var(--muted); }
+
+.filemap-tree { background: var(--surface); border-color: var(--border); }
+.filemap-root, .filemap-branch > .filemap-children { border-color: var(--border-subtle); }
+.filemap-select, .filemap-fold, .filemap-more { background: transparent; box-shadow: none; }
+.filemap-icon, .filemap-fold, .filemap-empty { color: var(--muted); }
+.filemap-fold:disabled { background: transparent; color: var(--muted); opacity: 1; }
+.filemap-select:hover, .filemap-fold:hover:not(:disabled) { background: var(--surface-tint); border-color: transparent; }
+.filemap-select.is-analyzed .filemap-icon, .filemap-select[data-file-kind="folder"] .filemap-icon { color: var(--green); }
+.filemap-badge, .filemap-filters button[aria-pressed="true"] { background: var(--soft); color: var(--accent-hover); }
+.filemap-select.selected, .filemap-select.selected:hover {
+  background: var(--soft);
+  border-color: var(--border-strong);
+  color: var(--accent-hover);
+}
+.filemap-select.selected .filemap-badge { background: var(--soft-hover); }
+.filemap-filters button[aria-pressed="true"] { border-color: var(--border-strong); }
 
 /* ==========================================================================
    Feature Reading & Feature Catalog

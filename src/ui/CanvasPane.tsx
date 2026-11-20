@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import type {
   AnalysisResult,
   Explanation,
@@ -21,6 +21,7 @@ import { Timeline } from './Timeline';
 import { FeatureReading } from './FeatureReading';
 import { Composition } from './Composition';
 import { FileMap } from './FileMap';
+import { analyzedSourcePaths } from './file-map';
 import { clampZoom } from './zoom';
 import { functionPathPosition } from './feature-reading-model';
 import type { AnalysisMode } from './discovery-state';
@@ -144,6 +145,11 @@ export function CanvasPane({
   evidence,
   showMcp,
 }: CanvasPaneProps) {
+  const fileSnapshotId = reading.view === 'files' && !featureReading ? sourceSnapshot?.source_snapshot_id : undefined;
+  const analyzedPaths = useMemo(
+    () => analyzedSourcePaths(data.explanations, projectId, fileSnapshotId, result),
+    [data.explanations, projectId, fileSnapshotId, result],
+  );
   const filters =
     featureReading && reading.view === 'files' ? (
       <div className="fr-file-search">
@@ -289,6 +295,7 @@ export function CanvasPane({
           <ZoomSurface reflow zoom={reading.zoom} change={zoom => patch({ zoom })}>
             <FileMap
               files={sourceSnapshot.files}
+              analyzedPaths={analyzedPaths}
               title={project?.name || '当前工程'}
               selected={selectedFile}
               select={chooseFile}
@@ -323,7 +330,7 @@ export function CanvasPane({
                 expanded={reading.expanded}
                 toggle={toggleExpanded}
                 architecture={() => switchView('system')}
-                dependencies={() => switchView('dependencies')}
+                dependencies={reading.entrance === 'overview' ? undefined : () => switchView('dependencies')}
               />
             )}
             {reading.view === 'composition' && (
@@ -479,7 +486,7 @@ export function CanvasPane({
             </p>
             <div className="row">
               <button className="quiet" onClick={() => switchView('files')}>
-                先浏览文件组织
+                先浏览源码目录
               </button>
             </div>
             <div className="facts">

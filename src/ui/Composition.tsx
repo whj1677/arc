@@ -4,7 +4,7 @@ import {edgeCaption} from './flow-layout';
 import {edgeNames} from './Graph';
 import {architectureOnlyDependencies} from './graph-presentation';
 import './composition.css';
-interface Props {result:AnalysisResult;title:string;selected:string;select:(id:string)=>void;zoom:number;search:string;expanded:readonly string[];toggle:(id:string)=>void;architecture:()=>void;dependencies:()=>void;variant?:'system'|'analysis'|'modules'|'dependencies';focus?:string}
+interface Props {result:AnalysisResult;title:string;selected:string;select:(id:string)=>void;zoom:number;search:string;expanded:readonly string[];toggle:(id:string)=>void;architecture:()=>void;dependencies?:()=>void;variant?:'system'|'analysis'|'modules'|'dependencies';focus?:string}
 export function Composition({result,title,selected,select,zoom,search,expanded,toggle,architecture,dependencies,variant='system',focus}:Props){
  const ref=useRef<HTMLDivElement>(null),[lines,setLines]=useState<{id:string;d:string;color:string;relation:boolean}[]>([]);
  const colors=['#8dcbbb','#c0b0e8','#ddbf8f','#98bedb'];
@@ -53,7 +53,7 @@ export function Composition({result,title,selected,select,zoom,search,expanded,t
    <svg className="composition-connectors" aria-hidden="true">{lines.map(line=><path key={line.id} data-topic-link={line.id} data-link-kind={line.relation?'relation':'membership'} d={line.d} stroke={line.color} strokeDasharray={line.relation?'5 4':undefined}/>)}</svg>
    <div className="composition-layout"><div className="composition-root" data-topic="__project_index__" data-zoom-anchor><small>{variant==='system'?'当前工程':'当前说明 · 阅读索引'}</small><strong>{title}</strong></div><div className="composition-roots">{roots.map((id,index)=>render(id,colors[index%colors.length],'__project_index__'))}</div></div>
   </div>
-  <div className="composition-navigation"><button onClick={architecture}>查看系统通信 →</button>{variant!=='dependencies'&&<button onClick={dependencies}>查看依赖用途 →</button>}</div>
+  <div className="composition-navigation"><button onClick={architecture}>查看系统通信 →</button>{variant!=='dependencies'&&dependencies&&<button onClick={dependencies}>查看依赖用途 →</button>}</div>
   <p className="composition-boundary">中心是阅读索引。主题及模块归属来自当前说明；实线表示索引/归属，虚线只连接已分析关系，方向与传递请看标签。没有实际执行时间记录。</p>
  </section>;
 }

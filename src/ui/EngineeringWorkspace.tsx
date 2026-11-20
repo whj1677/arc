@@ -215,8 +215,8 @@ export function EngineeringOverviewSections({
               <button className="home-edge" onClick={()=>onArchitecture(focus.edge!.edge_id)}>{focus.edge.label} →</button>
               <button onClick={()=>onArchitecture(focus.to!.node_id)}>{focus.to.label}</button></div>}
           </details>
-        </div>:<p>{result?'这份分析还没有可定位到源码的阅读起点。可先浏览文件组织，或打开功能目录选一个问题。':'先浏览工程文件，或点击上方分析按钮生成可核对的阅读起点。'}</p>}
-        <div className="home-reading-links"><button onClick={onWalk}>{result?.feature_catalog?.readings?.some(r=>r.steps.length)?'阅读首轮功能说明':'功能走读'} →</button><button onClick={onFiles}>文件组织 →</button></div>
+        </div>:<p>{result?'这份分析还没有可定位到源码的阅读起点。可先浏览源码目录，或打开功能目录选一个问题。':'先浏览工程文件，或点击上方分析按钮生成可核对的阅读起点。'}</p>}
+        <div className="home-reading-links"><button onClick={onWalk}>{result?.feature_catalog?.readings?.some(r=>r.steps.length)?'阅读首轮功能说明':'功能走读'} →</button><button onClick={onFiles}>源码目录 →</button></div>
       </section>
       <aside className="project-home-panel"><h2>继续工作</h2>
         {resumeLabel&&<button className="home-continue" onClick={onResume}><small>上次阅读</small><strong>{resumeLabel}</strong><span>继续阅读 →</span></button>}

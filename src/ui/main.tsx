@@ -56,9 +56,7 @@ import './workbench.css';
 const api = window.arc;
 const overviewTabs = [
   ['system', '系统架构'],
-  ['files', '文件组织'],
-  ['dependencies', '依赖关系'],
-  ['composition', '组成导图'],
+  ['files', '源码目录'],
 ];
 const overviewLanding = {
   entrance: 'overview', view: 'system', catalog_hidden: true, mode: 'normal', detail_tab: 'details',
@@ -169,7 +167,7 @@ function App() {
   const readingGuide = featureReading && result ? featureReadingModel(result) : undefined;
   const readingEvidence = readingGuide && reading.selected ? result?.evidence.filter(e => guideEvidenceIds(readingGuide, reading.selected).includes(e.evidence_id)) : result?.evidence;
   const businessReading = reading.view === 'timeline' && !!result && timelineModel(result).ordered;
-  const systemReading = reading.entrance === 'overview' && ['system', 'map', 'composition', 'modules', 'dependencies'].includes(reading.view);
+  const systemReading = overview && ['system', 'modules'].includes(reading.view);
 
   const selectedNode = result?.nodes.find(n => n.node_id === reading.selected);
   const selectedEdge = result?.edges.find(n => n.edge_id === reading.selected);
@@ -187,7 +185,7 @@ function App() {
   const sceneAnnotations = data.annotations.filter(a => a.scenario_id === scenarioId);
   const windowMode = width >= 1280 ? 'desktop' : width >= 900 ? 'medium' : 'narrow';
   const detailDrawer = width < 1280;
-  const architectureReading = reading.entrance === 'overview' && ['system', 'map'].includes(reading.view);
+  const architectureReading = overview && reading.view === 'system';
   const hasDetailSelection = reading.view === 'functions' ? !!(selectedNode?.kind === 'function' || selectedCall || functionStep) : !!reading.selected;
   const detailVisible = (!featureReading && !architectureReading && reading.view !== 'functions') || hasDetailSelection || reading.detail_tab !== 'details' || showDetail;
   const readingKey = `${projectId}/${scenarioId || reading.entrance}/${windowMode}`;
@@ -751,7 +749,7 @@ function App() {
       readingFile(file);
       return;
     }
-    switchView('files', { file, evidence_id: '', selected: '', source_snapshot_id: result?.binding.source_snapshot_id || project?.snapshot_id || '', mode: 'normal', detail_tab: 'details' });
+    switchView('files', { file, evidence_id: '', selected: '', source_snapshot_id: sourceSnapshotId, mode: 'normal', detail_tab: 'details' });
     setShowCatalog(false);
     if (detailDrawer) setShowDetail(true);
   }
@@ -1330,7 +1328,7 @@ function App() {
       : undefined;
   const activeFeatureTab = reading.view === 'functions' ? `functions:${functionViewMode}` : reading.view;
   const workspaceTabs = overview && !engineeringReading ? overviewTabs : featureTabs;
-  const activeTab = overview ? (reading.view === 'modules' ? 'composition' : reading.view === 'map' ? 'system' : reading.view) : activeFeatureTab;
+  const activeTab = overview && reading.view === 'modules' ? 'system' : activeFeatureTab;
   const currentView = (workspaceTabs ?? featureViews).find(([view]) => view === activeTab)?.[1] || (preview ? '功能说明' : '当前视图');
 
   function navigateFeatureTab(tab: string) {
@@ -1355,7 +1353,7 @@ function App() {
       navigateFeature(view);
       return;
     }
-    switchView(view, { mode: 'normal', ...(view === 'modules' ? { stage: '' } : {}), ...(view === 'composition' ? { files_open: false } : {}) });
+    switchView(view, { mode: 'normal' });
     setShowCatalog(false);
   }
 

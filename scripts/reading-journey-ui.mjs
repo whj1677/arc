@@ -118,7 +118,7 @@ try{
   await page.getByLabel('当前工程',{exact:true}).selectOption(other.project_id);
   await page.waitForFunction(async id=>(await window.arc.invoke('reading_get',{key:'last-session'}))?.project_id===id,other.project_id);
   await page.getByRole('navigation',{name:'主要导航'}).getByRole('button',{name:'工程全貌',exact:true}).click();
-  await page.locator('.workspace-bar .feature-view-tabs').getByRole('button',{name:'文件组织',exact:true}).click();
+  await page.locator('.workspace-bar .feature-view-tabs').getByRole('button',{name:'源码目录',exact:true}).click();
   await page.locator('[data-file-path="src"]').click();
   await page.getByRole('button',{name:'解释这个文件夹',exact:true}).click();
   assert.equal(await page.locator('[aria-label="当前位置问答"]').getAttribute('data-target-kind'),'directory');
@@ -173,7 +173,7 @@ try{
 
   console.log('Asking real Codex about an unexplained file with an explicitly refreshed source snapshot.');
   await page.getByRole('navigation',{name:'主要导航'}).getByRole('button',{name:'工程全貌',exact:true}).click();
-  await page.locator('.workspace-bar .feature-view-tabs').getByRole('button',{name:'文件组织',exact:true}).click();
+  await page.locator('.workspace-bar .feature-view-tabs').getByRole('button',{name:'源码目录',exact:true}).click();
   await page.locator('[data-file-path="store.ts"]').click();
   await page.locator('.file-summary').getByRole('heading',{name:'用途尚未分析',exact:true}).waitFor();
   await page.getByRole('button',{name:'解释这个文件',exact:true}).click();

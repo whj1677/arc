@@ -1,7 +1,7 @@
 import type {Run,AnalysisResult,ReadingState} from '../shared';
 
 export function isLegacyOverview(position:Pick<ReadingState,'entrance'|'view'>){
- return position.entrance==='overview'&&['home','functions','capabilities'].includes(position.view);
+ return position.entrance==='overview'&&['home','functions','capabilities','dependencies','composition','map'].includes(position.view);
 }
 
 export function modernReading(r:ReadingState):ReadingState{
@@ -10,18 +10,20 @@ export function modernReading(r:ReadingState):ReadingState{
  r={...withoutCode(r),...(r.view_states?{view_states:Object.fromEntries(Object.entries(r.view_states).map(([key,value])=>[key,withoutCode(value)]))}:{})};
  if(r.entrance==='overview'){
   r={...r,catalog_hidden:true};
-  if(isLegacyOverview(r))r={...r,view:'system',selected:'',file:'',evidence_id:'',mode:'normal',detail_tab:'details',zoom:1,stage:'',pinned:false};
- }
- if(r.entrance==='overview'&&r.architecture_version!==1){
-  const {selected,file,evidence_id,source_snapshot_id,mode,detail_tab,zoom,stage,result_id}=r;
-  if(['map','composition'].includes(r.view))return {...r,architecture_version:1,view:'system',mode:'normal',detail_tab:'details',zoom:1,stage:'',view_states:{...r.view_states,[r.view]:{selected,file,evidence_id,source_snapshot_id,mode,detail_tab,zoom,stage,result_id}}};
+  if(isLegacyOverview(r)){
+   const {selected,file,evidence_id,source_snapshot_id,mode,detail_tab,zoom,stage,result_id}=r;
+   if(['map','composition'].includes(r.view)&&r.architecture_version!==1){
+    r={...r,view_states:{...r.view_states,[r.view]:{selected,file,evidence_id,source_snapshot_id,mode,detail_tab,zoom,stage,result_id}}};
+   }
+   r={...r,view:'system',selected:'',file:'',evidence_id:'',mode:'normal',detail_tab:'details',zoom:1,stage:'',pinned:false};
+  }
   r={...r,architecture_version:1};
  }
  if(r.view==='walknav')return {...r,...(r.view_states?.timeline||{selected:'',file:'',evidence_id:'',source_snapshot_id:'',zoom:1,stage:''}),presentation_version:3,view:'timeline',mode:'normal',detail_tab:'details',catalog_hidden:false};
  if(r.presentation_version===3)return r;
  if(r.entrance!=='walk'&&r.view!=='map'||r.entrance==='walk'&&!['flow','sequence','timeline','topicmap'].includes(r.view))return {...r,presentation_version:3};
  const {selected,file,evidence_id,source_snapshot_id,mode,detail_tab,zoom,stage,result_id}=r;
- return {...r,presentation_version:3,view:r.entrance==='overview'?'composition':'timeline',zoom:1,stage:'',mode:'normal',detail_tab:'details',view_states:{...r.view_states,[r.view]:{selected,file,evidence_id,source_snapshot_id,mode,detail_tab,zoom,stage,result_id}}};
+ return {...r,presentation_version:3,view:'timeline',zoom:1,stage:'',mode:'normal',detail_tab:'details',view_states:{...r.view_states,[r.view]:{selected,file,evidence_id,source_snapshot_id,mode,detail_tab,zoom,stage,result_id}}};
 }
 
 export function edgeExplanation(result:AnalysisResult,edge:AnalysisResult['edges'][number]){

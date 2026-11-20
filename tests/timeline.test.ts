@@ -36,19 +36,19 @@ test('presentation migration preserves the saved graph state and does not force 
  const fresh=modernReading({...next,view:'walknav',view_states:undefined});assert.equal(fresh.view,'timeline');assert.equal(fresh.selected,'');assert.equal(fresh.result_id,next.result_id);
  const overview=modernReading({...old,entrance:'overview',view:'composition',presentation_version:3});
  assert.equal(overview.view,'system');assert.equal(overview.zoom,1);assert.equal(overview.result_id,old.result_id);assert.equal(overview.source_snapshot_id,old.source_snapshot_id);assert.deepEqual(overview.scroll,old.scroll);assert.equal(overview.view_states?.composition.zoom,old.zoom);
- assert.equal(modernReading({...overview,view:'composition'}).view,'composition','an explicit subsequent choice is not forced back');
  assert.equal(modernReading({...overview,view:'files',architecture_version:undefined}).view,'files','file reading is not replaced by overview migration');
 });
 
 test('restoring a retired overview tab opens architecture while the feature catalog remains available in walkthroughs',()=>{
-  for(const view of ['home','functions','capabilities']){
-    const saved={...defaults,entrance:'overview' as const,view,catalog_hidden:false,result_id:'previous-result',source_snapshot_id:'frozen'};
+  for(const view of ['home','functions','capabilities','dependencies','composition','map']){
+    const saved={...defaults,entrance:'overview' as const,view,architecture_version:1,catalog_hidden:false,result_id:'previous-result',source_snapshot_id:'frozen',selected:'old-node'};
     const restored=modernReading(saved);
     assert.equal(restored.entrance,'overview');
     assert.equal(restored.view,'system');
     assert.equal(restored.catalog_hidden,true);
     assert.equal(restored.result_id,saved.result_id);
     assert.equal(restored.source_snapshot_id,saved.source_snapshot_id);
+    assert.equal(restored.selected,'');
   }
   const catalog=modernReading({...defaults,entrance:'walk',view:'capabilities',catalog_hidden:false});
   assert.equal(catalog.view,'capabilities');

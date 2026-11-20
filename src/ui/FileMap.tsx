@@ -1,16 +1,107 @@
-import React,{useMemo,useState} from 'react';
-import type {SourceFile} from '../shared';
-import {fileIndex} from './file-map';
-import type {FileTopic} from './file-map';
-export function FileMap({files,title,expanded,toggle,selected,select,zoom,search}:{files:readonly SourceFile[];title:string;expanded:readonly string[];toggle:(path:string)=>void;selected:string;select:(path:string)=>void;zoom:number;search:string}){
- const {root}=useMemo(()=>fileIndex(files),[files]),[limits,setLimits]=useState<Record<string,number>>({});let visible=0;
- const query=search.trim().toLowerCase();const matches=(n:FileTopic):boolean=>!query||n.path.toLowerCase().includes(query)||n.children.some(matches);
- const roots=root.children.filter(matches),rootLimit=limits['']||80;
- const render=(topic:FileTopic,depth=0):React.ReactNode=>{
-  if(++visible>180)return null;
-  const children=topic.children.filter(matches),open=topic.folder&&(!!query||expanded.includes(topic.path));
-  const limit=limits[topic.path]||40;
-  return <div className="filemap-branch" key={topic.path}><div className="filemap-topic"><button className={`filemap-select ${selected===topic.path?'selected':''}`} data-file-path={topic.path} data-file-kind={topic.folder?'folder':'file'} data-zoom-anchor onClick={()=>select(topic.path)}><span aria-hidden="true">{topic.folder?'▱':'▤'}</span><strong>{topic.name}</strong>{topic.folder&&<small>{topic.count}</small>}</button>{topic.folder&&<button className="composition-fold" aria-label={`${open?'收起':'展开'}文件夹 ${topic.path}`} aria-expanded={open} onClick={()=>toggle(topic.path)}>{open?'−':'＋'}</button>}</div>{open&&depth<24&&<div className="filemap-children">{children.slice(0,limit).map(n=>render(n,depth+1))}{children.length>limit&&<button className="filemap-more" onClick={()=>setLimits(x=>({...x,[topic.path]:limit+40}))}>再显示 40 项 · 余 {children.length-limit}</button>}</div>}</div>;
- };
- return <section className="file-mindmap composition" style={{fontSize:16*zoom}} data-zoom-surface aria-label="文件结构导图"><div className="composition-intro"><h2>文件结构</h2><p>点击文件夹或文件，右侧查看用途摘要；用＋展开下一级。索引来自当前冻结快照。</p></div><div className="filemap-tree"><button className={`composition-root ${!selected?'selected':''}`} data-file-path="" data-file-kind="folder" data-zoom-anchor onClick={()=>select('')}><small>工程根目录</small><strong>{title}</strong><small>{files.length} 个文本文件</small></button><div className="filemap-children">{roots.slice(0,rootLimit).map(n=>render(n))}{roots.length>rootLimit&&<button className="filemap-more" onClick={()=>setLimits(x=>({...x,'':rootLimit+40}))}>再显示 40 项 · 余 {roots.length-rootLimit}</button>}</div></div>{visible>180&&<p className="warning">当前显示前 180 个可见主题，请收起部分目录或搜索具体路径。</p>}<p className="composition-boundary">目录关系来自实际文件索引；用途摘要需 Agent 读取对应源码后单独说明。未分析不会按名称生成职责。</p></section>;
+import React, { useMemo, useState } from 'react';
+import type { SourceFile } from '../shared';
+import { fileIndex, type FileTopic } from './file-map';
+
+interface FileMapProps {
+  files: readonly SourceFile[];
+  analyzedPaths: ReadonlySet<string>;
+  title: string;
+  expanded: readonly string[];
+  toggle: (path: string) => void;
+  selected: string;
+  select: (path: string) => void;
+  zoom: number;
+  search: string;
+}
+
+export function FileMap({ files, analyzedPaths, title, expanded, toggle, selected, select, zoom, search }: FileMapProps) {
+  const { root } = useMemo(() => fileIndex(files, analyzedPaths), [files, analyzedPaths]);
+  const [analyzedOnly, setAnalyzedOnly] = useState(false);
+  const [limits, setLimits] = useState<Record<string, number>>({});
+  const filterAnalyzed = analyzedOnly && analyzedPaths.size > 0;
+  const query = search.trim().toLowerCase();
+  const autoExpand = filterAnalyzed || !!query;
+  let visible = 0;
+
+  const matches = (topic: FileTopic): boolean =>
+    (!filterAnalyzed || topic.analyzedCount > 0) &&
+    (!query || topic.path.toLowerCase().includes(query) || topic.children.some(matches));
+
+  const renderChildren = (topic: FileTopic, depth: number): React.ReactNode => {
+    const children = topic.children.filter(matches);
+    const limit = filterAnalyzed ? children.length : limits[topic.path] ?? (topic.path ? 40 : 80);
+    return (
+      <>
+        {children.slice(0, limit).map(child => renderTopic(child, depth))}
+        {children.length > limit && (
+          <button className="filemap-more" onClick={() => setLimits(previous => ({ ...previous, [topic.path]: limit + 40 }))}>
+            再显示 40 项 · 余 {children.length - limit}
+          </button>
+        )}
+      </>
+    );
+  };
+
+  function renderRow(topic: FileTopic, label: string) {
+    const analyzed = analyzedPaths.has(topic.path);
+    return (
+      <button
+        className={`filemap-select${selected === topic.path ? ' selected' : ''}${analyzed ? ' is-analyzed' : ''}`}
+        data-file-path={topic.path}
+        data-file-kind={topic.folder ? 'folder' : 'file'}
+        data-zoom-anchor
+        onClick={() => select(topic.path)}
+      >
+        <span className="filemap-icon" aria-hidden="true" />
+        <strong>{label}</strong>
+        {topic.folder && <small aria-label={`${topic.count} 个文本文件`}>{topic.count}</small>}
+        {topic.folder && topic.analyzedCount > 0 ? (
+          <span className="filemap-badge">{topic.analyzedCount}/{topic.count} 已分析</span>
+        ) : analyzed && <span className="filemap-badge">已分析</span>}
+      </button>
+    );
+  }
+
+  function renderTopic(topic: FileTopic, depth: number): React.ReactNode {
+    if (!filterAnalyzed && ++visible > 180) return null;
+    const canExpand = topic.folder && (filterAnalyzed || depth < 24);
+    const open = canExpand && (autoExpand || expanded.includes(topic.path));
+    return (
+      <div className="filemap-branch" key={topic.path}>
+        <div className="filemap-topic">
+          {canExpand && (
+            <button
+              className="filemap-fold"
+              aria-label={`${open ? '收起' : '展开'}文件夹 ${topic.path}`}
+              aria-expanded={open}
+              disabled={autoExpand}
+              onClick={() => toggle(topic.path)}
+            >
+              {open ? '▾' : '▸'}
+            </button>
+          )}
+          {renderRow(topic, topic.name)}
+        </div>
+        {open && <div className="filemap-children">{renderChildren(topic, depth + 1)}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <section className="file-mindmap" style={{ fontSize: 13 * zoom }} data-zoom-surface aria-label="源码目录">
+      <h2>源码目录</h2>
+      {analyzedPaths.size > 0 && (
+        <div className="filemap-filters" role="group" aria-label="源码目录筛选">
+          <button aria-pressed={!filterAnalyzed} onClick={() => setAnalyzedOnly(false)}>全部文件（{root.count}）</button>
+          <button aria-pressed={filterAnalyzed} onClick={() => setAnalyzedOnly(true)}>已分析（{root.analyzedCount}）</button>
+        </div>
+      )}
+      <div className="filemap-tree">
+        <div className="filemap-root">{renderRow(root, title)}</div>
+        <div className="filemap-children">{renderChildren(root, 0)}</div>
+        {!root.children.some(matches) && <p className="filemap-empty">{query || filterAnalyzed ? '没有匹配的文件' : '当前快照没有索引到文本文件'}</p>}
+      </div>
+      {visible > 180 && <p className="warning">当前显示前 180 项，请收起部分目录或搜索具体路径。</p>}
+    </section>
+  );
 }
