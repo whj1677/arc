@@ -1901,6 +1901,34 @@ dialog::backdrop {
   color: var(--accent-hover);
   font-variant-numeric: tabular-nums;
 }
+.discovery-coverage-row, .catalog-batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+.discovery-coverage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.catalog-batch-bar {
+  margin-bottom: 12px;
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+}
+.discovery-coverage-actions button, .capability-group h3 button {
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
 .discovery-coverage span, .discovery-mode small { color: var(--muted); }
 .discovery-mode {
   margin: 8px 0 10px;
@@ -1929,11 +1957,17 @@ dialog::backdrop {
   padding: 12px 14px;
 }
 .capability-group h3 {
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
   color: var(--accent-hover);
   font-size: 13.5px;
   font-weight: 600;
   margin: 0 2px 8px;
 }
+.capability-group h3 > span { min-width: 0; overflow-wrap: anywhere; }
+.capability-group h3 > small, .capability-group h3 button { flex-shrink: 0; }
+.capability-group h3 button { margin-left: auto; }
 .capability-group h3 small, .catalog-unresolved h3 small {
   font-variant-numeric: tabular-nums;
   background: var(--bg);
@@ -1952,6 +1986,26 @@ dialog::backdrop {
 .capability-card:hover {
   background: var(--soft);
 }
+.capability-card strong { overflow: hidden; text-overflow: ellipsis; overflow-wrap: anywhere; }
+.capability-card.is-selected {
+  background: var(--soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.capability-card.is-unselectable:hover { background: transparent; }
+.capability-check {
+  display: grid;
+  place-items: center;
+  flex: 0 0 16px;
+  height: 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 1;
+}
+.is-selected .capability-check { border-color: var(--accent); }
+.is-selecting .capability-card > span:first-child { flex: 1; }
 .capability-card small { color: var(--muted); }
 .capability-state {
   color: var(--accent);

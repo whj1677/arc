@@ -19,24 +19,52 @@ export function CatalogUnresolved({items,addFeatureFromScope}:{items:string[];ad
   </section>;
 }
 
-export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mode,setMode,fillPending,addFeatureFromScope}:{explanation?:Explanation;data:WorkspaceData;projectId:string;busy:boolean;open:(id:string)=>void;discover:()=>void;mode:AnalysisMode;setMode:(mode:AnalysisMode)=>void;fillPending?:(nodeIds:string[])=>void;addFeatureFromScope?:(item:string)=>void}){
+function isPending(graph:ReturnType<typeof catalogGraphState>){
+  return !graph.archived&&!graph.ready&&!['已排队','等待领取','分析中','正在校验','正在停止'].includes(graph.status);
+}
+
+export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mode,setMode,fillPending,cancelQueued,addFeatureFromScope}:{explanation?:Explanation;data:WorkspaceData;projectId:string;busy:boolean;open:(id:string)=>void;discover:()=>void;mode:AnalysisMode;setMode:(mode:AnalysisMode)=>void;fillPending?:(nodeIds:string[])=>void;cancelQueued?:(runIds:string[])=>void;addFeatureFromScope?:(item:string)=>void}){
   const result=explanation?.result,catalog=result?.feature_catalog;
   const unresolved=(result?.coverage.unresolved_scope||[]).map(item=>item.trim()).filter(Boolean);
   const project=data.projects.find(item=>item.project_id===projectId);
   const checked=data.project_freshness?.[projectId];
   const changedFiles=checked && checked.snapshot_id===project?.snapshot_id ? checked.changed_files : [];
   const [search,setSearch]=useState('');
+  const [selectMode,setSelectMode]=useState(false);
+  const [selectedIds,setSelectedIds]=useState<Set<string>>(new Set());
+
+  function exitSelection(){
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }
+
+  function updateSelection(ids:string[],selected:boolean){
+    setSelectedIds(previous=>{
+      const next=new Set(previous);
+      for(const id of ids){
+        if(selected)next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }
+
   useEffect(()=>setSearch(''),[projectId]);
+  useEffect(exitSelection,[projectId,explanation?.result_id]);
   const query=search.trim().toLocaleLowerCase();
-  const groups=catalog?.groups.map(group=>({...group,node_ids:group.node_ids.filter(id=>{const node=result!.nodes.find(n=>n.node_id===id);return !query||!!node&&`${group.label} ${node.label} ${node.description}`.toLocaleLowerCase().includes(query);})})).filter(group=>group.node_ids.length)||[];
+  const nodes=new Map(result?.nodes.map(node=>[node.node_id,node]));
+  const groups=catalog?.groups.map(group=>({...group,visibleIds:group.node_ids.filter(id=>{const node=nodes.get(id);return !query||!!node&&`${group.label} ${node.label} ${node.description}`.toLocaleLowerCase().includes(query);})})).filter(group=>group.visibleIds.length)||[];
   const readings=new Map(catalog?.readings?.map(item=>[item.node_id,item]));
   const ids=[...new Set(catalog?.groups.flatMap(g=>g.node_ids))];
   const graphs=new Map(ids.map(id=>[id,catalogGraphState(data,explanation!,id)]));
-  const pendingIds=ids.filter(id=>{
-    const graph=graphs.get(id)!;
-    return !graph.archived&&!graph.ready&&!['已排队','等待领取','分析中','正在校验','正在停止'].includes(graph.status);
-  });
   const count=ids.length,items=[...graphs.values()],readyCount=items.filter(item=>item.ready&&!item.archived).length;
+  const pendingIds=ids.filter(id=>isPending(graphs.get(id)!));
+  const pendingSet=new Set(pendingIds);
+  const visiblePendingIds=[...new Set(groups.flatMap(group=>group.visibleIds.filter(id=>pendingSet.has(id))))];
+  const selectedPendingIds=[...selectedIds].filter(id=>pendingSet.has(id));
+  const queuedRunIds=[...new Set(items.flatMap(({run})=>run?.status==='queued'?[run.binding.run_id]:[]))];
+  const generate=mode==='mcp'?undefined:fillPending;
+  const selecting=selectMode&&!!generate;
   const counts=new Map<string,number>();
   for(const item of items){
     const label=item.archived?'已归档':item.status||(!item.ready?'仅有首轮线索':'');
@@ -44,24 +72,58 @@ export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mo
   }
   return <section className="feature-catalog" aria-label="已发现的功能目录">
     <div className="feature-catalog-heading"><div><h2>系统有哪些功能</h2><p>首轮目录依据源码列出已发现的能力。可先查看步骤与源码，再按需生成调用链和调用时间图。</p></div>{!catalog&&<button disabled={busy} onClick={discover}>{mode==='mcp'?'准备功能发现任务':'在 ARC 内发现功能'}</button>}</div>
-    {catalog?<><div className="discovery-coverage"><div className="row between"><strong>已发现 {count} 项功能 · 双图就绪 {readyCount}/{count}</strong>
-      {pendingIds.length>0&&fillPending&&mode!=='mcp'&&(
-        <button className="primary" disabled={busy} onClick={()=>fillPending(pendingIds)}>
-          {explanation?.source_status==='current' ? `补齐未就绪双图（${pendingIds.length}）` : `按原快照补齐双图（${pendingIds.length}）`}
-        </button>
-      )}</div>
+    {catalog?<><div className="discovery-coverage"><div className="discovery-coverage-row"><strong>已发现 {count} 项功能 · 双图就绪 {readyCount}/{count}</strong>
+      <div className="discovery-coverage-actions">
+        {queuedRunIds.length>0&&cancelQueued&&<button className="secondary" disabled={busy} onClick={()=>cancelQueued(queuedRunIds)}>清空排队（{queuedRunIds.length}）</button>}
+        {generate&&(selecting
+          ? <button className="secondary" onClick={exitSelection}>退出批量选择</button>
+          : pendingIds.length>0&&<>
+            <button className="secondary" onClick={()=>setSelectMode(true)}>批量选择</button>
+            {pendingIds.length<=8&&<button className="primary" disabled={busy} onClick={()=>generate(pendingIds)}>
+              {explanation?.source_status==='current' ? `补齐未就绪双图（${pendingIds.length}）` : `按原快照补齐双图（${pendingIds.length}）`}
+            </button>}
+          </>)}
+      </div></div>
       {!!counts.size&&<p aria-label="功能分析状态">{[...counts].map(([label,n])=>`${label} ${n}`).join(' · ')}</p>}
       <details><summary>查看目录来源与覆盖范围</summary><p>{catalog.scope}</p></details>{explanation?.source_status!=='current'&&<small className="warning">来源已有变化：这是已保存的目录，详细分析仍须核对绑定快照。</small>}</div>
-    <div className="discovery-mode"><AnalysisModePicker label="补查分析方式" ariaLabel="功能展开方式" mode={mode} setMode={setMode}/><small>{analysisModes[mode].description}</small></div>
-    <div className="catalog-search"><input type="search" aria-label="搜索工程功能" placeholder="按功能名称或用途查找…" value={search} onChange={e=>setSearch(e.target.value)}/>{search&&<button onClick={()=>setSearch('')}>清除搜索</button>}<small>{query?`找到 ${groups.reduce((n,g)=>n+g.node_ids.length,0)} 项功能`:'点击功能卡片即可继续'}</small></div>
+    <div className="discovery-mode"><AnalysisModePicker label="补查分析方式" ariaLabel="功能展开方式" mode={mode} setMode={next=>{if(next==='mcp')exitSelection();setMode(next);}}/><small>{analysisModes[mode].description}</small></div>
+    <div className="catalog-search"><input type="search" aria-label="搜索工程功能" placeholder="按功能名称或用途查找…" value={search} onChange={e=>setSearch(e.target.value)}/>{search&&<button onClick={()=>setSearch('')}>清除搜索</button>}<small>{query?`找到 ${groups.reduce((n,g)=>n+g.visibleIds.length,0)} 项功能`:selecting?'点击功能卡片即可选择':'点击功能卡片即可继续'}</small></div>
     {!groups.length&&(count?<p role="status">没有匹配的功能，试试用途关键词或清除搜索。</p>:<section className="discovery-empty"><h3>本轮尚未确认功能入口</h3><p>{catalog.scope}</p>{Array.from(new Set(result!.gaps.map(gap=>gap.question.trim()).filter(reason=>reason&&!unresolved.includes(reason)))).map(reason=><p key={reason}>{reason}</p>)}</section>)}
-    <div className="capability-groups">{groups.map((group,i)=><section className="capability-group" key={i}><h3>{group.label}<small>{group.node_ids.length}</small></h3>{group.node_ids.map(id=>{
-      const node=result!.nodes.find(n=>n.node_id===id);if(!node)return null;
-      const graph=graphs.get(id)!;
-      const affected=graph.ready && project && explanationFreshness(graph.ready,project.snapshot_id,changedFiles).kind==='affected';
-      const label=graph.archived?'已归档':[affected?'所引源码已变':graph.ready?'双图就绪':'',graph.status].filter(Boolean).join(' · ')||(readings.get(id)?.steps.length?'阅读首轮步骤':'查看已有线索');
-      return <button className="capability-card" data-capability-id={id} key={id} disabled={busy||graph.archived} onClick={()=>open(id)}><span><strong>{node.label}</strong><small title={node.description}>{node.description}</small></span><span className={`capability-state${affected ? ' affected' : ''}`}>{label}<b aria-hidden="true">↗</b></span></button>;
-    })}</section>)}</div>
+    {selecting&&generate&&<div className="catalog-batch-bar">
+      <span role="status">已选 {selectedPendingIds.length} 项待生成</span>
+      <div className="discovery-coverage-actions">
+        <button className="secondary" disabled={!visiblePendingIds.length} onClick={()=>updateSelection(visiblePendingIds,true)}>全选当前（{visiblePendingIds.length}）</button>
+        <button className="secondary" disabled={!selectedPendingIds.length} onClick={()=>setSelectedIds(new Set())}>清空选择</button>
+        <button className="primary" disabled={busy||!selectedPendingIds.length} onClick={()=>{generate(selectedPendingIds);exitSelection();}}>生成已选双图（{selectedPendingIds.length}）</button>
+      </div>
+    </div>}
+    <div className={`capability-groups${selecting?' is-selecting':''}`}>{groups.map((group,i)=>{
+      const groupReadyCount=group.node_ids.filter(id=>{const graph=graphs.get(id)!;return graph.ready&&!graph.archived;}).length;
+      const groupPendingIds=group.node_ids.filter(id=>pendingSet.has(id));
+      const groupSelected=groupPendingIds.every(id=>selectedIds.has(id));
+      return <section className="capability-group" key={i}>
+        <h3><span>{group.label}</span><small>{groupReadyCount}/{group.node_ids.length}</small>
+          {groupPendingIds.length>0&&generate&&(selecting
+            ? <button className="secondary" onClick={()=>updateSelection(groupPendingIds,!groupSelected)}>{groupSelected?'取消本组':'全选本组'}</button>
+            : <button className="secondary" disabled={busy} onClick={()=>generate(groupPendingIds)}>生成本组（{groupPendingIds.length}）</button>)}
+        </h3>
+        {group.visibleIds.map(id=>{
+          const node=nodes.get(id);if(!node)return null;
+          const graph=graphs.get(id)!;
+          const affected=graph.ready && project && explanationFreshness(graph.ready,project.snapshot_id,changedFiles).kind==='affected';
+          const label=graph.archived?'已归档':[affected?'所引源码已变':graph.ready?'双图就绪':'',graph.status].filter(Boolean).join(' · ')||(readings.get(id)?.steps.length?'阅读首轮步骤':'查看已有线索');
+          const selectable=selecting&&pendingSet.has(id),checked=selectable&&selectedIds.has(id);
+          const selectionClass=checked?' is-selected':selecting&&!selectable?' is-unselectable':'';
+          return <button className={`capability-card${selectionClass}`} data-capability-id={id} key={id}
+            disabled={selecting?!selectable:busy||graph.archived} aria-pressed={selectable?checked:undefined}
+            onClick={()=>selecting?updateSelection([id],!checked):open(id)}>
+            <span><strong>{node.label}</strong><small title={node.description}>{node.description}</small></span>
+            <span className={`capability-state${affected ? ' affected' : ''}`}>{label}{!selecting&&<b aria-hidden="true">↗</b>}</span>
+            {selectable&&<span className="capability-check" aria-hidden="true">{checked?'✓':''}</span>}
+          </button>;
+        })}
+      </section>;
+    })}</div>
     {unresolved.length>0&&<CatalogUnresolved items={unresolved} addFeatureFromScope={busy?undefined:addFeatureFromScope}/>}</>:<div className="discovery-empty"><h3>尚未生成工程功能目录</h3><p>分析工程后，这里展示已查明的功能入口、主要处理步骤、结果与源码依据，未查明的部分会标出。</p><p className="muted">{data.features.some(f=>f.project_id===projectId)?'原有手动功能和分析仍保留在左侧，不代表工程的全部功能。':'尚未分析目录，不按文件名猜测业务功能。'}</p></div>}
   </section>;
 }

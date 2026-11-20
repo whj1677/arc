@@ -1350,6 +1350,29 @@ function App() {
     }
   }
 
+  async function cancelQueued(runIds: string[]) {
+    if (starting.current || pending || !runIds.length) return;
+    starting.current = true;
+    setPending(true);
+    try {
+      await action(async () => {
+        const failures: string[] = [];
+        for (const run_id of runIds) {
+          try {
+            await api.invoke('run_cancel', { run_id, queued_only: true });
+          } catch (error) {
+            failures.push(`${run_id}：${(error as Error).message}`);
+          }
+        }
+        await reload();
+        if (failures.length) throw Error(`取消排队失败（${failures.length}/${runIds.length}）：${failures.join('；')}`);
+      });
+    } finally {
+      starting.current = false;
+      setPending(false);
+    }
+  }
+
   const changeWidth = (side: 'left_width' | 'right_width', amount: number) =>
     patch({
       [side]: Math.min(
@@ -1671,6 +1694,7 @@ function App() {
       openCapability={openCapability}
       addFeatureFromScope={addFeatureFromScope}
       fillPending={fillPending}
+      cancelQueued={ids => void cancelQueued(ids)}
       requestAnalysis={requestAnalysis}
       readingPath={readingPath}
       selectReading={selectReading}

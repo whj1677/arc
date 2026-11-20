@@ -6,7 +6,7 @@ import { isValidCodexModel } from './codex-models';
 import {ArcMcpBridge} from './mcp-bridge';
 import { ArcService } from './service';
 import { redact } from './providers';
-import {isExecutionMode,type ExecutionMode,type ReadingQuestion,type Scenario} from '../shared';
+import {isExecutionMode,type ExecutionMode,type ReadingQuestion,type Run,type Scenario} from '../shared';
 import {scanAecLegacy,applyAecRuleMigration,installArcAgentRules} from './aec-migration';
 let window:BrowserWindow|null=null, service:ArcService, bridge:ArcMcpBridge, quitting=false;
 function defaultEngine():ExecutionMode {
@@ -158,7 +158,15 @@ app.whenReady().then(async()=>{
           await enableExternal(mode,service.store.get<ReadingQuestion>('reading_question',args.question_id).project_id);
           value=service.retryReading(args.question_id,mode,args.submission_key);break;
         }
-        case 'run_cancel':{const item=bridge.dispatch.items().find(item=>item.run_id===args.run_id);value=item?bridge.cancelDispatch(item.dispatch_id):await service.cancel(args.run_id);break;}
+        case 'run_cancel':{
+          if(args.queued_only===true){
+            const run=service.store.get<Run>('run',args.run_id);
+            value=run.status==='queued'?await service.cancel(args.run_id):run;
+            break;
+          }
+          const item=bridge.dispatch.items().find(item=>item.run_id===args.run_id);
+          value=item?bridge.cancelDispatch(item.dispatch_id):await service.cancel(args.run_id);break;
+        }
         case 'run_revalidate':value=await service.revalidate(args.run_id);break;
         case 'run_events':service.store.get('run',args.run_id);value=service.store.events(args.run_id);break;
         case 'index_cancel':service.cancelIndex(args.project_id);break;
