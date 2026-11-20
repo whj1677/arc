@@ -11,6 +11,7 @@ export function Diagram({
   label,
   children,
   header,
+  headerHeight = 98,
 }: {
   width: number;
   height: number;
@@ -18,6 +19,7 @@ export function Diagram({
   label: string;
   children: React.ReactNode;
   header?: React.ReactNode;
+  headerHeight?: number;
 }) {
   const root = useRef<HTMLDivElement>(null);
   const [available, setAvailable] = useState(800);
@@ -28,10 +30,11 @@ export function Diagram({
     return () => o.disconnect();
   }, []);
   const scale = Math.max(0.85, Math.min(1, available / width)) * zoom;
+  const bodyTop = header ? headerHeight : 0;
   return (
     <div className={'reading-diagram-frame' + (header ? ' function-time-scroll' : '')} ref={root}>
       {header && (
-        <svg className="function-time-header" data-zoom-surface width={width * scale} height={98 * scale} viewBox={`0 0 ${width} 98`} role="group" aria-label="函数节点">
+        <svg className="function-time-header" data-zoom-surface width={width * scale} height={headerHeight * scale} viewBox={`0 0 ${width} ${headerHeight}`} role="group" aria-label="函数节点">
           {header}
         </svg>
       )}
@@ -39,8 +42,8 @@ export function Diagram({
         data-zoom-surface
         className="reading-diagram"
         width={width * scale}
-        height={(height - (header ? 98 : 0)) * scale}
-        viewBox={`0 ${header ? 98 : 0} ${width} ${height - (header ? 98 : 0)}`}
+        height={(height - bodyTop) * scale}
+        viewBox={`0 ${bodyTop} ${width} ${height - bodyTop}`}
         role="group"
         aria-label={label}
       >

@@ -786,6 +786,8 @@ summary {
   box-shadow: var(--shadow-float);
 }
 
+.reading-shell .canvas > .panel-scroll { padding-bottom: 68px; }
+
 .canvas-zoom-float {
   position: absolute;
   right: 16px;
@@ -851,6 +853,7 @@ summary {
 .detail-tabs, .detail .panel-scroll {
   border-color: var(--border-subtle);
 }
+.reading-shell .detail > .panel-scroll { padding-bottom: 28px; }
 .detail-tabs {
   gap: 2px;
   padding: 0 12px;
@@ -1652,7 +1655,7 @@ dialog::backdrop {
 }
 
 .function-call-map .reading-diagram-frame {
-  max-height: max(420px, calc(100vh - 340px));
+  max-height: max(380px, calc(100vh - 320px));
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -1660,7 +1663,7 @@ dialog::backdrop {
 }
 .function-map-file-band { fill: #eef4ed; stroke: var(--border); stroke-width: 1; pointer-events: none; }
 .function-map-file-heading { display: flex; align-items: center; gap: 10px; height: 32px; color: var(--ink-secondary); font-size: 11px; }
-.function-map-file-heading strong { font-size: 12px; }
+.function-map-file-heading strong { min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .function-map-file-heading span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .function-map-file-heading small { flex: none; }
 .function-map-node { box-shadow: var(--shadow-xs); }
@@ -1677,6 +1680,8 @@ dialog::backdrop {
 .function-map-args small { color: var(--muted); }
 .function-map-link.selected .function-map-args { background: var(--soft); border-color: #7da58a; }
 .function-map-link.cross-file .function-map-args { border-color: #bdd1d8; }
+.function-map-link:hover .function-map-args,
+.function-map-link:focus-visible .function-map-args { border-color: var(--accent-hover); }
 .function-map-focus, .function-map-selection {
   display: grid; gap: 10px; margin: 12px 0; padding: 13px;
   border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface);
@@ -1687,7 +1692,11 @@ dialog::backdrop {
 .function-map-breadcrumb button, .function-map-neighbours button { font-size: 12px; min-height: 30px; padding: 4px 8px; }
 .function-map-neighbours > div { flex: 1; align-items: flex-start; }
 .function-map-neighbours strong { width: 100%; font-size: 12px; color: var(--ink-secondary); }
-.function-map-selection { grid-template-columns: minmax(0, 1fr) minmax(220px, 0.8fr); }
+.function-map-selection {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
 .function-map-selection h3 { margin: 4px 0; }
 .function-map-selection p { margin: 6px 0; }
 .function-map-selection-sources { min-width: 0; }
@@ -2605,7 +2614,6 @@ dialog::backdrop {
   .workbench-primary-nav { grid-column: 1 / -1; grid-row: 2; display: flex; overflow-x: auto; padding-bottom: 2px; gap: 5px; }
   .workbench-primary-nav button { width: auto; flex: 1 0 auto; justify-content: center; min-height: 36px; }
   .workbench-nav-icon { width: 1.1rem; }
-  .function-call-map .reading-diagram-frame { max-height: 65vh; }
   .function-map-breadcrumb { align-items: flex-start; }
   .function-map-breadcrumb button { overflow-wrap: anywhere; white-space: normal; }
   .function-map-focus, .function-map-selection { padding: 10px; }

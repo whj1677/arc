@@ -1,6 +1,6 @@
 import React,{useEffect,useId,useRef} from 'react';
 import type {AnalysisResult,SourceEvidence} from '../shared';
-import {functionCallMap,recursiveCallRoute} from './function-call-map';
+import {functionCallMap,callLabelWidth,callLabelHeight} from './function-call-map';
 import {functionInfo} from './function-chain';
 import {Diagram,shortLabel} from './ReadingDiagrams';
 
@@ -32,6 +32,28 @@ export function FunctionCallMap({result,pathId,selected,select,search,zoom,evide
     selectedLink.callerDefinition,selectedLink.callerDeclaration,selectedLink.calleeDefinition,selectedLink.calleeDeclaration,...selectedLink.callsites
   ].filter((item):item is SourceEvidence=>!!item).map(item=>[item.evidence_id,item] as const)).values()]:[];
   if(!m.nodes.length)return <p className="fr-empty">这版分析尚未提供函数入口与调用依据。</p>;
+  const linkLayers=m.links.map(link=>{
+    const {d,labelX,labelY}=m.routes.get(link.id)!;
+    const siblings=m.links.filter(item=>item.from===link.from&&item.to===link.to);
+    const expanded=selected===link.id||link.edgeIds.includes(selected),targetFile=m.nodeSources.get(link.to)?.path;
+    const relation=link.fileRelation==='same-file'?'同文件':link.fileRelation==='cross-file'?'跨文件':'文件待确认';
+    const height=callLabelHeight(expanded);
+    const label=link.fileRelation==='cross-file'?fileName(targetFile)+' → '+nodeName(link.to):nodeName(link.to)+(siblings.length>1?' · '+(siblings.findIndex(item=>item.id===link.id)+1)+'/'+siblings.length:'');
+    const className=`function-map-link ${link.kind} ${link.status} ${link.fileRelation} ${expanded?'selected':''} ${entryLinks.has(`${link.from}→${link.to}`)?'on-entry-path':''}`;
+    const title=link.label+'\n'+relation+'\n传入：'+link.input+(link.condition?'\n条件：'+link.condition:'');
+    const activate=()=>select(link.id);
+    return {
+      path:<g key={link.id} className={className} aria-hidden="true" onClick={activate}>
+        <title>{title}</title><path className="diagram-hit" d={d}/><path className="diagram-link" d={d} markerEnd={`url(#${marker})`}/>
+      </g>,
+      label:<g key={link.id} className={className} data-function-call={link.id} role="button" tabIndex={0} aria-label={`${link.label}，${relation}，传入：${link.input}`} onClick={activate} onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();activate();}}}>
+        <title>{title}</title>
+        <foreignObject x={labelX} y={labelY-height/2} width={callLabelWidth} height={height}>
+          <div className="function-map-args"><small>{relation} · {link.kind==='call'?'调用':link.kind==='callback'?'回调':'异步'}{link.condition?' · 有条件':''}</small><span title={expanded?link.input:label}>{expanded?link.input:label}</span></div>
+        </foreignObject>
+      </g>,
+    };
+  });
   return <div className="function-call-map" ref={root}><div className="diagram-caption"><strong>从入口沿箭头走 →</strong><span>按文件阅读 · 选中连线查看传入内容、调用点与定义依据</span></div>
     {selectedNode&&<nav className="function-map-focus" aria-label="当前函数的调用位置">
       <div className="function-map-focus-heading">
@@ -55,16 +77,13 @@ export function FunctionCallMap({result,pathId,selected,select,search,zoom,evide
           </div>
         </foreignObject>
       </g>)}
-    {m.links.map((link,i)=>{const a=m.boxes.get(link.from),b=m.boxes.get(link.to);if(!a||!b)return null;const self=link.from===link.to,forward=b.x>a.x,sx=a.x+a.w,sy=a.y+a.h/2,tx=forward?b.x:b.x+b.w,ty=b.y+b.h/2;
-      const recursive=self?recursiveCallRoute(a):null,siblings=m.links.filter(item=>item.from===link.from&&item.to===link.to),offset=(siblings.findIndex(item=>item.id===link.id)-(siblings.length-1)/2)*76;
-      const d=recursive?recursive.d:forward?`M${sx} ${sy} C${(sx+tx)/2} ${sy+offset} ${(sx+tx)/2} ${ty+offset} ${tx-4} ${ty}`:`M${sx} ${sy} C${sx+55+i*12} ${sy} ${tx+55+i*12} ${ty} ${tx+4} ${ty}`;
-      const expanded=selected===link.id||link.edgeIds.includes(selected),targetFile=m.nodeSources.get(link.to)?.path;
-      const relation=link.fileRelation==='same-file'?'同文件':link.fileRelation==='cross-file'?'跨文件':'文件待确认';
-      const lx=recursive?recursive.labelX-10:forward?(sx+tx)/2-76:sx+8,ly=(recursive?recursive.labelY:(sy+ty)/2-30+(forward?offset*.75:0))-(expanded?12:0);
-      return <g key={link.id} className={`function-map-link ${link.kind} ${link.status} ${link.fileRelation} ${expanded?'selected':''} ${entryLinks.has(`${link.from}→${link.to}`)?'on-entry-path':''}`} data-function-call={link.id} role="button" tabIndex={0} aria-label={`${link.label}，${relation}，传入：${link.input}`} onClick={()=>select(link.id)} onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();select(link.id);}}}><title>{link.label+'\n'+relation+'\n传入：'+link.input+(link.condition?'\n条件：'+link.condition:'')}</title><path className="diagram-hit" d={d}/><path className="diagram-link" d={d} markerEnd={`url(#${marker})`}/><foreignObject x={lx} y={ly} width="152" height={expanded?70:44}><div className="function-map-args"><small>{relation} · {link.kind==='call'?'调用':link.kind==='callback'?'回调':'异步'}{link.condition?' · 有条件':''}</small><span>{expanded?shortLabel(link.input,32):shortLabel(link.fileRelation==='cross-file'?fileName(targetFile)+' → '+nodeName(link.to):nodeName(link.to)+(siblings.length>1?' · '+(siblings.findIndex(item=>item.id===link.id)+1)+'/'+siblings.length:''),24)}</span></div></foreignObject></g>;
-    })}
+    <g>{linkLayers.map(link=>link.path)}</g>
+    <g>{linkLayers.map(link=>link.label)}</g>
     {m.nodes.map(node=>{const b=m.boxes.get(node.node_id)!,info=functionInfo(result,node),source=m.nodeSources.get(node.node_id),symbol=info.details?.symbol||node.label;
-      return <foreignObject key={node.node_id} data-function-node={node.node_id} data-zoom-anchor x={b.x} y={b.y} width={b.w} height={b.h}><button aria-pressed={selected===node.node_id} className={`function-map-node ${selected===node.node_id?'selected':''} ${entryNodes.has(node.node_id)?'on-entry-path':''} ${related.has(node.node_id)?'focus-related':''} ${query&&![symbol,node.description,source?.path].join(' ').toLowerCase().includes(query)?'diagram-dim':''}`} onClick={()=>select(node.node_id)} title={symbol+'\n'+node.description}><small>{m.entry===node.node_id?'● 入口函数':symbol.includes('.')?symbol.split('.').slice(0,-1).join('.'):'函数'}</small><strong>{symbol.split('.').at(-1)}</strong><span>{shortLabel(node.description,19)}</span><small>{source?.definition?fileName(source.definition.path)+':'+source.definition.line_start+'–'+source.definition.line_end:source?.declaration?'声明 · '+fileName(source.declaration.path)+':'+source.declaration.line_start+'–'+source.declaration.line_end:'定义与声明位置待确认'}</small></button></foreignObject>;
+      const location=source?.definition||source?.declaration;
+      const range=location?`:${location.line_start}–${location.line_end}`:'';
+      const unknownLocation='定义与声明位置待确认';
+      return <foreignObject key={node.node_id} data-function-node={node.node_id} data-zoom-anchor x={b.x} y={b.y} width={b.w} height={b.h}><button aria-pressed={selected===node.node_id} className={`function-map-node ${selected===node.node_id?'selected':''} ${entryNodes.has(node.node_id)?'on-entry-path':''} ${related.has(node.node_id)?'focus-related':''} ${query&&![symbol,node.description,source?.path].join(' ').toLowerCase().includes(query)?'diagram-dim':''}`} onClick={()=>select(node.node_id)} title={symbol+'\n'+node.description}><small>{m.entry===node.node_id?'● 入口函数':symbol.includes('.')?symbol.split('.').slice(0,-1).join('.'):'函数'}</small><strong>{symbol.split('.').at(-1)}</strong><span>{shortLabel(node.description,28)}</span><small title={location?location.path+range:unknownLocation}>{location?(source?.declaration?'声明 · ':'')+fileName(location.path)+range:unknownLocation}</small></button></foreignObject>;
     })}
     </Diagram>{!m.entry&&<p className="muted">这版仅记录了调用关系，工程入口尚未确认。</p>}
     {selectedLink&&<section className="function-map-selection" aria-label="所选调用关系">

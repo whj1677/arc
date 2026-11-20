@@ -4,7 +4,7 @@ import {FunctionCallMap} from './FunctionCallMap';
 import {functionCallMap} from './function-call-map';
 import {functionInfo,functionSource} from './function-chain';
 import {functionSequence,callStepKey,selectedCallStep} from './function-sequence-model';
-import {Diagram,shortLabel} from './ReadingDiagrams';
+import {Diagram} from './ReadingDiagrams';
 
 const stepNames={entry:'入口',call:'调用',callback:'回调内调用',dispatch:'异步派发',return:'返回',work:'处理'};
 type FunctionChainMode='calls'|'time';
@@ -27,8 +27,9 @@ export function FunctionChain({result,selected,select,zoom,search,pathId,onPath,
       {ids.size>0&&<FunctionCallMap result={result} pathId="" selected={selected} select={select} search={search} zoom={zoom} evidence={evidence}/>}
     </section>;
   }
-  const {path,participants}=model,width=Math.max(480,participants.length*200+70),height=154+path.steps.length*68;
-  const x=(id:string|null)=>id===null?18:120+participants.findIndex(n=>n.node_id===id)*200;
+  const headerHeight=104,firstMessageY=headerHeight+49;
+  const {path,participants}=model,width=Math.max(520,participants.length*236+70),height=firstMessageY+17+path.steps.length*68;
+  const x=(id:string|null)=>id===null?18:132+participants.findIndex(n=>n.node_id===id)*236;
   const query=search.trim().toLowerCase();
   const symbol=(id:string|null)=>{const n=participants.find(n=>n.node_id===id);return n?.function_details?.symbol||n?.label||'外部触发';};
   return <section className="function-chain function-diagram" aria-label="函数走读">
@@ -38,19 +39,20 @@ export function FunctionChain({result,selected,select,zoom,search,pathId,onPath,
     </div>}
     {mode==='calls'?<FunctionCallMap result={result} pathId={path.id} selected={selected} select={select} search={search} zoom={zoom} evidence={evidence}/>:<>
     <div className="diagram-caption"><strong>从入口往下读 ↓</strong><span>按已确认说明排列的静态顺序，不是运行记录　┄ 返回　蓝色 异步 / 回调</span></div>
-    <Diagram key={result.result_id+path.id} width={width} height={height} zoom={zoom} label="每个函数一个节点的调用时间图" header={participants.map(n=>{const full=symbol(n.node_id),parts=full.split('.'),file=functionInfo(result,n).definition?.path;return <foreignObject key={n.node_id} data-function-node={n.node_id} data-zoom-anchor x={x(n.node_id)-90} y="4" width="180" height="86"><button className={'fn-participant '+(selected===n.node_id?'selected':'')} onClick={()=>select(n.node_id)} title={full+(file?'\n'+file:'')}><small>{n.node_id===path.entry_node_id?'● 入口 · ':''}{parts.slice(0,-1).join('.')||file?.split('/').at(-1)||'函数'}</small><strong>{parts.at(-1)}</strong></button></foreignObject>;})}>
+    <Diagram key={result.result_id+path.id} width={width} height={height} zoom={zoom} label="每个函数一个节点的调用时间图" headerHeight={headerHeight} header={participants.map(n=>{const full=symbol(n.node_id),parts=full.split('.'),file=functionInfo(result,n).definition?.path;return <foreignObject key={n.node_id} data-function-node={n.node_id} data-zoom-anchor x={x(n.node_id)-108} y="4" width="216" height="92"><button className={'fn-participant '+(selected===n.node_id?'selected':'')} onClick={()=>select(n.node_id)} title={full+(file?'\n'+file:'')}><small>{n.node_id===path.entry_node_id?'● 入口 · ':''}{parts.slice(0,-1).join('.')||file?.split('/').at(-1)||'函数'}</small><strong>{parts.at(-1)}</strong></button></foreignObject>;})}>
       <defs><marker id={marker} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" fill="context-stroke"/></marker></defs>
-      {participants.map(n=><line key={n.node_id} className="fn-lifeline" x1={x(n.node_id)} y1="90" x2={x(n.node_id)} y2={height-20}/>)}
+      {participants.map(n=><line key={n.node_id} className="fn-lifeline" x1={x(n.node_id)} y1={headerHeight} x2={x(n.node_id)} y2={height-20}/>)}
       {path.steps.map((step,i)=>{
-        const sx=x(step.from_node_id),tx=x(step.to_node_id),y=137+i*68,self=sx===tx,key=callStepKey(path.id,step.id);
+        const sx=x(step.from_node_id),tx=x(step.to_node_id),y=firstMessageY+i*68,self=sx===tx,key=callStepKey(path.id,step.id);
         const d=self?`M${sx} ${y-16} h60 v26 h-60`:`M${sx} ${y} H${tx}`;
         const label=step.kind==='return'?step.input:step.kind==='entry'?'进入 '+symbol(step.to_node_id).split('.').at(-1):step.text;
-        const lx=self?sx+14:Math.min(sx,tx)+10,lw=self?168:Math.max(86,Math.abs(sx-tx)-20);
+        const lw=self?204:step.kind==='entry'?216:Math.max(86,Math.abs(sx-tx)-20);
+        const lx=self?Math.min(sx+14,width-lw-8):Math.min(sx,tx)+10;
         const match=!query||[symbol(step.from_node_id),symbol(step.to_node_id),step.text,step.input,step.output].join(' ').toLowerCase().includes(query);
         return <g key={step.id} className={`fn-message ${step.kind} ${selected===key?'selected':''} ${query&&!match?'diagram-dim':''}`} data-call-step={step.id} role="button" tabIndex={0} aria-label={`${i+1} ${stepNames[step.kind]}：${symbol(step.from_node_id)} → ${symbol(step.to_node_id)}，${step.text}`} onClick={()=>select(key)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();select(key);}}}>
           <title>{step.text+(step.condition?'\n条件：'+step.condition:'')}</title>
           <path className="diagram-hit" d={d}/><path className="fn-message-line" d={d} markerEnd={`url(#${marker})`}/>
-          <foreignObject x={lx} y={y-43} width={lw} height="29"><div className="fn-message-label"><b>{String(i+1).padStart(2,'0')}</b><span>{shortLabel(label,Math.max(8,Math.floor((lw-35)/12)))}</span>{step.condition&&<em title={step.condition}>条件</em>}</div></foreignObject>
+          <foreignObject x={lx} y={y-45} width={lw} height="34"><div className="fn-message-label"><b>{String(i+1).padStart(2,'0')}</b><span title={label}>{label}</span>{step.condition&&<em title={step.condition}>条件</em>}</div></foreignObject>
         </g>;
       })}
 

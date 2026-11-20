@@ -5,7 +5,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import type {AnalysisResult,ReadingGuide} from '../src/shared';
 import {functionSequence,selectedCallStep,callStepKey} from '../src/ui/function-sequence-model';
 import {FunctionChain} from '../src/ui/FunctionChain';
-import {functionCallMap,recursiveCallRoute} from '../src/ui/function-call-map';
+import {callLabelHeight,callLabelWidth,functionCallMap,recursiveCallRoute} from '../src/ui/function-call-map';
 import {readingFailureLinks,readingCollaboration} from '../src/ui/reading-diagram-model';
 
 const result={nodes:[{node_id:'entry',kind:'function',label:'save',description:'save',inputs:[],outputs:[],evidence_ids:[]},{node_id:'store',kind:'function',label:'write',description:'write',inputs:[],outputs:[],evidence_ids:[]}],edges:[],evidence:[],function_walkthroughs:[{id:'save',label:'保存',trigger:'点击',entry_node_id:'entry',boundary:'只覆盖保存',evidence_ids:[],steps:[
@@ -33,8 +33,22 @@ test('a call map keeps siblings attached to their actual caller and labels argum
  assert.deepEqual(map.links.map(e=>[e.from,e.to,e.input]),[['entry','store','内容'],['entry','audit','保存结果']]);
  assert.equal(map.entry,'entry');assert.equal(map.nodes.length,3);
  assert.equal(map.boxes.get('store')?.x,map.boxes.get('audit')?.x);
- assert.ok(map.boxes.get('store')!.x>map.boxes.get('entry')!.x);
+ const entry=map.boxes.get('entry')!,store=map.boxes.get('store')!,route=map.routes.get(map.links[0].id)!;
+ assert.equal(store.x-entry.x,432);
+ assert.equal(route.labelX-(entry.x+entry.w),16);
+ assert.equal(store.x-(route.labelX+callLabelWidth),16);
  assert.ok(!map.links.some(e=>e.from==='store'&&e.to==='audit'));
+
+ const throughStore={...base.steps[1],id:'store-audit',from_node_id:'store',to_node_id:'audit'};
+ const jump=functionCallMap({...r,
+   edges:[...r.edges,{...r.edges[0],edge_id:'store-audit',source_node_id:'store',target_node_id:'audit'}],
+   function_walkthroughs:[{...base,steps:[...r.function_walkthroughs![0].steps,throughStore]}],
+ },'save');
+ const direct=jump.routes.get(callStepKey('save','audit'))!;
+ const first=jump.routes.get(callStepKey('save','save'))!;
+ assert.equal(direct.labelX,first.labelX);
+ assert.ok(direct.labelX+callLabelWidth<jump.boxes.get('store')!.x);
+ assert.ok(Math.abs(direct.labelY-first.labelY)>=callLabelHeight(true));
 });
 
 test('recursive call labels stay above their node and clear of outgoing arguments',()=>{
@@ -43,8 +57,9 @@ test('recursive call labels stay above their node and clear of outgoing argument
  const r={...result,function_walkthroughs:[{...original,steps:[...original.steps,self]}]};
  const map=functionCallMap(r,'save'),box=map.boxes.get('entry')!,route=recursiveCallRoute(box);
  assert.equal(map.nodes.filter(n=>n.node_id==='entry').length,1);
- assert.ok(route.labelY>=0);assert.ok(route.labelY+82<box.y);
- assert.ok(route.labelX>=box.x&&route.labelX+132<=box.x+box.w);
+ const halfLabel=callLabelHeight(true)/2;
+ assert.ok(route.labelY-halfLabel>=0);assert.ok(route.labelY+halfLabel<box.y);
+ assert.ok(route.labelX>=box.x&&route.labelX+callLabelWidth<=box.x+box.w);
  assert.ok(box.y-110>=0);assert.ok(box.y+box.h<=map.height);
 });
 test('step details and participants never fall back to another explanation',()=>{
