@@ -48,8 +48,11 @@ const requirementPlan={summary:'Approve the change to the existing value',propos
 
 test('direct Codex plans read-only and only runs approved execution with linked verification',async()=>{
   const f=await fixture();let plans=0,configured=0,executions=0;
+  const analysisPreferences={model:'planning-model',reasoning_effort:'medium'} as const;
+  const executionPreferences={model:'execution-model',reasoning_effort:'high'} as const;
   const analysis:typeof runCodex=async options=>{
     plans++;
+    assert.deepEqual(options.preferences,analysisPreferences);
     assert.match(options.prompt,/只分析/);
     assert.equal(options.snapshot.project_id,f.project.project_id);
     assert.equal(options.run.execution_mode,'codex');
@@ -57,6 +60,7 @@ test('direct Codex plans read-only and only runs approved execution with linked 
   };
   const runner:typeof runDevelopmentCodex=async options=>{
     executions++;
+    assert.deepEqual(options.preferences,executionPreferences);
     assert.deepEqual(options.writeScope,['main.ts']);
     assert.deepEqual(options.task.requirement_package,requirementPlan.requirement_package);
     const receipt={id:'value-before',command:'node --test',cwd:f.source,cwd_source:'task_workspace' as const,
@@ -70,6 +74,7 @@ test('direct Codex plans read-only and only runs approved execution with linked 
     async()=>{configured++;return configuration();},analysis);
   try{
     const input={project_id:f.project.project_id,goal:'Change value',submission_key:'codex-requirement'};
+    f.service.store.put('settings','codex_preferences',analysisPreferences);
     const task=await development.submit(input,'codex');
     await Promise.all([...development.executing.values()]);
     const plan=f.service.engineering.task(task.task_id);
@@ -78,6 +83,7 @@ test('direct Codex plans read-only and only runs approved execution with linked 
     const approval={...input,task_id:task.task_id,phase:'execution' as const,submission_key:'codex-approval',scope:['main.ts']};
     await assert.rejects(development.submit({...approval,expected_version:plan.version-1},'codex'),/VERSION_CONFLICT/);
     assert.equal(executions,0);
+    f.service.store.put('settings','codex_preferences',executionPreferences);
     await development.submit({...approval,expected_version:plan.version},'codex');
     await Promise.all([...development.executing.values()]);
     const saved=f.service.engineering.task(task.task_id);

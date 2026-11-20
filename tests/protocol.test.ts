@@ -6,7 +6,7 @@ import {spawn} from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {AcpConnection,redact,CodexTurnErrors,codexChildEnvironment,runCodex,readingWatchdog,isSupportedCodexVersion,codexFeatureFlags,reasoningEffortForRun} from '../src/main/providers';
+import {AcpConnection,redact,CodexTurnErrors,codexChildEnvironment,codexModelArguments,runCodex,readingWatchdog,isSupportedCodexVersion,codexFeatureFlags,reasoningEffortForRun} from '../src/main/providers';
 import {overviewDiscoveryQuestion} from '../src/main/architecture-analysis';
 
 test('direct Codex execution cannot inherit a desktop tool pipe or the calling session identity',()=>{
@@ -198,4 +198,14 @@ test('Codex semver capability check supports modern versions and picks version-a
   assert.equal(reasoningEffortForRun({question:'分析此功能的调用链'}),'low');
   assert.equal(reasoningEffortForRun({question:'分析工程全貌',overview_format:'overview-1'}),'low');
   assert.equal(reasoningEffortForRun({question:overviewDiscoveryQuestion}),'medium');
+});
+test('analysis arguments apply the selected model while preserving low effort on review turns',()=>{
+  const run={question:'分析工程全貌'},prefs={model:'local-model',reasoning_effort:'high'} as const;
+  assert.deepEqual(codexModelArguments(prefs,reasoningEffortForRun(run,undefined,prefs.reasoning_effort)),
+    ['-m','local-model','-c','model_reasoning_effort="high"']);
+  for(const phase of ['overview_review','overview_research','overview_recheck'] as const){
+    assert.deepEqual(codexModelArguments(prefs,reasoningEffortForRun(run,phase,prefs.reasoning_effort)),
+      ['-m','local-model','-c','model_reasoning_effort="low"']);
+  }
+  assert.deepEqual(codexModelArguments({model:'',reasoning_effort:'auto'},reasoningEffortForRun(run)),['-c','model_reasoning_effort="low"']);
 });

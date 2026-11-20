@@ -1,12 +1,11 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {DatabaseSync} from 'node:sqlite';
 import {Store} from '../src/main/store';
-import {capture,readSource,workspaceGitDirectory} from '../src/main/snapshot';
+import {capture,readSource} from '../src/main/snapshot';
 import {EngineeringService} from '../src/main/engineering-service';
 import {effectiveTaskBoundaries} from '../src/task-boundaries';
 import {requirementPrompt} from '../src/main/dsh-development';
@@ -159,20 +158,6 @@ test('boundary edits persist before and after approval without rewriting the rev
   }finally{reopened?.close();await f.cleanup();}
 });
 
-test('a desktop launch without Git on PATH cannot identify an existing Git workspace as non-Git',async()=>{
-  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'arc-git-path-'));
-  const repo=path.join(directory,'repo'),plain=path.join(directory,'plain');
-  await fs.mkdir(path.join(repo,'.git'),{recursive:true});await fs.mkdir(plain);
-  const savedPath=process.env.PATH;
-  try{
-    process.env.PATH=plain;
-    await assert.rejects(workspaceGitDirectory(repo),/PATH 找不到 Git/);
-    assert.equal(await workspaceGitDirectory(plain),null);
-  }finally{
-    if(savedPath===undefined)delete process.env.PATH;else process.env.PATH=savedPath;
-    await fs.rm(directory,{recursive:true,force:true});
-  }
-});
 test('engineering v1 upgrade preserves existing reading objects and persists version history',async()=>{
   const temp=path.resolve('.test-data');await fs.mkdir(temp,{recursive:true});const dir=await fs.mkdtemp(path.join(temp,'upgrade-'));const db=new DatabaseSync(path.join(dir,'arc.sqlite'));db.exec(`CREATE TABLE objects(kind TEXT NOT NULL,id TEXT NOT NULL,json TEXT NOT NULL,PRIMARY KEY(kind,id));CREATE TABLE events(run_id TEXT NOT NULL,event_id TEXT NOT NULL,sequence INTEGER NOT NULL,json TEXT NOT NULL,PRIMARY KEY(run_id,event_id));PRAGMA user_version=1;`);db.prepare('INSERT INTO objects VALUES(?,?,?)').run('annotation','a',JSON.stringify({text:'保留批注'}));db.close();
   const store=new Store(dir);try{assert.equal(store.get<any>('annotation','a').text,'保留批注');assert.equal((store.db.prepare('PRAGMA user_version').get() as any).user_version,2);store.transaction(()=>store.putVersion('engineering_task','t',1,{version:1}));assert.equal(store.versions('engineering_task','t').length,1);}finally{store.close();await fs.rm(dir,{recursive:true,force:true});}

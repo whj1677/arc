@@ -13,7 +13,7 @@ const noAction=()=>{};
 function renderCatalog(unresolved_scope:string[],busy=false,addFeatureFromScope?: (item:string)=>void){
   const result={...base,coverage:{...base.coverage,unresolved_scope},feature_catalog:{scope:'冻结源码',groups:[{label:'核心能力',node_ids:[base.nodes[0].node_id]}]}};
   const explanation:Explanation={result,result_id:result.result_id,scenario_id:result.binding.scenario_id,created_at:'',source_status:'current'};
-  const data:WorkspaceData={projects:[],features:[],scenarios:[],revisions:[],annotations:[],runs:[],explanations:[explanation],providers:[],snapshots:[]};
+  const data:WorkspaceData={projects:[],features:[],scenarios:[],revisions:[],annotations:[],runs:[],explanations:[explanation],providers:[],snapshots:[],codex_preferences:{model:'',reasoning_effort:'auto'},codex_models:{models:[]}};
   return renderToStaticMarkup(React.createElement(FeatureCatalog,{explanation,data,projectId:result.binding.project_id,busy,open:noAction,discover:noAction,mode:'codex',setMode:noAction,addFeatureFromScope}));
 }
 

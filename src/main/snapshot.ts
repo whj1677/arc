@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import type { CompletionBinding, WorkspaceAsset } from '../engineering';
 import type { Snapshot, SourceFile } from '../shared';
 import { id, now } from './store';
+import { locate } from './executables';
 const exec = promisify(execFile);
 export const sha = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
 export function relativePath(value: string) {
@@ -43,7 +44,7 @@ async function ignoredByGit(root:string) {
   // when they match a later ignore rule. Non-Git folders keep existing behavior.
   const gitIgnored = new Set<string>();
   try {
-    const {stdout}=await exec('git',['-C',root,'ls-files','--others','--ignored','--exclude-standard','--directory','-z'],{windowsHide:true,timeout:10000,maxBuffer:8*1024*1024});
+    const {stdout}=await exec(await locate('git'),['-C',root,'ls-files','--others','--ignored','--exclude-standard','--directory','-z'],{windowsHide:true,timeout:10000,maxBuffer:8*1024*1024});
     for(const entry of stdout.split('\0').filter(Boolean))gitIgnored.add(entry.replace(/\/$/,''));
   } catch { /* Without a verified Git list, retain the ordinary exclusions. */ }
   return gitIgnored;
@@ -78,7 +79,7 @@ export async function workspaceFiles(root:string, snapshot?:Snapshot) {
 
 export async function workspaceGitDirectory(root:string):Promise<string|null> {
   try {
-    const {stdout}=await exec('git',['-C',root,'rev-parse','--git-common-dir'],{windowsHide:true,timeout:10000});
+    const {stdout}=await exec(await locate('git'),['-C',root,'rev-parse','--git-common-dir'],{windowsHide:true,timeout:10000});
     return path.resolve(root,stdout.trim());
   } catch(error) {
     const failure=error as NodeJS.ErrnoException&{stderr?:string};
@@ -99,7 +100,7 @@ export async function workspaceGitDirectory(root:string):Promise<string|null> {
 export async function bindWorkspaceCompletion(workspacePath:string):Promise<CompletionBinding> {
   const workspace_path=await fs.realpath(workspacePath);
   async function checkout(){
-    const git=async (...args:string[])=>(await exec('git',['-C',workspace_path,...args],{windowsHide:true,timeout:10000})).stdout.trim();
+    const git=async (...args:string[])=>(await exec(await locate('git'),['-C',workspace_path,...args],{windowsHide:true,timeout:10000})).stdout.trim();
     const git_common_dir=await workspaceGitDirectory(workspace_path);
     const head=git_common_dir?await git('rev-parse','HEAD').catch(()=>null):null;
     const branch=git_common_dir?await git('symbolic-ref','--short','-q','HEAD').catch(()=>null):null;
@@ -172,7 +173,7 @@ export async function capture(rootPath: string, projectId: string, storage: stri
   await verify(root);
   if (observed.size !== files.length) throw new Error('捕获期间文件清单变化，请重试');
   let commit: string|null=null, dirty: string|null=null;
-  try { commit = (await exec('git',['-C',root,'rev-parse','HEAD'],{windowsHide:true,timeout:5000})).stdout.trim(); dirty = (await exec('git',['--no-optional-locks','-C',root,'status','--porcelain=v1','--untracked-files=normal'],{windowsHide:true,timeout:5000,maxBuffer:1024*1024})).stdout.trim(); } catch { /* A non-Git project is valid; identity is not guessed. */ }
+  try { commit = (await exec(await locate('git'),['-C',root,'rev-parse','HEAD'],{windowsHide:true,timeout:5000})).stdout.trim(); dirty = (await exec(await locate('git'),['--no-optional-locks','-C',root,'status','--porcelain=v1','--untracked-files=normal'],{windowsHide:true,timeout:5000,maxBuffer:1024*1024})).stdout.trim(); } catch { /* A non-Git project is valid; identity is not guessed. */ }
   const snapshot: Snapshot = {source_snapshot_id:snapshotId,project_id:projectId,captured_at:now(),root_path:root,files,excluded,fingerprint:sha(JSON.stringify([files.map(f=>[f.path,f.content_sha256]),buildConfig])),commit,dirty,build_config:buildConfig,consistency:'verified'};
   await fs.mkdir(destination,{recursive:true});
   progress?.(files.length);

@@ -1,8 +1,86 @@
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { locate } from '../src/main/providers';
+import { locateVerificationShell } from '../src/main/development-runner';
+import { isSupportedDshVersion,resolveDsh } from '../src/main/dsh';
+import { workspaceGitDirectory } from '../src/main/snapshot';
+
+async function isolatedInstall(t:TestContext) {
+  await fs.mkdir('.test-data',{recursive:true});
+  const root=await fs.mkdtemp(path.resolve('.test-data','locate-'));
+  for(const key of ['PATH','ProgramFiles','ProgramFiles(x86)','LOCALAPPDATA','APPDATA','PNPM_HOME','VOLTA_HOME','NVM_SYMLINK','USERPROFILE','SystemRoot']) {
+    const original=process.env[key];
+    process.env[key]=path.join(root,key);
+    t.after(()=>{if(original===undefined)delete process.env[key];else process.env[key]=original;});
+  }
+  t.after(()=>fs.rm(root,{recursive:true}));
+  return root;
+}
+
+test('an installation without Git distinguishes a Git workspace from a non-Git folder',async t=>{
+  await isolatedInstall(t);
+  // The plain directory must be outside ARC's own Git worktree.
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'arc-git-path-'));
+  t.after(()=>fs.rm(directory,{recursive:true}));
+  const repo=path.join(directory,'repo'),plain=path.join(directory,'plain');
+  await fs.mkdir(path.join(repo,'.git'),{recursive:true});await fs.mkdir(plain);
+  if(process.platform!=='win32')t.mock.method(fs,'access',async()=>{throw Object.assign(Error('missing'),{code:'ENOENT'});});
+  await assert.rejects(workspaceGitDirectory(repo),/找不到 Git/);
+  assert.equal(await workspaceGitDirectory(plain),null);
+});
+
+test('POSIX finds an executable on PATH without which and skips non-executable files',{skip:process.platform==='win32'},async t=>{
+  const root=await isolatedInstall(t);
+  const dirs=[path.join(root,'first'),path.join(root,'second')];
+  for(const dir of dirs)await fs.mkdir(dir);
+  await fs.writeFile(path.join(dirs[0],'git'),'');
+  const git=path.join(dirs[1],'git');
+  await fs.writeFile(git,'#!/bin/sh\n',{mode:0o755});
+  process.env.PATH=dirs.join(path.delimiter);
+  assert.equal(await locate('git'),git);
+});
+
+test('Windows locates standard Git, Node and DSH installations without a terminal PATH',{skip:process.platform!=='win32'},async t=>{
+  const root=await isolatedInstall(t);
+  const candidates={
+    git:['ProgramFiles/Git/cmd','ProgramFiles(x86)/Git/cmd','LOCALAPPDATA/Programs/Git/cmd','USERPROFILE/scoop/shims'],
+    node:['ProgramFiles/nodejs','ProgramFiles(x86)/nodejs','LOCALAPPDATA/Programs/nodejs','NVM_SYMLINK','VOLTA_HOME/bin','USERPROFILE/scoop/shims'],
+    dsh:['APPDATA/npm','PNPM_HOME','LOCALAPPDATA/pnpm','VOLTA_HOME/bin','USERPROFILE/scoop/shims'],
+    codex:['APPDATA/npm','PNPM_HOME','LOCALAPPDATA/pnpm','VOLTA_HOME/bin','USERPROFILE/scoop/shims','LOCALAPPDATA/Programs/codex','USERPROFILE/.local/bin'],
+  };
+  for(const [name,dirs] of Object.entries(candidates)){
+    for(const dir of dirs){
+      const file=path.join(root,dir,name+'.exe');
+      await fs.mkdir(path.dirname(file),{recursive:true});
+      await fs.writeFile(file,'');
+      assert.equal(name==='dsh'?(await resolveDsh()).path:await locate(name),file);
+      await fs.unlink(file);
+    }
+  }
+});
+
+test('verification prefers PowerShell 7 and falls back to Windows PowerShell',{skip:process.platform!=='win32'},async t=>{
+  const system32=path.join(process.env.SystemRoot!,'System32');
+  const root=await isolatedInstall(t);
+  const modern=path.join(root,'bin','pwsh.exe'),stock=path.join(root,'SystemRoot','System32','WindowsPowerShell','v1.0','powershell.exe');
+  for(const file of [modern,stock]){
+    await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,'');
+  }
+  process.env.PATH=[path.dirname(modern),system32].join(path.delimiter);
+  assert.equal(await locateVerificationShell(),modern);
+  await fs.unlink(modern);
+  assert.equal(await locateVerificationShell(),stock);
+});
+
+test('DSH accepts semantic versions at or above the Web minimum',()=>{
+  for(const version of ['0.2.1-rc.2','0.2.1-rc.5','0.2.1-rc.10','0.2.1','0.2.2','0.3.0','1.0.0','0.3.0-alpha.1+build'])
+    assert.equal(isSupportedDshVersion(version),true,version);
+  for(const version of ['0.2.0','0.2.1-rc.1','0.2.1-beta.99','0.2','not a version','0.2.1-rc.02',''])
+    assert.equal(isSupportedDshVersion(version),false,version);
+});
 
 test('locate reports a clean Chinese error without Windows where.exe mojibake when binary is missing', async () => {
   await assert.rejects(

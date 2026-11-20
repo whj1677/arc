@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { loadCodexModelCatalog } from './codex-models';
 import type { GoalRefinement } from '../engineering';
 import type {
   AnalysisResult,
@@ -75,6 +76,7 @@ export class ArcService {
   private localSlotsInUse = 0;
   private readonly localWaiters = new Map<string, { priority: boolean; resume: (acquired: boolean) => void }>();
   private checkingProviders = new Map<'codex' | 'dsh', Promise<ProviderProfile[]>>();
+  private codexModels = loadCodexModelCatalog();
   private readonly freshnessState = new Map<string, ProjectFreshness>();
   private readonly checkingFreshness = new Map<string, Promise<ProjectFreshness>>();
   private readonly readingService: ReadingService;
@@ -173,6 +175,8 @@ export class ArcService {
 
   data(): WorkspaceData {
     return {
+      codex_preferences: this.store.codexPreferences(),
+      codex_models: this.codexModels,
       projects: this.store.all('project'),
       features: this.store.all('feature'),
       scenarios: this.store.all('scenario'),
@@ -202,7 +206,7 @@ export class ArcService {
     const config = this.store.maybe<Record<string, string>>('settings', 'providers') ?? {};
     let raw: string;
     if (engine === 'codex') {
-      raw = await runCodexPromptRefinement(prompt, goalRefinementSchema, config.codex_path);
+      raw = await runCodexPromptRefinement(prompt, goalRefinementSchema, config.codex_path, this.store.codexPreferences());
     } else {
       const [profile] = await probeProviders(config, 'dsh');
       if (profile.status !== 'available') throw Error('本机 DSH 不可用：' + profile.reason);
@@ -634,6 +638,7 @@ export class ArcService {
     }
     const saved = config || this.store.maybe<Record<string, string>>('settings', 'providers') || {};
     const profiles = await probeProviders(saved, only);
+    if (only !== 'dsh') this.codexModels = loadCodexModelCatalog();
     for (const p of profiles) this.store.put('provider', p.provider_id, p);
     this.changed();
     return profiles;
@@ -950,6 +955,7 @@ export class ArcService {
     };
     const options: Parameters<typeof runCodex>[0] = {
       run: initial,
+      preferences: this.store.codexPreferences(),
       snapshot,
       storage: this.directory,
       resources: this.resources,

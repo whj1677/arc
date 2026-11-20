@@ -2,6 +2,7 @@ import React,{useEffect,useRef,useState} from 'react';
 import type {EngineeringContext,EngineeringTask,GoalRefinement} from '../engineering';
 import {normalizeBoundaryText} from '../task-boundaries';
 import {analysisModes,type AnalysisMode} from './discovery-state';
+import {CodexModelSelect,type CodexModelSelection} from './CodexModelSelect';
 import {useProjectEnvironment} from './project-environment-store';
 import './requirement-composer.css';
 
@@ -21,6 +22,7 @@ interface ComposerProps {
   disabledProject:boolean;
   context:EngineeringContext|null;
   defaultEngine:AnalysisMode;
+  codexModel:CodexModelSelection;
   onEngineChange:(mode:AnalysisMode)=>void;
   enginePending:boolean;
   onSettings:()=>void;
@@ -33,7 +35,7 @@ interface ComposerProps {
   onCancel?:()=>void;
 }
 
-export function RequirementComposer({projectId,disabledProject,context,defaultEngine,onEngineChange,enginePending,onSettings,
+export function RequirementComposer({projectId,disabledProject,context,defaultEngine,codexModel,onEngineChange,enginePending,onSettings,
   goal,onGoalChange,goalInput,disabled,busy,onSubmit,onCancel}:ComposerProps) {
   const {environment,error}=useProjectEnvironment(context?.workspace);
   const [nonGoals,setNonGoals]=useState<string[]>([]);
@@ -183,6 +185,7 @@ export function RequirementComposer({projectId,disabledProject,context,defaultEn
           <span className="composer-engines" role="group" aria-label="执行引擎">{(['codex','dsh'] as const).map(mode=>
             <button key={mode} type="button" disabled={enginePending||busy} aria-pressed={defaultEngine===mode} onClick={()=>onEngineChange(mode)}>{analysisModes[mode].name}</button>
           )}</span>}
+          {defaultEngine==='codex'&&<CodexModelSelect {...codexModel} label="本次 Codex 模型" disabled={enginePending||busy}/>}
           <button type="button" className="composer-link" onClick={onSettings}>连接设置</button>
         </div>
         <span className={'composer-binding'+(bound?' is-bound':'')}>{context?(bound?'工作区已绑定':'工作区未绑定'):'正在读取工作区…'}

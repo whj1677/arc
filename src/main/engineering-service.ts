@@ -6,6 +6,7 @@ import type {ExecutionMode,Project,Snapshot,Explanation,Feature,Scenario} from '
 import {activeContextEntries,engineeringCategories,engineeringSectionCategories,type SaveEngineeringEntry,type EngineeringSectionCategory} from '../engineering';
 import type {CodeState,WorkspaceBinding,ContextEntry,ContextSource,EngineeringContext,EngineeringAnalysis,ContextRequest,EngineeringTask,CreateEngineeringTask,UpdateEngineeringTask,FinishEngineeringTask,DevelopmentAttempt,VerificationEvidence,TaskReadingBinding,WalkthroughUpdate,DevelopmentStep} from '../engineering';
 import {Store,id,now} from './store';
+import {locate} from './executables';
 import {capture,freshness,readSource,sha,relativePath,safeFile,workspaceFiles,workspaceGitDirectory} from './snapshot';
 import {exportEngineeringProject,restoreEngineeringProject} from './engineering-transfer';
 import {scanAecLegacy,type AecScan,type AecLegacyDocument} from './aec-migration';
@@ -19,7 +20,7 @@ export {sameVerificationState} from '../delivery-audit';
 const exec=promisify(execFile), workspaceKind='engineering_workspace', contextKind='engineering_context', taskKind='engineering_task', attemptKind='development_attempt';
 const requireText=(v:unknown,max=20000)=>{if(typeof v!=='string'||!v.trim()||v.length>max)throw Error(`请输入 1–${max} 个字符`);return v.trim();};
 const samePath=(a:string,b:string)=>process.platform==='win32'?path.resolve(a).toLowerCase()===path.resolve(b).toLowerCase():path.resolve(a)===path.resolve(b);
-async function git(root:string,args:string[]) {return (await exec('git',['-C',root,...args],{windowsHide:true,timeout:10000,maxBuffer:16*1024*1024})).stdout.trim();}
+async function git(root:string,args:string[]) {return (await exec(await locate('git'),['-C',root,...args],{windowsHide:true,timeout:10000,maxBuffer:16*1024*1024})).stdout.trim();}
 function stateFiles(snapshot:Snapshot,state?:Pick<CodeState,'assets'>) {
   return new Map([...snapshot.files.map(f=>[f.path,f.content_sha256] as const),...(state?.assets??[]).map(f=>[f.path,f.sha256] as const)]);
 }

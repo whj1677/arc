@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {CreateEngineeringTask,EngineeringContext,EngineeringTask,DevelopmentAttempt,VerificationEvidence,CodeState} from '../engineering';
-import type {ProviderProfile,Run,Snapshot} from '../shared';
+import type {CodexPreferences,ProviderProfile,Run,Snapshot} from '../shared';
 import {inspectVerificationOutput} from '../delivery-audit';
 import {EngineeringService,sameVerificationState} from './engineering-service';
 import {runDevelopmentCodex,type DevelopmentCommand} from './development-runner';
@@ -107,18 +107,20 @@ export class DevelopmentService {
     if(profile.status!=='available'||!profile.path)throw Object.assign(Error(profile.reason+'；'+profile.auth),{environmentBlocked:true});
     if(this.isStopped(attemptId))return;
     const task=this.engineering.task(taskId);
+    const preferences=this.store.codexPreferences();
     const configured=mode==='codex'&&task.workflow!=='analysis'?await this.configuration(profile.path,attempt.workspace_path):undefined;
     if(this.isStopped(attemptId))return;
-    this.engineering.updateAttempt(attemptId,{model:configured?.model?`配置：${configured.model}`:`沿用 ${engine} 默认模型`,runtime_version:profile.version});
+    const model=mode==='codex'?(preferences.model||configured?.model):undefined;
+    this.engineering.updateAttempt(attemptId,{model:model?`配置：${model}`:`沿用 ${engine} 默认模型`,runtime_version:profile.version});
     const context=await this.engineering.executionContext(task.project_id,task.task_id);
     const baseline=attempt.baseline??task.baseline;
     if(context.workspace.workspace_id!==task.workspace_id||context.workspace.root_path!==task.workspace_path||!sameVerificationState(context.code_state,baseline))throw Error('WORKSPACE_CONFLICT：启动前工作区或代码基线已改变，未派发开发。');
     if(task.workflow==='analysis'||mode==='dsh'){
-      await this.executeFrozen(attempt,task,context,profile,mode);
+      await this.executeFrozen(attempt,task,context,profile,mode,preferences);
       return;
     }
     const records:CommandRecord[]=[];let captureQueue=Promise.resolve(),possibleWrite=0;
-    const result=await this.runner({task,context,profile,storage:this.store.directory,writeScope:attempt.write_scope!,
+    const result=await this.runner({task,context,profile,preferences,storage:this.store.directory,writeScope:attempt.write_scope!,
       event:event=>{if(event.item?.type==='file_change'||event.type==='item.started'&&event.item?.type==='command_execution')possibleWrite++;this.event(attemptId,event);},
       shouldStart:()=>!this.isStopped(attemptId),
       started:process=>this.started(attemptId,process),
@@ -188,7 +190,7 @@ export class DevelopmentService {
       ...(result.model?{model:`运行回执：${result.model}`}:{})});
     this.event(attemptId,{type:'local.stage',message:`开发结果已自动保存到原任务，验证状态：${saved.verification_status}。${entryFailures.length?`另有 ${entryFailures.length} 项工程条目未保存，详见未解决事项。`:''}`});
   }
-  private async executeFrozen(attempt:DevelopmentAttempt,task:EngineeringTask,context:EngineeringContext,profile:ProviderProfile,mode:LocalMode){
+  private async executeFrozen(attempt:DevelopmentAttempt,task:EngineeringTask,context:EngineeringContext,profile:ProviderProfile,mode:LocalMode,preferences:CodexPreferences){
     const {attempt_id:attemptId}=attempt,{task_id:taskId}=task,planning=task.workflow==='analysis';
     const storage=this.store.directory,outputDirectory=path.join(storage,'development',taskId,attemptId);
     const snapshot=this.store.get<Snapshot>('snapshot',context.code_state.snapshot_id);
@@ -219,7 +221,7 @@ export class DevelopmentService {
         this.event(attemptId,event);
       }};
     const readReply=async(optionsForTurn:typeof options)=>{
-      const result=mode==='dsh'?await this.dshWeb({...optionsForTurn,submitResult:true}):await this.codexAnalysis({...optionsForTurn,outputDirectory});
+      const result=mode==='dsh'?await this.dshWeb({...optionsForTurn,submitResult:true}):await this.codexAnalysis({...optionsForTurn,outputDirectory,preferences});
       this.active.delete(attemptId);
       checkRunning();
       if(result.code!==0||result.protocol_error)throw Error(result.protocol_error||result.stderr||`引擎退出：${result.code}`);

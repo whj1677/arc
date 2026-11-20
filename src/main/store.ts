@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Explanation, Project } from '../shared';
+import type { CodexPreferences, Explanation, Project } from '../shared';
 import type { ContextEntry } from '../engineering';
 
 export const id = (prefix: string) => `${prefix}-${randomUUID()}`;
@@ -43,6 +43,9 @@ export class Store {
     return JSON.parse(row.json);
   }
   maybe<T = any>(kind: string, key: string): T | null { try { return this.get(kind, key); } catch { return null; } }
+  codexPreferences(): CodexPreferences {
+    return this.maybe<CodexPreferences>('settings', 'codex_preferences') ?? { model: '', reasoning_effort: 'auto' };
+  }
   put(kind: string, key: string, value: unknown) { this.db.prepare('INSERT INTO objects VALUES (?,?,?) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json').run(kind, key, JSON.stringify(value)); }
   putVersion(kind:string,key:string,version:number,value:unknown) { this.db.prepare('INSERT INTO engineering_versions VALUES(?,?,?,?)').run(kind,key,version,JSON.stringify(value)); this.put(kind,key,value); }
   versions<T = any>(kind:string,key:string):T[] { return this.db.prepare('SELECT json FROM engineering_versions WHERE kind=? AND id=? ORDER BY version').all(kind,key).map((r:any)=>JSON.parse(r.json)); }

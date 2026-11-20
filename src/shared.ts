@@ -97,7 +97,11 @@ export interface ReadingState {
   feature_reading_version?: number;
 }
 export interface AnalysisRequest { project_analysis?:true; project_id:string; scenario_id:string; source_snapshot_id:string; question_revision_id?:string; created_at?:string; development_task_id?:string }
-export interface WorkspaceData { projects: Project[]; features: Feature[]; scenarios: Scenario[]; revisions: Revision[]; annotations: Annotation[]; runs: Run[]; explanations: Explanation[]; providers: ProviderProfile[]; snapshots: Snapshot[]; project_freshness?: Record<string, ProjectFreshness>; requested_analysis?:AnalysisRequest; questions?:ReadingQuestion[]; development_tasks?:import('./engineering').EngineeringTask[]; default_engine?:ExecutionMode }
+export type CodexReasoningEffortPreference = 'auto' | 'low' | 'medium' | 'high';
+export interface CodexModelOption { slug: string; display_name: string }
+export interface CodexModelCatalog { default_model?: string; models: CodexModelOption[] }
+export interface CodexPreferences { model: string; reasoning_effort: CodexReasoningEffortPreference }
+export interface WorkspaceData { projects: Project[]; features: Feature[]; scenarios: Scenario[]; revisions: Revision[]; annotations: Annotation[]; runs: Run[]; explanations: Explanation[]; providers: ProviderProfile[]; snapshots: Snapshot[]; project_freshness?: Record<string, ProjectFreshness>; requested_analysis?:AnalysisRequest; questions?:ReadingQuestion[]; development_tasks?:import('./engineering').EngineeringTask[]; default_engine?:ExecutionMode; codex_preferences: CodexPreferences; codex_models: CodexModelCatalog }
 export interface ArcApi {
   invoke<T = any>(operation: string, args?: unknown): Promise<T>;
   onEvent(callback: (event: { type: string; [key: string]: any }) => void): () => void;

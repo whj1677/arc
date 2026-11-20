@@ -376,6 +376,7 @@ export class OverviewOrchestrator {
     const phaseRun: Run = { ...initial, output_path: path.join(phaseDirectory, 'result.json') };
     const options: Parameters<typeof runCodex>[0] = {
       run: phaseRun,
+      preferences: store.codexPreferences(),
       snapshot,
       storage: directory,
       resources,

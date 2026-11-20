@@ -8,6 +8,7 @@ import {EngineeringSections,ContextBody,ContextText,ExternalExecutor,type Engine
 import {DevelopmentActivity,PlanDecision,SavedRequirementPackage,publicActivity,taskDetailStage,type ActivityEvent} from './DevelopmentActivity';
 import {ProjectEnvironmentCard} from './ProjectEnvironmentCard';
 import {RequirementComposer} from './RequirementComposer';
+import type {CodexModelSelection} from './CodexModelSelect';
 import {verificationEvidenceLabel} from '../delivery-audit';
 import {DeliveryAuditBar} from './DeliveryAuditBar';
 import {TaskBoundaries} from './TaskBoundaries';
@@ -250,7 +251,7 @@ export function EngineeringManagement({project,onRestored}:{project:Project;onRe
 const taskLists=new Map<string,EngineeringTask[]>();
 const selectedTasks=new Map<string,string>();
 
-export function EngineeringWorkspace({project,page,requestedTask,onTaskOpened,onSettings,defaultEngine,onEngineChange,enginePending,focusGoal,onGoalFocused,back,onArchitecture,onRestored,onReading}:{project:Project;page:'materials'|'records';requestedTask:string;onTaskOpened:()=>void;onSettings:()=>void;defaultEngine:AnalysisMode;onEngineChange:(mode:AnalysisMode)=>void;enginePending:boolean;focusGoal:boolean;onGoalFocused:()=>void;back:()=>void;onArchitecture:(resultId?:string)=>void;onRestored:(projectId:string)=>void;onReading:(task:EngineeringTask)=>void}){
+export function EngineeringWorkspace({project,page,requestedTask,onTaskOpened,onSettings,defaultEngine,codexModel,onEngineChange,enginePending,focusGoal,onGoalFocused,back,onArchitecture,onRestored,onReading}:{project:Project;page:'materials'|'records';requestedTask:string;onTaskOpened:()=>void;onSettings:()=>void;defaultEngine:AnalysisMode;codexModel:CodexModelSelection;onEngineChange:(mode:AnalysisMode)=>void;enginePending:boolean;focusGoal:boolean;onGoalFocused:()=>void;back:()=>void;onArchitecture:(resultId?:string)=>void;onRestored:(projectId:string)=>void;onReading:(task:EngineeringTask)=>void}){
   const {context,error:contextError,reload:reloadContext,more,checking}=useContext(project.project_id);
   const [tasks,setTasks]=useState<EngineeringTask[]>(()=>taskLists.get(project.project_id)??[]),[selectedId,setSelectedId]=useState(()=>requestedTask||selectedTasks.get(project.project_id)||''),[query,setQuery]=useState(''),[filter,setFilter]=useState('');
   const [tasksLoaded,setTasksLoaded]=useState(()=>taskLists.has(project.project_id));
@@ -357,7 +358,7 @@ export function EngineeringWorkspace({project,page,requestedTask,onTaskOpened,on
     </aside><section className="engineering-task-detail" key={mode==='new'?'new':selectedId} aria-label="工程任务详情"
       onFocusCapture={mode==='new'?()=>setMode('new'):undefined}>
       {mode==='new'||!task?<RequirementComposer projectId={project.project_id} disabledProject={project.fictional} context={context}
-        defaultEngine={defaultEngine} onEngineChange={onEngineChange} enginePending={enginePending}
+        defaultEngine={defaultEngine} codexModel={codexModel} onEngineChange={onEngineChange} enginePending={enginePending}
         onSettings={onSettings} goal={goal} onGoalChange={setGoal} goalInput={goalInput} busy={busy} disabled={cannotStart}
         onSubmit={start} onCancel={tasks.length?()=>selectTask((current??visible[0]??tasks[0]).task_id):undefined}/>:<>
         <header className="engineering-requirement-header">

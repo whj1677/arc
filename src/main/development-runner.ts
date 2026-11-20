@@ -9,13 +9,16 @@ import Ajv from 'ajv';
 import type {EngineeringTask,EngineeringContext,DevelopmentStep} from '../engineering';
 import {engineeringSectionCategories,type SaveEngineeringEntry} from '../engineering';
 import {approvedRequirement,effectiveTaskBoundaries} from '../task-boundaries';
-import type {ProviderProfile} from '../shared';
-import {codexChildEnvironment,JsonLines,CodexTurnErrors,stopTree,redact,locate,type ActiveProcess} from './providers';
+import type {CodexPreferences,ProviderProfile} from '../shared';
+import {codexChildEnvironment,codexModelArguments,JsonLines,CodexTurnErrors,stopTree,redact,locate,type ActiveProcess} from './providers';
 import {readCodexConfiguration} from './codex-configuration';
 import {resolveDevelopmentScope} from './development-scope';
 import {transportSchema} from './validation';
 
 const exec=promisify(execFile);
+export function locateVerificationShell() {
+  return process.platform==='win32'?locate('pwsh.exe').catch(()=>locate('powershell.exe')):locate('sh');
+}
 const ajv=new Ajv({allErrors:true});
 export interface DevelopmentResult {
   task_id:string; status:'completed'|'failed'|'blocked'; summary:string; decisions:string[]; unresolved:string[];
@@ -47,8 +50,8 @@ function parseDevelopmentReply(raw:string){
   }
   return value;
 }
-export function developmentArguments(workspace:string,schemaFile:string,outputFile:string,overrides:string[]){
-  return ['-a','never','exec','--json','--skip-git-repo-check','--color','never','--cd',workspace,...overrides,'--output-schema',schemaFile,'--output-last-message',outputFile,'-'];
+export function developmentArguments(workspace:string,schemaFile:string,outputFile:string,overrides:string[],preferences?:CodexPreferences){
+  return ['-a','never','exec','--json','--skip-git-repo-check','--color','never','--cd',workspace,...overrides,...codexModelArguments(preferences),'--output-schema',schemaFile,'--output-last-message',outputFile,'-'];
 }
 export function developmentSandboxArguments(workspace:string,profile=':workspace',overrides:string[]=[],command=['cmd.exe','/d','/c','echo','ARC_WORKSPACE_SANDBOX_READY']){
   return ['sandbox','--include-managed-config','--permission-profile',profile,'--cd',workspace,...overrides,'--',...command];
@@ -213,10 +216,10 @@ ${environment_brief??'尚无探测记录。'}
 禁止将未定义行为、竞态或平台偶发状态包装成稳定单测。
 严守授权文件范围，勿为本次交付添加过程文档或临时验证脚本。
 仅在本任务确需保存方案、架构、设计或验证计划时，在最终 JSON 的 context_entries 回填相应文字；否则填写空数组（不要求生成条目）。category 为 plan/architecture/design/verification_plan；新条目 entry_id 为空字符串、expected_version=0；更新使用已读取条目的 entry_id/version，key 是标题。未提供的内容保持缺失，不强制小改动填写五栏。条目由 ARC 保存为 Agent 待复核说明，不计作已观察验证；不得覆盖未读取或截断的长文。
-从分析、最小充分修改、必要验证推进到结束。阅读冻结快照用于理解；实际编辑必须发生在上面的真实工作区。未执行和失败验证如实报告。权限或关键业务事实阻塞时返回 blocked 与具体原因，不绕过权限。验证结束后如果继续修改受验证文件，必须复验相关行为。最终只输出合同要求的 JSON，task_id 必须为 ${task.task_id}；verification 仅列实际执行的验证命令及结果，command 精确复制实际工具执行命令（包括 shell 脚本体），普通搜索/读取不冒充测试。模型与推理强度沿用当前 Codex 配置。`;
+从分析、最小充分修改、必要验证推进到结束。阅读冻结快照用于理解；实际编辑必须发生在上面的真实工作区。未执行和失败验证如实报告。权限或关键业务事实阻塞时返回 blocked 与具体原因，不绕过权限。验证结束后如果继续修改受验证文件，必须复验相关行为。最终只输出合同要求的 JSON，task_id 必须为 ${task.task_id}；verification 仅列实际执行的验证命令及结果，command 精确复制实际工具执行命令（包括 shell 脚本体），普通搜索/读取不冒充测试。`;
 }
 export async function runDevelopmentCodex(options:{
-  task:EngineeringTask;context:EngineeringContext;profile:ProviderProfile;storage:string;writeScope:string[];
+  task:EngineeringTask;context:EngineeringContext;profile:ProviderProfile;preferences:CodexPreferences;storage:string;writeScope:string[];
   event:(value:any)=>void;started:(active:ActiveProcess)=>void;shouldStart?:()=>boolean;timeoutMs?:number;
   commandCompleted?:(command:DevelopmentCommand)=>Promise<void>;
   saveSteps?:(steps:unknown)=>Promise<void>;
@@ -256,14 +259,14 @@ export async function runDevelopmentCodex(options:{
     await fs.writeFile(path.join(directory,'diagnostic.json'),JSON.stringify({stage:'sandbox_check',model_called:false,protocol_error:blocked.message,ended_at:new Date().toISOString()},null,2));
     throw blocked;
   }
-  const envShell=await locate(process.platform==='win32'?'pwsh.exe':'sh');
+  const envShell=await locateVerificationShell();
   const commands:DevelopmentCommand[]=[];
   const scoped=await openScopedCommands(profile.path,workspace,env,scopeConfig,envShell,options,commands);
   const args=developmentArguments(workspace,schemaFile,outputFile,[...scopeConfig.overrides,
     '-c','features.shell_tool=false','-c','features.unified_exec=false','-c','features.apply_patch_freeform=false',
-    '-c','mcp_servers.arc_file_sandbox={url='+JSON.stringify(scoped.url)+',enabled=true,required=true,tool_timeout_sec=140,enabled_tools=["arc_run_scoped_command","arc_save_development_steps"],tools={arc_run_scoped_command={approval_mode="approve"},arc_save_development_steps={approval_mode="approve"}}}']);
+    '-c','mcp_servers.arc_file_sandbox={url='+JSON.stringify(scoped.url)+',enabled=true,required=true,tool_timeout_sec=140,enabled_tools=["arc_run_scoped_command","arc_save_development_steps"],tools={arc_run_scoped_command={approval_mode="approve"},arc_save_development_steps={approval_mode="approve"}}}'],options.preferences);
   try{
-  await fs.writeFile(path.join(directory,'request.json'),JSON.stringify({task_id:task.task_id,workspace,args:args.map(arg=>arg.replace(scoped.url,'[local scoped command endpoint]')),write_scope:options.writeScope,runtime_version:version.stdout.trim(),model:'inherited from Codex configuration'},null,2));
+  await fs.writeFile(path.join(directory,'request.json'),JSON.stringify({task_id:task.task_id,workspace,args:args.map(arg=>arg.replace(scoped.url,'[local scoped command endpoint]')),write_scope:options.writeScope,runtime_version:version.stdout.trim(),model:options.preferences.model||'inherited from Codex configuration'},null,2));
   if(options.shouldStart&&!options.shouldStart())throw Error('任务已取消，未启动 Codex 开发');
   options.event({type:'local.stage',stage:'development_start',message:'文件级沙箱已生效。仅可写入授权文件；外部 MCP 和权限升级已禁用。'});
   return await new Promise<Awaited<ReturnType<typeof runDevelopmentCodex>>>((resolve,reject)=>{

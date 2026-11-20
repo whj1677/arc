@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { EngineeringTask } from '../engineering';
-import type { Project, ReadingState, Run, Scenario, SourceEvidence, WorkspaceData } from '../shared';
+import type { CodexPreferences, Project, ReadingState, Run, Scenario, SourceEvidence, WorkspaceData } from '../shared';
 import { hasFunctionGraphs } from '../shared';
 import { explanationFreshness } from '../freshness';
 import { discoveredFeature } from '../discovered-feature';
@@ -43,6 +43,7 @@ import {
   type HomeBookmark,
 } from './workbench-primitives';
 import { SettingsModal } from './SettingsModal';
+import { CodexModelSelect } from './CodexModelSelect';
 import { EntityFormModal } from './EntityFormModal';
 import { CatalogSidebar } from './CatalogSidebar';
 import { DetailPane } from './DetailPane';
@@ -896,6 +897,21 @@ function App() {
     }).finally(() => setPending(false));
   }
 
+  async function saveCodexPreferences(changes: Partial<CodexPreferences>) {
+    setPending(true);
+    try {
+      return !!await action(async () => {
+        await api.invoke('codex_preferences_save', { ...data.codex_preferences, ...changes });
+        await reload();
+        return true;
+      });
+    } finally {
+      setPending(false);
+    }
+  }
+  const codexModel = { catalog: data.codex_models, model: data.codex_preferences.model,
+    onModelChange: (model: string) => saveCodexPreferences({ model }) };
+
   async function desktopReady(id: string) {
     const { binding, authorized, workspace_matches } = await api.invoke('executor_status', { project_id: id });
     return binding && authorized && workspace_matches;
@@ -1213,9 +1229,13 @@ function App() {
   );
   const analysisMenu = (
     <details className="analysis-options">
-      <summary>分析方式 · {analysisMode.name}</summary>
+      <summary>分析方式 · {analysisMode.name}{expandMode === 'codex' && codexModel.model &&
+        <small className="analysis-selected-model" title={codexModel.model}>{codexModel.model}</small>}</summary>
       <div className="popover-content">
         <AnalysisModePicker label="分析运行方式" mode={expandMode} setMode={setAnalysisMode} />
+        {expandMode === 'codex' && <label>Codex 模型
+          <CodexModelSelect {...codexModel} label="Codex 模型" disabled={pending}/>
+        </label>}
         <button onClick={showMcp}>连接 Agent</button>
         <p>{analysisMode.description}</p>
       </div>
@@ -1991,6 +2011,7 @@ function App() {
                   onSettings={showMcp}
                   defaultEngine={expandMode}
                   onEngineChange={setAnalysisMode}
+                  codexModel={codexModel}
                   enginePending={pending}
                   focusGoal={focusDevelopment}
                   onGoalFocused={() => setFocusDevelopment(false)}
@@ -2120,6 +2141,7 @@ function App() {
               pending={pending}
               mode={expandMode}
               setMode={setAnalysisMode}
+              saveCodexPreferences={saveCodexPreferences}
               openDesktop={openDesktop}
               refreshMcp={refreshMcp}
               action={action}

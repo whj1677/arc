@@ -1,5 +1,6 @@
 import React, {useEffect,useState} from 'react';
-import type { Project, Scenario, WorkspaceData } from '../shared';
+import type { CodexPreferences, CodexReasoningEffortPreference, Project, Scenario, WorkspaceData } from '../shared';
+import { CodexModelSelect } from './CodexModelSelect';
 import { ExternalExecutor } from './EngineeringSections';
 import { EngineeringManagement } from './EngineeringWorkspace';
 import {analysisModes,type AnalysisMode} from './discovery-state';
@@ -23,6 +24,7 @@ export interface SettingsModalProps {
   mode: AnalysisMode;
   openDesktop: boolean;
   setMode: (mode: AnalysisMode) => void;
+  saveCodexPreferences: (changes: Partial<CodexPreferences>) => Promise<boolean>;
   refreshMcp: () => void;
   action: <T>(fn: () => Promise<T>, message?: string) => Promise<T | undefined>;
   reload: () => Promise<WorkspaceData>;
@@ -49,6 +51,7 @@ export function SettingsModal({
   mode,
   openDesktop,
   setMode,
+  saveCodexPreferences,
   refreshMcp,
   action,
   reload,
@@ -107,6 +110,25 @@ export function SettingsModal({
           <small role="status">当前默认：{analysisModes[mode].option}</small>
           <button disabled={detecting||pending} onClick={()=>void detectEngines()}>检测本机引擎</button>
         </div>
+        <fieldset className="agent-codex-preferences">
+          <legend>Codex 模型与推理强度</legend>
+          <div className="agent-codex-fields">
+            <div>
+              <span>模型</span>
+              <CodexModelSelect catalog={data.codex_models} model={data.codex_preferences.model}
+                label="Codex 模型" disabled={pending} allowCustom onModelChange={model => saveCodexPreferences({model})}/>
+            </div>
+            <label>推理强度
+              <select aria-label="Codex 推理强度" disabled={pending} value={data.codex_preferences.reasoning_effort}
+                onChange={event => void saveCodexPreferences({reasoning_effort:event.target.value as CodexReasoningEffortPreference})}>
+                <option value="auto">按任务自动分级（推荐）</option>
+                <option value="low">低（更快）</option>
+                <option value="medium">中（均衡）</option>
+                <option value="high">高（深度）</option>
+              </select>
+            </label>
+          </div>
+        </fieldset>
         {detectionError&&<p role="alert" className="warning">{detectionError}</p>}
         {!detecting&&data.providers.filter(p=>p.provider_id===mode&&p.status!=='available').map(p=><p key={p.provider_id} className="muted">{p.status==='auth_required'?`请先在 ${analysisModes[mode].name} 中登录，再检测。`:p.reason}</p>)}
       </section>

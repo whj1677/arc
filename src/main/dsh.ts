@@ -4,12 +4,16 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { load } from 'js-yaml';
+import { satisfies } from 'semver';
 import type { ProviderProfile } from '../shared';
-import { locate, redact } from './providers';
+import { redact } from './providers';
+import { locate, windowsPackageDirs } from './executables';
 import { now } from './store';
 
 const exec = promisify(execFile);
-const supportedVersions = new Set(['0.2.1-rc.2', '0.2.1-rc.5']);
+export function isSupportedDshVersion(version:string) {
+  return satisfies(version,'>=0.2.1-rc.2',{includePrerelease:true});
+}
 
 export async function resolveDsh(configured?: string) {
   let file: string;
@@ -19,8 +23,8 @@ export async function resolveDsh(configured?: string) {
     file = configured;
   } else if (process.platform === 'win32') {
     const directories = (process.env.PATH ?? '').split(path.delimiter).map(directory => directory.trim().replace(/^"(.*)"$/, '$1')).filter(Boolean);
-    const candidates = directories.flatMap(directory => ['dsh.exe', 'dsh.cmd'].map(name => path.join(directory, name)));
-    if (process.env.APPDATA) candidates.push(path.join(process.env.APPDATA, 'npm', 'dsh.cmd'));
+    directories.push(...windowsPackageDirs(),path.join(process.env.USERPROFILE||os.homedir(),'scoop','shims'));
+    const candidates = [...new Set(directories)].flatMap(directory => ['dsh.exe', 'dsh.cmd'].map(name => path.join(directory, name)));
     const available = await Promise.all(candidates.map(async item => (await fs.stat(item).catch(() => null))?.isFile()));
     const index = available.indexOf(true);
     if (index < 0) throw Error('未在本机找到 dsh.cmd 或 dsh.exe，请先安装 DeepSeek Harness。');
@@ -73,7 +77,7 @@ export async function probeDsh(configured?: string): Promise<ProviderProfile> {
     profile.path = runtime.path;
     const { stdout } = await exec(runtime.command, [...runtime.prefix, '--version'], { windowsHide: true, timeout: 8000 });
     profile.version = stdout.trim();
-    if (!supportedVersions.has(profile.version)) throw Error(`当前 DSH 版本 ${profile.version} 不在已验证的 Web 版本范围内。`);
+    if (!isSupportedDshVersion(profile.version)) throw Error(`DSH 需要可识别的版本号且版本 ≥ 0.2.1-rc.2，当前为 ${profile.version}。`);
   } catch (error) {
     return { ...profile, reason: redact((error as Error).message) };
   }

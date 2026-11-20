@@ -44,12 +44,15 @@ test('Codex overview repairs an oversized evidence range before semantic review'
   t.after(async()=>{service.store.close();await fs.rm(dir,{recursive:true,force:true});});
   await fs.appendFile(path.join(project,'source.c'),'// padding\r\n'.repeat(42));
   const opened=await service.openProject(project),scenario=service.overview(opened.project_id);
+  const preferences={model:'selected-model',reasoning_effort:'high'} as const;
+  service.store.put('settings','codex_preferences',preferences);
   service.store.put('provider','codex',{status:'available',checked_at:new Date().toISOString()});
   const run=await service.startRun(scenario.scenario_id,'codex','overview-repair-test-key');
   const runId=run.binding.run_id;
   await service.executing.get(runId);
 
   assert.deepEqual(calls.map(options=>options.phase),[undefined,undefined,'overview_review']);
+  for(const call of calls)assert.deepEqual(call.preferences,preferences);
   const repair=calls[1];
   assert.equal(repair.reasoningEffort,'low');
   assert.equal(repair.outputSchema,overviewSchema);

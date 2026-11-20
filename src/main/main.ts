@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell, clipboard } from 'electron'
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { matchesUiUrl } from './ipc-origin';
+import { isValidCodexModel } from './codex-models';
 import {ArcMcpBridge} from './mcp-bridge';
 import { ArcService } from './service';
 import { redact } from './providers';
@@ -51,6 +52,13 @@ app.whenReady().then(async()=>{
         case 'mcp_enable':value=await bridge.enable(args.project_id,args.register_codex===true);break;
         case 'mcp_disable':value=bridge.disable();break;
         case 'data':value={...service.data(),default_engine:defaultEngine()};break;
+        case 'codex_preferences_save':{
+          const {model,reasoning_effort}=args;
+          if(!isValidCodexModel(model))throw Error('Codex 模型标识无效');
+          if(!['auto','low','medium','high'].includes(reasoning_effort))throw Error('Codex 推理强度无效');
+          value={model,reasoning_effort};
+          service.store.put('settings','codex_preferences',value);service.changed();break;
+        }
         case 'default_engine_save':{
           if(!isExecutionMode(args.mode))throw Error('执行方式无效');
           service.store.put('settings','default_engine',args.mode);service.changed();value=args.mode;break;

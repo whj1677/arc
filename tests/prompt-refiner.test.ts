@@ -140,17 +140,19 @@ async function checkIdleLayout(page:Page, width:number, height:number) {
       }
     }
     return {
+      stripHeight:form.querySelector('.composer-exec-strip')!.getBoundingClientRect().height,
       overflow, pageOverflow:document.documentElement.scrollHeight - innerHeight,
       bottom:form.getBoundingClientRect().bottom, rightGap:row.right-button.right,
       rowOffset:button.top-lastStarter.top,
     };
   });
   assert.deepEqual(layout.overflow, [], JSON.stringify(layout));
+  assert.equal(layout.stripHeight,56, JSON.stringify({width,height,...layout}));
   assert.ok(layout.pageOverflow <= 1 && layout.bottom <= height, JSON.stringify(layout));
   assert.ok(Math.abs(layout.rightGap) <= 1 && Math.abs(layout.rowOffset) <= 2, JSON.stringify(layout));
 }
 
-test('RequirementComposer refines a draft, toggles boundaries, adopts and restores the goal', async () => {
+test('RequirementComposer settings and prompt refinement', async t => {
   if (!['dist/main.cjs','dist/preload.cjs','dist/ui/index.html'].every(file=>existsSync(file))) {
     execFileSync(process.execPath,['scripts/build.mjs'],{stdio:'inherit'});
   }
@@ -164,6 +166,12 @@ test('RequirementComposer refines a draft, toggles boundaries, adopts and restor
   for (const [key,value] of Object.entries(process.env)) {
     if (value !== undefined && key !== 'ARC_DATA_DIR') env[key] = value;
   }
+  env.CODEX_HOME = path.join(run,'codex-home');
+  await fs.mkdir(env.CODEX_HOME);
+  await fs.writeFile(path.join(env.CODEX_HOME,'config.toml'),'model = "fixture-sol"');
+  await fs.writeFile(path.join(env.CODEX_HOME,'models_cache.json'),JSON.stringify({models:[
+    {slug:'fixture-sol',display_name:'Fixture Sol'}, {slug:'fixture-astra',display_name:'Fixture Astra'},
+  ]}));
   delete env.ELECTRON_RUN_AS_NODE;
   const app = await _electron.launch({
     args:[`--user-data-dir=${userData}`, path.resolve('tests/fixtures/prompt-refiner-main.cjs')],
@@ -184,6 +192,29 @@ test('RequirementComposer refines a draft, toggles boundaries, adopts and restor
     const refine = form.getByRole('button',{name:'优化提示词',exact:true});
     const card = form.getByRole('region',{name:'优化建议'});
     await form.locator('.composer-command').first().waitFor();
+    await t.test('settings and execution strip select and save the same Codex preferences',async()=>{
+      const quick=form.getByRole('combobox',{name:'本次 Codex 模型'});
+      assert.equal(await quick.locator('option:checked').textContent(),'默认（fixture-sol）');
+      await quick.selectOption('fixture-astra');
+      await form.getByRole('button',{name:'连接设置'}).click();
+      const dialog=page.getByRole('dialog',{name:'连接 Agent'});
+      const model=dialog.getByRole('combobox',{name:'Codex 模型',exact:true});
+      const effort=dialog.getByRole('combobox',{name:'Codex 推理强度'});
+      assert.equal(await model.locator('option:checked').textContent(),'Fixture Astra');
+      await effort.selectOption('high');
+      await model.selectOption({label:'自定义模型…'});
+      await dialog.getByRole('textbox',{name:'自定义模型名称'}).fill('custom-local');
+      await dialog.getByRole('button',{name:'应用',exact:true}).click();
+      await dialog.getByRole('textbox',{name:'自定义模型名称'}).waitFor({state:'hidden'});
+      await dialog.getByRole('button',{name:'关闭对话框'}).click();
+      assert.equal(await quick.inputValue(),'custom-local');
+      assert.deepEqual(await page.evaluate(async()=>(await window.arc.invoke('data')).codex_preferences),
+        {model:'custom-local',reasoning_effort:'high'});
+      await quick.selectOption('');
+      await page.waitForFunction(async()=>(await window.arc.invoke('data')).codex_preferences.model==='');
+      assert.deepEqual(await page.evaluate(async()=>(await window.arc.invoke('data')).codex_preferences),
+        {model:'',reasoning_effort:'high'});
+    });
     assert.ok(await refine.isDisabled());
     await input.fill(goal);
     await checkIdleLayout(page,1024,768);

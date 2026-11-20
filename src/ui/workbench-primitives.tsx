@@ -11,6 +11,8 @@ export const initialData: WorkspaceData = {
   runs: [],
   explanations: [],
   providers: [],
+  codex_preferences: { model: '', reasoning_effort: 'auto' },
+  codex_models: { models: [] },
   snapshots: [],
 };
 

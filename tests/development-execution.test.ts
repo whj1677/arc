@@ -19,6 +19,12 @@ test('development uses actual workspace, host model, exact permission profile an
   assert.deepEqual(args.slice(0,3),['-a','never','exec']);assert.ok(args.includes('default_permissions="arc-files-test"'));assert.ok(!args.includes('-m'));assert.ok(!args.join(' ').includes('danger'));
   assert.match(developmentPrompt({task_id:'task-a',workspace_path:'real-workspace',goal:'fix typo'} as any,{} as any,['src/cart.mjs']),/src\/cart\.mjs/);
 });
+test('development exec passes a selected model and effort, leaving automatic effort to Codex',()=>{
+  const args=(effort:'auto'|'high')=>developmentArguments('workspace','schema','output',[],{model:'local-model',reasoning_effort:effort});
+  const high=args('high'),modelIndex=high.indexOf('-m');
+  assert.deepEqual(high.slice(modelIndex,modelIndex+4),['-m','local-model','-c','model_reasoning_effort="high"']);
+  assert.ok(!args('auto').some(arg=>arg.startsWith('model_reasoning_effort=')));
+});
 test('approved prompts use current behaviors, boundaries and host commands without superseded requests',()=>{
   const task={task_id:'current',workspace_path:'workspace',workflow:'execution',goal:'old-goal',
     summary:'old-summary',requests:[{text:'old-request'}],unresolved:['old-issue'],

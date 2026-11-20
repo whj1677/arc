@@ -134,6 +134,16 @@
   font-size: 12px;
 }
 .composer-engines button[aria-pressed=true], .composer-engine-current { background: var(--soft); color: var(--accent); font-weight: 580; }
+.composer-engine-controls .codex-model-select {
+  width: clamp(8rem, 13vw, 12rem);
+  min-height: 29px;
+  padding: 2px 4px;
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--ink-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
 .composer-engine-current { padding: 3px 8px; border-radius: var(--radius-sm); }
 .composer-link { min-height: 26px; padding: 2px 4px; border: 0; background: transparent; color: var(--accent); font-size: 12px; }
 .composer-link:hover { text-decoration: underline; text-underline-offset: 3px; }
@@ -154,6 +164,11 @@
   white-space: nowrap;
 }
 .composer-command code { max-width: 18ch; overflow: hidden; text-overflow: ellipsis; color: var(--ink-secondary); font-size: 11.5px; }
+@media (min-width: 900px) {
+  .composer-exec-strip { flex-wrap: nowrap; column-gap: 8px; }
+  .composer-commands { flex: 1 1 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
+  .composer-command { flex-shrink: 0; }
+}
 
 .composer-footer { padding-block: 11px; border-top: 1px solid var(--border-subtle); }
 .composer-footer small { color: var(--muted); font-size: 12px; }
