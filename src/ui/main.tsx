@@ -1203,7 +1203,7 @@ function App() {
   }
 
   async function fillPending(nodeIds: string[]) {
-    if (starting.current || pending || catalogExplanation?.source_status !== 'current' || expandMode === 'mcp') return;
+    if (starting.current || pending || !catalogExplanation || expandMode === 'mcp') return;
     starting.current = true;
     setPending(true);
     try {
