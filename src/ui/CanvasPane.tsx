@@ -72,7 +72,7 @@ export interface CanvasPaneProps {
   openCapability: (id: string) => Promise<void>;
   addFeatureFromScope: (item: string) => void;
   fillPending: (nodeIds: string[]) => Promise<void>;
-  requestAnalysis: (overview?: boolean) => Promise<void>;
+  requestAnalysis: (overview?: boolean, refreshFirst?: boolean) => Promise<void>;
   readingPath: (pathId: string) => void;
   selectReading: (id: string) => void;
   navigateFeature: (view: string) => void;
@@ -238,7 +238,7 @@ export function CanvasPane({
             open={id => void openCapability(id)}
             addFeatureFromScope={addFeatureFromScope}
             fillPending={ids => void fillPending(ids)}
-            discover={() => void requestAnalysis(true)}
+            discover={() => void requestAnalysis(true, true)}
             mode={expandMode}
             setMode={setAnalysisMode}
           />

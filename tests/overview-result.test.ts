@@ -99,31 +99,40 @@ test('overview generates source-bound readings with the catalog, preserves a leg
   assert.equal(Object.hasOwn(old.feature_catalog!,'readings'),false);
 });
 
-test('a broad overview accepts more than eight capability groups and 120 source anchors',async t=>{
+test('a broad overview accepts 300 source anchors and rejects a 301st',async t=>{
   const {value,run,snapshot,storage}=await fixture(t);
   const [group]=value.features,[feature]=group.items;
   const groups=Array.from({length:9},(_,i)=>({label:`能力族 ${i+1}`,items:Array.from({length:13},(_,j)=>({
     ...feature,id:`feature-${i}-${j}`,evidence_ids:[`anchor-${i*13+j}`],
   }))}));
-  const evidence=[...value.evidence,...Array.from({length:121},(_,i)=>({...value.evidence[1],id:`anchor-${i}`}))];
+  const evidence=[...value.evidence,...Array.from({length:300-value.evidence.length},(_,i)=>({...value.evidence[1],id:`anchor-${i}`}))];
   const readings=groups.flatMap(({items})=>items.map(item=>({node_id:item.id,entry:'',outcome:'',steps:[],boundary:deferredCatalogReadingBoundary})));
   const current={...run,question:overviewDiscoveryQuestion};
   const result=await prepareOverview({...value,features:groups,evidence,readings},current,snapshot,storage);
   assert.equal(result.feature_catalog?.groups.length,9);
   assert.equal(result.feature_catalog?.groups[0].node_ids.length,13);
-  assert.equal(result.evidence.length,124);
+  assert.equal(result.evidence.length,300);
   assert.deepEqual(result.feature_catalog?.readings,readings);
+  await assert.rejects(prepareOverview({...value,features:groups,readings,evidence:[...evidence,{...value.evidence[1],id:'extra-anchor'}]},current,snapshot,storage),/\/evidence: must NOT have more than 300 items/);
+});
+
+test('overview prompt asks for module-by-module coverage within the first-turn budget',async t=>{
+  const {run,snapshot}=await fixture(t);
+  const current={...run,question:overviewDiscoveryQuestion};
   const prompt=overviewPrompt(current,snapshot,promptContext(snapshot,[]));
   assert.ok(prompt.includes(`预算共 ${overviewDiscoveryBudget.calls} 次源码工具调用`));
-  assert.match(prompt,/提前停止并立即返回完整 JSON/);
+  assert.match(prompt,/完成逐目录清点且证据足够后，提前停止并立即返回完整 JSON/);
   for(const provider_id of ['codex','dsh'] as const){
     const instructions=overviewPrompt({...current,provider_id},snapshot,promptContext(snapshot,[]));
     assert.match(instructions,/先看 inventory\.source_directories/);
-    assert.match(instructions,/逐个核对每个有实质用途的子系统目录/);
-    assert.match(instructions,/4–6 个流程写 steps，每个流程用 2–4 条短步骤/);
-    assert.doesNotMatch(instructions,/目标各不超过 6 项|通常不超过 12 个/);
+    assert.match(instructions,/逐目录清点全部实质模块，不漏模块/);
+    assert.match(instructions,/实际实现或公共接口的，都应纳入 features/);
+    assert.match(instructions,/按模块独立职责拆分功能项/);
+    assert.match(instructions,/4–6 条端到端主线写 steps，每条主线用 2–4 条短步骤/);
+    assert.doesNotMatch(instructions,/30–70|20–50|目标各不超过 6 项|通常不超过 12 个/);
   }
-  assert.match(prompt,/arc_list_files.*arc_search_source.*arc_read_source/);
+  assert.match(prompt,/arc_list_files.*并行用 arc_search_source.*并行用 arc_read_source/);
+  assert.match(prompt,/每个次要模块只需一处能确认入口与职责的短锚点/);
   assert.match(prompt,/库 \/ 内核 \/ SDK \/ 框架工程.*核心模块及其公共能力族/);
   assert.match(prompt,/示例 main\(\) 调用的少数 API/);
   assert.match(prompt,/steps: \[\]、entry: ''、outcome: ''/);

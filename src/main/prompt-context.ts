@@ -74,9 +74,12 @@ export function listFrozenFiles(snapshot:Snapshot,args:{query?:string;offset?:nu
 }
 
 const sourceFile=/\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|cs|swift|m|mm|vue|svelte|sql|proto)$/i;
+const cppImplementation=/\.(?:c|cc|cpp|cxx)$/i;
+const cppHeader=/\.(?:h|hh|hpp|hxx)$/i;
 const headerFile=/\.(?:h|hh|hpp|hxx|d\.ts)$/i;
 const nonSourceDirectory=/(?:^|\/)(?:tests?|gtest|glog|third_party|vendor|CMakeFiles|build)\//i;
 const preferredModule=/^(?:src|app|mid|hal|core|modules|services|components|pkg|internal|lib)$/i;
+const moduleSampleLimit=24;
 
 function wrapperPrefix(snapshot:Snapshot) {
   let prefix='';
@@ -89,16 +92,18 @@ function wrapperPrefix(snapshot:Snapshot) {
 }
 
 function moduleSamples(paths:string[]) {
-  const ordered=paths.sort((a,b)=>Number(headerFile.test(a))-Number(headerFile.test(b)));
+  const implementations=new Set(paths.filter(file=>cppImplementation.test(file)).map(file=>file.replace(cppImplementation,'')));
+  const ordered=paths.filter(file=>!cppHeader.test(file)||!implementations.has(file.replace(cppHeader,'')))
+    .sort((a,b)=>Number(headerFile.test(a))-Number(headerFile.test(b)));
   const parents=new Set<string>(),samples=new Set<string>();
   for(const file of ordered){
     const parent=file.slice(0,file.lastIndexOf('/')+1);
     if(parents.has(parent))continue;
     parents.add(parent);
     samples.add(file);
-    if(samples.size===6)return [...samples];
+    if(samples.size===moduleSampleLimit)return [...samples];
   }
-  for(const file of ordered){samples.add(file);if(samples.size===6)break;}
+  for(const file of ordered){samples.add(file);if(samples.size===moduleSampleLimit)break;}
   return [...samples];
 }
 
@@ -119,7 +124,7 @@ function sourceDirectories(snapshot:Snapshot,prefix:string) {
   const result:Directory[]=[], candidates:string[][]=[];
   // Give each module a representative before spending the remaining bytes on
   // more examples. Keep paths intact so each hint can be opened in the snapshot.
-  let remaining=4096-2;
+  let remaining=6*1024-2;
   for(const [dir,paths] of ranked){
     const choices=moduleSamples(paths);
     const entry={dir,count:paths.length,samples:choices.slice(0,1)};
@@ -128,9 +133,9 @@ function sourceDirectories(snapshot:Snapshot,prefix:string) {
     result.push(entry);
     candidates.push(choices);
     remaining-=size;
-    if(result.length===30)break;
+    if(result.length===40)break;
   }
-  for(let i=1;i<6;i++){
+  for(let i=1;i<moduleSampleLimit;i++){
     for(const [index,choices] of candidates.entries()){
       const sample=choices[i];
       if(!sample)continue;

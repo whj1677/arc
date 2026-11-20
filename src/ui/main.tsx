@@ -1162,11 +1162,11 @@ function App() {
   const beginAnalysis = () =>
     running || (waitingMcp && expandMode === 'mcp')
       ? showRun()
-      : catalogReading
-        ? void requestAnalysis(true)
+      : catalogReading || overview
+        ? void requestAnalysis(true, true)
         : reading.entrance === 'walk' && !scenario
           ? openModal('feature')
-          : void requestAnalysis(reading.entrance === 'overview');
+          : void requestAnalysis();
 
   async function revalidateFunctionRun(run: Run) {
     if (starting.current || pending || running) return;

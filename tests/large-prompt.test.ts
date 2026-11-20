@@ -24,22 +24,40 @@ test('wrapped source inventory groups authored modules and keeps usable entry pa
   ]);
   assert.deepEqual(inventory.entry_file_hints,['bams_code/README.md','bams_code/src/app/main.cpp','bams_code/src/mid/boot/init.cpp']);
   assert.equal(inventory.largest_roots[0].name,'bams_code/src/');
-  const broad={...snapshot,files:Array.from({length:280},(_,i)=>({...snapshot.files[0],path:`wrapper/src/domain${i%35}/${'温度'.repeat(8)}${i}.java`}))};
+  const broad={...snapshot,files:Array.from({length:360},(_,i)=>({...snapshot.files[0],path:`wrapper/src/domain${i%45}/${'温度'.repeat(8)}${i}.java`}))};
   const groups=promptContext(broad,[]).inventory.source_directories;
-  assert.equal(groups.length,30);
-  assert.ok(groups.every(group=>group.count===8&&group.samples.length>=1&&group.samples.length<=6));
-  assert.ok(Buffer.byteLength(JSON.stringify(groups))<=4096);
+  assert.equal(groups.length,40);
+  assert.ok(groups.every(group=>group.count===8&&group.samples.length>=1&&group.samples.length<=8));
+  assert.ok(Buffer.byteLength(JSON.stringify(groups))<=6*1024);
   const longPaths=broad.files.map(file=>({...file,path:file.path.replace('domain','目录'.repeat(45))}));
   const longGroups=promptContext({...snapshot,files:longPaths},[]).inventory.source_directories;
-  assert.ok(longGroups.length>0&&longGroups.length<30);
-  assert.ok(Buffer.byteLength(JSON.stringify(longGroups))<=4096);
+  assert.ok(longGroups.length>0&&longGroups.length<40);
+  assert.ok(Buffer.byteLength(JSON.stringify(longGroups))<=6*1024);
   assert.ok(longGroups.every(group=>longPaths.some(file=>file.path===group.dir+'/'+group.samples[0])));
   const domains=['auth','billing','catalog','devices'];
   const packaged=domains.flatMap(domain=>Array.from({length:10},(_,i)=>({...snapshot.files[0],path:`wrapper/src/main/java/com/acme/${domain}/Service${i}.java`})));
   const [java]=promptContext({...snapshot,files:packaged},[]).inventory.source_directories;
   assert.equal(java.dir,'wrapper/src/main/java/com');
   assert.equal(java.count,40);
+  assert.equal(java.samples.length,24);
   assert.deepEqual(java.samples.slice(0,4),domains.map(domain=>`acme/${domain}/Service0.java`));
+});
+
+test('first-turn inventory exposes all 72 module paths across 13 source directories',()=>{
+  const directories=[
+    ['mid/protocols',22],['mid/core',10],['app/core',8],['app/devices',7],['hal',6],['common',4],
+    ['mid/storage',3],['mid/logging',3],['app/hmi',2],['app/diagnostics',2],['hal/io',2],['hal/bus',2],['boot',1],
+  ] as const;
+  const implementations=directories.flatMap(([dir,count])=>Array.from({length:count},(_,i)=>`src/${dir}/module-${i}.cpp`));
+  const headerOnly='src/mid/protocols/pcs_protocol_codec.h';
+  const headers=implementations.map(file=>file.replace(/\.cpp$/,'.h'));
+  const files=[...headers,...implementations,headerOnly].map(path=>({...snapshot.files[0],path}));
+  const groups=promptContext({...snapshot,files},[]).inventory.source_directories;
+  assert.equal(groups.length,13);
+  const protocols=groups.find(group=>group.dir==='src/mid/protocols');
+  assert.equal(protocols?.count,45);
+  assert.equal(protocols?.samples.length,23);
+  assert.deepEqual(groups.flatMap(group=>group.samples.map(file=>`${group.dir}/${file}`)).sort(),[...implementations,headerOnly].sort());
 });
 
 test('first overview asks for an evidenced architecture and catalog without requesting detailed function walks',async()=>{

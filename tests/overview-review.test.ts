@@ -43,10 +43,18 @@ test('a rejected direction is excluded instead of silently changing its kind, pr
   }
 });
 
-test('supported relations must cite their original evidence and a refused summary cannot be published',()=>{
+test('review requires original relation evidence, rejects contradicted summaries, and marks uncertain summaries',()=>{
   const result=draft(),value=review(result);
   for(const ids of [[],['new-evidence']])assert.throws(()=>applyOverviewReview({...value,relations:[{...value.relations[0],evidence_ids:ids},value.relations[1]]},result),/原始依据/);
-  for(const verdict of ['uncertain','contradicted'])assert.throws(()=>applyOverviewReview({...value,summary:{verdict,reason:'摘要声称完成了源码未证明的全部业务'}},result),/摘要未通过.*源码未证明/);
+  const reason='摘要声称完成了源码未证明的全部业务';
+  assert.throws(()=>applyOverviewReview({...value,summary:{verdict:'contradicted',reason}},result),/摘要未通过.*源码未证明/);
+  const applied=applyOverviewReview({...value,summary:{verdict:'uncertain',reason}},result).result;
+  const [gap]=applied.gaps;
+  assert.equal(gap.gap_id,'overview-review-summary');
+  assert.equal(gap.reason,reason);
+  assert.deepEqual(applied.coverage.unresolved_scope,[...result.coverage.unresolved_scope,gap.question]);
+  assert.deepEqual(applied.claims[0].limitations,[`独立复核提示摘要仍有未完全覆盖的细节：${reason}`]);
+  assert.deepEqual(applied.architecture,result.architecture);
 });
 
 test('a rejected edge with a shared claim requires a new draft instead of breaking other facts',()=>{
