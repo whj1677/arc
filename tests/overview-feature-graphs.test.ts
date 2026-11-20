@@ -87,3 +87,70 @@ test('one project analysis schedules frozen feature graphs, continues after a fa
   await analyze('project-pass-three',0);
   assert.equal(attempts.length,3);
 });
+
+test('local runs cap feature batches at two, skip cancelled waiters and prioritize overview', {timeout:10000}, async t=>{
+  const temp=await fs.mkdtemp(path.join(os.tmpdir(),'arc-local-slots-')),root=path.join(temp,'project');
+  await fs.mkdir(root);await fs.writeFile(path.join(root,'main.c'),source.join('\n'));
+  const deferred=()=>{
+    let resolve!:()=>void;
+    const promise=new Promise<void>(done=>{resolve=done;});
+    return {promise,resolve};
+  };
+  const keys=['batch-one','batch-two','batch-cancelled','batch-four','priority-overview'];
+  const gates=new Map(keys.map(key=>[key,{entered:deferred(),release:deferred()}]));
+  const launches:Parameters<typeof runCodex>[0][]=[];
+  let active=0,peak=0;
+  const runner:typeof runCodex=async options=>{
+    const gate=gates.get(options.run.submission_key!)!;
+    launches.push(options);
+    options.started({child:{pid:123} as any,cancel:async()=>gate.release.resolve()});
+    peak=Math.max(peak,++active);
+    gate.entered.resolve();
+    try{
+      await gate.release.promise;
+      if(options.run.overview_format)return {code:1,stderr:'controlled stop',raw:''};
+      return {code:0,stderr:'',raw:JSON.stringify(detail(options.run,options.snapshot,entries[0]))};
+    }finally{active--;}
+  };
+  const service=new ArcService(path.join(temp,'data'),path.resolve('.'),undefined,runner);
+  t.after(async()=>{
+    for(const gate of gates.values())gate.release.resolve();
+    await service.shutdown();service.store.close();await fs.rm(temp,{recursive:true,force:true});
+  });
+  const project=await service.openProject(root);
+  service.store.put('provider','codex',{status:'available',checked_at:new Date().toISOString(),version:'offline-runner'});
+  const runs=await Promise.all(keys.slice(0,4).map(key=>{
+    const {scenario}=service.addFeature(project.project_id,key);
+    return service.startRun(scenario.scenario_id,'codex',key);
+  }));
+  const overviewRun=await service.startRun(service.overview(project.project_id).scenario_id,'codex',keys[4]);
+  const [first,second,,fourth]=keys.map(key=>gates.get(key)!);
+  const priority=gates.get(keys[4])!;
+  await Promise.all([first.entered.promise,second.entered.promise]);
+  assert.deepEqual(launches.map(call=>call.run.submission_key),keys.slice(0,2));
+  const cancelledId=runs[2].binding.run_id;
+  const cancelledExecution=service.executing.get(cancelledId);
+  assert.ok(cancelledExecution);
+  assert.equal((await service.cancel(cancelledId)).status,'cancelled');
+  await cancelledExecution;
+  assert.equal(service.executing.has(cancelledId),false);
+  assert.equal(active,2);
+
+  first.release.resolve();
+  await priority.entered.promise;
+  assert.deepEqual(launches.map(call=>call.run.submission_key),[keys[0],keys[1],keys[4]]);
+  priority.release.resolve();
+  await fourth.entered.promise;
+  second.release.resolve();
+  fourth.release.resolve();
+  await Promise.all(service.executing.values());
+
+  assert.equal(peak,2);
+  assert.deepEqual(launches.map(call=>call.run.submission_key),[keys[0],keys[1],keys[4],keys[3]]);
+  for(const call of launches.filter(call=>!call.run.overview_format)){
+    assert.match(call.prompt,/只展开当前功能/);
+    assert.doesNotMatch(call.prompt,/feature_catalog\.groups 引用/);
+  }
+  assert.deepEqual(runs.map(run=>service.store.get<Run>('run',run.binding.run_id).status),['completed','completed','cancelled','completed']);
+  assert.equal(service.store.get<Run>('run',overviewRun.binding.run_id).status,'failed');
+});

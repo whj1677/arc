@@ -7,6 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {AcpConnection,redact,CodexTurnErrors,codexChildEnvironment,runCodex,readingWatchdog,isSupportedCodexVersion,codexFeatureFlags,reasoningEffortForRun} from '../src/main/providers';
+import {overviewDiscoveryQuestion} from '../src/main/architecture-analysis';
 
 test('direct Codex execution cannot inherit a desktop tool pipe or the calling session identity',()=>{
   const parent={PATH:'path',CODEX_HOME:'owned-codex-home',HTTPS_PROXY:'existing-proxy',CODEX_APP_TOOLS_PIPE_PATH:'host-pipe',CODEX_APP_RUNTIME_CLI_PATH:'host-cli',CODEX_THREAD_ID:'host-thread',CODEX_SESSION_ID:'host-session',CODEX_PERMISSION_PROFILE:'host-permissions',ELECTRON_RUN_AS_NODE:'1'};
@@ -165,5 +166,7 @@ test('Codex semver capability check supports modern versions and picks version-a
   assert.equal(reasoningEffortForRun({reading_question_id:'q1',question:'why?',reading_context:{target:{kind:'node',id:'n1'}} as any}),'low');
   assert.equal(reasoningEffortForRun({reading_question_id:'q2',question:'overview?',reading_context:{target:{kind:'directory',id:'src'}} as any}),'medium');
   assert.equal(reasoningEffortForRun({question:'x'},'overview_recheck'),'low');
-  assert.equal(reasoningEffortForRun({question:'分析此功能的调用链'}),'medium');
+  assert.equal(reasoningEffortForRun({question:'分析此功能的调用链'}),'low');
+  assert.equal(reasoningEffortForRun({question:'分析工程全貌',overview_format:'overview-1'}),'medium');
+  assert.equal(reasoningEffortForRun({question:overviewDiscoveryQuestion}),'medium');
 });

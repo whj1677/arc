@@ -66,6 +66,8 @@ export class ArcService {
   readonly indexing = new Map<string, AbortController>();
   readonly executing = new Map<string, Promise<void>>();
   private closing = false;
+  private localSlotsInUse = 0;
+  private readonly localWaiters = new Map<string, { priority: boolean; resume: (acquired: boolean) => void }>();
   private checkingProviders = new Map<'codex' | 'dsh', Promise<ProviderProfile[]>>();
   private readonly readingService: ReadingService;
   private readonly walkthroughs: WalkthroughRefreshCoordinator;
@@ -745,7 +747,46 @@ export class ArcService {
     return terminal.has(run.status);
   }
 
+  private async acquireLocalSlot(run: Run): Promise<boolean> {
+    if (this.localSlotsInUse < 2) {
+      this.localSlotsInUse++;
+      return true;
+    }
+    return new Promise(resolve => {
+      this.localWaiters.set(run.binding.run_id, {
+        priority: !!(run.overview_format || run.reading_question_id),
+        resume: resolve,
+      });
+    });
+  }
+
+  private releaseLocalSlot() {
+    const next = [...this.localWaiters].find(([, waiter]) => waiter.priority) ?? this.localWaiters.entries().next().value;
+    if (next && !this.closing) {
+      const [runId, waiter] = next;
+      this.localWaiters.delete(runId);
+      waiter.resume(true);
+    } else {
+      this.localSlotsInUse--;
+    }
+  }
+
   private async execute(initial: Run) {
+    if (!await this.acquireLocalSlot(initial)) return;
+    const runId = initial.binding.run_id;
+    try {
+      if (this.closing) {
+        await this.cancel(runId);
+        return;
+      }
+      if (this.store.get<Run>('run', runId).status !== 'queued') return;
+      await this.executeLocal(initial);
+    } finally {
+      this.releaseLocalSlot();
+    }
+  }
+
+  private async executeLocal(initial: Run) {
     this.checkOverviewChild(initial);
     const runId = initial.binding.run_id;
     const provider = initial.provider_id;
@@ -784,11 +825,9 @@ export class ArcService {
     }
 
     const { annotations, previous } = this.analysisHistory(initial);
-    const featureDetail = !!initial.overview_parent_run_id || (
-      !initial.development_task_id &&
-      this.store.get<Scenario>('scenario', initial.binding.scenario_id).kind === 'feature_overview' &&
-      !!this.store.get<Feature>('feature', initial.binding.feature_id).discovery
-    );
+    const scenario = this.store.get<Scenario>('scenario', initial.binding.scenario_id);
+    const featureDetail = !!initial.overview_parent_run_id ||
+      (!initial.overview_format && !initial.reading_question_id && scenario.kind === 'feature_overview');
     const prompt = await makePrompt(initial, snapshot, this.directory, annotations, previous, featureDetail);
     this.event(runId, { type: 'local.stage', stage: 'launching', message: `只读任务已准备，正在启动 ${product}` });
     if (this.store.get<Run>('run', runId).status === 'cancelled' || this.closing) return;
@@ -1062,6 +1101,11 @@ export class ArcService {
 
   async cancel(runId: string) {
     const run = this.store.get<Run>('run', runId);
+    const waiter = this.localWaiters.get(runId);
+    if (waiter) {
+      this.localWaiters.delete(runId);
+      waiter.resume(false);
+    }
     if (terminal.has(run.status)) return run;
     const active = this.active.get(runId);
     if (run.origin === 'mcp') {
