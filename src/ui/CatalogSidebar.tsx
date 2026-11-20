@@ -2,6 +2,7 @@ import React from 'react';
 import { hasFunctionGraphs, type Explanation, type Feature, type Project, type ReadingState, type WorkspaceData } from '../shared';
 import { discoveredFeature } from '../discovered-feature';
 import { explanationFreshness } from '../freshness';
+import { featureViews } from './feature-reading-model';
 import { compactTitle, sceneStatus } from './presentation';
 import { ScrollPanel } from './workbench-primitives';
 
@@ -19,8 +20,6 @@ export interface CatalogSidebarProps {
   catalogReading: boolean;
   preview: unknown;
   featureTabs?: readonly (readonly [string, string])[] | string[][];
-  primaryViews: readonly (readonly [string, string])[] | string[][];
-  extraViews: readonly (readonly [string, string])[] | string[][];
   archiveVisible: boolean;
   setArchiveVisible: (visible: boolean) => void;
   featureOpen: (featureId: string) => boolean;
@@ -47,8 +46,6 @@ export function CatalogSidebar({
   catalogReading,
   preview,
   featureTabs,
-  primaryViews,
-  extraViews,
   archiveVisible,
   setArchiveVisible,
   featureOpen,
@@ -180,7 +177,7 @@ export function CatalogSidebar({
   return (
     <aside id="workspace-navigation" className="catalog" aria-label="工作区导航">
       <div className="pane-heading">
-        <span>{reading.entrance === 'overview' ? '深入阅读' : '功能与场景'}</span>
+        <span>功能与场景</span>
         <button className="icon" aria-label="收起目录" title="隐藏导航" onClick={onHide}>
           <svg className="arc-ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M10 3.5 5.5 8 10 12.5" />
@@ -188,40 +185,31 @@ export function CatalogSidebar({
         </button>
       </div>
       <ScrollPanel positions={reading.scroll} restoreKey={loadedKey} onPosition={savePosition} name="catalog">
-        {reading.entrance === 'overview' && (
-          <nav className="catalog-views" aria-label="工程页面">
-            {[...primaryViews, ...extraViews].map(viewButton)}
+        <button className={`catalog-home ${catalogReading ? 'selected' : ''}`} onClick={() => setEntrance('walk')}>
+          功能总览
+        </button>
+        {!catalogReading && !preview && !featureTabs && (
+          <nav className="catalog-views" aria-label="当前功能视图">
+            <span className="catalog-label">当前功能视图</span>
+            {featureViews.map(viewButton)}
           </nav>
         )}
-        {reading.entrance === 'walk' && (
-          <>
-            <button className={`catalog-home ${catalogReading ? 'selected' : ''}`} onClick={() => setEntrance('walk')}>
-              功能总览
-            </button>
-            {!catalogReading && !preview && !featureTabs && (
-              <nav className="catalog-views" aria-label="当前功能视图">
-                <span className="catalog-label">当前功能视图</span>
-                {[...primaryViews, ...extraViews].map(viewButton)}
-              </nav>
-            )}
-            <span className="catalog-label">已展开的功能与场景</span>
-            {currentFeatures.map(feature => renderFeature(feature, true))}
-            {historicalFeatures.length > 0 && (
-              <details key={catalogExplanation?.result_id} className="historical-features">
-                <summary>历史快照功能（{historicalFeatures.length}）</summary>
-                {historicalFeatures.map(feature => renderFeature(feature, false))}
-              </details>
-            )}
-            <div className="catalog-management">
-              <button className="quiet full" onClick={onOpenFeatureModal}>
-                ＋ 添加功能
-              </button>
-              <button className="quiet full" onClick={() => setArchiveVisible(!archiveVisible)}>
-                {archiveVisible ? '隐藏归档' : '查看归档'}
-              </button>
-            </div>
-          </>
+        <span className="catalog-label">已展开的功能与场景</span>
+        {currentFeatures.map(feature => renderFeature(feature, true))}
+        {historicalFeatures.length > 0 && (
+          <details key={catalogExplanation?.result_id} className="historical-features">
+            <summary>历史快照功能（{historicalFeatures.length}）</summary>
+            {historicalFeatures.map(feature => renderFeature(feature, false))}
+          </details>
         )}
+        <div className="catalog-management">
+          <button className="quiet full" onClick={onOpenFeatureModal}>
+            ＋ 添加功能
+          </button>
+          <button className="quiet full" onClick={() => setArchiveVisible(!archiveVisible)}>
+            {archiveVisible ? '隐藏归档' : '查看归档'}
+          </button>
+        </div>
       </ScrollPanel>
     </aside>
   );

@@ -519,6 +519,20 @@ summary {
   margin: 2px 0 0;
   letter-spacing: -0.015em;
 }
+.reading-shell .overview-context .scope-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.reading-shell .overview-context .scope-hint > span:last-child {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
 .breadcrumb, .breadcrumb-kind, .current-view {
   color: var(--muted);
 }
@@ -527,8 +541,7 @@ summary {
   font-size: 11.5px;
 }
 .reading-shell .context summary,
-.reading-shell .workspace-bar summary,
-.project-home-actions summary {
+.reading-shell .workspace-bar summary {
   list-style: none;
   border: 1px solid var(--border-strong);
   background: var(--surface);
@@ -542,15 +555,8 @@ summary {
   cursor: pointer;
   transition: background 0.14s var(--ease), border-color 0.14s var(--ease);
 }
-.project-home-actions summary::-webkit-details-marker {
-  display: none;
-}
-.project-home-actions details {
-  position: relative;
-}
 .reading-shell .context summary:hover,
-.reading-shell .workspace-bar summary:hover,
-.project-home-actions summary:hover {
+.reading-shell .workspace-bar summary:hover {
   background: var(--surface-tint);
   border-color: #89a895;
   color: var(--ink);
@@ -802,6 +808,15 @@ summary {
   background: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(10px);
   box-shadow: var(--shadow-float);
+}
+.reading-shell .overview-canvas > .panel-scroll {
+  padding-bottom: 12px;
+}
+.overview-canvas > .canvas-zoom-float {
+  position: static;
+  align-self: flex-end;
+  flex-shrink: 0;
+  margin: 4px 16px 8px;
 }
 .canvas-zoom-float .zoom-hint {
   font-size: 11px;
@@ -1870,35 +1885,59 @@ dialog::backdrop {
 }
 
 /* ==========================================================================
-   Project Home (Editorial Polish)
+   Engineering overview below the architecture diagram
    ========================================================================== */
-.project-home {
-  padding: 28px clamp(20px, 3.5vw, 48px) 40px;
-  background: var(--bg);
+.overview-below-architecture {
+  display: grid;
+  gap: 12px;
+  height: auto;
+  margin-top: 16px;
+  padding: 16px 0 0;
+  overflow: visible;
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
 }
-.project-home-hero {
-  padding-bottom: 20px;
-  border-bottom: 1px solid var(--border);
+.overview-below-architecture > .project-home-main,
+.overview-below-architecture > .project-home-section {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
 }
-.project-home-hero h1 {
-  font-size: 26px;
-  letter-spacing: -0.025em;
-  color: var(--ink);
+.overview-below-architecture > .project-home-main {
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  align-items: stretch;
+  gap: 14px;
 }
-.project-home-hero p {
-  color: var(--ink-secondary);
-  font-size: 14px;
+.overview-below-architecture .project-home-panel {
+  min-width: 0;
 }
-.project-home-hero code {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: var(--bg-subtle);
-  color: var(--muted);
-  font-size: 11.5px;
+.overview-below-architecture .project-home-heading {
+  margin-bottom: 8px;
+}
+.overview-below-architecture .home-guide {
+  padding: 0;
+}
+.overview-below-architecture .home-guide > p {
+  margin: 4px 0;
+}
+.home-guide details > summary {
+  color: var(--accent);
+  font-size: 13px;
+  cursor: pointer;
+}
+.overview-below-architecture .env-tools {
+  padding-bottom: 8px;
+}
+.overview-below-architecture .env-card form {
+  padding-top: 8px;
+}
+@media (max-width: 720px) {
+  .overview-below-architecture > .project-home-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .project-home-panel {
-  padding: 20px 22px;
+  padding: 14px 18px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
@@ -1911,7 +1950,7 @@ dialog::backdrop {
   letter-spacing: -0.01em;
 }
 .home-guide h3 {
-  font-size: 20px;
+  font-size: 17px;
   letter-spacing: -0.02em;
 }
 .home-guide dl {
@@ -1930,9 +1969,10 @@ dialog::backdrop {
   border-color: #96b8a1;
 }
 .home-reading-links {
+  flex-wrap: wrap;
   gap: 8px;
   border-top: 1px solid var(--border-subtle);
-  padding-top: 12px;
+  padding-top: 8px;
   margin-top: 8px;
 }
 .home-reading-links button {
@@ -1970,7 +2010,7 @@ dialog::backdrop {
   background: var(--surface-tint);
 }
 .project-home-section {
-  padding: 18px 22px;
+  padding: 12px 18px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
@@ -1978,7 +2018,7 @@ dialog::backdrop {
 }
 .home-facts dt, .home-facts dd {
   border-top-color: var(--border-subtle);
-  padding: 9px 0;
+  padding: 5px 0;
 }
 .home-facts dt {
   color: var(--ink-secondary);

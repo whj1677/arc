@@ -26,7 +26,7 @@ export const defaults: ReadingState = {
   mode: 'normal',
   left_width: 220,
   right_width: 360,
-  catalog_hidden: false,
+  catalog_hidden: true,
   pinned: false,
   detail_tab: 'details',
   expanded: [],

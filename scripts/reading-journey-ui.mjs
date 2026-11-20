@@ -114,11 +114,11 @@ try{
   console.log('Checking project return and an unexplained directory through the actual UI.');
   const graphBefore=JSON.stringify((await read()).explanations.find(e=>e.result_id===explanation.result_id).result);
   const other=await page.evaluate(source=>window.arc.invoke('open_project_path',{path:source}),path.join(root,'examples/source-fixture'));
-  await page.locator('.project-select option').filter({hasText:other.name}).last().waitFor({state:'attached'});
+  await page.getByLabel('当前工程',{exact:true}).locator('option').filter({hasText:other.name}).last().waitFor({state:'attached'});
   await page.getByLabel('当前工程',{exact:true}).selectOption(other.project_id);
   await page.waitForFunction(async id=>(await window.arc.invoke('reading_get',{key:'last-session'}))?.project_id===id,other.project_id);
-  await page.locator('.main-nav').getByRole('button',{name:'工程全貌',exact:true}).click();
-  await page.locator('.catalog-views').getByRole('button',{name:'文件组织',exact:true}).click();
+  await page.getByRole('navigation',{name:'主要导航'}).getByRole('button',{name:'工程全貌',exact:true}).click();
+  await page.locator('.workspace-bar .feature-view-tabs').getByRole('button',{name:'文件组织',exact:true}).click();
   await page.locator('[data-file-path="src"]').click();
   await page.getByRole('button',{name:'解释这个文件夹',exact:true}).click();
   assert.equal(await page.locator('[aria-label="当前位置问答"]').getAttribute('data-target-kind'),'directory');
@@ -172,8 +172,8 @@ try{
   assert.equal(await page.locator('.scene-row[aria-current="page"]').getAttribute('aria-label'),scenario.title);
 
   console.log('Asking real Codex about an unexplained file with an explicitly refreshed source snapshot.');
-  await page.locator('.main-nav').getByRole('button',{name:'工程全貌',exact:true}).click();
-  await page.locator('.catalog-views').getByRole('button',{name:'文件组织',exact:true}).click();
+  await page.getByRole('navigation',{name:'主要导航'}).getByRole('button',{name:'工程全貌',exact:true}).click();
+  await page.locator('.workspace-bar .feature-view-tabs').getByRole('button',{name:'文件组织',exact:true}).click();
   await page.locator('[data-file-path="store.ts"]').click();
   await page.locator('.file-summary').getByRole('heading',{name:'用途尚未分析',exact:true}).waitFor();
   await page.getByRole('button',{name:'解释这个文件',exact:true}).click();
@@ -230,7 +230,7 @@ try{
   console.log('Checking that an old MCP handoff does not block switching to direct Codex execution.');
   const overviewId=(await read()).projects.find(p=>p.project_id===project.project_id).overview_scenario_id;
   await page.evaluate(scenario_id=>window.arc.invoke('analysis_prepare',{scenario_id}),overviewId);
-  await page.locator('.catalog-views').getByRole('button',{name:'系统协作',exact:true}).click();
+  await page.locator('.workspace-bar .feature-view-tabs').getByRole('button',{name:'系统架构',exact:true}).click();
   await page.locator('.analysis-options > summary').click();
   await page.getByLabel('分析运行方式',{exact:true}).selectOption('mcp');
   await page.locator('.analysis-start').filter({hasText:'查看待领取任务'}).waitFor();

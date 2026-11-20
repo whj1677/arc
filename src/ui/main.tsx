@@ -25,10 +25,10 @@ import {
 } from './feature-reading-model';
 import { timelineModel } from './timeline-model';
 import { savedBusinessPath } from './home-reading';
-import { EngineeringOverview, EngineeringWorkspace } from './EngineeringWorkspace';
+import { EngineeringOverviewSections, EngineeringWorkspace } from './EngineeringWorkspace';
 import { WorkbenchNavigation } from './WorkbenchNavigation';
 import { readingQuestionTarget } from './reading-target';
-import { compactTitle, modernReading } from './presentation';
+import { compactTitle, isLegacyOverview, modernReading } from './presentation';
 import { RunActivity } from './RunActivity';
 import {
   Compare,
@@ -54,6 +54,25 @@ import './feature-reading.css';
 import './workbench.css';
 
 const api = window.arc;
+const overviewTabs = [
+  ['system', '系统架构'],
+  ['files', '文件组织'],
+  ['dependencies', '依赖关系'],
+  ['composition', '组成导图'],
+];
+const overviewLanding = {
+  entrance: 'overview', view: 'system', catalog_hidden: true, mode: 'normal', detail_tab: 'details',
+  result_id: '', source_snapshot_id: '', selected: '', file: '', evidence_id: '', pinned: false,
+  scroll: { 'canvas-system': { top: 0, left: 0 } },
+} as const;
+
+function applyReadingPosition(reading: ReadingState, position: Partial<ReadingState>): ReadingState {
+  return { ...reading, ...position, ...(position.scroll && { scroll: { ...reading.scroll, ...position.scroll } }) };
+}
+
+function scrollArchitectureToTop() {
+  document.querySelector('.canvas > .panel-scroll')?.scrollTo(0, 0);
+}
 
 function App() {
   const [data, setData] = useState(initialData);
@@ -138,7 +157,9 @@ function App() {
 
   const catalogReading = reading.view === 'capabilities' || (reading.entrance === 'walk' && !scenarioId);
   const engineeringReading = ['engineering', 'materials'].includes(reading.view);
-  const projectHome = reading.view === 'home' && !project?.fictional;
+  const overview = reading.entrance === 'overview';
+  const overviewSectionsVisible = overview && reading.view === 'system' && !project?.fictional;
+  const walkNavigation = reading.entrance === 'walk' && !engineeringReading;
   const catalogExplanation = data.explanations.filter(e => e.scenario_id === project?.overview_scenario_id && e.result.feature_catalog).at(-1);
   const lastCheck = data.project_freshness?.[projectId];
   const projectFreshness = lastCheck?.snapshot_id === project?.snapshot_id ? lastCheck : undefined;
@@ -191,8 +212,8 @@ function App() {
       : undefined;
 
   const suggestedPath = useMemo(
-    () => (projectHome && project ? savedBusinessPath(project, walkScenes, data.explanations) : undefined),
-    [projectHome, project, data.scenarios, data.features, data.explanations],
+    () => (overviewSectionsVisible && project ? savedBusinessPath(project, walkScenes, data.explanations) : undefined),
+    [overviewSectionsVisible, project, data.scenarios, data.features, data.explanations],
   );
   const currentFeature = data.features.find(f => f.feature_id === scenario?.feature_id);
   const discovery = currentFeature?.discovery;
@@ -240,7 +261,7 @@ function App() {
   const bookmarkLabel = preview ? currentFeature?.name : architectureReading || featureReading || reading.view === 'functions' ? objectLabel : reading.view === 'files' ? reading.file : '';
 
   useEffect(() => {
-    if (!projectHome || !projectId) return;
+    if (!overviewSectionsVisible || !projectId || bookmarkLabel) return;
     let current = true;
     void api.invoke<HomeBookmark | null>('reading_get', { key: 'home-bookmark/' + projectId }).then(value => {
       if (current) setBookmark(value);
@@ -248,7 +269,7 @@ function App() {
     return () => {
       current = false;
     };
-  }, [projectHome, projectId]);
+  }, [overviewSectionsVisible, projectId, bookmarkLabel]);
 
   useEffect(() => {
     if (
@@ -279,6 +300,7 @@ function App() {
       source_snapshot_id: bookmarkSource.binding.source_snapshot_id,
     };
     const value: HomeBookmark = { projectId, label: bookmarkLabel, position, ...(preview ? { catalogNodeId: preview.node_id } : {}) };
+    setBookmark(value);
     void api.invoke('reading_save', { key: 'home-bookmark/' + projectId, value }).catch(e => setError(e.message));
   }, [
     bookmarkLabel,
@@ -452,8 +474,9 @@ function App() {
     void api
       .invoke('reading_get', { key: readingKey })
       .then(r => {
+        const featureScenario = !!scenarioId && scenarioId !== project?.overview_scenario_id;
         if (r) r = featureReadingPosition(modernReading(r));
-        if (r && scenarioId && scenarioId !== project?.overview_scenario_id && ['home', 'engineering', 'materials'].includes(r.view)) {
+        if (r && featureScenario && ['home', 'engineering', 'materials'].includes(r.view)) {
           r = { ...r, entrance: 'walk', view: 'timeline' };
         }
         if (current) {
@@ -461,29 +484,25 @@ function App() {
           const same = readingScope.current === scope;
           const requested = navigation.current?.scope === scope ? navigation.current.value : {};
           navigation.current = null;
-          setReading(previous => ({
-            ...(same
-              ? {
-                  ...previous,
-                  left_width: r?.left_width ?? defaults.left_width,
-                  right_width: r?.right_width ?? defaults.right_width,
-                  detail_tab: width >= 1280 && previous.detail_tab === 'source' ? 'details' : previous.detail_tab,
-                }
-              : {
-                  ...defaults,
-                  entrance: scenarioId && scenarioId !== project?.overview_scenario_id ? 'walk' : 'overview',
-                  view: scenarioId && scenarioId !== project?.overview_scenario_id ? 'timeline' : project?.fictional ? 'system' : 'home',
-                  ...r,
-                  ...(!scenarioId
-                    ? {
-                        entrance: emptyEntrance.current,
-                        view: r?.entrance === emptyEntrance.current ? r.view : emptyEntrance.current === 'walk' ? 'capabilities' : project?.fictional ? 'system' : 'home',
-                      }
-                    : {}),
-                  scenario_id: scenarioId,
-                }),
-            ...requested,
-          }));
+          const entrance = scenarioId ? featureScenario ? 'walk' : 'overview' : emptyEntrance.current;
+          const initialPosition = {
+            entrance,
+            view: entrance === 'overview' ? 'system' : featureScenario ? 'timeline' : 'capabilities',
+            catalog_hidden: entrance === 'overview',
+          } as const;
+          setReading(previous => {
+            const restored = same ? {
+              ...previous,
+              left_width: r?.left_width ?? defaults.left_width,
+              right_width: r?.right_width ?? defaults.right_width,
+              detail_tab: width >= 1280 && previous.detail_tab === 'source' ? 'details' : previous.detail_tab,
+            } : {
+              ...defaults, ...initialPosition, ...r,
+              ...(!scenarioId && r?.entrance !== entrance ? initialPosition : {}),
+              scenario_id: scenarioId,
+            };
+            return applyReadingPosition(restored, requested);
+          });
           readingScope.current = scope;
           setLoadedKey(readingKey);
         }
@@ -665,7 +684,10 @@ function App() {
     }
     if (value) {
       if (id !== scenarioId) navigation.current = { scope: projectId + '/' + id, value };
-      patch(value);
+      const position = value;
+      if (position.entrance) emptyEntrance.current = position.entrance;
+      if (id === scenarioId && reading.view === 'system' && position.scroll?.['canvas-system']?.top === 0) scrollArchitectureToTop();
+      setReading(r => applyReadingPosition(r, position));
     }
     setScenarioId(id);
     setSearch('');
@@ -812,8 +834,13 @@ function App() {
       if (projectSwitch.current === switchVersion) {
         await chooseProject(workspace.projects.find(item => item.project_id === p.project_id)!, workspace);
         if (target && projectSwitch.current === switchVersion + 1) {
-          navigation.current = { scope: p.project_id + '/' + target, value: { entrance: 'overview', view: 'system', detail_tab: 'details', mode: 'normal' } };
-          setScenarioId(target);
+          emptyEntrance.current = 'overview';
+          if (p.project_id === projectId && target === scenarioId) {
+            chooseScenario(target, overviewLanding);
+          } else {
+            navigation.current = { scope: p.project_id + '/' + target, value: overviewLanding };
+            setScenarioId(target);
+          }
         }
       }
       if (needsConnection && projectSwitch.current === switchVersion + 1) showDesktop();
@@ -886,8 +913,7 @@ function App() {
         await reload();
         if (activeReadingKey.current !== readingAtStart) return;
         chooseScenario(target, {
-          entrance: overview ? 'overview' : 'walk',
-          view: overview ? 'system' : keepFunctions ? 'functions' : 'timeline',
+          ...(overview ? overviewLanding : { entrance: 'walk', view: keepFunctions ? 'functions' : 'timeline' }),
           detail_tab: expandMode === 'mcp' || expandMode === 'codex_desktop' ? 'agent' : 'details',
           mode: 'normal',
           ...(refreshFirst ? { result_id: '', source_snapshot_id: '', selected: '', file: '', evidence_id: '', reading_path: '', function_path: '' } : {}),
@@ -924,8 +950,7 @@ function App() {
     const s = data.scenarios.find(item => item.scenario_id === sceneId);
     if (!s) return;
     chooseScenario(sceneId, {
-      entrance: sceneId === project?.overview_scenario_id ? 'overview' : 'walk',
-      view: sceneId === project?.overview_scenario_id ? 'system' : 'timeline',
+      ...(sceneId === project?.overview_scenario_id ? overviewLanding : { entrance: 'walk', view: 'timeline' }),
       mode: 'normal',
       detail_tab: 'agent',
       result_id: '',
@@ -1193,12 +1218,11 @@ function App() {
 
   function setEntrance(entrance: 'overview' | 'walk') {
     emptyEntrance.current = entrance;
-    chooseScenario(entrance === 'overview' ? project?.overview_scenario_id || '' : '', {
-      entrance,
-      view: entrance === 'walk' ? 'capabilities' : project?.fictional ? 'system' : 'home',
-      mode: 'normal',
-      catalog_hidden: false,
-    });
+    if (entrance === 'overview') {
+      chooseScenario(project?.overview_scenario_id || '', overviewLanding);
+    } else {
+      chooseScenario('', { entrance, view: 'capabilities', mode: 'normal', catalog_hidden: false });
+    }
   }
 
   function openWorkbench(view: 'overview' | 'walk' | 'materials' | 'engineering') {
@@ -1296,18 +1320,6 @@ function App() {
     patch({ expanded: [...reading.expanded.filter(v => v !== 'feature-open/' + id && v !== 'feature-closed/' + id), (open ? 'feature-closed/' : 'feature-open/') + id] });
   }
 
-  const primaryViews =
-    reading.entrance === 'overview'
-      ? [
-          ['home', '工程概览'],
-          ['system', '系统协作'],
-          ['capabilities', '功能总览'],
-          ['functions', '调用链'],
-          ['files', '文件组织'],
-          ['dependencies', '依赖关系'],
-        ]
-      : featureViews;
-  const extraViews = reading.entrance === 'overview' ? [['composition', '组成导图']] : [];
   const functionViewMode = reading.function_mode ?? 'calls';
   const functionTabs = [['functions:calls', '函数调用链'], ['functions:time', '调用时间图']];
   const previewTab = ['timeline', '功能说明'];
@@ -1317,7 +1329,9 @@ function App() {
       ? [...functionTabs, ...featureViews.filter(([view]) => view !== 'functions')]
       : undefined;
   const activeFeatureTab = reading.view === 'functions' ? `functions:${functionViewMode}` : reading.view;
-  const currentView = [...(featureTabs ?? primaryViews), ...extraViews, ['files', '文件组织']].find(([v]) => v === (featureTabs ? activeFeatureTab : reading.view))?.[1] || (preview ? '功能说明' : '当前视图');
+  const workspaceTabs = overview && !engineeringReading ? overviewTabs : featureTabs;
+  const activeTab = overview ? (reading.view === 'modules' ? 'composition' : reading.view === 'map' ? 'system' : reading.view) : activeFeatureTab;
+  const currentView = (workspaceTabs ?? featureViews).find(([view]) => view === activeTab)?.[1] || (preview ? '功能说明' : '当前视图');
 
   function navigateFeatureTab(tab: string) {
     if (tab === activeFeatureTab) return;
@@ -1333,6 +1347,10 @@ function App() {
   }
 
   function navigateView(view: string) {
+    if (view === 'capabilities') {
+      setEntrance('walk');
+      return;
+    }
     if (featureReading) {
       navigateFeature(view);
       return;
@@ -1343,7 +1361,16 @@ function App() {
 
   function resumeHomeReading() {
     if (!bookmark || !canResume) return;
-    chooseScenario(bookmark.position.scenario_id, { ...bookmark.position, mode: 'normal', catalog_hidden: true, pinned: false });
+    if (isLegacyOverview(bookmark.position)) {
+      chooseScenario(bookmark.position.scenario_id, {
+        ...overviewLanding, result_id: bookmark.position.result_id, source_snapshot_id: bookmark.position.source_snapshot_id,
+      });
+      return;
+    }
+    chooseScenario(bookmark.position.scenario_id, {
+      ...bookmark.position, mode: 'normal', catalog_hidden: true, pinned: false,
+      ...(bookmark.position.view === 'system' && { scroll: overviewLanding.scroll }),
+    });
     setShowDetail(!bookmark.catalogNodeId && (detailDrawer || bookmark.position.entrance === 'walk'));
   }
 
@@ -1377,6 +1404,7 @@ function App() {
     setSearch('');
     setShowCatalog(false);
     setShowDetail(!!object && detailDrawer);
+    scrollArchitectureToTop();
     switchView('system', {
       mode: 'normal',
       catalog_hidden: true,
@@ -1420,7 +1448,7 @@ function App() {
       />
     );
 
-  const catalog = (
+  const catalog = walkNavigation && (
     <CatalogSidebar
       data={data}
       project={project}
@@ -1433,8 +1461,6 @@ function App() {
       catalogReading={catalogReading}
       preview={preview}
       featureTabs={featureTabs}
-      primaryViews={primaryViews}
-      extraViews={extraViews}
       archiveVisible={archiveVisible}
       setArchiveVisible={setArchiveVisible}
       featureOpen={featureOpen}
@@ -1525,8 +1551,36 @@ function App() {
     />
   );
 
+  function proposeRequirement() {
+    setFocusDevelopment(true);
+    switchView('engineering', { mode: 'normal', catalog_hidden: true });
+  }
+
+  const overviewSections = overviewSectionsVisible && project && (
+    <EngineeringOverviewSections
+      key={project.project_id}
+      businessPath={suggestedPath}
+      onBusinessStep={openSuggestedStep}
+      resumeLabel={
+        canResume && bookmark ? bookmark.label + (bookmark.position.source_snapshot_id !== project.snapshot_id ? ' · 历史版本' : '') : ''
+      }
+      onResume={resumeHomeReading}
+      project={project}
+      result={result}
+      onArchitecture={openArchitecture}
+      onWalk={() => setEntrance('walk')}
+      onFiles={() => navigateView('files')}
+      onMaterials={() => switchView('materials', { mode: 'normal', catalog_hidden: true })}
+      onTask={id => {
+        setRequestedTask(id);
+        switchView('engineering', { mode: 'normal', catalog_hidden: true });
+      }}
+    />
+  );
+
   const canvas = (
     <CanvasPane
+      overviewSections={overviewSections}
       data={data}
       project={project}
       freshness={freshness}
@@ -1611,7 +1665,7 @@ function App() {
         onNavigate={openWorkbench}
       />
       <div
-        className={`app reading-shell ${projectHome ? 'project-home-active' : ''} ${engineeringReading ? 'engineering-active' : ''} ${
+        className={`app reading-shell ${engineeringReading ? 'engineering-active' : ''} ${
           featureReading ? 'feature-reader' : businessReading ? 'business-reader' : systemReading ? 'system-reader' : ''
         }`}
       >
@@ -1677,8 +1731,8 @@ function App() {
           </main>
         ) : (
           <>
-            {!engineeringReading && !projectHome && (
-              <div className="context">
+            {!engineeringReading && (
+              <div className={overview ? 'context overview-context' : 'context'}>
                 <div>
                   <div className="breadcrumb" title={project.root_path}>
                     {projectLabel(project)} /{' '}
@@ -1686,25 +1740,17 @@ function App() {
                     <span className="breadcrumb-kind"> · {currentView}</span>
                     {project.fictional && <span className="tag amber">演示数据</span>}
                   </div>
-                  <h1 title={scenario?.title}>
-                    {catalogReading
-                      ? '功能总览'
-                      : reading.entrance === 'overview' && reading.view === 'functions'
-                        ? '工程全貌 · 函数走读'
-                        : featureReading || (reading.entrance === 'walk' && reading.view === 'functions')
-                          ? `${currentFeature?.name || scenario?.title || '当前功能'} · ${currentView}`
-                          : reading.view === 'files'
-                            ? '文件结构与用途'
-                            : compactTitle(scenario?.title || (reading.entrance === 'overview' ? '系统架构与工程组成' : '选择要理解的功能'), 40)}
+                  <h1 title={overview ? project.name : scenario?.title}>
+                    {overview ? projectLabel(project) : catalogReading ? '功能总览'
+                      : featureReading || reading.view === 'functions' ? `${currentFeature?.name || scenario?.title || '当前功能'} · ${currentView}`
+                      : compactTitle(scenario?.title || '选择要理解的功能', 40)}
                   </h1>
                   <div className="scope-hint">
-                    <span className="tag">{analysisScope}</span>
-                    <span>
-                      {reading.entrance === 'overview'
-                        ? '系统组成、技术栈与组件关系'
-                        : scenario?.kind === 'feature_overview'
-                          ? '这个功能的职责、关键调用与输入输出'
-                          : '围绕当前问题核对调用、阶段和源码依据'}
+                    {!overview && <span className="tag">{analysisScope}</span>}
+                    <span title={overview ? result?.summary.text : undefined}>
+                      {overview ? compactTitle(result?.summary.text || '系统组成、技术栈与组件关系', 100)
+                        : scenario?.kind === 'feature_overview' ? '这个功能的职责、关键调用与输入输出'
+                        : '围绕当前问题核对调用、阶段和源码依据'}
                     </span>
                   </div>
                 </div>
@@ -1719,6 +1765,7 @@ function App() {
                     )}
                     {analysisMenu}
                   </div>
+                  {overview && !project.fictional && <button onClick={proposeRequirement}>提出新需求</button>}
                   <details className="context-edit-actions">
                     <summary>更多操作</summary>
                     <div className="popover-content">
@@ -1758,39 +1805,41 @@ function App() {
 
             <div className="workspace-bar">
               <div className="row">
-                <button
-                  className="icon"
-                  aria-label={width >= 900 && !reading.catalog_hidden ? '隐藏目录' : '显示目录'}
-                  aria-expanded={width >= 900 ? !reading.catalog_hidden : showCatalog}
-                  aria-controls="workspace-navigation"
-                  title={width >= 900 && !reading.catalog_hidden ? '隐藏导航' : '显示导航'}
-                  onClick={() => {
-                    if (width >= 900) patch({ catalog_hidden: !reading.catalog_hidden });
-                    else {
-                      patch({ catalog_hidden: false });
-                      setShowCatalog(!showCatalog);
-                    }
-                  }}
-                >
-                  <svg className="arc-ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <rect x="2" y="2.5" width="12" height="11" rx="2" />
-                    <path d="M6 2.5v11" />
-                  </svg>
-                </button>
-                {reading.entrance === 'walk' && !catalogReading && (
+                {walkNavigation && (
+                  <button
+                    className="icon"
+                    aria-label={width >= 900 && !reading.catalog_hidden ? '隐藏目录' : '显示目录'}
+                    aria-expanded={width >= 900 ? !reading.catalog_hidden : showCatalog}
+                    aria-controls="workspace-navigation"
+                    title={width >= 900 && !reading.catalog_hidden ? '隐藏导航' : '显示导航'}
+                    onClick={() => {
+                      if (width >= 900) patch({ catalog_hidden: !reading.catalog_hidden });
+                      else {
+                        patch({ catalog_hidden: false });
+                        setShowCatalog(!showCatalog);
+                      }
+                    }}
+                  >
+                    <svg className="arc-ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <rect x="2" y="2.5" width="12" height="11" rx="2" />
+                      <path d="M6 2.5v11" />
+                    </svg>
+                  </button>
+                )}
+                {walkNavigation && !catalogReading && (
                   <button className="back-to-catalog" onClick={() => setEntrance('walk')}>
                     ← 返回功能总览
                   </button>
                 )}
-                {featureTabs ? (
-                  <nav className="feature-view-tabs" aria-label="功能阅读视图">
-                    {featureTabs.map(([view, label]) => (
+                {workspaceTabs ? (
+                  <nav className="feature-view-tabs" aria-label={overview ? '工程全貌视图' : '功能阅读视图'}>
+                    {workspaceTabs.map(([view, label]) => (
                       <button
                         key={view}
                         type="button"
                         className={view.startsWith('functions:') ? 'feature-functions-tab' : undefined}
-                        aria-current={activeFeatureTab === view ? 'page' : undefined}
-                        onClick={() => navigateFeatureTab(view)}
+                        aria-current={activeTab === view ? 'page' : undefined}
+                        onClick={() => overview ? navigateView(view) : navigateFeatureTab(view)}
                       >
                         {label}
                       </button>
@@ -1909,9 +1958,9 @@ function App() {
               )}
 
             <div
-              className={`workspace ${projectHome ? 'home-mode catalog-hidden' : engineeringReading ? 'engineering-mode' : catalogReading ? 'catalog-workspace' : ''} ${
+              className={`workspace ${engineeringReading ? 'engineering-mode' : catalogReading ? 'catalog-workspace' : ''} ${
                 reading.mode === 'source' ? 'source-mode' : ''
-              } ${reading.catalog_hidden ? 'catalog-hidden' : ''}`}
+              } ${!walkNavigation || reading.catalog_hidden ? 'catalog-hidden' : ''}`}
               style={
                 {
                   '--left': `${reading.left_width}px`,
@@ -1919,42 +1968,13 @@ function App() {
                 } as React.CSSProperties
               }
             >
-              {width >= 900 && !projectHome && !reading.catalog_hidden && (
+              {width >= 900 && walkNavigation && !reading.catalog_hidden && (
                 <>
                   {catalog}
                   <Separator side="left_width" value={reading.left_width} change={changeWidth} reset={() => patch({ left_width: 220 })} />
                 </>
               )}
-              {projectHome ? (
-                <EngineeringOverview
-                  key={project.project_id}
-                  businessPath={suggestedPath}
-                  onBusinessStep={openSuggestedStep}
-                  resumeLabel={
-                    canResume && bookmark ? bookmark.label + (bookmark.position.source_snapshot_id !== project.snapshot_id ? ' · 历史版本' : '') : ''
-                  }
-                  onResume={resumeHomeReading}
-                  project={project}
-                  result={result}
-                  hasAnalysis={!!result}
-                  analysisLabel={analysisLabel}
-                  analysisBusy={pending || !!indexes[projectId]}
-                  analysisMenu={analysisMenu}
-                  onAnalyze={beginAnalysis}
-                  onArchitecture={openArchitecture}
-                  onWalk={() => setEntrance('walk')}
-                  onFiles={() => navigateView('files')}
-                  onMaterials={() => switchView('materials', { mode: 'normal', catalog_hidden: true })}
-                  onTask={id => {
-                    setRequestedTask(id);
-                    switchView('engineering', { mode: 'normal', catalog_hidden: true });
-                  }}
-                  develop={() => {
-                    setFocusDevelopment(true);
-                    switchView('engineering', { mode: 'normal', catalog_hidden: true });
-                  }}
-                />
-              ) : engineeringReading ? (
+              {engineeringReading ? (
                 <EngineeringWorkspace
                   key={project.project_id}
                   project={project}
@@ -1967,26 +1987,19 @@ function App() {
                   enginePending={pending}
                   focusGoal={focusDevelopment}
                   onGoalFocused={() => setFocusDevelopment(false)}
-                  back={() => switchView('system')}
+                  back={() => setEntrance('overview')}
                   onArchitecture={id => {
                     const savedExp = data.explanations.find(e => e.result_id === id);
                     if (savedExp) {
                       chooseScenario(savedExp.scenario_id, {
-                        entrance: 'overview',
-                        view: 'system',
+                        ...overviewLanding,
                         result_id: id,
                         source_snapshot_id: savedExp.result.binding.source_snapshot_id,
-                        mode: 'normal',
                       });
                     } else {
                       chooseScenario(project.overview_scenario_id || '', {
-                        entrance: 'overview',
-                        view: 'system',
-                        result_id: '',
+                        ...overviewLanding,
                         source_snapshot_id: project.snapshot_id,
-                        mode: 'normal',
-                        detail_tab: 'details',
-                        catalog_hidden: false,
                       });
                     }
                   }}
@@ -2028,7 +2041,7 @@ function App() {
               )}
             </div>
 
-            {width < 900 && showCatalog && (
+            {width < 900 && walkNavigation && showCatalog && (
               <div className="drawer catalog-drawer">
                 <button className="drawer-back" onClick={() => setShowCatalog(false)}>
                   ← 返回原视图
@@ -2062,7 +2075,7 @@ function App() {
                       ? `${sceneExplanations.length} 个说明版本 · ${sceneAnnotations.length} 条线索`
                       : '用途与关系待真实分析'}
               </span>
-              <button onClick={() => patch({ ...defaults, entrance: reading.entrance, view: reading.view, scenario_id: scenarioId })}>恢复默认布局</button>
+              <button onClick={() => patch({ ...defaults, entrance: reading.entrance, view: reading.view, catalog_hidden: overview, scenario_id: scenarioId })}>恢复默认布局</button>
             </footer>
           </>
         )}

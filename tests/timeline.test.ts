@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {timelineModel} from '../src/ui/timeline-model';
 import {modernReading} from '../src/ui/presentation';
+import {defaults} from '../src/ui/workbench-primitives';
 import type {AnalysisResult,ReadingState} from '../src/shared';
 const actual=JSON.parse(fs.readFileSync('evidence/readability-20261021/walk-result.json','utf8')) as AnalysisResult;
 test('real trade timeline follows only evidenced control links; rejection and uncertain returns stay branches',()=>{
@@ -37,6 +38,21 @@ test('presentation migration preserves the saved graph state and does not force 
  assert.equal(overview.view,'system');assert.equal(overview.zoom,1);assert.equal(overview.result_id,old.result_id);assert.equal(overview.source_snapshot_id,old.source_snapshot_id);assert.deepEqual(overview.scroll,old.scroll);assert.equal(overview.view_states?.composition.zoom,old.zoom);
  assert.equal(modernReading({...overview,view:'composition'}).view,'composition','an explicit subsequent choice is not forced back');
  assert.equal(modernReading({...overview,view:'files',architecture_version:undefined}).view,'files','file reading is not replaced by overview migration');
+});
+
+test('restoring a retired overview tab opens architecture while the feature catalog remains available in walkthroughs',()=>{
+  for(const view of ['home','functions','capabilities']){
+    const saved={...defaults,entrance:'overview' as const,view,catalog_hidden:false,result_id:'previous-result',source_snapshot_id:'frozen'};
+    const restored=modernReading(saved);
+    assert.equal(restored.entrance,'overview');
+    assert.equal(restored.view,'system');
+    assert.equal(restored.catalog_hidden,true);
+    assert.equal(restored.result_id,saved.result_id);
+    assert.equal(restored.source_snapshot_id,saved.source_snapshot_id);
+  }
+  const catalog=modernReading({...defaults,entrance:'walk',view:'capabilities',catalog_hidden:false});
+  assert.equal(catalog.view,'capabilities');
+  assert.equal(catalog.catalog_hidden,false);
 });
 
 

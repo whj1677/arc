@@ -57,6 +57,7 @@ export interface CanvasPaneProps {
   explanation?: Explanation;
   result?: AnalysisResult;
   overviewRun?: Run;
+  overviewSections?: React.ReactNode;
   discovery?: Feature['discovery'];
   graphCatalog?: Explanation;
   featureSource?: Explanation;
@@ -115,6 +116,7 @@ export function CanvasPane({
   explanation,
   result,
   overviewRun,
+  overviewSections,
   discovery,
   graphCatalog,
   featureSource,
@@ -194,17 +196,17 @@ export function CanvasPane({
     patch({ expanded: reading.expanded.includes(id) ? reading.expanded.filter(x => x !== id) : [...reading.expanded, id] });
 
   return (
-    <main className="canvas">
+    <main className={overviewSections ? 'canvas overview-canvas' : 'canvas'}>
       {freshness?.kind === 'affected' ? (
         <div className="freshness-banner affected" role="status">
           <span>外部代码已变更（{freshness.files.slice(0, 3).join('、')}{freshness.files.length > 3 && ` 等 ${freshness.files.length} 个文件`}）· 当前展示为旧快照，非最新代码</span>
           <button disabled={pending || !!indexes[projectId] || !!running || !!project?.fictional || scenario?.archived} onClick={refreshAndAnalyze}>
-            刷新快照并重析此功能
+            {reading.entrance === 'overview' ? '刷新快照并重析工程' : '刷新快照并重析此功能'}
           </button>
         </div>
       ) : freshness?.kind === 'other_changed' && freshness.count > 0 && (
         <div className="freshness-banner" role="status">
-          <span>工作区另有 {freshness.count} 个文件改动，{explanation?.result.binding.source_snapshot_id === project?.snapshot_id || explanation?.source_status === 'current' ? '本功能所引源码未变' : '当前展示为历史快照'}</span>
+          <span>工作区另有 {freshness.count} 个文件改动，{explanation?.result.binding.source_snapshot_id === project?.snapshot_id || explanation?.source_status === 'current' ? '当前说明所引源码未变' : '当前展示为历史快照'}</span>
           <button className="quiet" disabled={pending || !!indexes[projectId] || !!project?.fictional} onClick={refreshSnapshot}>刷新快照</button>
         </div>
       )}
@@ -349,14 +351,16 @@ export function CanvasPane({
                   modules={() => switchView('modules', { stage: '' })}
                   inspect={inspectComponent}
                 />
-                <div className="overview-feature-entry">
-                  <div>
-                    <strong>系统有哪些功能</strong>
-                    <br />
-                    <span>{capabilityCount ? `已发现 ${capabilityCount} 项 · 阅读功能说明` : '在 ARC 内生成目录，再选择功能深入'}</span>
+                {!overviewSections && (
+                  <div className="overview-feature-entry">
+                    <div>
+                      <strong>系统有哪些功能</strong>
+                      <br />
+                      <span>{capabilityCount ? `已发现 ${capabilityCount} 项 · 阅读功能说明` : '在 ARC 内生成目录，再选择功能深入'}</span>
+                    </div>
+                    <button onClick={() => navigateView('capabilities')}>浏览功能总览</button>
                   </div>
-                  <button onClick={() => navigateView('capabilities')}>浏览功能总览</button>
-                </div>
+                )}
               </>
             )}
             <details
@@ -383,7 +387,7 @@ export function CanvasPane({
             </details>
             {reading.view === 'modules' && reading.stage && (
               <button className="architecture-back" onClick={() => switchView('system')}>
-                ← 返回系统协作
+                ← 返回系统架构
               </button>
             )}
             {reading.view === 'functions' && (
@@ -428,13 +432,13 @@ export function CanvasPane({
           </ZoomSurface>
         ) : waitingMcp ? (
           <section className="mcp-waiting" aria-label="等待 Agent 领取">
-            <span className="eyebrow">已准备所选功能 · 尚未开始分析</span>
+            <span className="eyebrow">已准备{reading.entrance === 'overview' ? '工程全貌' : '所选功能'} · 尚未开始分析</span>
             <h2>等待 Agent 对话领取</h2>
-            <p>功能：{data.features.find(f => f.feature_id === scenario?.feature_id)?.name}</p>
+            <p>{reading.entrance === 'overview' ? `工程：${project?.name}` : `功能：${data.features.find(f => f.feature_id === scenario?.feature_id)?.name || ''}`}</p>
             <ol>
               <li>已绑定当前工程、问题版本和源码快照。</li>
               <li>在接入 ARC MCP 的对话中领取当前分析任务。</li>
-              <li>Agent 领取后，这里显示真实进度；结果写回后展示流程时间线。</li>
+              <li>Agent 领取后，这里显示分析进度；结果写回后展示{reading.entrance === 'overview' ? '系统架构' : '流程时间线'}。</li>
             </ol>
             <p className="muted">Arc 不会自动唤醒或切换 Agent 对话，此时还没有模型调用。</p>
             <div className="row">
@@ -494,6 +498,7 @@ export function CanvasPane({
             </div>
           </div>
         )}
+        {overviewSections}
       </ScrollPanel>
       {!preview && !catalogReading && (
         <div className="canvas-zoom-float" role="group" aria-label="画布缩放">

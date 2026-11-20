@@ -1,9 +1,17 @@
 import type {Run,AnalysisResult,ReadingState} from '../shared';
 
+export function isLegacyOverview(position:Pick<ReadingState,'entrance'|'view'>){
+ return position.entrance==='overview'&&['home','functions','capabilities'].includes(position.view);
+}
+
 export function modernReading(r:ReadingState):ReadingState{
  // Legacy code-view positions restore to evidence metadata, never fetch file contents.
  const withoutCode=<T extends {mode:ReadingState['mode'];detail_tab:string}>(value:T):T=>({...value,mode:value.mode==='source'?'normal':value.mode,detail_tab:value.detail_tab==='source'?'evidence':value.detail_tab});
  r={...withoutCode(r),...(r.view_states?{view_states:Object.fromEntries(Object.entries(r.view_states).map(([key,value])=>[key,withoutCode(value)]))}:{})};
+ if(r.entrance==='overview'){
+  r={...r,catalog_hidden:true};
+  if(isLegacyOverview(r))r={...r,view:'system',selected:'',file:'',evidence_id:'',mode:'normal',detail_tab:'details',zoom:1,stage:'',pinned:false};
+ }
  if(r.entrance==='overview'&&r.architecture_version!==1){
   const {selected,file,evidence_id,source_snapshot_id,mode,detail_tab,zoom,stage,result_id}=r;
   if(['map','composition'].includes(r.view))return {...r,architecture_version:1,view:'system',mode:'normal',detail_tab:'details',zoom:1,stage:'',view_states:{...r.view_states,[r.view]:{selected,file,evidence_id,source_snapshot_id,mode,detail_tab,zoom,stage,result_id}}};
