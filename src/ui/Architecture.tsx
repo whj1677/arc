@@ -52,13 +52,20 @@ function RelationTable({ edges, byId, search, selected, select }: Pick<Props, 's
   </section>;
 }
 
+function RoleIcon({ kind }: { kind: Node['kind'] }) {
+  return <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    {kind === 'resource' ? <><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v7c0 1.7 3.1 3 7 3s7-1.3 7-3V5M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></> : kind === 'execution_boundary' ? <><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m8 9 3 3-3 3m5 0h3"/></> : <><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></>}
+  </svg>;
+}
+
 export function Architecture({ result, selected, select, inspect, modules, openFile, zoom, search }: Props) {
   const root = useRef<HTMLElement>(null);
   const [width, setWidth] = useState(820);
   const [view, setView] = useState<'layers' | 'relations' | 'code'>('layers');
   const [hover, setHover] = useState('');
+  const [focusOnly, setFocusOnly] = useState(false);
   const marker = 'arch-' + useId().replace(/:/g, '');
-  const columns = Math.max(2, Math.min(5, Math.floor((width - 32) / 224)));
+  const columns = width >= 1200 ? 6 : Math.max(2, Math.min(5, Math.floor((width - 32) / 224)));
   const diagramSearch = view === 'layers' ? search : '';
   const model = useMemo(() => architectureMap(result, diagramSearch, columns), [result, diagramSearch, columns]);
   const contexts = useMemo(() => new Map(model.nodes.map(node => [node.node_id, componentContext(node, result)])), [model.nodes, result]);
@@ -69,7 +76,7 @@ export function Architecture({ result, selected, select, inspect, modules, openF
     return () => observer.disconnect();
   }, []);
 
-  const scale = Math.max(0.9, Math.min(1, (width - 4) / model.width)) * zoom;
+  const scale = Math.min(1.15, (width - 4) / model.width) * zoom;
   const isInDiagram = (id: string) => byId.has(id) || model.edges.some(e => edgeSelection(e.edge_id) === id);
   const focusId = hover && isInDiagram(hover) ? hover : isInDiagram(selected) ? selected : '';
   const focusedNode = byId.get(focusId);
@@ -90,6 +97,10 @@ export function Architecture({ result, selected, select, inspect, modules, openF
       </div>
       {view === 'layers' && <div className="architecture-map-status">
         <span className="architecture-map-stat">{model.nodes.length} 个组件 · {model.edges.length} 条关系</span>
+        <div className="architecture-edge-switch" role="group" aria-label="连线显示方式">
+          <button aria-pressed={!focusOnly} onClick={() => setFocusOnly(false)}>自动连线</button>
+          <button aria-pressed={focusOnly} onClick={() => setFocusOnly(true)}>仅聚焦显线</button>
+        </div>
         {focusLabel && <span className="architecture-focus-chip"><span>已聚焦：{focusLabel}</span><button onClick={reset}>显示全部</button></span>}
       </div>}
     </header>
@@ -104,7 +115,7 @@ export function Architecture({ result, selected, select, inspect, modules, openF
         </div>
       : !model.nodes.length ? <div className="empty compact"><h2>没有匹配组件</h2><p>清除搜索查看完整系统。</p></div>
       : <>
-        <div className="architecture-viewport" tabIndex={0} role="region" aria-label="系统架构图，可横向滚动">
+        <div className={"architecture-viewport" + (focusOnly ? " focus-only" : "")} tabIndex={0} role="region" aria-label="系统架构图，可横向滚动">
           <svg className="architecture-map-canvas" data-zoom-surface width={model.width * scale} height={model.height * scale}
             viewBox={`0 0 ${model.width} ${model.height}`} role="group" aria-label="系统架构图" onClick={event => {
               if ((selected || hover) && !(event.target as Element).closest('[data-component-id], [data-edge-id]')) reset();
@@ -122,8 +133,8 @@ export function Architecture({ result, selected, select, inspect, modules, openF
               const state = !focusId ? '' : id === focusId ? 'selected' : edge.source_node_id === focusId ? 'outgoing'
                 : edge.target_node_id === focusId ? 'incoming' : 'dimmed';
               const label = `${byId.get(edge.source_node_id)!.label} → ${byId.get(edge.target_node_id)!.label}：${edge.label}`;
-              return <g key={id} className={`architecture-link ${state}${edge.status === 'source_supported' ? '' : ' uncertain'}`}
-                data-edge-id={edge.edge_id} role="button" tabIndex={0} aria-label={label} aria-pressed={selected === id}
+              return <g key={id} className={`architecture-link ${state}${focusOnly && !focusId ? " hidden-resting" : ""}${edge.status === 'source_supported' ? '' : ' uncertain'}`}
+                data-edge-id={edge.edge_id} role="button" tabIndex={(focusOnly && !focusId) || state === 'dimmed' ? -1 : 0} aria-hidden={(focusOnly && !focusId) || state === 'dimmed' || undefined} aria-label={label} aria-pressed={selected === id}
                 onMouseEnter={() => setHover(id)} onMouseLeave={() => setHover('')} onFocus={() => setHover(id)} onBlur={() => setHover('')}
                 onClick={() => select(id)} onKeyDown={event => {
                   if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(id); }
@@ -137,18 +148,22 @@ export function Architecture({ result, selected, select, inspect, modules, openF
               className={'architecture-caption-leader' + (edge.target_node_id === focusId ? ' incoming' : '')}
               x1={labelAnchor.x} y1={labelAnchor.y} x2={labelPos.x} y2={labelPos.y}/>)}
             {model.layers.map(layer => <text key={layer.id} className={'architecture-layer-title tier-' + layer.id}
-              x={layer.x + 15} y={layer.y + 23}>{layer.title}<tspan dx="10">{layer.roots.length} 个组件</tspan></text>)}
+              x={layer.x + 15} y={layer.y + 25}>●  {layer.title}<tspan dx="8">· {layer.roots.length}</tspan></text>)}
             {model.nodes.map(node => {
               const context = contexts.get(node.node_id)!;
               return <foreignObject key={node.node_id} {...model.boxes.get(node.node_id)} data-component-id={node.node_id} data-zoom-anchor
                 className={focusId && !activeNodes.has(node.node_id) ? 'architecture-node-dimmed' : undefined}>
-                <button className={'architecture-card architecture-node kind-' + node.kind} aria-pressed={selected === node.node_id}
+                <button className={'architecture-card architecture-node kind-' + node.kind + (model.hubs.has(node.node_id) ? ' is-hub' : '')} aria-pressed={selected === node.node_id}
                   onMouseEnter={() => setHover(node.node_id)} onMouseLeave={() => setHover('')}
                   onFocus={() => setHover(node.node_id)} onBlur={() => setHover('')} onClick={() => select(node.node_id)}>
-                  <strong className="architecture-card-title" title={node.label}>{node.label}</strong>
+                  <span className="architecture-card-header">
+                    <span className="architecture-card-icon" aria-hidden="true"><RoleIcon kind={node.kind}/></span>
+                    <strong className="architecture-card-title" title={node.label}>{node.label}</strong>
+                    {model.hubs.has(node.node_id) && <span className="architecture-hub-badge">核心</span>}
+                  </span>
                   <span className="architecture-card-copy">{node.description}</span>
-                  <span className="architecture-card-meta">{model.degrees.get(node.node_id) ?? 0} 条关系
-                    {context.children.length > 0 ? ` · ${context.children.length} 个子模块` : context.features.length > 0 && ` · ${context.features.length} 项功能`}
+                  <span className="architecture-card-meta"><span>{model.degrees.get(node.node_id) ?? 0} 关系</span>
+                    {context.children.length > 0 ? <span>{context.children.length} 子模块</span> : context.features.length > 0 && <span>{context.features.length} 功能</span>}
                   </span>
                 </button>
               </foreignObject>;
@@ -160,6 +175,7 @@ export function Architecture({ result, selected, select, inspect, modules, openF
             </foreignObject>)}
           </svg>
         </div>
+        <div className="architecture-legend" aria-label="架构图图例"><span className="legend-blue">● 入口交互</span><span className="legend-green">● 核心控制</span><span className="legend-amber">● 存储底层</span><span>· 点击组件聚焦上下游调用链</span><span className="architecture-zoom-hint">点击右下角缩放比例恢复 100%</span></div>
         {!!contexts.get(selected)?.children.length && <button className="architecture-inspect" onClick={() => inspect(selected)}>展开所选组件的内部模块</button>}
       </>}
     <details className="architecture-scope">

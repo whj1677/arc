@@ -20,7 +20,7 @@ function verticalCurve(from: Point, to: Point, middle = (from.y + to.y) / 2) {
   return [from, { x: from.x, y: middle }, { x: to.x, y: middle }, to];
 }
 
-export function architectureMap(result: AnalysisResult, search = '', maxColumns = 5) {
+export function architectureMap(result: AnalysisResult, search = '', maxColumns = 6) {
   const byId = new Map(result.nodes.map(node => [node.node_id, node]));
   const byEdge = new Map(result.edges.map(edge => [edge.edge_id, edge]));
   const all = (result.architecture?.node_ids ?? []).map(id => byId.get(id)).filter(node => !!node);
@@ -73,10 +73,20 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
     if (node.kind === 'resource' || (node.kind === 'execution_boundary' && inputs.some(id => byId.get(id)?.kind === 'resource'))) {
       tier = 'infrastructure';
     } else if (outgoing.size ? inputs.length === 0 : node.kind === 'execution_boundary') {
-      tier = 'boundary';
+      const targets = outgoing.get(node.node_id) ?? [];
+      const bridgesStageAndResource = node.kind === 'stage' &&
+        targets.some(id => byId.get(id)?.kind === 'stage') && targets.some(id => byId.get(id)?.kind === 'resource');
+      if (!bridgesStageAndResource) tier = 'boundary';
     }
     tiers[tier].push(node);
   }
+
+  // Rank the system's most connected core roots without inventing graph edges.
+  const hubs = new Set(tiers.core
+    .map(node => ({ id: node.node_id, degree: (incoming.get(node.node_id)?.length ?? 0) + (outgoing.get(node.node_id)?.length ?? 0) }))
+    .filter(node => node.degree >= 3)
+    .sort((a, b) => b.degree - a.degree || a.id.localeCompare(b.id))
+    .slice(0, 3).map(node => node.id));
 
   const largestTier = Math.max(...tierOrder.map(tier => tiers[tier].length));
   const columns = Math.max(1, Math.min(maxColumns, largestTier));
@@ -153,8 +163,10 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
       height = floor + (row + 1 === rowCount ? 18 : 32);
     }
     layers.push({ id: tier, title: tierNames[tier], roots: roots.map(n => n.node_id), x: 4, y: top, width: width - 8, height: height - top });
-    height += 10;
+    height += 60;
   }
+
+  if (layers.length) height -= 52; // Keep the generous corridors between bands, not below the last one.
 
   type Side = 'top' | 'bottom' | 'left' | 'right';
   const portGroups = new Map<string, { point: Point; rank: number }[]>();
@@ -255,5 +267,5 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
     }
     return { edge, path, labelPos, labelWidth, labelAnchor, singleEdgeLabel };
   });
-  return { nodes, edges, degrees, boxes, boundaries, layers, links, width, height };
+  return { nodes, edges, degrees, hubs, boxes, boundaries, layers, links, width, height };
 }

@@ -64,6 +64,9 @@ test('a saved component selection highlights direct neighbors and directional la
     result, selected, select: noop, inspect: noop, modules: noop, zoom: 1, search: '',
   }));
   const html = markup('core');
+  assert.match(html, /自动连线/);
+  assert.match(html, /仅聚焦显线/);
+  assert.match(html, /点击右下角缩放比例恢复 100%/);
   assert.match(html, /已聚焦：电池控制（2 条关联）/);
   assert.match(html, /显示全部/);
   for (const [edgeId, state] of [['samples', 'incoming'], ['publish', 'outgoing'], ['archive', 'dimmed']]) {
@@ -116,7 +119,12 @@ test('architecture selection survives leaving the card and the three views remai
     const search = page.getByRole('textbox', { name: '搜索' });
     assert.equal(await layers.getAttribute('aria-pressed'), 'true');
     assert.equal(await page.getByRole('table').count(), 0);
+    const focusOnly = page.getByRole('button', { name: '仅聚焦显线' });
+    await focusOnly.click();
+    assert.equal(await canvas.locator('.architecture-link.hidden-resting').count(), 3);
     await core.click();
+    assert.equal(await canvas.locator('.architecture-link.incoming').count(), 1);
+    assert.equal(await canvas.locator('.architecture-link.outgoing').count(), 1);
     await search.click(); // Move both pointer and keyboard focus away from the chosen card.
     assert.equal(await core.getAttribute('aria-pressed'), 'true');
     assert.equal(await canvas.locator('.architecture-node-dimmed').count(), 2);

@@ -120,14 +120,23 @@ test('the 21-component bams topology fits in five or six rows with separated par
     ['pcs', 'hal'], ['aux', 'hal'], ['ems', 'hal'], ['wave', 'fault'], ['wave', 'ring'], ['persist-q', 'writer'],
     ['writer', 'csv'], ['events', 'battery'], ['events', 'event-lib']];
   const r = fixture(nodes, links.map(([a, b], i) => edge('transfer-' + i, a, b)));
-  for (const columns of [4, 5]) {
+  for (const columns of [4, 5, 6]) {
     const m = architectureMap(r, '', columns);
-    assert.deepEqual(m.layers.map(l => l.roots.length), [8, 4, 9]);
+    assert.deepEqual(m.layers.map(l => l.roots.length), [6, 6, 9]);
     assert.ok(m.layers[2].roots.includes('writer'));
-    assert.equal(new Set([...m.boxes.values()].map(b => b.y)).size, columns === 5 ? 5 : 6);
-    assert.ok(m.height <= 850 && m.width <= columns * 224 + 32);
+    assert.equal(new Set([...m.boxes.values()].map(b => b.y)).size, columns === 6 ? 4 : columns === 5 ? 6 : 7);
+    assert.ok(m.height <= 1100 && m.width <= columns * 224 + 32);
     for (const b of m.boxes.values()) assert.deepEqual([b.width, b.height], [204, 82]);
     assert.equal(m.degrees.get('battery'), 7);
+    assert.ok(m.hubs.has('battery'));
+    assert.ok(m.layers[1].roots.includes('wave'));
+    assert.ok(m.layers[1].roots.includes('events'));
+    if (columns === 6) {
+      for (const layer of m.layers.slice(0, 2)) assert.equal(new Set(layer.roots.map(id => m.boxes.get(id)!.y)).size, 1);
+      const rows = new Map<number, number>();
+      for (const id of m.layers[2].roots) { const y = m.boxes.get(id)!.y; rows.set(y, (rows.get(y) ?? 0) + 1); }
+      assert.deepEqual([...rows.values()], [5, 4]);
+    }
     assert.notEqual(m.links[2].path, m.links[3].path);
     checkGeometry(m);
   }
@@ -156,7 +165,7 @@ test('layered cards show responsibility and feature counts while detailed eviden
   } as unknown as AnalysisResult;
   const noop = () => {};
   const html = renderToStaticMarkup(createElement(Architecture, { result, selected: '控制器', select: noop, inspect: noop, modules: noop, zoom: 1, search: '' }));
-  for (const label of ['系统架构图', '分层架构图', '协作关系表', '代码模块依赖（静态索引）', '汇总并执行控制命令', '项功能', '条关系',
+  for (const label of ['系统架构图', '分层架构图', '协作关系表', '代码模块依赖（静态索引）', '汇总并执行控制命令', '功能', '关系',
     '已分析控制链路', '控制命令入口', '设备运行状态', 'data-component-id="控制器"', 'data-edge-id="下发"', 'aria-pressed="true"']) {
     assert.ok(html.includes(label), label);
   }
