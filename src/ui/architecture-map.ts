@@ -1,23 +1,26 @@
 import type { AnalysisResult } from '../shared';
+import { cubicPoint, overlaps, type Point, type Rect } from './flow-layout';
 
 type Node = AnalysisResult['nodes'][number];
-type Box = { x: number; y: number; width: number; height: number };
 type Tier = 'boundary' | 'core' | 'infrastructure';
-
 const tierNames: Record<Tier, string> = {
-  boundary: '入口与外部边界',
+  boundary: '入口与交互层',
   core: '核心业务与控制层',
-  infrastructure: '基础资源与下游组件',
+  infrastructure: '存储、队列与底层支撑',
 };
-const cardWidth = 284;
-const inset = 16;
+const tierOrder = Object.keys(tierNames) as Tier[];
+const cardWidth = 204, cardHeight = 82, pitch = 224, inset = 16;
 
-function cardHeight(node: Node) {
-  // Two lines each for the title and responsibility, then only reserve rows with source or I/O.
-  return 148 + 24 * [node.evidence_ids?.length, node.inputs?.length, node.outputs?.length].filter(Boolean).length;
+function append<T>(map: Map<string, T[]>, key: string, value: T) {
+  if (!map.has(key)) map.set(key, []);
+  map.get(key)!.push(value);
 }
 
-export function architectureMap(result: AnalysisResult, search = '', maxColumns = 3) {
+function verticalCurve(from: Point, to: Point, middle = (from.y + to.y) / 2) {
+  return [from, { x: from.x, y: middle }, { x: to.x, y: middle }, to];
+}
+
+export function architectureMap(result: AnalysisResult, search = '', maxColumns = 5) {
   const byId = new Map(result.nodes.map(node => [node.node_id, node]));
   const byEdge = new Map(result.edges.map(edge => [edge.edge_id, edge]));
   const all = (result.architecture?.node_ids ?? []).map(id => byId.get(id)).filter(node => !!node);
@@ -47,88 +50,84 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
   }
   const nodes = all.filter(node => matches.has(node.node_id));
   const edges = relations.filter(edge => matches.has(edge.source_node_id) && matches.has(edge.target_node_id));
-  const children = new Map<string, Node[]>();
-  const tiers: Record<Tier, Node[]> = { boundary: [], core: [], infrastructure: [] };
   const degrees = new Map<string, number>();
-  const upstream = new Set<string>(), downstream = new Set<string>(), connected = new Set<string>();
+  const incoming = new Map<string, string[]>(), outgoing = new Map<string, string[]>();
   for (const edge of relations) {
-    const from = rootOf.get(edge.source_node_id)!, to = rootOf.get(edge.target_node_id)!;
     for (const id of new Set([edge.source_node_id, edge.target_node_id])) degrees.set(id, (degrees.get(id) ?? 0) + 1);
-    connected.add(from);
-    connected.add(to);
-    if (from !== to) {
-      upstream.add(from);
-      downstream.add(to);
+    const source = rootOf.get(edge.source_node_id)!, target = rootOf.get(edge.target_node_id)!;
+    if (source !== target) {
+      append(incoming, target, source);
+      append(outgoing, source, target);
     }
   }
+
+  const tiers: Record<Tier, Node[]> = { boundary: [], core: [], infrastructure: [] };
+  const children = new Map<string, Node[]>();
   for (const node of nodes) {
-    if (node.parent_node_id && allIds.has(node.parent_node_id)) {
-      const siblings = children.get(node.parent_node_id) ?? [];
-      siblings.push(node);
-      children.set(node.parent_node_id, siblings);
+    if (rootOf.get(node.node_id) !== node.node_id) {
+      append(children, node.parent_node_id!, node);
       continue;
     }
-    const sends = upstream.has(node.node_id), receives = downstream.has(node.node_id);
-    const tier = node.kind === 'execution_boundary' ? 'boundary' : node.kind === 'resource' ? 'infrastructure'
-      : sends && !receives ? 'boundary' : receives && !sends ? 'infrastructure' : 'core';
+    const inputs = incoming.get(node.node_id) ?? [];
+    let tier: Tier = 'core';
+    if (node.kind === 'resource' || (node.kind === 'execution_boundary' && inputs.some(id => byId.get(id)?.kind === 'resource'))) {
+      tier = 'infrastructure';
+    } else if (outgoing.size ? inputs.length === 0 : node.kind === 'execution_boundary') {
+      tier = 'boundary';
+    }
     tiers[tier].push(node);
   }
 
-  const largestTier = Math.max(...Object.values(tiers).map(roots => roots.length));
+  const largestTier = Math.max(...tierOrder.map(tier => tiers[tier].length));
   const columns = Math.max(1, Math.min(maxColumns, largestTier));
-  const boxes = new Map<string, Box>();
-  const boundaries: (Box & { id: string })[] = [];
-  const layers: (Box & { id: Tier; title: string; roots: string[] })[] = [];
-  const positions = new Map<string, { col: number; row: number }>();
-  const rows: { tier: Tier; groups: Node[] }[] = [];
-  function mark(node: Node, col: number, row: number) {
-    positions.set(node.node_id, { col, row });
-    for (const child of children.get(node.node_id) ?? []) mark(child, col, row);
+  // Balance partially filled rows (e.g. 4+4 for eight roots). Sweep using actual
+  // column coordinates so neighbors still align when a layer wraps.
+  type Slot = { col: number; row: number; systemRow: number };
+  const slots = new Map<string, Slot>();
+  let firstRow = 0;
+  for (const tier of tierOrder) {
+    const group = tiers[tier], rowCount = Math.ceil(group.length / columns);
+    let index = 0;
+    for (let row = 0; row < rowCount; row++) {
+      const count = Math.floor(group.length / rowCount) + Number(row < group.length % rowCount);
+      for (let col = 0; col < count; col++) slots.set(group[index++].node_id, { col, row, systemRow: firstRow + row });
+    }
+    firstRow += rowCount;
   }
-  for (const tier of Object.keys(tiers) as Tier[]) {
-    const roots = tiers[tier].sort((a, b) => Number(connected.has(b.node_id)) - Number(connected.has(a.node_id)));
-    for (let start = 0; start < roots.length; start += columns) {
-      const groups = roots.slice(start, start + columns);
-      groups.forEach((root, col) => mark(root, col, rows.length));
-      rows.push({ tier, groups });
+  const neighbors = new Map([...slots.keys()].map(id => [id, [...(incoming.get(id) ?? []), ...(outgoing.get(id) ?? [])].filter(n => slots.has(n))]));
+  function affinity(id: string, slot: Slot, other: string) {
+    return neighbors.get(id)!.reduce((sum, n) => {
+      if (n === other) return sum; // A shared edge has the same length after swapping its ends.
+      const target = slots.get(n)!;
+      // A column pitch is roughly twice a row pitch.
+      return sum + 4 * (slot.col - target.col) ** 2 + (slot.systemRow - target.systemRow) ** 2;
+    }, 0);
+  }
+  for (const tier of [...tierOrder, ...[...tierOrder].reverse()]) {
+    const ids = tiers[tier].map(n => n.node_id);
+    for (const [index, a] of ids.entries()) {
+      for (const b of ids.slice(index + 1)) {
+        const p = slots.get(a)!, q = slots.get(b)!;
+        const current = affinity(a, p, b) + affinity(b, q, a);
+        if (affinity(a, q, b) + affinity(b, p, a) < current) {
+          slots.set(a, q);
+          slots.set(b, p);
+        }
+      }
     }
   }
 
-  // Each column has a routing gutter. Cross-column links change columns only
-  // in the aisle below their source row, so paths never run across other cards.
-  const gutterTracks = Array<number>(columns).fill(0);
-  const aisleTracks = Array<number>(rows.length).fill(0);
-  const ports = new Map<string, number>();
-  function takePort(id: string) {
-    const next = (ports.get(id) ?? 0) + 1;
-    ports.set(id, next);
-    return next;
-  }
-  const tracks = edges.map(edge => {
-    const from = positions.get(edge.source_node_id)!, to = positions.get(edge.target_node_id)!;
-    const sourceTrack = ++gutterTracks[from.col];
-    return {
-      edge, from, to, sourceTrack,
-      targetTrack: from.col === to.col ? sourceTrack : ++gutterTracks[to.col],
-      aisle: from.col === to.col ? 0 : ++aisleTracks[from.row],
-      sourcePort: takePort(edge.source_node_id), targetPort: takePort(edge.target_node_id),
-    };
-  });
-
-  let width = inset + 4;
-  const xs = gutterTracks.map(count => {
-    const left = width;
-    width += cardWidth + 28 + count * 5;
-    return left;
-  });
-  const floors: number[] = [];
+  const width = inset * 2 + (columns - 1) * pitch + cardWidth;
+  const boxes = new Map<string, Rect>();
+  const boundaries: (Rect & { id: string })[] = [];
+  const layers: (Rect & { id: Tier; title: string; roots: string[] })[] = [];
   function place(node: Node, x: number, y: number, depth: number): number {
     const indent = Math.min(depth, 4) * 8;
-    const box = { x: x + indent, y, width: cardWidth - indent * 2, height: cardHeight(node) };
+    const box = { x: x + indent, y, width: cardWidth - indent * 2, height: cardHeight };
     boxes.set(node.node_id, box);
     let bottom = y + box.height;
     const nested = children.get(node.node_id) ?? [];
-    for (const child of nested) bottom = place(child, x, bottom + 18, depth + 1);
+    for (const child of nested) bottom = place(child, x, bottom + 24, depth + 1);
     if (nested.length) {
       boundaries.push({ id: node.node_id, x: box.x - 6, y: y - 6, width: box.width + 12, height: bottom - y + 12 });
       bottom += 8;
@@ -137,34 +136,124 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
   }
 
   let height = 8;
-  for (const [index, row] of rows.entries()) {
-    if (layers.at(-1)?.id !== row.tier) {
-      layers.push({ id: row.tier, title: tierNames[row.tier], roots: tiers[row.tier].map(node => node.node_id),
-        x: 4, y: height, width: width - 8, height: 0 });
-      height += 48;
+  const aisleYs: number[] = [];
+  for (const tier of tierOrder) {
+    const roots = tiers[tier].sort((a, b) => {
+      const p = slots.get(a.node_id)!, q = slots.get(b.node_id)!;
+      return p.row - q.row || p.col - q.col;
+    });
+    if (!roots.length) continue;
+    const top = height;
+    height += 42;
+    const rowCount = Math.ceil(roots.length / columns);
+    for (let row = 0; row < rowCount; row++) {
+      const floor = Math.max(...roots.filter(n => slots.get(n.node_id)!.row === row)
+        .map(n => place(n, inset + slots.get(n.node_id)!.col * pitch, height, 0)));
+      aisleYs.push(height - 14, floor + 14);
+      height = floor + (row + 1 === rowCount ? 18 : 32);
     }
-    const floor = Math.max(...row.groups.map((root, col) => place(root, xs[col], height, 0)));
-    floors.push(floor);
-    height = floor + 24 + aisleTracks[index] * 5;
-    const layer = layers.at(-1)!;
-    layer.height = height - layer.y - 6;
+    layers.push({ id: tier, title: tierNames[tier], roots: roots.map(n => n.node_id), x: 4, y: top, width: width - 8, height: height - top });
+    height += 10;
   }
 
-  function portY(box: Box, id: string, slot: number) {
-    return Math.round(box.y + box.height * slot / ((ports.get(id) ?? 0) + 1));
+  type Side = 'top' | 'bottom' | 'left' | 'right';
+  const portGroups = new Map<string, { point: Point; rank: number }[]>();
+  function port(id: string, side: Side, other: Rect) {
+    const box = boxes.get(id)!;
+    const point = { x: box.x, y: box.y };
+    const horizontal = side === 'top' || side === 'bottom';
+    if (side === 'bottom') point.y += box.height;
+    if (side === 'right') point.x += box.width;
+    append(portGroups, id + ':' + side, { point, rank: horizontal ? other.x : other.y });
+    return point;
   }
-  const links = tracks.map(({ edge, from, to, sourceTrack, targetTrack, aisle, sourcePort, targetPort }) => {
+  const endpoints = edges.map(edge => {
     const a = boxes.get(edge.source_node_id)!, b = boxes.get(edge.target_node_id)!;
-    const sy = portY(a, edge.source_node_id, sourcePort), ty = portY(b, edge.target_node_id, targetPort);
-    const sx = xs[from.col] + cardWidth + 8 + sourceTrack * 5;
-    const tx = xs[to.col] + cardWidth + 8 + targetTrack * 5;
-    const points = [[a.x + a.width, sy], [sx, sy]];
-    if (from.col !== to.col) {
-      const trackY = floors[from.row] + 8 + aisle * 5;
-      points.push([sx, trackY], [tx, trackY]);
+    const adjacent = a.y === b.y && Math.abs(a.x - b.x) === pitch;
+    const beneath = a.y < b.y;
+    const sourceSide = adjacent ? (a.x < b.x ? 'right' : 'left') : beneath || (a.y === b.y && a.x > b.x) ? 'bottom' : 'top';
+    const targetSide = adjacent ? (a.x < b.x ? 'left' : 'right') : a.y === b.y ? sourceSide : beneath ? 'top' : 'bottom';
+    return { edge, a, b, adjacent, start: port(edge.source_node_id, sourceSide, b), end: port(edge.target_node_id, targetSide, a) };
+  });
+  for (const [key, group] of portGroups) {
+    const split = key.lastIndexOf(':'), box = boxes.get(key.slice(0, split))!, side = key.slice(split + 1);
+    group.sort((a, b) => a.rank - b.rank).forEach(({ point }, i) => {
+      const fraction = (i + 1) / (group.length + 1);
+      if (side === 'top' || side === 'bottom') point.x += Math.round(12 + (box.width - 24) * fraction);
+      else point.y += box.height - Math.round(5 + 14 * fraction);
+    });
+  }
+
+  const obstacles = [...boxes.values()];
+  const fixedLabels: Rect[] = [...obstacles, ...layers.map(l => ({ x: l.x + 8, y: l.y + 5, width: l.title.length * 16 + 50, height: 27 }))];
+  const captions = new Map<string, Rect[]>();
+  const links = endpoints.map(({ edge, a, b, adjacent, start, end }) => {
+    let curves: Point[][];
+    if (adjacent) {
+      const middle = (start.x + end.x) / 2;
+      curves = [[start, { x: middle, y: start.y }, { x: middle, y: end.y }, end]];
+    } else if (a.y === b.y) {
+      const aisle = start.y + (a.x <= b.x ? -21 : 21);
+      curves = [verticalCurve(start, end, aisle)];
+    } else {
+      curves = [verticalCurve(start, end)];
+      // When a link skips occupied rows, keep its bottom/top ports and curve
+      // through the nearest open column gap only for the obstructed span.
+      const hitsCard = (curve: Point[]) => {
+        const steps = Math.ceil((Math.abs(curve[3].y - curve[0].y) + Math.abs(curve[3].x - curve[0].x)) / 8);
+        for (let i = 1; i < steps; i++) {
+          const p = cubicPoint(curve, i / steps);
+          if (obstacles.some(r => p.x > r.x && p.x < r.x + r.width && p.y > r.y && p.y < r.y + r.height)) return true;
+        }
+        return false;
+      };
+      if (hitsCard(curves[0])) {
+        const bend = Math.sign(end.y - start.y) * 10, middle = (start.x + end.x) / 2;
+        const gaps = Array.from({ length: columns + 1 }, (_, i) => inset - 10 + i * pitch)
+          .sort((p, q) => Math.abs(p - middle) - Math.abs(q - middle));
+        for (const x of gaps) {
+          const p = { x, y: start.y + bend * 2 }, q = { x, y: end.y - bend * 2 };
+          const detour = [verticalCurve(start, p), verticalCurve(p, q), verticalCurve(q, end)];
+          if (!detour.some(hitsCard)) { curves = detour; break; }
+        }
+      }
     }
-    points.push([tx, ty], [b.x + b.width, ty]);
-    return { edge, points };
+    const path = 'M' + start.x + ' ' + start.y + curves.map(curve => ' C' + curve.slice(1).map(p => p.x + ' ' + p.y).join(', ')).join('');
+    const labelWidth = Math.min(150, Math.max(44, [...edge.label].reduce((w, ch) => w + (ch.charCodeAt(0) < 128 ? 7 : 12), 16)));
+    const anchors = curves.flatMap(curve => [0.5, 0.32, 0.68, 0.16, 0.84].map(t => cubicPoint(curve, t)));
+    // Only captions incident on the same focused component appear together.
+    const occupied = [...fixedLabels, ...(captions.get(edge.source_node_id) ?? []), ...(captions.get(edge.target_node_id) ?? [])];
+    let labelPos = anchors[0], labelAnchor = anchors[0], best = Infinity;
+    searchLabel: for (const p of anchors) {
+      const nearAisles = [...aisleYs].sort((a, b) => Math.abs(a - p.y) - Math.abs(b - p.y)).slice(0, 4);
+      for (const y of [p.y, ...nearAisles]) {
+        for (const offset of [0, -labelWidth / 2, labelWidth / 2, -(labelWidth / 2 + 6), labelWidth / 2 + 6, -labelWidth, labelWidth]) {
+          const x = Math.max(labelWidth / 2 + 4, Math.min(width - labelWidth / 2 - 4, p.x + offset));
+          const dx = Math.abs(x - p.x), dy = Math.abs(y - p.y);
+          const score = Math.max(0, dx - labelWidth / 2) ** 2 + Math.max(0, dy - 10) ** 2 + 0.025 * (dx * dx + dy * dy);
+          if (score >= best) continue;
+          const rect = { x: x - labelWidth / 2, y: y - 10, width: labelWidth, height: 20 };
+          if (rect.y < 2 || rect.y + 20 > height - 2 || occupied.some(r => overlaps(rect, r, 2))) continue;
+          best = score;
+          labelPos = { x, y };
+          labelAnchor = p;
+          if (!score) break searchLabel;
+        }
+      }
+    }
+    const singleEdgeLabel = best === Infinity;
+    if (singleEdgeLabel) {
+      // A dense hub can fill its local aisles. Reserve a card-free caption
+      // for this edge alone, instead of overlaying its neighbors' captions.
+      const x = Math.max(labelWidth / 2 + 4, Math.min(width - labelWidth / 2 - 4, labelAnchor.x));
+      const y = [...aisleYs].sort((a, b) => Math.abs(a - labelAnchor.y) - Math.abs(b - labelAnchor.y))
+        .find(y => !fixedLabels.some(r => overlaps({ x: x - labelWidth / 2, y: y - 10, width: labelWidth, height: 20 }, r, 2)))!;
+      labelPos = { x, y };
+    } else {
+      const rect = { x: labelPos.x - labelWidth / 2, y: labelPos.y - 10, width: labelWidth, height: 20 };
+      for (const id of new Set([edge.source_node_id, edge.target_node_id])) append(captions, id, rect);
+    }
+    return { edge, path, labelPos, labelWidth, labelAnchor, singleEdgeLabel };
   });
   return { nodes, edges, degrees, boxes, boundaries, layers, links, width, height };
 }
