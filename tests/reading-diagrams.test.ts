@@ -4,7 +4,7 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import type {AnalysisResult,ReadingGuide} from '../src/shared';
 import {functionSequence,selectedCallStep,callStepKey} from '../src/ui/function-sequence-model';
-import {FunctionChain} from '../src/ui/FunctionChain';
+import {FunctionChain,FunctionDetail} from '../src/ui/FunctionChain';
 import {callLabelHeight,callLabelWidth,functionCallMap,recursiveCallRoute} from '../src/ui/function-call-map';
 import {readingFailureLinks,readingCollaboration} from '../src/ui/reading-diagram-model';
 
@@ -24,6 +24,20 @@ test('a repeated callee and returned caller each render as one function particip
  assert.ok(html.includes('传入'));assert.ok(html.includes('内容'));
  assert.ok(html.includes('函数调用链'));assert.ok(html.includes('调用时间图'));
  assert.ok(!html.includes('function-sequence-steps'));
+});
+test('function detail offers editors only for an explicit source location',()=>{
+ const node:AnalysisResult['nodes'][number]={...result.nodes[0],function_details:{
+   symbol:'save',signature:'save()',definition_evidence_id:'save-definition',parameter_io_ids:[],return_io_ids:[],
+ }};
+ const definition={evidence_id:'save-definition',source_snapshot_id:'snapshot',path:'src/save.ts',line_start:2,line_end:4,
+   role:'definition' as const,content_sha256:'',note:''};
+ const detail=(evidence:AnalysisResult['evidence'])=>renderToStaticMarkup(React.createElement(FunctionDetail,{
+   result:{...result,evidence},node,select:()=>{},evidence:()=>{},
+ }));
+ assert.match(detail([definition]),/在默认编辑器中打开.*在 VS Code 中打开/);
+ const unresolved=detail([{...definition,role:'callsite'}]);
+ assert.match(unresolved,/尚未记录准确的函数定义或声明文件/);
+ assert.doesNotMatch(unresolved,/在默认编辑器中打开|在 VS Code 中打开/);
 });
 test('a call map keeps siblings attached to their actual caller and labels arguments',()=>{
  const extra={...result.nodes[1],node_id:'audit',label:'audit'};

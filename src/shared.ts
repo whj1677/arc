@@ -6,6 +6,8 @@ export function isExecutionMode(value: unknown): value is ExecutionMode {
   return value === 'codex' || value === 'dsh' || value === 'codex_desktop' || value === 'mcp';
 }
 export interface SourceFile { path: string; content_sha256: string; bytes: number; line_count: number; encoding: string }
+export type SourceEditor = 'default' | 'vscode';
+export interface SourceEditorLocation { source_snapshot_id: string; path: string; line?: number }
 export interface CodeIndexSummary {
   modules: { dir: string; file_count: number; files: string[]; symbol_count: number; key_symbols: string[] }[];
   module_edges: { from: string; to: string; count: number }[];

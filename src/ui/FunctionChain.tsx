@@ -5,6 +5,7 @@ import {functionCallMap} from './function-call-map';
 import {functionInfo,functionSource} from './function-chain';
 import {functionSequence,callStepKey,selectedCallStep} from './function-sequence-model';
 import {Diagram} from './ReadingDiagrams';
+import {SourceEditorActions} from './SourceEditorActions';
 
 const stepNames={entry:'入口',call:'调用',callback:'回调内调用',dispatch:'异步派发',return:'返回',work:'处理'};
 type FunctionChainMode='calls'|'time';
@@ -123,6 +124,7 @@ export function FunctionStepDetail({result,selection,select,evidence}:{result:An
 
 export function FunctionDetail({result,node,select,evidence}:{result:AnalysisResult;node:AnalysisResult['nodes'][number];select:(id:string)=>void;evidence:(e:SourceEvidence)=>void}){
   const info=functionInfo(result,node),source=functionSource(result,node),calls=result.edges.filter(e=>['sync_call','execution_boundary'].includes(e.kind)&&(e.source_node_id===node.node_id||e.target_node_id===node.node_id));
+  const location=source.definition??source.declaration;
   const ioList=(list:AnalysisResult['nodes'][number]['inputs']|null,unknown:string,empty:string)=>list===null?<p className="muted">{unknown}</p>:list.length?list.map(io=><article className="function-io" key={io.io_id}><strong>{io.name}</strong><span className="tag">{io.data_type||'类型未知'}</span><p>{io.description}</p>{io.value_or_shape&&<code>{io.value_or_shape}</code>}{io.availability!=='specified'&&<small className="warning">{io.availability==='partial'?'仅部分已知':'尚未查明'}</small>}</article>):<p>{empty}</p>;
   return <article className="function-detail">
     <span className="eyebrow">函数详情</span><h2 className="function-symbol">{info.details?.symbol||node.label}</h2><p>{node.description}</p>
@@ -130,6 +132,7 @@ export function FunctionDetail({result,node,select,evidence}:{result:AnalysisRes
     <h3>定义与声明</h3>
     {source.definition?<FunctionEvidence data={source.definition} label="函数定义（实现）" open={evidence}/>:<p className="muted">{source.declaration?'当前只记录了声明位置；声明不等于函数实现。':'尚未记录准确的函数定义或声明文件。下方来源引用不自动等于所属文件。'}</p>}
     {source.declaration&&<FunctionEvidence data={source.declaration} label="函数声明（不是实现）" open={evidence}/>}
+    {location&&<SourceEditorActions key={`${result.result_id}/${node.node_id}`} location={{source_snapshot_id:location.source_snapshot_id,path:location.path,line:location.line_start}}/>}
     <h3>输入参数</h3>{ioList(info.parameters,'尚未区分具体参数；不能将业务输入直接当作函数形参。','已记录为无输入参数。')}
     <h3>返回值</h3>{ioList(info.returns,'返回值尚未明确，不能把所有输出都当作 return。','已记录为无返回值。')}
     {info.otherOutputs.length>0&&<><h3>{info.returns===null?'已记录输出（尚未区分返回值）':'其他输出 / 副作用'}</h3>{ioList(info.otherOutputs,'','无')}</>}

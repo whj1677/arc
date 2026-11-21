@@ -66,6 +66,9 @@ function windowsFallbacks(name:string) {
   } else if(name==='codex') {
     const dirs=windowsPackageDirs();
     candidates.push(...dirs.flatMap(npmNativeCodexCandidates),...dirs.map(dir=>path.join(dir,binary)),scoop);
+  } else if(name==='code') {
+    return uniquePaths([under(env.LOCALAPPDATA,'Programs','Microsoft VS Code','Code.exe'),
+      under(env.ProgramFiles,'Microsoft VS Code','Code.exe'),under(env['ProgramFiles(x86)'],'Microsoft VS Code','Code.exe')]);
   } else if(name==='powershell.exe') {
     candidates.push(windowsPowerShell());
   }
@@ -146,6 +149,19 @@ export async function locate(name:string, configured?:string) {
     } catch {}
   }
   if(windows) {
+    if(name==='code') {
+      for(const directory of (process.env.PATH??'').split(path.delimiter).map(dir=>dir.replace(/^"|"$/g,'')).filter(dir=>path.isAbsolute(dir))) {
+        const executable=path.join(directory,'Code.exe');
+        if(await isFile(executable))return executable;
+        // The official bin\code.cmd forwards to the native executable one level up.
+        if(await isFile(path.join(directory,'code.cmd'))) {
+          const installed=path.resolve(directory,'..','Code.exe');
+          if(await isFile(installed))return installed;
+        }
+      }
+      for(const candidate of windowsFallbacks(name))if(await isFile(candidate))return candidate;
+      throw Object.assign(new Error('未找到 VS Code 可执行文件。'),{code:'ENOENT'});
+    }
     try {
       const {stdout}=await exec('where.exe',[name],{windowsHide:true,timeout:5000});
       const candidates=stdout.trim().split(/\r?\n/).map(line=>line.trim()).filter(Boolean);

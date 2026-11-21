@@ -3,6 +3,7 @@ const operations = new Set(['mcp_status','mcp_enable','mcp_disable','overview_cr
 for(const operation of ['executor_sessions','executor_copy_workspace','executor_open','executor_status','executor_bind','executor_retry','executor_cancel','executor_acknowledge_stop','executor_verify_stopped','engineering_context','engineering_tasks','engineering_task','engineering_task_boundaries','project_environment','project_environment_save','engineering_history','engineering_open_link','engineering_revise','engineering_save_entry','engineering_log','engineering_diff','engineering_rollback','engineering_connect','engineering_pending','engineering_sync','engineering_export','engineering_restore','engineering_rebind','development_refine_goal','development_start','development_cancel','development_events','walkthrough_retry'])operations.add(operation);
 operations.add('engineering_task_hud');
 operations.add('walkthrough_feature_refresh');
+operations.add('source_open_editor');
 contextBridge.exposeInMainWorld('arc', {
   invoke: (operation:string,args?:unknown) => {
     if(!operations.has(operation))return Promise.reject(new Error('未授权 IPC 操作'));
