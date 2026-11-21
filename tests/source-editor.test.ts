@@ -4,7 +4,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import type { Snapshot } from '../src/shared';
 import { locate } from '../src/main/executables';
-import { editorSourceFile, vscodeSourceLaunch } from '../src/main/source-editor';
+import { defaultSourceLaunch, editorSourceFile, sourceEditorLaunch } from '../src/main/source-editor';
 import { sha } from '../src/main/snapshot';
 
 test('editor opens the bound source in the workspace and rejects stale or invalid locations', async t => {
@@ -23,25 +23,24 @@ test('editor opens the bound source in the workspace and rejects stale or invali
   };
   const location = { path: relative, line: 2 };
 
-  assert.equal(await editorSourceFile(snapshot, location, 'vscode'), await fs.realpath(file));
-  assert.equal(await editorSourceFile(snapshot, { ...location, line: undefined }, 'default'), await fs.realpath(file));
-  await assert.rejects(editorSourceFile(snapshot, { ...location, line: 3 }, 'vscode'), /行号超出/);
-  await assert.rejects(editorSourceFile(snapshot, { ...location, path: '../other.ts' }, 'default'), /文件不在/);
+  assert.equal(await editorSourceFile(snapshot, location), await fs.realpath(file));
+  assert.equal(await editorSourceFile(snapshot, { ...location, line: undefined }), await fs.realpath(file));
+  await assert.rejects(editorSourceFile(snapshot, { ...location, line: 3 }), /行号超出/);
+  await assert.rejects(editorSourceFile(snapshot, { ...location, path: '../other.ts' }), /文件不在/);
   const executableSource = process.platform === 'win32' ? 'script.cmd' : 'shortcut.desktop';
-  await assert.rejects(editorSourceFile({ ...snapshot, files: [{ ...snapshot.files[0], path: executableSource }] },
-    { ...location, path: executableSource }, 'default'), /可能执行文件/);
+  await assert.rejects(defaultSourceLaunch(executableSource, 2), /可能执行文件/);
   await fs.writeFile(file, '\n' + source);
-  await assert.rejects(editorSourceFile(snapshot, location, 'vscode'), /工程中的文件已变化/);
+  await assert.rejects(editorSourceFile(snapshot, location), /工程中的文件已变化/);
   await fs.unlink(file);
-  await assert.rejects(editorSourceFile(snapshot, location, 'default'), /源码文件已不存在/);
+  await assert.rejects(editorSourceFile(snapshot, location), /源码文件已不存在/);
 });
 
-test('VS Code goto passes the full Windows path and line as one argument', () => {
+test('editor goto passes the full Windows path and line as one argument', () => {
   const file = 'C:\\测试工程\\with spaces & symbols\\read.ts';
-  const program = path.resolve('VS Code', 'Code.exe');
-  const cli = process.platform === 'win32' ? [path.join(path.dirname(program), 'resources', 'app', 'out', 'cli.js')] : [];
-  assert.deepEqual(vscodeSourceLaunch(program, file, 15).args, [...cli, '--goto', `${file}:15:1`]);
-  assert.deepEqual(vscodeSourceLaunch(program, file).args, [...cli, file]);
+  const cli = path.resolve('Editor Directory', 'resources', 'app', 'out', 'cli.js');
+  assert.deepEqual(sourceEditorLaunch(file, 15, cli).args, [cli, '--goto', `${file}:15:1`]);
+  assert.deepEqual(sourceEditorLaunch(file, undefined, cli).args, [cli, file]);
+  assert.deepEqual(sourceEditorLaunch(file, 15).args, ['--goto', `${file}:15:1`]);
 });
 
 test('Windows resolves the PATH launcher and uses the official CLI environment', { skip: process.platform !== 'win32' }, async t => {
@@ -61,13 +60,26 @@ test('Windows resolves the PATH launcher and uses the official CLI environment',
   await fs.mkdir(bin);
   await fs.writeFile(path.join(bin, 'code.cmd'), '');
   await fs.writeFile(executable, '');
+  const trae = path.join(root, 'Trae CN.exe');
+  await fs.writeFile(path.join(bin, 'trae-cn.cmd'), '');
+  await fs.writeFile(trae, '');
   process.env.PATH = bin;
   process.env.VSCODE_DEV = '1';
   process.env.ELECTRON_RUN_AS_NODE = '0';
 
   const program = await locate('code');
   assert.equal(program, executable);
-  const { env } = vscodeSourceLaunch(program, 'read.ts', 15);
+  assert.equal(await locate('trae'), trae);
+  const file = path.join(root, 'read.py');
+  await assert.rejects(defaultSourceLaunch(file, 15, trae), /可能执行文件/);
+  assert.equal(await defaultSourceLaunch(path.join(root, 'read.ts'), 15, trae), undefined);
+  const cli = path.join(root, 'resources', 'app', 'out', 'cli.js');
+  await fs.mkdir(path.dirname(cli), { recursive: true });
+  await fs.writeFile(cli, '');
+  const launch = await defaultSourceLaunch(file, 15, trae);
+  assert.ok(launch);
+  assert.deepEqual(launch.args, [cli, '--goto', `${file}:15:1`]);
+  const { env } = launch;
   assert.equal(env.ELECTRON_RUN_AS_NODE, '1');
   assert.equal(env.VSCODE_DEV, undefined);
 });

@@ -8,7 +8,7 @@ import { ArcService } from './service';
 import { redact } from './providers';
 import {isExecutionMode,type ExecutionMode,type ReadingQuestion,type Run,type Scenario,type Snapshot} from '../shared';
 import {scanAecLegacy,applyAecRuleMigration,installArcAgentRules} from './aec-migration';
-import {editorSourceFile,openSourceInVSCode} from './source-editor';
+import {editorSourceFile,openSourceInEditor} from './source-editor';
 let window:BrowserWindow|null=null, service:ArcService, bridge:ArcMcpBridge, quitting=false;
 function defaultEngine():ExecutionMode {
   return service.store.maybe<ExecutionMode>('settings','default_engine')??'codex';
@@ -154,14 +154,10 @@ app.whenReady().then(async()=>{
         case 'source':value=await service.source(args.source_snapshot_id,args.path);break;
         case 'source_open_editor':{
           const {source_snapshot_id,path:relative,line,editor}=args;
-          if(typeof source_snapshot_id!=='string'||typeof relative!=='string'||(editor!=='default'&&editor!=='vscode'))throw new Error('源码打开请求无效。');
+          if(typeof source_snapshot_id!=='string'||typeof relative!=='string'||(editor!=='default'&&editor!=='vscode'&&editor!=='trae'))throw new Error('源码打开请求无效。');
           const snapshot=service.store.get<Snapshot>('snapshot',source_snapshot_id);
-          const file=await editorSourceFile(snapshot,{path:relative,line},editor);
-          if(editor==='vscode')await openSourceInVSCode(file,line);
-          else {
-            const error=await shell.openPath(file);
-            if(error)throw new Error(`无法使用系统默认关联打开此文件：${error}`);
-          }
+          const file=await editorSourceFile(snapshot,{path:relative,line});
+          await openSourceInEditor(file,line,editor,shell.openPath);
           value={opened:true};break;
         }
         case 'code_index_summary':value=await service.codeIndexSummary(args.source_snapshot_id);break;

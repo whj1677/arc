@@ -8,6 +8,7 @@ import {promisify} from 'node:util';
 const exec = promisify(execFile);
 const resolved = new Map<string,string>();
 const defaultOverrides = new Map<'node'|'git',string>();
+const editorExecutables = {code:[['code','Code']],trae:[['trae-cn','Trae CN'],['trae','Trae']]} as const;
 
 export function setDefaultExecutableOverrides(overrides:Partial<Record<'node'|'git',string>>) {
   for(const name of ['node','git'] as const) {
@@ -54,6 +55,42 @@ function windowsPowerShell() {
   return path.join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
 }
 
+const associationLookup = `
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$ErrorActionPreference = 'Stop'
+Add-Type @'
+using System.Runtime.InteropServices;
+using System.Text;
+public static class ArcFileAssociation {
+  [DllImport("Shlwapi.dll", CharSet = CharSet.Unicode)]
+  public static extern int AssocQueryString(uint flags, uint kind, string extension,
+    string verb, StringBuilder result, ref uint length);
+}
+'@
+$length = [uint32]32768
+$result = [Text.StringBuilder]::new([int]$length)
+$executable = 2 # ASSOCSTR_EXECUTABLE
+$status = [ArcFileAssociation]::AssocQueryString(0, $executable, $env:ARC_SOURCE_EXTENSION, 'open', $result, [ref]$length)
+if ($status -eq 0) { $result.ToString() }
+elseif ($status -ne 0x80070483 -and $status -ne 0x80070002) { throw "AssocQueryString failed: $status" }
+`;
+
+export async function windowsDefaultExecutable(extension:string) {
+  if(!extension)return;
+  const command=Buffer.from(associationLookup,'utf16le').toString('base64');
+  const {stdout}=await exec(windowsPowerShell(),['-NoProfile','-NonInteractive','-EncodedCommand',command],{
+    env:{...process.env,ARC_SOURCE_EXTENSION:extension},windowsHide:true,timeout:5000,
+  });
+  const file=stdout.trim();
+  if(path.isAbsolute(file)&&/\.exe$/i.test(file)&&path.basename(file).toLowerCase()!=='openwith.exe')return file;
+}
+
+export async function windowsEditorCli(program:string) {
+  if(!path.isAbsolute(program)||!/\.exe$/i.test(program))return;
+  const cli=path.join(path.dirname(program),'resources','app','out','cli.js');
+  if(await isFile(cli))return cli;
+}
+
 function windowsFallbacks(name:string) {
   const env=process.env, home=env.USERPROFILE||os.homedir();
   const binary=name.endsWith('.exe')?name:name+'.exe';
@@ -66,9 +103,9 @@ function windowsFallbacks(name:string) {
   } else if(name==='codex') {
     const dirs=windowsPackageDirs();
     candidates.push(...dirs.flatMap(npmNativeCodexCandidates),...dirs.map(dir=>path.join(dir,binary)),scoop);
-  } else if(name==='code') {
-    return uniquePaths([under(env.LOCALAPPDATA,'Programs','Microsoft VS Code','Code.exe'),
-      under(env.ProgramFiles,'Microsoft VS Code','Code.exe'),under(env['ProgramFiles(x86)'],'Microsoft VS Code','Code.exe')]);
+  } else if(name==='code'||name==='trae') {
+    return uniquePaths([under(env.LOCALAPPDATA,'Programs'),env.ProgramFiles,env['ProgramFiles(x86)']].flatMap(base=>
+      editorExecutables[name].map(([,editor])=>under(base,name==='code'?'Microsoft VS Code':editor,`${editor}.exe`))));
   } else if(name==='powershell.exe') {
     candidates.push(windowsPowerShell());
   }
@@ -149,18 +186,19 @@ export async function locate(name:string, configured?:string) {
     } catch {}
   }
   if(windows) {
-    if(name==='code') {
+    if(name==='code'||name==='trae') {
       for(const directory of (process.env.PATH??'').split(path.delimiter).map(dir=>dir.replace(/^"|"$/g,'')).filter(dir=>path.isAbsolute(dir))) {
-        const executable=path.join(directory,'Code.exe');
-        if(await isFile(executable))return executable;
-        // The official bin\code.cmd forwards to the native executable one level up.
-        if(await isFile(path.join(directory,'code.cmd'))) {
-          const installed=path.resolve(directory,'..','Code.exe');
-          if(await isFile(installed))return installed;
+        for(const [command,editor] of editorExecutables[name]) {
+          const executable=path.join(directory,`${editor}.exe`);
+          if(await isFile(executable))return executable;
+          if(await isFile(path.join(directory,`${command}.cmd`))||await isFile(path.join(directory,command))) {
+            const installed=path.resolve(directory,'..',`${editor}.exe`);
+            if(await isFile(installed))return installed;
+          }
         }
       }
       for(const candidate of windowsFallbacks(name))if(await isFile(candidate))return candidate;
-      throw Object.assign(new Error('未找到 VS Code 可执行文件。'),{code:'ENOENT'});
+      throw Object.assign(new Error(`未找到 ${name==='code'?'VS Code':'Trae'} 可执行文件。`),{code:'ENOENT'});
     }
     try {
       const {stdout}=await exec('where.exe',[name],{windowsHide:true,timeout:5000});

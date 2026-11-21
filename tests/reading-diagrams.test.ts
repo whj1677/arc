@@ -34,10 +34,13 @@ test('function detail offers editors only for an explicit source location',()=>{
  const detail=(evidence:AnalysisResult['evidence'])=>renderToStaticMarkup(React.createElement(FunctionDetail,{
    result:{...result,evidence},node,select:()=>{},evidence:()=>{},
  }));
- assert.match(detail([definition]),/在默认编辑器中打开（仅文件）.*在 VS Code 中打开到第 2 行/);
+ const resolved=detail([definition]);
+ assert.match(resolved,/在编辑器中打开（第 2 行）/);
+ assert.deepEqual([...resolved.matchAll(/<button[^>]*>(默认编辑器|Trae|VS Code)<\/button>/g)].map(match=>match[1]),
+   ['默认编辑器','Trae','VS Code']);
  const unresolved=detail([{...definition,role:'callsite'}]);
  assert.match(unresolved,/尚未记录准确的函数定义或声明文件/);
- assert.doesNotMatch(unresolved,/在默认编辑器中打开|在 VS Code 中打开/);
+ assert.doesNotMatch(unresolved,/在编辑器中打开|>默认编辑器<|>Trae<|>VS Code</);
 });
 test('a call map keeps siblings attached to their actual caller and labels arguments',()=>{
  const extra={...result.nodes[1],node_id:'audit',label:'audit'};

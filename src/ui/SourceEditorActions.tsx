@@ -4,6 +4,7 @@ import type { SourceEditor, SourceEditorLocation } from '../shared';
 export function SourceEditorActions({ location }: { location: SourceEditorLocation }) {
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState('');
+  const label = location.line === undefined ? '在编辑器中打开' : `在编辑器中打开（第 ${location.line} 行）`;
 
   async function open(editor: SourceEditor) {
     setOpening(true);
@@ -18,11 +19,11 @@ export function SourceEditorActions({ location }: { location: SourceEditorLocati
   }
 
   return <>
-    <div className="row" role="group" aria-label="在编辑器中打开源码" aria-busy={opening}>
-      <button type="button" disabled={opening} onClick={() => void open('default')}>在默认编辑器中打开（仅文件）</button>
-      <button type="button" disabled={opening} onClick={() => void open('vscode')}>
-        {location.line === undefined ? '在 VS Code 中打开' : `在 VS Code 中打开到第 ${location.line} 行`}
-      </button>
+    <div className="row" role="group" aria-label={label} aria-busy={opening}>
+      <small>{label}</small>
+      <button type="button" disabled={opening} onClick={() => void open('default')}>默认编辑器</button>
+      <button type="button" disabled={opening} onClick={() => void open('trae')}>Trae</button>
+      <button type="button" disabled={opening} onClick={() => void open('vscode')}>VS Code</button>
     </div>
     {error && <small className="warning" role="alert">{error}</small>}
   </>;
