@@ -33,7 +33,7 @@ app.whenReady().then(async()=>{
   });}
   catch(e){dialog.showErrorBox('Arc 无法打开数据',(e as Error).message);app.quit();return;}
   bridge=new ArcMcpBridge(service,resources);await bridge.start();
-  window=new BrowserWindow({width:1440,height:900,minWidth:320,minHeight:560,title:'Arc · 工程理解工作台',backgroundColor:'#101923',show:false,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
+  window=new BrowserWindow({width:1440,height:900,minWidth:320,minHeight:560,title:'Arc · 工程理解工作台',backgroundColor:'#f4f6f2',show:false,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
   window.removeMenu();
   const notifyFocus = () => window?.webContents.send('arc:event', { type: 'window_focus' });
   window.on('focus', notifyFocus);
