@@ -71,8 +71,9 @@ export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mo
     if(label)counts.set(label,(counts.get(label)||0)+1);
   }
   return <section className="feature-catalog" aria-label="已发现的功能目录">
-    <div className="feature-catalog-heading"><div><h2>系统有哪些功能</h2><p>首轮目录依据源码列出已发现的能力。可先查看步骤与源码，再按需生成调用链和调用时间图。</p></div>{!catalog&&<button disabled={busy} onClick={discover}>{mode==='mcp'?'准备功能发现任务':'在 ARC 内发现功能'}</button>}</div>
-    {catalog?<><div className="discovery-coverage"><div className="discovery-coverage-row"><strong>已发现 {count} 项功能 · 双图就绪 {readyCount}/{count}</strong>
+    <header className="feature-catalog-heading"><div><h2>系统有哪些功能</h2><p>从功能入口查看首轮步骤与源码，或展开函数调用链和时间图。</p></div>{!catalog&&<button disabled={busy} onClick={discover}>{mode==='mcp'?'准备功能发现任务':'在 ARC 内发现功能'}</button>}</header>
+    {catalog?<><div className="discovery-coverage"><div className="discovery-coverage-row"><div className="catalog-progress"><strong>已发现 {count} 项功能 · 双图就绪 {readyCount}/{count}</strong>
+      {count>0&&<progress aria-label="功能双图覆盖进度" value={readyCount} max={count}/>}</div>
       <div className="discovery-coverage-actions">
         {queuedRunIds.length>0&&cancelQueued&&<button className="secondary" disabled={busy} onClick={()=>cancelQueued(queuedRunIds)}>清空排队（{queuedRunIds.length}）</button>}
         {generate&&(selecting
@@ -84,10 +85,14 @@ export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mo
             </button>}
           </>)}
       </div></div>
-      {!!counts.size&&<p aria-label="功能分析状态">{[...counts].map(([label,n])=>`${label} ${n}`).join(' · ')}</p>}
-      <details><summary>查看目录来源与覆盖范围</summary><p>{catalog.scope}</p></details>{explanation?.source_status!=='current'&&<small className="warning">来源已有变化：这是已保存的目录，详细分析仍须核对绑定快照。</small>}</div>
-    <div className="discovery-mode"><AnalysisModePicker label="补查分析方式" ariaLabel="功能展开方式" mode={mode} setMode={next=>{if(next==='mcp')exitSelection();setMode(next);}}/><small>{analysisModes[mode].description}</small></div>
-    <div className="catalog-search"><input type="search" aria-label="搜索工程功能" placeholder="按功能名称或用途查找…" value={search} onChange={e=>setSearch(e.target.value)}/>{search&&<button onClick={()=>setSearch('')}>清除搜索</button>}<small>{query?`找到 ${groups.reduce((n,g)=>n+g.visibleIds.length,0)} 项功能`:selecting?'点击功能卡片即可选择':'点击功能卡片即可继续'}</small></div>
+      <details><summary>目录来源与覆盖范围</summary><p>{catalog.scope}</p>
+        {!!counts.size&&<p aria-label="功能分析状态">{[...counts].map(([label,n])=>`${label} ${n}`).join(' · ')}</p>}
+      </details>{explanation?.source_status!=='current'&&<small className="warning">来源已有变化，详细分析仍须核对绑定快照。</small>}</div>
+    <div className="catalog-controls">
+      <div className="catalog-search"><input type="search" aria-label="搜索工程功能" placeholder="按功能名称或用途查找…" value={search} onChange={e=>setSearch(e.target.value)}/>{search&&<button onClick={()=>setSearch('')}>清除搜索</button>}</div>
+      <div className="discovery-mode" title={analysisModes[mode].description}><AnalysisModePicker label="补查方式" ariaLabel="功能展开方式" mode={mode} setMode={next=>{if(next==='mcp')exitSelection();setMode(next);}}/></div>
+    </div>
+    {query&&<p role="status">找到 {groups.reduce((n,g)=>n+g.visibleIds.length,0)} 项功能</p>}
     {!groups.length&&(count?<p role="status">没有匹配的功能，试试用途关键词或清除搜索。</p>:<section className="discovery-empty"><h3>本轮尚未确认功能入口</h3><p>{catalog.scope}</p>{Array.from(new Set(result!.gaps.map(gap=>gap.question.trim()).filter(reason=>reason&&!unresolved.includes(reason)))).map(reason=><p key={reason}>{reason}</p>)}</section>)}
     {selecting&&generate&&<div className="catalog-batch-bar">
       <span role="status">已选 {selectedPendingIds.length} 项待生成</span>
@@ -117,8 +122,9 @@ export function FeatureCatalog({explanation,data,projectId,busy,open,discover,mo
           return <button className={`capability-card${selectionClass}`} data-capability-id={id} key={id}
             disabled={selecting?!selectable:busy||graph.archived} aria-pressed={selectable?checked:undefined}
             onClick={()=>selecting?updateSelection([id],!checked):open(id)}>
-            <span><strong>{node.label}</strong><small title={node.description}>{node.description}</small></span>
-            <span className={`capability-state${affected ? ' affected' : ''}`}>{label}{!selecting&&<b aria-hidden="true">↗</b>}</span>
+            <strong>{node.label}</strong>
+            <span className={`capability-state${affected ? ' affected' : ''}`}>{label}</span>
+            <small title={node.description}>{node.description}</small>
             {selectable&&<span className="capability-check" aria-hidden="true">{checked?'✓':''}</span>}
           </button>;
         })}
@@ -141,17 +147,19 @@ export function CatalogFeatureReading({explanation,nodeId,currentSnapshot,source
     <button key={e.evidence_id} aria-pressed={sourceId===e.evidence_id} onClick={()=>onSource(e.evidence_id)}>
       {e.path} · L{e.line_start}{e.line_end!==e.line_start?'–'+e.line_end:''}
     </button>);
-  return <article className="catalog-reading" aria-label={functionActions?'首轮函数走读线索':'工程分析中的功能说明'}>
-    <header><small>{result.binding.source_snapshot_id!==currentSnapshot?'历史工程分析':'工程分析'} · {functionActions?'首轮线索':reading?.steps.length?'首轮走读':'功能线索'}</small>
-      <h2>{functionActions?'函数调用图尚未生成':node.label}</h2>
-      <p>{functionActions?`下方保留了工程全貌中「${node.label}」的首轮线索和源码依据。`:node.description}</p>
+  return <article className="catalog-reading" aria-label="工程分析中的功能说明">
+    <header><small>{result.binding.source_snapshot_id!==currentSnapshot?'历史工程分析':'工程分析'} · {reading?.steps.length?'首轮走读':'功能线索'}</small>
+      <h2>{node.label}</h2>
+      <p>{node.description}</p>
     </header>
     {functionActions}
-    {reading?.entry&&<div className="catalog-reading-fact"><strong>触发入口</strong><span>{reading.entry}</span></div>}
-    {!!reading?.steps.length&&<section><h3>{functionActions?'已记录的处理步骤':'处理过程'}</h3><ol className="catalog-reading-steps">{reading.steps.map((step,index)=>
+    {(reading?.entry||reading?.outcome)&&<dl className="catalog-reading-facts">
+      {reading.entry&&<div><dt>触发入口</dt><dd>{reading.entry}</dd></div>}
+      {reading.outcome&&<div><dt>处理结果</dt><dd>{reading.outcome}</dd></div>}
+    </dl>}
+    {!!reading?.steps.length&&<section><h3>处理步骤</h3><ol className="catalog-reading-steps">{reading.steps.map((step,index)=>
       <li key={index}><p>{step.text}</p><div className="catalog-reading-refs">{references(step.evidence_ids)}</div></li>)}</ol></section>}
-    {reading?.outcome&&<div className="catalog-reading-fact"><strong>处理结果</strong><span>{reading.outcome}</span></div>}
-    {reading?.boundary?<p className="catalog-reading-boundary"><strong>覆盖边界</strong> {reading.boundary}</p>:!reading?.steps.length&&<p className="catalog-reading-boundary">这份目录只保存了用途与发现依据。</p>}
+    {(reading?.boundary||!reading?.steps.length)&&<aside className="catalog-reading-boundary"><strong>覆盖边界</strong><p>{reading?.boundary||'首轮尚未展开这项功能的完整处理步骤。'}</p></aside>}
     <section><h3>功能来源</h3><div className="catalog-reading-refs">{references(node.evidence_ids)}</div></section>
     {selected&&<section className="catalog-reading-source"><button onClick={()=>onSource('')}>收起源码</button><SourceExcerpt key={selected.evidence_id} evidence={selected}/></section>}
   </article>;

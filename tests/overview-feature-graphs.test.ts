@@ -19,7 +19,7 @@ const overview={
   scope:'main.c',unresolved:[],components:[{id:'component',kind:'stage',label:'读写接口',description:'对外提供读写入口。',inputs:[],outputs:[],evidence_ids:['definition']}],
   features:[{label:'接口',items:capabilities.map(name=>({id:name,label:name,description:name===declaredEntry?`声明 ${name} 入口。`:`从 ${name} 调用 record。`,evidence_ids:[name+'-line']}))}],
   readings:[...entries.map(name=>({node_id:name,entry:name,outcome:'返回记录值',steps:[{text:'调用 record。',evidence_ids:[name+'-line']}],boundary:'仅静态调用'})),
-    {node_id:deferredEntry,entry:'',outcome:'',steps:[],boundary:deferredCatalogReadingBoundary},
+    {node_id:deferredEntry,entry:`调用 ${deferredEntry}`,outcome:'返回 record() 的结果',steps:[],boundary:deferredCatalogReadingBoundary},
     {node_id:declaredEntry,entry:'',outcome:'',steps:[],boundary:deferredCatalogDeclarationBoundary}],
   relations:[],evidence:source.map((quote,i)=>({id:i?capabilities[i-1]+'-line':'definition',path:'main.c',start:i+1,end:i+1,quote})),
 };

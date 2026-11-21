@@ -231,7 +231,7 @@ function App() {
   const currentFeature = data.features.find(f => f.feature_id === scenario?.feature_id);
   const breakdownFeature = modal === 'breakdown' && data.features.find(f => f.feature_id === formFeature);
   const discovery = currentFeature?.discovery;
-  const graphRun = discovery && reading.view === 'timeline' && result ? sceneRuns.find(run => run.binding.run_id === result.binding.run_id && run.dsh_function_format) : undefined;
+  const graphRun = discovery && reading.view === 'timeline' && result && !result.reading_guide?.paths.length ? sceneRuns.find(run => run.binding.run_id === result.binding.run_id && run.dsh_function_format) : undefined;
   const graphCatalog =
     graphRun?.overview_parent_run_id && discovery
       ? data.explanations.find(
@@ -253,7 +253,7 @@ function App() {
   const preview = featureSource && !catalogReading && !engineeringReading && project && discovery;
   const functionPreview = !!preview && reading.view === 'functions';
   const previewGraphs = preview ? catalogGraphState(data, featureSource, preview.node_id) : undefined;
-  const previewRun = functionPreview ? previewGraphs?.run : undefined;
+  const previewRun = previewGraphs?.run;
   const automaticRun = previewRun?.overview_parent_run_id;
   const previewExplanation = functionPreview ? previewGraphs?.ready ?? (!automaticRun ? previewGraphs?.latest : undefined) : undefined;
 
@@ -338,7 +338,7 @@ function App() {
 
   const latestRun = sceneRuns.at(-1);
   const running = sceneRuns.find(r => ['queued', 'waiting_agent', 'running', 'validating', 'cancel_requested'].includes(r.status));
-  const activityRun = functionPreview ? previewRun : running || latestRun;
+  const activityRun = preview ? previewRun : running || latestRun;
   const completedExplanation = data.explanations.find(e => e.result.binding.run_id === activityRun?.binding.run_id);
   const projectTasks = data.runs.filter(r => !r.reading_question_id && r.binding.project_id === projectId && ['queued', 'waiting_agent', 'running', 'validating', 'cancel_requested'].includes(r.status));
   const otherProjectTasks = projectTasks.filter(r => !r.overview_parent_run_id);
@@ -766,7 +766,9 @@ function App() {
         ? { detail_tab: 'details', scroll: { ...r.scroll, [`detail-${r.view}-details`]: { top: 0, left: 0 } } }
         : {}),
     }));
-    if (detailDrawer || reading.view === 'functions') {
+    if (!id) {
+      setShowDetail(false);
+    } else if (detailDrawer || reading.view === 'functions') {
       previousFocus.current = document.activeElement as HTMLElement;
       setShowDetail(true);
     }
@@ -951,7 +953,7 @@ function App() {
     starting.current = true;
     setPending(true);
     const readingAtStart = activeReadingKey.current;
-    const keepFunctions = !overview && reading.view === 'functions';
+    const keepFunctions = !overview && (reading.view === 'functions' || !!preview);
     try {
       await action(async () => {
         if (expandMode === 'codex_desktop' && !(await desktopReady(projectId))) {
@@ -1095,6 +1097,7 @@ function App() {
       } else if (hasCollaborationRoles(original.result) && (kind === 'role' || kind === 'handoff' || kind === 'edge')) {
         position.view = 'collaboration';
         position.selected = (kind === 'role' ? 'role:' : 'handoff:') + id;
+        position.reading_path = guide.paths.find(path => (kind === 'role' ? path.role_ids : path.handoff_ids).includes(id))?.id ?? '';
       } else if (kind === 'step' || kind === 'node') {
         position.selected = 'step:' + id;
         position.reading_path = guidePathForStep(guide, id)?.id ?? '';
@@ -1200,10 +1203,11 @@ function App() {
     previewRun.provider_id === 'codex' &&
     !previewRun.dsh_overview_format &&
     !previewRun.dsh_function_format;
-  const needsFunctionGraphs = reading.entrance === 'walk' && reading.view === 'functions' && (functionPreview || (!!result && !result.function_walkthroughs?.length));
-  const generateLabel = expandMode === 'mcp' ? '准备调用图任务' : '用 ' + analysisMode.name + ' 生成调用图';
+  const needsFunctionGraphs = (!!preview && !previewGraphs?.ready) ||
+    (reading.entrance === 'walk' && reading.view === 'functions' && !!result && !result.function_walkthroughs?.length);
+  const generateLabel = expandMode === 'mcp' ? '准备函数双图任务' : '生成函数调用链与时间图';
   const graphPending = activityRun && ['queued', 'waiting_agent', 'running', 'validating', 'cancel_requested'].includes(activityRun.status);
-  const graphWaiting = functionPreview ? previewGraphs?.status === '等待领取' : waitingMcp;
+  const graphWaiting = preview ? previewGraphs?.status === '等待领取' : waitingMcp;
 
   const manualGraphActions = (
     <>
@@ -1223,11 +1227,11 @@ function App() {
   );
 
   const graphActions = needsFunctionGraphs && (
-    <section aria-label="当前功能的深入分析">
+    <section className="catalog-graph-actions" aria-label="当前功能的深入分析">
       {automaticRun ? (
         <p role="status">本轮工程分析已包含此功能 · {previewGraphs?.status || '已结束'}。</p>
       ) : (
-        <p>一次功能分析可生成调用链和调用时间图。调用链展示谁调用谁，时间图按源码确认的先后排列步骤。</p>
+        <p>{analysisMode.name} 将沿冻结源码核对函数调用和执行顺序。</p>
       )}
       {graphPending || graphWaiting ? (
         <div className="row">
@@ -1698,7 +1702,6 @@ function App() {
       graphCatalog={graphCatalog}
       featureSource={featureSource}
       preview={preview}
-      functionPreview={functionPreview}
       graphActions={graphActions}
       selectedFile={selectedFile}
       waitingMcp={waitingMcp}

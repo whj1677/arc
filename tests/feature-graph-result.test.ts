@@ -3,12 +3,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { featureGraphSchema, prepareFeatureGraph } from '../src/main/feature-graph-result';
+import Ajv2020 from 'ajv/dist/2020';
+import { featureGraphPrompt, featureGraphSchema, prepareFeatureGraph } from '../src/main/feature-graph-result';
+import { featureReadingModel, hasCollaborationRoles } from '../src/ui/feature-reading-model';
+import { readingQuestionTarget } from '../src/ui/reading-target';
+import { buildReadingContext, promptContext } from '../src/main/prompt-context';
 import type { runCodex } from '../src/main/providers';
 import { ArcService } from '../src/main/service';
 import { capture } from '../src/main/snapshot';
 import { validateResult } from '../src/main/validation';
-import { hasFunctionGraphs, type Run } from '../src/shared';
+import { hasFunctionGraphs, type ReadingState, type Run } from '../src/shared';
 
 const lines = [
   'static int last;',
@@ -45,9 +49,13 @@ async function workspace(t: TestContext) {
   await fs.writeFile(path.join(root, 'main.c'), [...lines, ...Array(40).fill('')].join('\r\n'));
   return { root, storage, clean: () => fs.rm(dir, { recursive: true }) };
 }
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, sources: Record<string, string> = {}) {
   const { root, storage, clean } = await workspace(t);
   t.after(clean);
+  for (const [file, source] of Object.entries(sources)) {
+    await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
+    await fs.writeFile(path.join(root, file), source);
+  }
   const snapshot = await capture(root, 'project', storage, '');
   const run: Run = { binding: { project_id: 'project', source_snapshot_id: snapshot.source_snapshot_id, run_id: 'run',
     scenario_id: 'scenario', question_revision_id: 'revision', feature_id: 'feature' },
@@ -87,6 +95,65 @@ test('feature graph rejects a wrong verbatim quote and an overlong frozen range'
     assert.match((error as Error).message, /record-def.*不超过 40 行/);
     return true;
   });
+});
+
+test('guide projects proven cross-file handoffs, duties and files for each entry, including older saved compact graphs', async t => {
+  const { prepare, snapshot, run } = await fixture(t, {
+    'main.c': ['extern int record(int value);', ...lines.slice(5)].join('\n'),
+    'storage/record.c': lines.slice(0, 5).join('\n'),
+  });
+  const draft = graphDraft();
+  draft.evidence[0] = { ...draft.evidence[0], start: 2, end: 4 };
+  draft.evidence[1].path = 'storage/record.c';
+  draft.evidence[2] = { ...draft.evidence[2], start: 3, end: 3 };
+  draft.walkthroughs[0].steps[1].output = '返回保存的整数';
+  draft.walkthroughs.push({ ...draft.walkthroughs[0], id: 'direct', label: '直接记录', entry_function_id: 'record',
+    trigger: '调用 record', steps: [{ ...draft.walkthroughs[0].steps[0], to_function_id: 'record', evidence_ids: ['record-def'] }] });
+  const result = await prepare(draft), guide = result.reading_guide!;
+  assert.deepEqual(guide.paths.map(p => p.files), [['main.c', 'storage/record.c'], ['storage/record.c']]);
+  const [caller, receiver] = guide.roles;
+  assert.deepEqual([caller.title, receiver.title], ['main.c', 'record.c']);
+  assert.equal(receiver.duty, draft.functions[1].description);
+  assert.deepEqual(guide.paths.map(p => p.role_ids), [[caller.id, receiver.id], [receiver.id]]);
+  const [handoff] = guide.handoffs;
+  assert.deepEqual([handoff.from, handoff.to, handoff.send, handoff.receive], [caller.id, receiver.id, 'value', '返回保存的整数']);
+  assert.deepEqual(handoff.evidence_ids, ['site']);
+  assert.deepEqual(guide.paths.map(p => p.handoff_ids), [[handoff.id], []]);
+  assert.deepEqual(guide.files[1].step_ids, [guide.paths[0].step_ids[1], guide.paths[1].step_ids[0]]);
+  const legacy = { ...result, reading_guide: { ...guide, roles: [], handoffs: [],
+    paths: guide.paths.map(p => ({ ...p, role_ids: [], handoff_ids: [], files: ['main.c'] })),
+    files: guide.files.map(f => ({ ...f, title: f.path, detail: '' })) } };
+  assert.deepEqual(featureReadingModel(legacy), guide);
+  assert.equal(hasCollaborationRoles(legacy), true);
+  const project = { ...run.binding, name: '测试工程', root_path: snapshot.root_path, snapshot_id: snapshot.source_snapshot_id,
+    fictional: false, build_config: '', created_at: run.created_at };
+  const feature = { ...run.binding, name: '记录', archived: false, sort_order: 0 };
+  const scenario = { ...feature, title: run.title, question: run.question };
+  for (const result of [legacy, { ...legacy, reading_guide: guide }]) {
+    for (const [kind, item] of [['role', receiver], ['handoff', handoff]] as const) {
+      const position = { view: 'collaboration', selected: `${kind}:${item.id}` } as ReadingState;
+      const { target } = readingQuestionTarget(result, position, feature.feature_id, snapshot);
+      assert.deepEqual(target, { kind, id: item.id });
+      const context = buildReadingContext({ project, feature, scenario, result, target, snapshot,
+        annotations: [], questions: [], sourceMode: 'bound', previousSnapshotId: null });
+      assert.deepEqual(context.existing_explanation, { source_snapshot_id: snapshot.source_snapshot_id, historical: false, selected: item, claims: [] });
+      assert.equal(context.source_snapshot_id, snapshot.source_snapshot_id);
+      assert.deepEqual(context.evidence.map(e => e.evidence_id), item.evidence_ids);
+    }
+  }
+  assert.equal(legacy.reading_guide.roles.length, 0);
+});
+
+test('compact graph transport allows complex subsystems beyond the former path and function caps', async t => {
+  const { run, snapshot } = await fixture(t), draft = graphDraft();
+  const count = <T>(item: T, n: number) => Array.from({ length: n }, () => item);
+  const walk = { ...draft.walkthroughs[0], steps: count(draft.walkthroughs[0].steps[1], 36) };
+  const expanded = { ...draft, functions: count(draft.functions[0], 32), calls: count(draft.calls[0], 64),
+    walkthroughs: count(walk, 8), evidence: count(draft.evidence[0], 100) };
+  const validate = new Ajv2020({ strict: false }).compile(featureGraphSchema);
+  assert.ok(validate(expanded), JSON.stringify(validate.errors));
+  assert.equal(validate({ ...expanded, functions: [...expanded.functions, draft.functions[0]] }), false);
+  assert.match(featureGraphPrompt(run, snapshot, promptContext(snapshot, [])), /跨文件核对调用点与接收方定义/);
 });
 
 test('functions, calls and evidence may share an ID while duplicates in one collection fail', async t => {

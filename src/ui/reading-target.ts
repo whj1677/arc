@@ -1,4 +1,5 @@
 import type {AnalysisResult,ReadingState,ReadingTarget,Snapshot} from '../shared';
+import {savedReadingGuide} from '../feature-graph-guide';
 import {selectedCallStep} from './function-sequence-model';
 
 // A slash cannot occur in a canonical object ID.
@@ -12,8 +13,8 @@ export function readingQuestionTarget(result:AnalysisResult|undefined,reading:Re
     return {target:{kind:snapshot?.files.some(f=>f.path===path)?'file':'directory',id:path},label:path||'工程根目录'};
   }
   const split=selection.indexOf(':'),kind=selection.slice(0,split),key=selection.slice(split+1);
-  if(result?.reading_guide){
-    const guide=result.reading_guide;
+  const guide=savedReadingGuide(result);
+  if(guide){
     const item=kind==='step'?guide.steps.find(s=>s.id===key):kind==='role'?guide.roles.find(s=>s.id===key):kind==='handoff'?guide.handoffs.find(s=>s.id===key):undefined;
     if(item)return {target:{kind:kind as 'step'|'role'|'handoff',id:key},label:'title'in item?item.title:item.label};
   }

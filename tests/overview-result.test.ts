@@ -5,9 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {capture} from '../src/main/snapshot';
 import {compactEvidence,deferredCatalogReadingBoundary,overviewSchema,prepareOverview,overviewPrompt,OverviewValidationError} from '../src/main/overview-result';
-import {overviewDiscoveryQuestion} from '../src/main/architecture-analysis';
-import {overviewDiscoveryBudget,promptContext} from '../src/main/prompt-context';
-import type {Run} from '../src/shared';
+import {overviewDiscoveryQuestion,previousCatalogQuestion} from '../src/main/architecture-analysis';
+import {promptContext} from '../src/main/prompt-context';
+import {analysisBudget,type Run} from '../src/shared';
 
 async function fixture(t:TestContext){
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-overview-')),root=path.join(dir,'source'),storage=path.join(dir,'data');
@@ -117,9 +117,14 @@ test('overview generates source-bound readings with the catalog, preserves a leg
   const reading={node_id:'send-feature',entry:'调用 submit',outcome:'字符串进入队列',steps:[{text:'把传入的值加入队列。',evidence_ids:['e-send']}],boundary:'接收时机与外部调用方未查证。'};
   const current={...run,question:overviewDiscoveryQuestion};
   await assert.rejects(prepareOverview(value,current,snapshot,storage),/readings/);
+  await assert.rejects(prepareOverview(value,{...run,question:previousCatalogQuestion},snapshot,storage),/readings/);
   const result=await prepareOverview({...value,readings:[reading]},current,snapshot,storage);
   assert.deepEqual(result.feature_catalog?.readings,[reading]);
   assert.equal(result.evidence.find(e=>e.evidence_id===reading.steps[0].evidence_ids[0])?.line_start,3);
+  const clue={...reading,steps:[],boundary:deferredCatalogReadingBoundary};
+  const deferred=await prepareOverview({...value,readings:[clue]},current,snapshot,storage);
+  assert.deepEqual(deferred.feature_catalog?.readings,[clue]);
+  assert.deepEqual(deferred.nodes.find(node=>node.node_id===clue.node_id)?.evidence_ids,['e-send']);
   await assert.rejects(prepareOverview({...value,readings:[]},run,snapshot,storage),/功能缺少阅读内容/);
   const empty={...value,features:[],readings:[],unresolved:[]};
   await assert.rejects(prepareOverview(empty,current,snapshot,storage),/功能目录为空/);
@@ -128,28 +133,28 @@ test('overview generates source-bound readings with the catalog, preserves a leg
   assert.equal(Object.hasOwn(old.feature_catalog!,'readings'),false);
 });
 
-test('a broad overview accepts 300 source anchors and rejects a 301st',async t=>{
+test('a broad overview preserves 16 groups of 24 verified capabilities and up to 512 anchors',async t=>{
   const {value,run,snapshot,storage}=await fixture(t);
   const [group]=value.features,[feature]=group.items;
-  const groups=Array.from({length:9},(_,i)=>({label:`能力族 ${i+1}`,items:Array.from({length:13},(_,j)=>({
-    ...feature,id:`feature-${i}-${j}`,evidence_ids:[`anchor-${i*13+j}`],
+  const groups=Array.from({length:16},(_,i)=>({label:`能力族 ${i+1}`,items:Array.from({length:24},(_,j)=>({
+    ...feature,id:`feature-${i}-${j}`,evidence_ids:[`anchor-${i*24+j}`],
   }))}));
-  const evidence=[...value.evidence,...Array.from({length:300-value.evidence.length},(_,i)=>({...value.evidence[1],id:`anchor-${i}`}))];
+  const evidence=[...value.evidence,...Array.from({length:512-value.evidence.length},(_,i)=>({...value.evidence[1],id:`anchor-${i}`}))];
   const readings=groups.flatMap(({items})=>items.map(item=>({node_id:item.id,entry:'',outcome:'',steps:[],boundary:deferredCatalogReadingBoundary})));
   const current={...run,question:overviewDiscoveryQuestion};
   const result=await prepareOverview({...value,features:groups,evidence,readings},current,snapshot,storage);
-  assert.equal(result.feature_catalog?.groups.length,9);
-  assert.equal(result.feature_catalog?.groups[0].node_ids.length,13);
-  assert.equal(result.evidence.length,300);
+  assert.equal(result.feature_catalog?.groups.length,16);
+  assert.equal(result.feature_catalog?.groups[0].node_ids.length,24);
+  assert.equal(result.evidence.length,512);
   assert.deepEqual(result.feature_catalog?.readings,readings);
-  await assert.rejects(prepareOverview({...value,features:groups,readings,evidence:[...evidence,{...value.evidence[1],id:'extra-anchor'}]},current,snapshot,storage),/\/evidence: must NOT have more than 300 items/);
+  await assert.rejects(prepareOverview({...value,features:groups,readings,evidence:[...evidence,{...value.evidence[1],id:'extra-anchor'}]},current,snapshot,storage),/\/evidence: must NOT have more than 512 items/);
 });
 
 test('overview prompt asks for module-by-module coverage within the first-turn budget',async t=>{
   const {run,snapshot}=await fixture(t);
   const current={...run,question:overviewDiscoveryQuestion};
   const prompt=overviewPrompt(current,snapshot,promptContext(snapshot,[]));
-  assert.ok(prompt.includes(`预算共 ${overviewDiscoveryBudget.calls} 次源码工具调用`));
+  assert.ok(prompt.includes(`预算共 ${analysisBudget(snapshot).discovery.calls} 次源码工具调用`));
   assert.match(prompt,/完成逐目录清点且证据足够后，提前停止并立即返回完整 JSON/);
   for(const provider_id of ['codex','dsh'] as const){
     const instructions=overviewPrompt({...current,provider_id},snapshot,promptContext(snapshot,[]));
@@ -158,14 +163,18 @@ test('overview prompt asks for module-by-module coverage within the first-turn b
     assert.match(instructions,/逐目录清点全部实质模块，不漏模块/);
     assert.match(instructions,/实际实现或公共接口的，都应纳入 features/);
     assert.match(instructions,/按模块独立职责拆分功能项/);
-    assert.match(instructions,/4–6 条端到端主线写 steps，每条主线用 2–4 条短步骤/);
+    assert.match(instructions,/约 4 条端到端主线写 steps/);
+    const large={...snapshot,files:snapshot.files.map(file=>({...file,line_count:130000}))};
+    const broad=overviewPrompt({...current,provider_id},large,promptContext(large,[]));
+    assert.match(broad,/约 10 条端到端主线写 steps/);
+    assert.ok(broad.includes(`预算共 ${analysisBudget(large).discovery.calls} 次源码工具调用`));
     assert.doesNotMatch(instructions,/30–70|20–50|目标各不超过 6 项|通常不超过 12 个/);
   }
   assert.match(prompt,/inventory\.source_directories.*entry_file_hints.*arc_list_files/);
   assert.match(prompt,/每个次要模块只需一处能确认入口与职责的短锚点/);
   assert.match(prompt,/库 \/ 内核 \/ SDK \/ 框架工程.*核心模块及其公共能力族/);
   assert.match(prompt,/示例 main\(\) 调用的少数 API/);
-  assert.match(prompt,/steps: \[\]、entry: ''、outcome: ''/);
+  assert.match(prompt,/steps: \[\].*功能锚点直接证明的触发入口或处理结果/);
   assert.ok(prompt.includes(deferredCatalogReadingBoundary));
 });
 

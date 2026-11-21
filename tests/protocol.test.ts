@@ -8,6 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {AcpConnection,redact,CodexTurnErrors,codexChildEnvironment,codexModelArguments,runCodex,readingWatchdog,isSupportedCodexVersion,codexFeatureFlags,reasoningEffortForRun} from '../src/main/providers';
 import {overviewDiscoveryQuestion} from '../src/main/architecture-analysis';
+import {analysisBudget,type Snapshot} from '../src/shared';
+import {dshWorkProgress} from '../src/main/dsh-web';
 
 test('direct Codex execution cannot inherit a desktop tool pipe or the calling session identity',()=>{
   const parent={PATH:'path',CODEX_HOME:'owned-codex-home',HTTPS_PROXY:'existing-proxy',CODEX_APP_TOOLS_PIPE_PATH:'host-pipe',CODEX_APP_RUNTIME_CLI_PATH:'host-cli',CODEX_THREAD_ID:'host-thread',CODEX_SESSION_ID:'host-session',CODEX_PERMISSION_PROFILE:'host-permissions',ELECTRON_RUN_AS_NODE:'1'};
@@ -54,13 +56,46 @@ for(const {label,run,minutes} of [
     t.mock.timers.enable({apis:['setTimeout','Date']});
     const queued={...run,created_at:new Date(Date.now()-10*60*1000).toISOString()};
     const events:any[]=[];let stopped=0,error='';
-    readingWatchdog(queued,async()=>{stopped++;},message=>{error=message;},event=>events.push(event),()=>assert.fail('stopping should succeed'));
-    t.mock.timers.tick(minutes*60*1000-1);assert.equal(stopped,0);assert.equal(error,'');
+    const watchdog=readingWatchdog(queued,async()=>{stopped++;},message=>{error=message;},event=>events.push(event),()=>assert.fail('stopping should succeed'));
+    for(let i=1;i<minutes;i++){t.mock.timers.tick(60000);watchdog.progress('item.completed');}
+    t.mock.timers.tick(60000-1);assert.equal(stopped,0);assert.equal(error,'');
     t.mock.timers.tick(1);assert.equal(stopped,1);
     assert.match(error,new RegExp(`${label}超过 ${minutes} 分钟.*已收原文保留`));
     assert.equal(events[0].stage,'timeout');
   });
 }
+
+test('file count or total lines independently raise analysis and discovery budgets at each tier',()=>{
+  const snapshot=(files:number,lines:number)=>({files:Array.from({length:files},(_,i)=>({line_count:i===0?lines:0}))}) as Snapshot;
+  assert.deepEqual(analysisBudget(),analysisBudget(snapshot(40,10000)));
+  const cases=[[41,10001,14,20,11,96],[151,40001,20,25,14,128],[401,120001,25,30,16,160]];
+  for(const [files,lines,feature,overview,discovery,calls] of cases){
+    const budget=analysisBudget(snapshot(files,1));
+    assert.deepEqual(budget,analysisBudget(snapshot(1,lines)));
+    assert.deepEqual([budget.featureMinutes,budget.overviewMinutes,budget.discoveryMinutes,budget.discovery.calls],[feature,overview,discovery,calls]);
+  }
+});
+
+test('a large feature continues beyond eight minutes with work and expires after six idle minutes',t=>{
+  t.mock.timers.enable({apis:['setTimeout','Date']});
+  const snapshot={files:[{line_count:50000}]} as Snapshot;
+  let reason='';
+  const watchdog=readingWatchdog({},async()=>{},message=>{reason=message;},()=>{},()=>{},false,undefined,snapshot);
+  for(let i=0;i<2;i++){t.mock.timers.tick(5*60000);watchdog.progress('item.updated');}
+  watchdog.progress('error');
+  t.mock.timers.tick(6*60000-1);assert.equal(reason,'');
+  t.mock.timers.tick(1);assert.match(reason,/连续 6 分钟/);
+});
+
+test('DSH idle renewal counts work on the admitted reading turn',()=>{
+  const progress=(type:string,turn:number)=>dshWorkProgress({seq:1,type,data:{turn}},3);
+  for(const type of ['step/start','step/end','tool/call','tool/result','assistant/message']){
+    assert.equal(progress(type,3),true);
+    assert.equal(progress(type,2),false);
+  }
+  assert.equal(progress('assistant/attempt',3),false);
+  assert.equal(progress('session/heartbeat',3),false);
+});
 
 test('a reading timeout reports a rejected stop instead of continuing to wait silently',async t=>{
   t.mock.timers.enable({apis:['setTimeout']});
@@ -106,6 +141,22 @@ test('an active first discovery stops at eight minutes and reserves the remainin
   t.mock.timers.tick(4*60000);watchdog.progress('item.completed');
   t.mock.timers.tick(4*60000-1);assert.equal(reason,'');
   t.mock.timers.tick(1);assert.equal(reason,'discovery');
+});
+
+test('large overviews reserve eleven minutes for synthesis and review after fourteen minutes of discovery',t=>{
+  t.mock.timers.enable({apis:['setTimeout','Date']});
+  const run={overview_format:'overview-1' as const,execution_started_at:new Date().toISOString()};
+  const snapshot={files:[{line_count:40001}]} as Snapshot;
+  const failures:string[]=[];
+  const phase=(discovery:boolean)=>readingWatchdog(run,async()=>{},message=>failures.push(message),()=>{},()=>{},discovery,undefined,snapshot);
+  const discovery=phase(true);
+  t.mock.timers.tick(7*60000);discovery.progress('item.completed');
+  t.mock.timers.tick(7*60000);
+  assert.match(failures[0],/取证已达到 14 分钟/);
+  const review=phase(false);
+  t.mock.timers.tick(7*60000);review.progress('item.completed');
+  t.mock.timers.tick(4*60000-1);assert.equal(failures.length,1);
+  t.mock.timers.tick(1);assert.match(failures[1],/超过 25 分钟/);
 });
 
 test('long analysis waits beyond the former limit and accepts a later terminal reply',async t=>{

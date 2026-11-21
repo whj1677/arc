@@ -224,7 +224,7 @@ export function DetailPane({
             <path d="M9.8 2.8 13.2 6.2 11.4 8l-.7-.2-2.2 2.2.3 1.4-1.2 1.2-2.2-2.2-2.4 2.4-.6-.6 2.4-2.4-2.2-2.2 1.2-1.2 1.4.3 2.2-2.2-.2-.7z" />
           </svg>
         </button>
-        {architectureReading && !detailDrawer && (
+        {(architectureReading || featureReading || reading.view === 'functions') && !detailDrawer && (
           <button
             className="icon"
             aria-label="收起详情"

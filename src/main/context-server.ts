@@ -4,8 +4,8 @@ import path from 'node:path';
 import readline from 'node:readline';
 import Ajv from 'ajv';
 import {linesOf,readSource,relativePath} from './snapshot';
-import type {Snapshot} from '../shared';
-import {listFrozenFiles,overviewDiscoveryBudget} from './prompt-context';
+import {analysisBudget,type Snapshot} from '../shared';
+import {listFrozenFiles} from './prompt-context';
 import {getCodeIndex} from './code-index';
 import {getCallGraph,listModules,listSymbols} from './code-index-query';
 async function main() {
@@ -13,6 +13,8 @@ const contextPath=process.argv[2];
 if(!contextPath||!path.isAbsolute(contextPath))throw new Error('Explicit run context required');
 const context=JSON.parse(await fs.readFile(contextPath,'utf8')) as {storage:string;snapshot:Snapshot;resultSchema?:object};
 const discovery=process.argv[3]==='overview-discovery';
+const {discovery:overviewDiscoveryBudget,discoveryMinutes}=analysisBudget(context.snapshot);
+const discoveryDeadline=Date.now()+discoveryMinutes*60000;
 let remainingCalls:number=overviewDiscoveryBudget.calls;
 const resultSchema=context.resultSchema;
 const ajv=new Ajv();
@@ -60,6 +62,7 @@ async function handle(message:any){
     validateArguments(name,args);
     let result:object;
     if(discovery&&name!=='arc_submit_result'){
+      if(Date.now()>=discoveryDeadline)throw Error(`首轮取证已达到 ${discoveryMinutes} 分钟预算；请用已读源码生成 overview-1 JSON，将未查证的部分写入 unresolved。`);
       if(remainingCalls===0)throw Error('首轮取证预算已用完；用已取得的源码立即输出 overview-1 JSON，将未查证的部分写入 unresolved。');
       if(remainingCalls<=2&&name!=='arc_read_source')throw Error('剩余取证预算只用于 arc_read_source；直接读取已定位的入口，或立即输出 overview-1 JSON。');
       // Reserve the call before doing asynchronous I/O, including parallel requests.

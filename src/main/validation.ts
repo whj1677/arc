@@ -2,7 +2,7 @@ import Ajv2020 from 'ajv/dist/2020';
 import schema from '../../contracts/analysis-result.schema.json';
 import type { AnalysisResult, Run, Snapshot, SourceEvidence } from '../shared';
 import { linesOf, readSource, relativePath } from './snapshot';
-import {overviewDiscoveryQuestion} from './architecture-analysis';
+import {isCatalogOverview} from './architecture-analysis';
 import {validateReadingGuide} from './reading-guide-validation';
 import {validateFunctionWalkthroughs} from './function-walkthrough-validation';
 const ajv = new Ajv2020({allErrors:true,strict:false});
@@ -37,7 +37,7 @@ export async function validateResult(value: unknown, run: Run, snapshot: Snapsho
   refs(result);
   errors.push(...validateReadingGuide(result));
   errors.push(...validateFunctionWalkthroughs(result));
-  const currentOverview=run.question===overviewDiscoveryQuestion;
+  const currentOverview=isCatalogOverview(run.question);
   if(currentOverview&&!result.feature_catalog)errors.push('本次工程全貌缺少 feature_catalog 功能目录');
   if(result.feature_catalog){
     const seen=new Set<string>();
@@ -58,7 +58,6 @@ export async function validateResult(value: unknown, run: Run, snapshot: Snapsho
         if(described.has(reading.node_id))errors.push(`功能阅读重复：${reading.node_id}`);
         described.add(reading.node_id);
         if(!reading.boundary.trim()||reading.steps.some(step=>!step.text.trim()))errors.push(`功能阅读缺少步骤说明或边界：${reading.node_id}`);
-        if(!reading.steps.length&&(reading.entry.trim()||reading.outcome.trim()))errors.push(`功能阅读的入口或结果缺少有依据的步骤：${reading.node_id}`);
       }
       for(const id of seen)if(!described.has(id))errors.push(`功能缺少阅读内容或具体缺口：${id}`);
     }else if(currentOverview){

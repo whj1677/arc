@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {Store} from '../src/main/store';
-import {ExternalDispatch} from '../src/main/external-dispatch';
+import {externalAnalysisMinutes,ExternalDispatch} from '../src/main/external-dispatch';
+import type {Run,Snapshot} from '../src/shared';
 
 test('delivery stays pending until claim, duplicate enqueue is stable, restart never resends',async()=>{
   const directory=await fs.mkdtemp(path.resolve('.test-data/dispatch-'));
@@ -119,8 +120,14 @@ test('external analysis budget preserves unknown stop state and never releases a
   const directory=await fs.mkdtemp(path.resolve('.test-data/dispatch-')),store=new Store(directory);
   const queue=new ExternalDispatch(store,()=>{});
   try{
-    const item=queue.enqueue('p',{run_id:'r'});store.put('run','r',{binding:{run_id:'r'},status:'running'});
-    store.put('external_dispatch',item.dispatch_id,{...item,state:'running',thread_id:'t',claimed_at:new Date(Date.now()-301000).toISOString()});
+    const run={binding:{run_id:'r'},status:'running'} as Run;
+    const snapshot={files:[{line_count:40001}]} as Snapshot;
+    const item=queue.enqueue('p',{run_id:'r'});store.put('run','r',run);
+    store.put('external_dispatch',item.dispatch_id,{...item,state:'awaiting_claim',thread_id:'t',claimed_at:new Date(Date.now()-8*60000).toISOString()});
+    const claimed=queue.claim(item.dispatch_id,externalAnalysisMinutes(run,snapshot));
+    assert.equal(claimed.analysis_minutes,20);
+    await queue.pump();assert.equal(store.get<any>('run','r').status,'running');
+    store.put('external_dispatch',item.dispatch_id,{...claimed,claimed_at:new Date(Date.now()-20*60000).toISOString()});
     await queue.pump();assert.equal(store.get<any>('run','r').status,'blocked_external');assert.equal(store.get<any>('external_dispatch',item.dispatch_id).state,'unknown');assert.throws(()=>queue.claim(item.dispatch_id),/撤销/);
     await queue.pump();assert.equal(store.get<any>('external_dispatch',item.dispatch_id).state,'unknown');await assert.rejects(queue.retry(item.dispatch_id),/不能重发/);
   }finally{queue.close();store.close();await fs.rm(directory,{recursive:true});}

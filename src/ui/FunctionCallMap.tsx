@@ -3,7 +3,7 @@ import React,{useEffect,useId,useRef} from 'react';
 import type {AnalysisResult,SourceEvidence} from '../shared';
 import {functionCallMap,callLabelWidth,callLabelHeight} from './function-call-map';
 import {functionInfo} from './function-chain';
-import {Diagram,shortLabel} from './ReadingDiagrams';
+import {Diagram} from './ReadingDiagrams';
 
 type Props={
   result:AnalysisResult;
@@ -18,10 +18,23 @@ type Props={
 export function FunctionCallMap({result,pathId,selected,select,search,zoom,evidence}:Props){
   const m=functionCallMap(result,pathId,selected);
   const root=useRef<HTMLDivElement>(null);
-  useEffect(()=>{const frame=root.current?.querySelector<HTMLElement>('.reading-diagram-frame'),node=root.current?.querySelector<SVGElement>(`[data-function-node="${CSS.escape(m.focus.selected)}"]`);if(!frame||!node)return;const box=node.getBoundingClientRect(),viewport=frame.getBoundingClientRect();frame.scrollTo({top:frame.scrollTop+box.top-viewport.top-48,left:frame.scrollLeft+box.left-viewport.left-(frame.clientWidth-box.width)/2,behavior:'auto'});},[result.result_id,pathId,selected]);
   const marker='function-map-'+useId().replace(/:/g,'');
   const query=search.trim().toLowerCase();
   const selectedLink=m.links.find(link=>link.id===selected||link.edgeIds.some(id=>edgeSelection(id)===selected));
+  useEffect(()=>{
+    const breadcrumb = root.current?.querySelector<HTMLElement>('.function-map-breadcrumb');
+    if (breadcrumb) breadcrumb.scrollLeft = breadcrumb.scrollWidth;
+    const frame = root.current?.querySelector<HTMLElement>('.reading-diagram-frame');
+    const selector = selectedLink ? `[data-function-call="${CSS.escape(selectedLink.id)}"]` : `[data-function-node="${CSS.escape(m.focus.selected)}"]`;
+    const target = frame?.querySelector<SVGElement>(selector);
+    if (!frame || !target) return;
+    const box = target.getBoundingClientRect(), viewport = frame.getBoundingClientRect();
+    if (box.left >= viewport.left && box.right <= viewport.right && box.top >= viewport.top && box.bottom <= viewport.bottom) return;
+    frame.scrollTo({
+      top: frame.scrollTop + box.top - viewport.top - 42,
+      left: frame.scrollLeft + box.left - viewport.left - (frame.clientWidth - box.width) / 2,
+    });
+  },[result.result_id,pathId,m.focus.selected,selectedLink?.id]);
   const selectedNode=m.nodes.some(node=>node.node_id===m.focus.selected);
   const nodeName=(id:string)=>{const node=m.nodes.find(item=>item.node_id===id);return node?functionInfo(result,node).details?.symbol||node.label:id;};
   const fileName=(path:string|null|undefined)=>path?.split('/').at(-1)||'文件待确认';
@@ -55,14 +68,14 @@ export function FunctionCallMap({result,pathId,selected,select,search,zoom,evide
       </g>,
     };
   });
-  return <div className="function-call-map" ref={root}><div className="diagram-caption"><strong>从入口沿箭头走 →</strong><span>按文件阅读 · 选中连线查看传入内容、调用点与定义依据</span></div>
+  return <div className="function-call-map" ref={root}><div className="diagram-caption"><strong>函数调用链</strong><span>{m.nodes.length} 个函数 · {m.links.length} 条调用 · 选择连线查看调用依据</span></div>
     {selectedNode&&<nav className="function-map-focus" aria-label="当前函数的调用位置">
       <div className="function-map-focus-heading">
-        <strong>{m.focus.reachable?'入口至此的一条代表最短路径':'当前函数的已记录关系'}</strong>
-        <small>{m.focus.reachable?'可能还有其他路径；这不是运行轨迹。':'尚未确认从当前入口到此函数的路径，不据此推断不存在调用。'}</small>
+        <strong>{m.focus.reachable?'入口至此的代表路径':'当前函数的已记录关系'}</strong>
+        <small>{m.focus.reachable?'按源码关系取一条最短路径':'当前入口到此函数的路径待确认'}</small>
       </div>
       {entryPath.length>0?<div className="function-map-breadcrumb" aria-label="入口路径跳转">
-        {entryPath.map((id,index)=><React.Fragment key={id}>{index>0&&<span aria-hidden="true">→</span>}<button className={m.focus.selected===id?'selected':''} aria-current={m.focus.selected===id?'step':undefined} onClick={()=>select(id)}>{nodeName(id)}</button></React.Fragment>)}
+        {entryPath.map((id,index)=><React.Fragment key={id}>{index>0&&<span aria-hidden="true">→</span>}<button aria-current={m.focus.selected===id?'step':undefined} onClick={()=>select(id)}>{nodeName(id)}</button></React.Fragment>)}
       </div>:<p className="muted">可点选下列已记录的上下游函数继续核对。</p>}
       <details><summary>上下游函数 · {m.focus.upstream.length} 个上游 / {m.focus.downstream.length} 个下游（含间接调用）</summary><div className="function-map-neighbours">
         <div><strong>全部上游（含间接调用）</strong>{m.focus.upstream.length?m.focus.upstream.map(id=><button key={id} onClick={()=>select(id)}>{nodeName(id)}</button>):<small>未记录上游</small>}</div>
@@ -80,11 +93,24 @@ export function FunctionCallMap({result,pathId,selected,select,search,zoom,evide
       </g>)}
     <g>{linkLayers.map(link=>link.path)}</g>
     <g>{linkLayers.map(link=>link.label)}</g>
-    {m.nodes.map(node=>{const b=m.boxes.get(node.node_id)!,info=functionInfo(result,node),source=m.nodeSources.get(node.node_id),symbol=info.details?.symbol||node.label;
-      const location=source?.definition||source?.declaration;
+    {m.nodes.map(node=>{const b=m.boxes.get(node.node_id)!,info=functionInfo(result,node),source=m.nodeSources.get(node.node_id)!,symbol=info.details?.symbol||node.label;
+      const location=source.definition||source.declaration;
       const range=location?`:${location.line_start}–${location.line_end}`:'';
       const unknownLocation='定义与声明位置待确认';
-      return <foreignObject key={node.node_id} data-function-node={node.node_id} data-zoom-anchor x={b.x} y={b.y} width={b.w} height={b.h}><button aria-pressed={selected===node.node_id} className={`function-map-node ${selected===node.node_id?'selected':''} ${entryNodes.has(node.node_id)?'on-entry-path':''} ${related.has(node.node_id)?'focus-related':''} ${query&&![symbol,node.description,source?.path].join(' ').toLowerCase().includes(query)?'diagram-dim':''}`} onClick={()=>select(node.node_id)} title={symbol+'\n'+node.description}><small>{m.entry===node.node_id?'● 入口函数':symbol.includes('.')?symbol.split('.').slice(0,-1).join('.'):'函数'}</small><strong>{symbol.split('.').at(-1)}</strong><span>{shortLabel(node.description,28)}</span><small title={location?location.path+range:unknownLocation}>{location?(source?.declaration?'声明 · ':'')+fileName(location.path)+range:unknownLocation}</small></button></foreignObject>;
+      return <foreignObject key={node.node_id} data-function-node={node.node_id} data-zoom-anchor x={b.x} y={b.y} width={b.w} height={b.h}>
+        <button aria-pressed={selected===node.node_id} className={`function-map-node ${entryNodes.has(node.node_id)?'on-entry-path':''} ${related.has(node.node_id)?'focus-related':''} ${query&&![symbol,node.description,source.path].join(' ').toLowerCase().includes(query)?'diagram-dim':''}`}
+          onClick={()=>select(node.node_id)} title={symbol+'\n'+node.description}>
+          <small className="function-node-meta">
+            {m.entry===node.node_id && <em className="function-entry-badge">入口</em>}
+            <span>{symbol.includes('.') ? symbol.split('.').slice(0,-1).join('.') : '函数'}</span>
+          </small>
+          <strong>{symbol.split('.').at(-1)}</strong>
+          <span className="function-node-purpose">{node.description}</span>
+          <small className="function-node-location" title={location?location.path+range:unknownLocation}>
+            {location?(source.declaration?'声明 · ':'')+fileName(location.path)+range:unknownLocation}
+          </small>
+        </button>
+      </foreignObject>;
     })}
     </Diagram>{!m.entry&&<p className="muted">这版仅记录了调用关系，工程入口尚未确认。</p>}
     {selectedLink&&<section className="function-map-selection" aria-label="所选调用关系">

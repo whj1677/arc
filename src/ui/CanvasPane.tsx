@@ -62,7 +62,6 @@ export interface CanvasPaneProps {
   graphCatalog?: Explanation;
   featureSource?: Explanation;
   preview: any;
-  functionPreview: boolean;
   graphActions: React.ReactNode;
   selectedFile: string;
   waitingMcp: boolean;
@@ -121,7 +120,6 @@ export function CanvasPane({
   graphCatalog,
   featureSource,
   preview,
-  functionPreview,
   graphActions,
   selectedFile,
   waitingMcp,
@@ -151,12 +149,12 @@ export function CanvasPane({
     [data.explanations, projectId, fileSnapshotId, result],
   );
   const filters =
-    featureReading && reading.view === 'files' ? (
-      <div className="fr-file-search">
+    featureReading || (reading.entrance === 'walk' && reading.view === 'functions') ? (
+      <div className="fr-reader-search">
         <input
           type="search"
-          aria-label="搜索本功能文件"
-          placeholder="查文件名或职责，只搜索本功能"
+          aria-label={reading.view === 'files' ? '搜索本功能文件' : '搜索当前走读'}
+          placeholder={reading.view === 'files' ? '查找文件名或职责…' : '查找当前走读内容…'}
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
@@ -167,13 +165,10 @@ export function CanvasPane({
         <summary>搜索与筛选</summary>
         <div className="filter-row">
           <input
-            aria-label={featureReading && reading.view === 'files' ? '搜索本功能文件' : '搜索节点或文件'}
+            aria-label="搜索节点或文件"
             placeholder={
-              featureReading && reading.view === 'files'
-                ? '查文件名或职责，只搜索本功能'
-                : reading.view === 'files'
-                  ? '搜索真实文件…'
-                  : '搜索节点、职责…'
+              reading.view === 'files' ? '搜索真实文件…'
+                : ['system', 'map'].includes(reading.view) ? '搜索当前架构视图…' : '搜索节点、职责…'
             }
             value={search}
             onChange={e => setSearch(e.target.value)}
@@ -213,7 +208,7 @@ export function CanvasPane({
       )}
       {!preview && !catalogReading && (
         <div className="canvas-tools">
-          <div className="row">
+          <div className={'row' + (reading.entrance === 'walk' ? ' fr-toolbar' : '')}>
             <span className="eyebrow">{reading.entrance === 'overview' ? '工程全貌' : '功能走读'}</span>
             {result && (
               <span className="tag">
@@ -256,7 +251,7 @@ export function CanvasPane({
           />
         ) : preview && featureSource ? (
           <CatalogFeatureReading
-            functionActions={functionPreview ? graphActions : undefined}
+            functionActions={graphActions}
             key={featureSource.result_id + '/' + preview.node_id}
             explanation={featureSource}
             nodeId={preview.node_id}

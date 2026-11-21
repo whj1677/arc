@@ -55,8 +55,29 @@ export interface ReadingAsk {
   project_id:string;scenario_id?:string;result_id?:string|null;target:ReadingTarget;question:string;
   source_mode?:'bound'|'latest';mode?:ExecutionMode;submission_key:string;correction?:boolean;previous_question_id?:string;
 }
-export const overviewTotalMinutes = 15;
-export const overviewIdleMinutes = 6;
+const analysisBudgets = [
+  { featureMinutes: 8, featureIdleMinutes: 4, overviewMinutes: 15, overviewIdleMinutes: 6, discoveryMinutes: 8, overviewWalkthroughs: 4, discovery: { calls: 64, searchFiles: 24, readLines: 80 } },
+  { featureMinutes: 14, featureIdleMinutes: 5, overviewMinutes: 20, overviewIdleMinutes: 7, discoveryMinutes: 11, overviewWalkthroughs: 6, discovery: { calls: 96, searchFiles: 36, readLines: 100 } },
+  { featureMinutes: 20, featureIdleMinutes: 6, overviewMinutes: 25, overviewIdleMinutes: 8, discoveryMinutes: 14, overviewWalkthroughs: 8, discovery: { calls: 128, searchFiles: 48, readLines: 120 } },
+  { featureMinutes: 25, featureIdleMinutes: 8, overviewMinutes: 30, overviewIdleMinutes: 10, discoveryMinutes: 16, overviewWalkthroughs: 10, discovery: { calls: 160, searchFiles: 64, readLines: 160 } },
+] as const;
+
+export function analysisBudget(snapshot?: Pick<Snapshot, 'files'>) {
+  if (!snapshot) return analysisBudgets[0];
+  const count = snapshot.files.length;
+  const lines = snapshot.files.reduce((sum, file) => sum + file.line_count, 0);
+  if (count > 400 || lines > 120000) return analysisBudgets[3];
+  if (count > 150 || lines > 40000) return analysisBudgets[2];
+  if (count > 40 || lines > 10000) return analysisBudgets[1];
+  return analysisBudgets[0];
+}
+
+export function readingLimits(run: Pick<Run, 'overview_format' | 'reading_question_id'> & {provider_id?: ProviderId}, snapshot?: Pick<Snapshot, 'files'>) {
+  const budget = analysisBudget(snapshot);
+  if (run.overview_format) return { label: '首次分析', total: budget.overviewMinutes, idle: budget.overviewIdleMinutes, discovery: budget.discoveryMinutes };
+  if (run.reading_question_id) return run.provider_id === 'dsh' ? { label: '阅读追问', total: 12, idle: 5 } : { label: '阅读追问', total: 5 };
+  return { label: '功能与调用链分析', total: budget.featureMinutes, idle: budget.featureIdleMinutes };
+}
 export interface Run {
   binding: RunBinding; provider_id: ProviderId; status: string; created_at: string; ended_at?: string;
   execution_mode?: ExecutionMode;

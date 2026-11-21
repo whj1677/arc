@@ -6,7 +6,7 @@ import {spawn} from 'node:child_process';
 import {ArcService} from '../src/main/service';
 import {capture,sha} from '../src/main/snapshot';
 import {AcpConnection} from '../src/main/providers';
-import {overviewDiscoveryBudget} from '../src/main/prompt-context';
+import {analysisBudget} from '../src/shared';
 import {annotationTarget} from '../src/ui/annotation';
 test('actual frozen-source MCP rejects traversal, absolute paths, unknown methods and junctions',async t=>{
   const root=path.resolve('.test-data','mcp-adversarial-'+Date.now()),source=path.join(root,'source'),storage=path.join(root,'data');
@@ -100,11 +100,13 @@ test('first Codex overview bounds parallel discovery on a 2109-file manifest and
   const root=await fs.mkdtemp(path.resolve('.test-data','mcp-overview-')),source=path.join(root,'source'),storage=path.join(root,'data');
   t.after(()=>fs.rm(root,{recursive:true,force:true}));
   await fs.mkdir(source);
-  await fs.writeFile(path.join(source,'main.c'),'int main(void) { return boot(); }\n'+'// other\n'.repeat(100));
+  await fs.writeFile(path.join(source,'main.c'),'int main(void) { return boot(); }\n'+'// other\n'.repeat(200));
   const snapshot=await capture(source,'overview',storage,'');
   const entry=snapshot.files[0];
   // Only the real entry should be opened. A broad search must reject this manifest before file I/O.
   snapshot.files.push(...Array.from({length:2108},(_,i)=>({...entry,path:`lib/module${i}.c`})));
+  const overviewDiscoveryBudget=analysisBudget(snapshot).discovery;
+  assert.ok(overviewDiscoveryBudget.calls>analysisBudget().discovery.calls);
   const context=path.join(root,'context.json');
   await fs.writeFile(context,JSON.stringify({storage,snapshot}));
   const child=spawn(process.execPath,['dist/context-server.cjs',context,'overview-discovery'],{windowsHide:true,stdio:['pipe','pipe','pipe']});
@@ -117,7 +119,7 @@ test('first Codex overview bounds parallel discovery on a 2109-file manifest and
     assert.equal((await invoke('get_call_graph',{symbol:'main',depth:4})).isError,true);
     assert.equal((await invoke('not_a_tool',{})).isError,true);
     assert.equal((await invoke('arc_read_source',{path:'out-of-scope.c'})).isError,true);
-    assert.equal((await invoke('arc_read_source',{path:'main.c',line_start:110})).isError,true);
+    assert.equal((await invoke('arc_read_source',{path:'main.c',line_start:210})).isError,true);
     const search=await invoke('arc_search_source',{query:'boot',path:'main.c'});
     assert.equal(JSON.parse(search.content[0].text).matches[0].line,1);
     assert.equal(JSON.parse(search.content[0].text).remaining_source_calls,overviewDiscoveryBudget.calls-1);

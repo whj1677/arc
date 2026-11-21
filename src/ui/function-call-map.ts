@@ -5,7 +5,7 @@ import {functionChain,functionSource,functionFocus} from './function-chain';
 
 const nodeWidth=236, nodeHeight=158, columnPitch=432, rowPitch=204;
 export const callLabelWidth=164;
-export const callLabelHeight=(expanded:boolean)=>expanded?80:54;
+export const callLabelHeight=(expanded:boolean)=>expanded?80:62;
 const labelSpacing=84;
 const recursiveOffset=86;
 

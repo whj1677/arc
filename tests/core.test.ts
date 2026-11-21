@@ -146,7 +146,11 @@ test('feature discovery requires real references and keeps shallow catalogs comp
   assert.match((await validateResult(value,run,snap,service.directory)).errors.join(','),/需要为每个目录功能提供 readings/);
   value.feature_catalog.readings=[{node_id:'node',entry:'输入数字',outcome:'返回计算值',steps:[{text:'对输入加三并返回。',evidence_ids:['ev']}],boundary:'未检查调用入口以外的业务。'}];
   assert.deepEqual((await validateResult(value,run,snap,service.directory)).errors,[]);
-  for(const change of [(v:any)=>v.feature_catalog.readings[0].steps[0].evidence_ids=['absent'],(v:any)=>v.feature_catalog.readings[0].node_id='missing',(v:any)=>v.feature_catalog.readings=[],(v:any)=>v.feature_catalog.readings.push(v.feature_catalog.readings[0]),(v:any)=>v.feature_catalog.readings[0].steps=[],(v:any)=>v.feature_catalog.groups[0].node_ids=['missing'],(v:any)=>v.feature_catalog.groups.push({label:'重复',node_ids:['node']}),(v:any)=>v.nodes[0].kind='function',(v:any)=>v.claims[0].targets.node_ids=[],(v:any)=>v.architecture={node_ids:['node'],edge_ids:[]}]){const bad=structuredClone(value);change(bad);assert.ok((await validateResult(bad,run,snap,service.directory)).errors.length);}
+  for(const change of [(v:any)=>v.feature_catalog.readings[0].steps[0].evidence_ids=['absent'],(v:any)=>v.feature_catalog.readings[0].node_id='missing',(v:any)=>v.feature_catalog.readings=[],(v:any)=>v.feature_catalog.readings.push(v.feature_catalog.readings[0]),(v:any)=>v.feature_catalog.groups[0].node_ids=['missing'],(v:any)=>v.feature_catalog.groups.push({label:'重复',node_ids:['node']}),(v:any)=>v.nodes[0].kind='function',(v:any)=>v.claims[0].targets.node_ids=[],(v:any)=>v.architecture={node_ids:['node'],edge_ids:[]}]){const bad=structuredClone(value);change(bad);assert.ok((await validateResult(bad,run,snap,service.directory)).errors.length);}
+  value.feature_catalog.readings[0].steps=[];
+  assert.deepEqual((await validateResult(value,run,snap,service.directory)).errors,[]);
+  const uncited=structuredClone(value);uncited.nodes[0].evidence_ids=[];
+  assert.match((await validateResult(uncited,run,snap,service.directory)).errors.join(','),/功能目录缺少对应功能的来源断言/);
   value.feature_catalog.readings=[{node_id:'node',entry:'',outcome:'',steps:[],boundary:'仅查到声明，未找到实现文件。'}];
   assert.deepEqual((await validateResult(value,run,snap,service.directory)).errors,[]);
   assert.deepEqual(normalizeTransport({feature_catalog:null}),{});

@@ -41,9 +41,26 @@ test('incomplete saved guides recover evidence-bound file entries without invent
  const projected=featureReadingModel(incomplete);assert.deepEqual(projected.files.map(file=>file.path),[ev.path]);assert.deepEqual(projected.paths[0].files,[ev.path]);assert.deepEqual(projected.files[0].step_ids,['input','save']);assert.match(projected.files[0].description,/职责尚未单独分析/);assert.equal(incomplete.reading_guide.files.length,0);
 });
 
+test('a selected cross-file step includes the receiver file when only the callsite is quoted',()=>{
+ const receiver={...guide.files[0],path:'store/save.ts',title:'保存实现',step_ids:['save']};
+ const detail=renderToStaticMarkup(React.createElement(FeatureReadingDetail,{
+   guide:{...guide,files:[...guide.files,receiver]},result,selected:'step:save',view:'timeline',
+   onFile:()=>{},onStep:()=>{},onEvidence:()=>{},
+ }));
+ assert.ok(detail.includes('store/save.ts'));
+ assert.ok(detail.includes(ev.path));
+});
+
 test('unknown order has no sequence arrows and distinct selection types cannot collide',()=>{
  const unordered={...base,edges:[]};const html=render(unordered);assert.ok(html.includes('先后关系未确认'));assert.ok(!html.includes('fr-arrow'));
  assert.equal((guideItem(guide,'step:input') as any).title,'编辑输入');assert.equal((guideItem(guide,'role:input') as any).title,'保存服务');
+});
+test('legacy exception edges targeting function nodes do not crash business timeline rendering',()=>{
+ const fnNode={...node,node_id:'fn-abort',kind:'function' as const};
+ const exEdge={edge_id:'ex-fn',kind:'control_flow' as const,flow_role:'exception' as const,status:'source_supported' as const,source_node_id:node.node_id,target_node_id:'fn-abort',label:'中止',claim_ids:node.claim_ids,evidence_ids:[ev.evidence_id]};
+ const legacy:AnalysisResult={...base,reading_guide:undefined,nodes:[...base.nodes,fnNode],edges:[...base.edges,exEdge]};
+ assert.ok(!featureReadingModel(legacy).paths[0].failure_ids.includes('fn-abort'));
+ assert.doesNotThrow(()=>render(legacy,'timeline'));
 });
 test('legacy feature views migrate once without switching explanation or source snapshot',()=>{
  const old={entrance:'walk',view:'sequence',selected:'old',result_id:'history',source_snapshot_id:'frozen',file:'other',reading_path:'stale'} as ReadingState;

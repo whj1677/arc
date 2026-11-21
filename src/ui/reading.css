@@ -182,11 +182,3 @@
 @media(max-width:600px){.reading-shell header .project-select{max-width:130px}}
 .reading-shell .compare-workspace{min-width:0}
 .reading-shell .evidence-location{overflow-wrap:anywhere}
-
-.feature-view-tabs{display:flex;align-items:center;flex-wrap:wrap;gap:4px}
-.reading-shell .feature-view-tabs button{padding:4px 9px;min-height:30px;border:1px solid transparent;background:transparent;color:var(--ink);white-space:nowrap}
-.reading-shell .feature-view-tabs .feature-functions-tab{border-color:#a8bead;color:var(--accent);font-weight:600}
-.reading-shell .feature-view-tabs button[aria-current="page"]{background:var(--soft);color:var(--accent);border-color:#b4c7b6;font-weight:600}
-.reading-shell .feature-view-tabs button:hover{background:var(--soft)}
-.reading-shell .feature-view-tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-@media(max-width:899px){.feature-view-tabs{flex-basis:100%}.reading-shell .feature-view-tabs button{padding-inline:7px}}

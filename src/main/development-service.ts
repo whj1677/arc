@@ -409,7 +409,9 @@ export class DevelopmentService {
         this.event(attemptId,event);
       }};
     const readReply=async(optionsForTurn:typeof options)=>{
-      const result=mode==='dsh'?await this.dshWeb({...optionsForTurn,submitResult:true}):await this.codexAnalysis({...optionsForTurn,outputDirectory,preferences});
+      const result=mode==='dsh'
+        ?await this.dshWeb({...optionsForTurn,submitResult:true,turnMinutes:12,idleMinutes:5})
+        :await this.codexAnalysis({...optionsForTurn,outputDirectory,preferences,turnMinutes:8});
       this.active.delete(attemptId);
       checkRunning();
       if(result.code!==0||result.protocol_error)throw Error(result.protocol_error||result.stderr||`引擎退出：${result.code}`);

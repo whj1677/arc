@@ -3,7 +3,8 @@ import {promisify} from 'node:util';
 import path from 'node:path';
 import {Store,id,now} from './store';
 import {JsonLines,codexChildEnvironment,redact,locate} from './providers';
-import type {Run} from '../shared';
+import {readingLimits,type Run,type Snapshot} from '../shared';
+import {isCatalogOverview} from './architecture-analysis';
 
 const exec=promisify(execFile);
 export interface ExecutorBinding {
@@ -15,7 +16,12 @@ export interface Dispatch {
   dispatch_id:string;project_id:string;run_id?:string;task_id?:string;thread_id?:string;submission_key?:string;attempt_id?:string;request?:string;scope?:string[];phase?:'analysis'|'execution';
   task_version?:number;reviewed_version?:number;
   state:'queued'|'sending'|'awaiting_claim'|'running'|'completed'|'blocked'|'unknown'|'cancelled';
-  created_at:string;sent_at?:string;claimed_at?:string;last_activity?:string;error?:string;revoked?:boolean;
+  created_at:string;sent_at?:string;claimed_at?:string;last_activity?:string;analysis_minutes?:number;error?:string;revoked?:boolean;
+}
+
+export function externalAnalysisMinutes(run: Run, snapshot: Snapshot) {
+  const overview_format = !run.reading_question_id && isCatalogOverview(run.question) ? 'overview-1' : undefined;
+  return readingLimits({overview_format,reading_question_id:run.reading_question_id},snapshot).total;
 }
 
 /** A fresh read-only protocol connection inspects the external session. No model turn is started. */
@@ -88,10 +94,11 @@ export class ExternalDispatch {
   }
   private save(item:Dispatch){this.store.put('external_dispatch',item.dispatch_id,item);this.changed();}
   started(dispatchId:string,attemptId:string){const item=this.store.get<Dispatch>('external_dispatch',dispatchId);item.attempt_id=attemptId;this.save(item);}
-  claim(dispatchId:string){
+  claim(dispatchId:string,analysisMinutes?:number){
     const item=this.store.get<Dispatch>('external_dispatch',dispatchId);
     if(item.revoked)throw Error('此派发已撤销，拒绝迟到领取');
     if(!['sending','awaiting_claim','running','unknown'].includes(item.state))throw Error('派发当前不可领取：'+item.state);
+    if(analysisMinutes!==undefined)item.analysis_minutes=analysisMinutes;
     item.state='running';item.claimed_at??=now();item.last_activity=now();item.error=undefined;this.save(item);return item;
   }
   cancel(dispatchId:string){
@@ -154,8 +161,8 @@ export class ExternalDispatch {
         if(!item.revoked&&item.claimed_at&&['completed','failed','cancelled','blocked_external'].includes(run?.status??attempt?.status)&&!['completed','cancelled','blocked'].includes(item.state)){
           item.state=(run?.status??attempt?.status)==='completed'?'completed':'blocked';item.error=run?.error??attempt?.error;this.save(item);continue;
         }
-        if(item.state==='running'&&item.claimed_at&&Date.now()-Date.parse(item.claimed_at)>300000&&run){
-          run.status='blocked_external';run.error='外部分析超过 5 分钟预算；已停止接收新结果。外部会话是否停止尚未确认，公开进度与旧结果已保留。';run.ended_at=now();this.store.put('run',run.binding.run_id,run);item.state='unknown';item.revoked=true;item.error=run.error;this.save(item);continue;
+        if(item.state==='running'&&item.claimed_at&&item.analysis_minutes&&run&&Date.now()-Date.parse(item.claimed_at)>=item.analysis_minutes*60000){
+          run.status='blocked_external';run.error=`外部分析超过 ${item.analysis_minutes} 分钟预算；已停止接收新结果。外部会话是否停止尚未确认，公开进度与旧结果已保留。`;run.ended_at=now();this.store.put('run',run.binding.run_id,run);item.state='unknown';item.revoked=true;item.error=run.error;this.save(item);continue;
         }
         if(item.state==='awaiting_claim'&&item.sent_at&&Date.now()-Date.parse(item.sent_at)>60000){item.state='unknown';item.error='已发送超过 60 秒，尚无领取回执。可能等待权限或外部会话离线，请核对原会话；不会自动重发。';this.save(item);continue;}
         if(item.state!=='queued')continue;

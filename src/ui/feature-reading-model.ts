@@ -1,10 +1,11 @@
 import type {AnalysisResult,ReadingGuide,ReadingState} from '../shared';
+import {savedReadingGuide} from '../feature-graph-guide';
 import {timelineModel} from './timeline-model';
 
 // Every projection uses only the selected explanation. No cross-result file lookup.
 export function featureReadingModel(result:AnalysisResult):ReadingGuide {
-  if(result.reading_guide){
-    const source=result.reading_guide;
+  const source=savedReadingGuide(result);
+  if(source){
     if(source.files.length&&source.paths.every(path=>path.files.length))return source;
     const referenced=new Set(source.steps.flatMap(step=>step.evidence_ids)),relevant=result.evidence.filter(e=>referenced.has(e.evidence_id));
     const files:ReadingGuide['files']=source.files.length?source.files:[...new Set(relevant.map(e=>e.path))].map(file=>{
@@ -24,7 +25,8 @@ export function featureReadingModel(result:AnalysisResult):ReadingGuide {
   const handoffs:ReadingGuide['handoffs']=calls.filter(e=>roleNodes.some(n=>n.node_id===e.source_node_id)&&roleNodes.some(n=>n.node_id===e.target_node_id)).map(e=>{const from=result.nodes.find(n=>n.node_id===e.source_node_id)!,to=result.nodes.find(n=>n.node_id===e.target_node_id)!;return {id:e.edge_id,from:e.source_node_id,to:e.target_node_id,label:e.label,kind:e.kind==='sync_call'?'同步调用':e.kind==='dependency'?'依赖关系':'已分析关系',send:e.transfers?.map(t=>from.outputs.find(io=>io.io_id===t.source_output_id)?.name).join('；')||'交接内容尚未明确',receive:e.transfers?.map(t=>to.inputs.find(io=>io.io_id===t.target_input_id)?.name).join('；')||'返回或结果尚未明确',detail:e.condition||result.claims.filter(c=>e.claim_ids.includes(c.claim_id)).map(c=>c.statement).join('\n'),evidence_ids:e.evidence_ids};});
   const files:ReadingGuide['files']=[...new Set(result.evidence.map(e=>e.path))].map(path=>{const refs=result.evidence.filter(e=>e.path===path),ids=new Set(refs.map(e=>e.evidence_id));const purpose=result.nodes.find(n=>n.source_scope?.kind==='file'&&n.source_scope.path===path);const linked=business.filter(n=>n.evidence_ids.some(id=>ids.has(id)));return {path,title:purpose?.label||path.split('/').at(-1)!,description:purpose?.description||(linked.length?`本功能中支撑：${[...new Set(linked.map(n=>n.label))].join('、')}。`:'本结果提供了该文件的引用，具体职责尚未说明。'),detail:purpose?'说明限定在当前功能与当前快照。':refs.map(e=>e.note).filter(Boolean).join('\n'),step_ids:linked.map(n=>n.node_id),evidence_ids:refs.map(e=>e.evidence_id)};});
   const ids=model.ordered?model.ids.filter(id=>steps.some(s=>s.id===id)):business.filter(n=>!exceptionIds.has(n.node_id)).map(n=>n.node_id);
-  return {steps,roles,handoffs,files,paths:[{id:'current',label:'当前功能',entry:model.ordered?'已确认的业务顺序':'先后关系尚未完整确认',intro:model.ordered?'沿已分析的顺序阅读业务过程':'查看已分析的业务环节',boundary:result.coverage.unresolved_scope.join('；'),step_ids:ids,lanes:[],failure_ids:[...exceptionIds],role_ids:roles.map(r=>r.id),handoff_ids:handoffs.map(h=>h.id),files:files.map(f=>f.path)}]};
+  const failureIds=business.filter(n=>exceptionIds.has(n.node_id)).map(n=>n.node_id);
+  return {steps,roles,handoffs,files,paths:[{id:'current',label:'当前功能',entry:model.ordered?'已确认的业务顺序':'先后关系尚未完整确认',intro:model.ordered?'沿已分析的顺序阅读业务过程':'查看已分析的业务环节',boundary:result.coverage.unresolved_scope.join('；'),step_ids:ids,lanes:[],failure_ids:failureIds,role_ids:roles.map(r=>r.id),handoff_ids:handoffs.map(h=>h.id),files:files.map(f=>f.path)}]};
 }
 
 export function guideItem(guide:ReadingGuide,key:string){const split=key.indexOf(':'),kind=key.slice(0,split),id=key.slice(split+1);return kind==='step'?guide.steps.find(s=>s.id===id):kind==='role'?guide.roles.find(r=>r.id===id):kind==='handoff'?guide.handoffs.find(h=>h.id===id):kind==='file'?guide.files.find(f=>f.path===id):undefined;}
@@ -40,7 +42,7 @@ export function featureReadingPosition(r:ReadingState):ReadingState {
 
 export const featureViews=[['timeline','业务流程'],['collaboration','协作关系'],['functions','函数走读'],['files','相关文件']];
 export function hasCollaborationRoles(result?:AnalysisResult){
-  return !!result?.reading_guide?.roles?.length;
+  return !!savedReadingGuide(result)?.roles.length;
 }
 
 // Business paths are shared by the three reading pages. Auxiliary function

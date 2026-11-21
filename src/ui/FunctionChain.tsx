@@ -33,13 +33,33 @@ export function FunctionChain({result,selected,select,zoom,search,pathId,onPath,
   const query=search.trim().toLowerCase();
   const symbol=(id:string|null)=>{const n=participants.find(n=>n.node_id===id);return n?.function_details?.symbol||n?.label||'外部触发';};
   return <section className="function-chain function-diagram" aria-label="函数走读">
-    {(showModeSwitch||paths.length>1)&&<div className="function-controls">
-      <nav className="function-entry-paths" aria-label="选择函数入口">{paths.map(p=><button key={p.id} aria-pressed={p.id===path.id} className={p.id===path.id?'selected':''} onClick={()=>onPath(p.id,p.entry_node_id)}>{p.label}</button>)}</nav>
-      {showModeSwitch&&<nav className="function-view-mode" aria-label="函数图类型"><button aria-pressed={mode==='calls'} onClick={()=>changeMode('calls')}>函数调用链</button><button aria-pressed={mode==='time'} onClick={()=>changeMode('time')}>调用时间图</button></nav>}
-    </div>}
+    <div className="function-controls">
+      {showModeSwitch && <nav className="architecture-view-switch" aria-label="函数图类型">
+        <button aria-pressed={mode==='calls'} onClick={()=>changeMode('calls')}>函数调用链</button>
+        <button aria-pressed={mode==='time'} onClick={()=>changeMode('time')}>调用时间图</button>
+      </nav>}
+      <label className="function-entry-paths">入口路径
+        {paths.length > 1 ? <select aria-label="选择函数入口" value={path.id} onChange={event=>{
+          const next = paths.find(item => item.id === event.target.value)!;
+          onPath(next.id, next.entry_node_id);
+        }}>{paths.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
+          : <strong>{path.label}</strong>}
+      </label>
+    </div>
     {mode==='calls'?<FunctionCallMap result={result} pathId={path.id} selected={selected} select={select} search={search} zoom={zoom} evidence={evidence}/>:<>
-    <div className="diagram-caption"><strong>从入口往下读 ↓</strong><span>按已确认说明排列的静态顺序，不是运行记录　┄ 返回　蓝色 异步 / 回调</span></div>
-    <Diagram key={result.result_id+path.id} width={width} height={height} zoom={zoom} label="每个函数一个节点的调用时间图" headerHeight={headerHeight} header={participants.map(n=>{const full=symbol(n.node_id),parts=full.split('.'),file=functionInfo(result,n).definition?.path;return <foreignObject key={n.node_id} data-function-node={n.node_id} data-zoom-anchor x={x(n.node_id)-108} y="4" width="216" height="92"><button className={'fn-participant '+(selected===n.node_id?'selected':'')} onClick={()=>select(n.node_id)} title={full+(file?'\n'+file:'')}><small>{n.node_id===path.entry_node_id?'● 入口 · ':''}{parts.slice(0,-1).join('.')||file?.split('/').at(-1)||'函数'}</small><strong>{parts.at(-1)}</strong></button></foreignObject>;})}>
+    <div className="diagram-caption"><strong>调用时间图</strong><span>{path.steps.length} 个静态步骤 · 虚线表示返回，蓝线表示异步或回调</span></div>
+    <Diagram key={result.result_id+path.id} width={width} height={height} zoom={zoom} label="每个函数一个节点的调用时间图" headerHeight={headerHeight} header={participants.map(node=>{
+      const full = symbol(node.node_id), parts = full.split('.'), file = functionSource(result, node).path;
+      return <foreignObject key={node.node_id} data-function-node={node.node_id} data-zoom-anchor x={x(node.node_id)-108} y="4" width="216" height="92">
+        <button className="fn-participant" aria-pressed={selected===node.node_id} onClick={()=>select(node.node_id)} title={full+(file?'\n'+file:'')}>
+          <small className="function-node-meta">
+            {node.node_id===path.entry_node_id && <em className="function-entry-badge">入口</em>}
+            <span>{parts.slice(0,-1).join('.') || file?.split('/').at(-1) || '函数'}</span>
+          </small>
+          <strong>{parts.at(-1)}</strong>
+        </button>
+      </foreignObject>;
+    })}>
       <defs><marker id={marker} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" fill="context-stroke"/></marker></defs>
       {participants.map(n=><line key={n.node_id} className="fn-lifeline" x1={x(n.node_id)} y1={headerHeight} x2={x(n.node_id)} y2={height-20}/>)}
       {path.steps.map((step,i)=>{
@@ -79,9 +99,11 @@ export function FunctionStepDetail({result,selection,select,evidence}:{result:An
   const stepEvidence=result.evidence.filter(item=>step.evidence_ids.includes(item.evidence_id));
   return <article className="function-detail"><span className="eyebrow">{String(index+1).padStart(2,'0')} · {stepNames[step.kind]}</span><h2>{step.text}</h2>
     <div className="function-step-pair">{step.from_node_id&&step.from_node_id!==step.to_node_id&&<><button onClick={()=>select(step.from_node_id!)}>{name(step.from_node_id)}</button><span>{step.kind==='return'?'┄ 返回到 →':'→'}</span></>}<button onClick={()=>select(step.to_node_id)}>{name(step.to_node_id)}</button></div>
-    {step.condition&&<p className="function-condition">{step.condition}</p>}
-    <h3>{step.kind==='return'?'返回内容':'传入 / 起点'}</h3><p>{step.input}</p>
-    <h3>本步结果</h3><p>{step.output}</p>
+    {step.condition&&<p className="function-condition"><strong>触发条件</strong>{step.condition}</p>}
+    <dl className="function-step-facts">
+      <div><dt>{step.kind==='return'?'返回内容':'传入 / 起点'}</dt><dd>{step.input}</dd></div>
+      <div><dt>本步结果</dt><dd>{step.output}</dd></div>
+    </dl>
     {relation&&<section className="function-relation-evidence">
       <h3>调用位置与实现依据</h3>
       <p className="muted">{relation.fileRelation==='same-file'?'调用者与目标位于同一文件。':relation.fileRelation==='cross-file'?'这是跨文件关系；请分别核对两端定义和实际调用点。':'两端文件关系尚未确认。'}</p>
@@ -103,7 +125,8 @@ export function FunctionDetail({result,node,select,evidence}:{result:AnalysisRes
   const info=functionInfo(result,node),source=functionSource(result,node),calls=result.edges.filter(e=>['sync_call','execution_boundary'].includes(e.kind)&&(e.source_node_id===node.node_id||e.target_node_id===node.node_id));
   const ioList=(list:AnalysisResult['nodes'][number]['inputs']|null,unknown:string,empty:string)=>list===null?<p className="muted">{unknown}</p>:list.length?list.map(io=><article className="function-io" key={io.io_id}><strong>{io.name}</strong><span className="tag">{io.data_type||'类型未知'}</span><p>{io.description}</p>{io.value_or_shape&&<code>{io.value_or_shape}</code>}{io.availability!=='specified'&&<small className="warning">{io.availability==='partial'?'仅部分已知':'尚未查明'}</small>}</article>):<p>{empty}</p>;
   return <article className="function-detail">
-    <span className="eyebrow">函数详情</span><h2>{info.details?.symbol||node.label}</h2><p>{node.description}</p>
+    <span className="eyebrow">函数详情</span><h2 className="function-symbol">{info.details?.symbol||node.label}</h2><p>{node.description}</p>
+    {info.details?.signature && <code className="function-signature">{info.details.signature}</code>}
     <h3>定义与声明</h3>
     {source.definition?<FunctionEvidence data={source.definition} label="函数定义（实现）" open={evidence}/>:<p className="muted">{source.declaration?'当前只记录了声明位置；声明不等于函数实现。':'尚未记录准确的函数定义或声明文件。下方来源引用不自动等于所属文件。'}</p>}
     {source.declaration&&<FunctionEvidence data={source.declaration} label="函数声明（不是实现）" open={evidence}/>}

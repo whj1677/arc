@@ -2,10 +2,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import Ajv2020 from 'ajv/dist/2020';
 import type { AnalysisResult, Explanation, Feature, Project, ProviderProfile, Run, Scenario, Snapshot } from '../shared';
-import { hasFunctionGraphs } from '../shared';
+import { analysisBudget, hasFunctionGraphs } from '../shared';
 import { Store, id, now } from './store';
 import { linesOf, readSource, sha } from './snapshot';
-import { overviewDiscoveryBudget } from './prompt-context';
 import { overviewPhaseDirectory, redact, type ActiveProcess, type OverviewPhase, type runCodex } from './providers';
 import { validateResult } from './validation';
 import { deferredCatalogDeclarationBoundary, deferredCatalogReadingBoundary, prepareOverview } from './overview-result';
@@ -90,7 +89,7 @@ export class OverviewOrchestrator {
 
   async readExcerpts(runId: string, snapshot: Snapshot) {
     const excerpts = [];
-    for (const location of this.host.store.overviewReadLocations(runId,overviewDiscoveryBudget.calls)) {
+    for (const location of this.host.store.overviewReadLocations(runId, analysisBudget(snapshot).discovery.calls)) {
       const file = await readSource(this.host.directory, snapshot, location.path);
       const start = location.start - 1;
       const lines = linesOf(file.text).slice(start, start + Math.min(location.count, 24));

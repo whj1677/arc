@@ -5,8 +5,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { setTimeout as pause } from 'node:timers/promises';
 import { dump } from 'js-yaml';
 import { dshCredential, resolveDsh } from './dsh';
-import { locate, redact, stopTree, type ActiveProcess } from './providers';
-import type { Run, Snapshot, ProviderProfile } from '../shared';
+import { locate, readingDeadline, redact, stopTree, type ActiveProcess } from './providers';
+import { readingLimits, type Run, type Snapshot, type ProviderProfile } from '../shared';
 
 const cleanLog = (text: string) => redact(text).replace(/([?&]token=)[^\s&#]+/gi, '$1[REDACTED]');
 const preset = 'arc-read-only';
@@ -84,6 +84,10 @@ class DshRemote {
 }
 type NativeEvent = { seq: number; type: string; data: any };
 
+export function dshWorkProgress(frame: NativeEvent, turn: number) {
+  return ['step/start', 'step/end', 'tool/call', 'tool/result', 'assistant/message'].includes(frame.type) && frame.data.turn === turn;
+}
+
 function waitForHost(child: ChildProcessWithoutNullStreams) {
   return new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => finish(Error('DSH Web 启动超时')), 45000);
@@ -123,13 +127,16 @@ type Options = {
   started: (active: ActiveProcess) => void;
   shouldStart?: () => boolean;
   timeoutMs?: number;
+  turnMinutes?: number;
+  idleMinutes?: number;
 } & ({
   toolFree: true;
   run: Pick<Run, 'title' | 'output_path'>;
   submitResult?: false;
 } | {
   toolFree?: false;
-  run: Pick<Run, 'title' | 'output_path'> & { binding: { source_snapshot_id: string } };
+  run: Pick<Run, 'title' | 'output_path' | 'execution_started_at' | 'reading_question_id' | 'overview_format'> & { binding: { source_snapshot_id: string } };
+  discovery?: boolean;
   snapshot: Snapshot;
   storage: string;
   resources: string;
@@ -144,8 +151,14 @@ export function dshWebPrompt(options: Pick<Options, 'prompt' | 'outputSchema' | 
 
 export async function runDshWeb(options: Options): Promise<{ code: number; raw: string; stderr: string; protocol_error?: string; session_id?: string }> {
   const { run, profile, event } = options;
-  const budget = options.timeoutMs ?? (options.toolFree ? 60000 : undefined);
-  const deadline = budget === undefined ? undefined : Date.now() + budget;
+  const limits = options.toolFree ? {label: '优化提示词', total: 1, idle: undefined} : readingLimits({...options.run,provider_id:'dsh'}, options.snapshot);
+  const idleMinutes = options.idleMinutes ?? limits.idle;
+  // Development turns and ordinary DSH questions retain their admission-based budgets.
+  const turnMinutes = options.turnMinutes ?? (!options.toolFree && options.run.reading_question_id ? limits.total : undefined);
+  const deadline = options.timeoutMs !== undefined ? Date.now() + options.timeoutMs
+    : options.toolFree ? Date.now() + 60000 : turnMinutes ? undefined : readingDeadline(options.run, limits.total);
+  const timeoutMessage = options.toolFree ? 'DSH 优化提示词超过 60 秒，请重试。'
+    : options.timeoutMs !== undefined ? 'DSH 只读分析已达到执行时限' : `DSH Web ${limits.label}已达到 ${limits.total} 分钟总时限`;
   const directory = path.dirname(run.output_path);
   const cwd = options.toolFree ? directory : path.join(options.storage, 'snapshots', options.snapshot.source_snapshot_id);
   const home = path.join(directory, 'dsh-web-home');
@@ -158,7 +171,7 @@ export async function runDshWeb(options: Options): Promise<{ code: number; raw: 
     { id: 'persona', name: '@deepseek-ai/dsh-persona', config: { prefix: 'Use Arc tools to read the bound source snapshot and deliver the requested result.' } },
     { id: 'arc-source', name: '@deepseek-ai/dsh-mcp-client', config: {
       serverName: 'arc-frozen-source', transport: 'stdio', command: await locate('node'),
-      args: [path.join(options.resources, 'dist', 'context-server.cjs'), contextPath], failOnStartupError: true,
+      args: [path.join(options.resources, 'dist', 'context-server.cjs'), contextPath, ...(options.discovery ? ['overview-discovery'] : [])], failOnStartupError: true,
     } },
   ];
   const prompt = dshWebPrompt(options);
@@ -173,6 +186,7 @@ export async function runDshWeb(options: Options): Promise<{ code: number; raw: 
   ]);
 
   if (options.shouldStart && !options.shouldStart()) throw Error('任务已取消，未启动 DSH Web');
+  if (deadline !== undefined && Date.now() >= deadline) throw Error(timeoutMessage);
   const env: NodeJS.ProcessEnv = { ...process.env, DSH_HOME: home, DEEPSEEK_API_KEY: key, DSH_PERMISSION_MODE: 'read-only', NO_COLOR: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   const child = spawn(runtime.command, [...runtime.prefix, '--profile', 'web', '--patch', patch, '--host', '127.0.0.1', '--port', '0', '--no-open'],
@@ -217,8 +231,9 @@ export async function runDshWeb(options: Options): Promise<{ code: number; raw: 
     while (!cancelled) {
       if (child.exitCode !== null) throw Error('DSH Web 已退出，未获得本轮终态');
       const state = await remote.events(sessionId, cursor);
+      if (timedOut) throw Error(timeoutMessage);
       cursor = state.cursor;
-      if (state.events.length) lastProgress = Date.now();
+      if (turnMinutes && state.events.length) lastProgress = Date.now();
       for (const frame of state.events) {
         const { seq, type, data } = frame;
         if (type === 'turn/start') lastTurn = data.turn;
@@ -227,6 +242,7 @@ export async function runDshWeb(options: Options): Promise<{ code: number; raw: 
           ownTurn = lastTurn;
         }
         if (ownTurn === undefined) continue;
+        if (dshWorkProgress(frame, ownTurn)) lastProgress = Date.now();
         if (type === 'tool/call') {
           const argumentsJson = options.submitResult && data.name.endsWith('arc_submit_result') ? undefined : data.arguments;
           const rawInput = typeof argumentsJson === 'string' ? JSON.parse(argumentsJson) : argumentsJson;
@@ -266,18 +282,22 @@ export async function runDshWeb(options: Options): Promise<{ code: number; raw: 
       }
       const elapsed = Date.now();
       if (ownTurn === undefined && elapsed - admitted > 45000) throw Error('DSH 消息已提交，但未观察到对应轮次');
-      if (elapsed - admitted > (options.timeoutMs ?? 12 * 60_000) || elapsed - lastProgress > 5 * 60_000) {
+      if (turnMinutes && elapsed - admitted >= turnMinutes * 60000) {
         await remote.rpc('session/cancel', { sessionId });
-        throw Error('DSH Web 超过本轮等待时限');
+        throw Error(`DSH Web 已达到本轮 ${turnMinutes} 分钟时限`);
+      }
+      if (idleMinutes && elapsed - lastProgress >= idleMinutes * 60000) {
+        await remote.rpc('session/cancel', { sessionId });
+        throw Error(`DSH Web 连续 ${idleMinutes} 分钟没有收到工作进度`);
       }
       await pause(700);
     }
     return { code: 1, raw, stderr: clean(stderr), session_id: sessionId };
   } catch (error) {
-    if (timedOut) throw Error(options.toolFree ? 'DSH 优化提示词超过 60 秒，请重试。' : 'DSH 只读分析已达到执行时限');
     if (cancelled) return { code: 1, raw: '', stderr: clean(stderr), session_id: sessionId };
-    const message = clean((error as Error).message);
+    const message = timedOut ? timeoutMessage : clean((error as Error).message);
     await fs.writeFile(path.join(directory, 'diagnostic.json'), JSON.stringify({ error: message, stderr: clean(stderr), session_id: sessionId }));
+    if (timedOut) throw Error(message);
     if (error instanceof DshMalformedReply) throw error;
     throw Object.assign(Error(message), { remoteUnknown: submitted && !terminal });
   } finally {

@@ -24,7 +24,7 @@ import type {
   Snapshot,
   WorkspaceData,
 } from '../shared';
-import { hasFunctionGraphs, overviewTotalMinutes } from '../shared';
+import { hasFunctionGraphs, readingLimits } from '../shared';
 import { explanationFreshness } from '../freshness';
 import { Store, id, now } from './store';
 import { capture, freshness, readSource, sha } from './snapshot';
@@ -37,7 +37,7 @@ import { discoveredFeature } from '../discovered-feature';
 import { promptContext } from './prompt-context';
 import { proposeScenarios, scenarioTitleKey } from './scenario-breakdown';
 import { readingAnswerSchema, validateReadingAnswer } from './reading-question';
-import { overviewDiscoveryQuestion, shallowOverviewQuestion } from './architecture-analysis';
+import { isCatalogOverview, overviewDiscoveryQuestion, previousCatalogQuestion, shallowOverviewQuestion } from './architecture-analysis';
 import { overviewSchema, prepareOverview } from './overview-result';
 import { featureGraphSchema, prepareFeatureGraph } from './feature-graph-result';
 import { parseDshReply } from './dsh';
@@ -281,7 +281,7 @@ export class ArcService {
     if (project.overview_scenario_id) {
       let scene = this.store.get<Scenario>('scenario', project.overview_scenario_id);
       // Upgrade only our untouched default when a new overview is explicitly requested.
-      if ([oldOverviewQuestion, architectureOverviewQuestion, previousOverviewQuestion, shallowOverviewQuestion].includes(scene.question)) {
+      if ([oldOverviewQuestion, architectureOverviewQuestion, previousOverviewQuestion, shallowOverviewQuestion, previousCatalogQuestion].includes(scene.question)) {
         scene = this.reviseScenario(scene.scenario_id, overviewQuestion);
         if (scene.title === '工程全貌 · 模块、目录用途与依赖') scene.title = '工程全貌 · 系统架构';
         this.store.put('scenario', scene.scenario_id, scene);
@@ -789,7 +789,7 @@ export class ArcService {
     if (options.projectAnalysis && !options.developmentTaskId && project.overview_scenario_id === scenarioId) {
       run.overview_followup_mode = dispatch ? 'dispatch' : 'direct';
     }
-    if (scenario.question === overviewQuestion) run.overview_format = 'overview-1';
+    if (isCatalogOverview(scenario.question)) run.overview_format = 'overview-1';
 
     this.store.put('run', runId, run);
     this.changed();
@@ -896,7 +896,7 @@ export class ArcService {
         return;
       }
       if (this.store.get<Run>('run', runId).status !== 'queued') return;
-      if (initial.overview_format && initial.provider_id === 'codex') {
+      if (!initial.reading_question_id) {
         initial.execution_started_at = now();
         this.store.put('run', runId, initial);
       }
@@ -937,6 +937,11 @@ export class ArcService {
     }
 
     const snapshot = this.store.get<Snapshot>('snapshot', initial.binding.source_snapshot_id);
+    const limits = readingLimits(initial, snapshot);
+    this.event(runId, { type: 'local.stage', stage: 'analysis_budget', message:
+      `${limits.label}总时限 ${limits.total} 分钟` +
+      (limits.discovery && !initial.overview_from_result_id ? `，首次源码取证最多 ${limits.discovery} 分钟` : '') +
+      (limits.idle ? `，连续 ${limits.idle} 分钟无工作进度会停止。` : '。') });
     if (initial.overview_from_result_id) {
       const inherited = await this.overviews.savedOverviewDraft(initial, snapshot);
       const checked = await this.overviews.finishOverview(initial, snapshot, profile, inherited.draft, inherited.review);
@@ -1014,14 +1019,14 @@ export class ArcService {
     };
     let candidatePath = initial.output_path;
     let result = savedCandidate !== undefined ? { code: 0, raw: savedCandidate, stderr: '' } : provider === 'dsh'
-      ? await this.dshRunner({ ...options, outputSchema: options.outputSchema ?? (initial.reading_question_id ? readingAnswerSchema : initial.overview_format ? overviewSchema : schema) })
+      ? await this.dshRunner({ ...options, discovery: !!initial.overview_format, outputSchema: options.outputSchema ?? (initial.reading_question_id ? readingAnswerSchema : initial.overview_format ? overviewSchema : schema) })
       : await this.codexRunner(options);
     this.active.delete(runId);
 
     let run = this.store.get<Run>('run', runId);
     if (this.localResultStopped(run)) return;
     if (initial.overview_format && 'timeout' in result && (result.timeout === 'idle' || result.timeout === 'discovery') &&
-        Date.now() < Date.parse(initial.execution_started_at!) + (overviewTotalMinutes - 1) * 60000) {
+        Date.now() < Date.parse(initial.execution_started_at!) + (limits.total - 1) * 60000) {
       const excerpts = await this.overviews.readExcerpts(runId, snapshot);
       if (excerpts.length || inheritedEvidence) {
         run = this.store.get<Run>('run', runId);

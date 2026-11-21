@@ -1,7 +1,7 @@
 import type {Snapshot,Annotation,AnalysisResult,ReadingContext,ReadingQuestion,ReadingTarget,Project,Feature,Scenario} from '../shared';
 import {relativePath} from './snapshot';
+import {savedReadingGuide} from '../feature-graph-guide';
 
-export const overviewDiscoveryBudget = { calls: 64, searchFiles: 24, readLines: 80 } as const;
 export const indexDiscoveryInstructions = '先用 list_modules 清点模块及跨目录调用，用 list_symbols 按 dir、path 或 query 定位入口和定义，再按需用 get_call_graph 查上下游及调用行。静态匹配只提供线索，用 arc_read_source 核对实际定义和调用点。未索引的语言、动态调用或缺失的符号可用 arc_search_source 定向补查。';
 
 export function readingTarget(result:AnalysisResult|undefined,target:ReadingTarget,snapshot:Snapshot,feature:Feature) {
@@ -15,7 +15,7 @@ export function readingTarget(result:AnalysisResult|undefined,target:ReadingTarg
     if(!snapshot.files.some(f=>target.kind==='file'?f.path===target.id:f.path.startsWith(target.id+'/')))throw Error('文件或目录不在本次冻结快照中');
     const matches=(p:string)=>target.kind==='file'?p===target.id:p.startsWith(target.id+'/');
     const nodes=result?.nodes.filter(n=>n.source_scope&&matches(n.source_scope.path))||[];
-    return {purpose:nodes,reading_file:result?.reading_guide?.files.find(f=>f.path===target.id),evidence_ids:result?.evidence.filter(e=>matches(e.path)).map(e=>e.evidence_id)||[]};
+    return {purpose:nodes,reading_file:savedReadingGuide(result)?.files.find(f=>f.path===target.id),evidence_ids:result?.evidence.filter(e=>matches(e.path)).map(e=>e.evidence_id)||[]};
   }
   if(!result)throw Error('节点和关系提问需要绑定原说明');
   if(target.kind==='call_step'){
@@ -24,7 +24,8 @@ export function readingTarget(result:AnalysisResult|undefined,target:ReadingTarg
     if(!step)throw Error('函数步骤不属于原说明');
     return {...step,node_ids:[step.to_node_id,...(step.from_node_id?[step.from_node_id]:[])]};
   }
-  const selected=target.kind==='node'?result.nodes.find(n=>n.node_id===target.id):target.kind==='edge'?result.edges.find(e=>e.edge_id===target.id):target.kind==='step'?result.reading_guide?.steps.find(s=>s.id===target.id):target.kind==='role'?result.reading_guide?.roles.find(r=>r.id===target.id):result.reading_guide?.handoffs.find(h=>h.id===target.id);
+  const guide=savedReadingGuide(result);
+  const selected=target.kind==='node'?result.nodes.find(n=>n.node_id===target.id):target.kind==='edge'?result.edges.find(e=>e.edge_id===target.id):target.kind==='step'?guide?.steps.find(s=>s.id===target.id):target.kind==='role'?guide?.roles.find(r=>r.id===target.id):guide?.handoffs.find(h=>h.id===target.id);
   if(!selected)throw Error('阅读对象不属于原说明');
   return selected;
 }
