@@ -46,7 +46,7 @@ async function workspace(t: TestContext) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'arc-feature-graph-'));
   const root = path.join(dir, 'src'), storage = path.join(dir, 'data');
   await fs.mkdir(root);
-  await fs.writeFile(path.join(root, 'main.c'), [...lines, ...Array(40).fill('')].join('\r\n'));
+  await fs.writeFile(path.join(root, 'main.c'), [...lines, ...Array(74).fill('// padding')].join('\r\n'));
   return { root, storage, clean: () => fs.rm(dir, { recursive: true }) };
 }
 async function fixture(t: TestContext, sources: Record<string, string> = {}) {
@@ -88,11 +88,13 @@ test('compact feature graph expands verified frozen evidence into both graphs an
 test('feature graph rejects a wrong verbatim quote and an overlong frozen range', async t => {
   const { prepare } = await fixture(t);
   const draft = graphDraft();
+  draft.evidence[1].end = 81;
+  assert.equal((await prepare(draft)).evidence.find(e => e.evidence_id === 'record-def')?.line_end, 81);
   draft.evidence[0].quote = 'int save(int value)';
-  draft.evidence[1].end = 42;
+  draft.evidence[1].end = 82;
   await assert.rejects(prepare(draft), error => {
     assert.match((error as Error).message, /submit-def.*引用原文不在/);
-    assert.match((error as Error).message, /record-def.*不超过 40 行/);
+    assert.match((error as Error).message, /record-def.*不超过 80 行，文件共 82 行/);
     return true;
   });
 });
@@ -154,6 +156,7 @@ test('compact graph transport allows complex subsystems beyond the former path a
   assert.ok(validate(expanded), JSON.stringify(validate.errors));
   assert.equal(validate({ ...expanded, functions: [...expanded.functions, draft.functions[0]] }), false);
   const prompt = featureGraphPrompt(run, snapshot, promptContext(snapshot, []));
+  assert.match(prompt, /含首尾最多 80 行/);
   assert.match(prompt, /list_symbols.*get_call_graph\(symbol, file, depth=2\)/);
   assert.match(prompt, /跨文件核对调用点与接收方定义/);
   assert.match(prompt, /syntax=reference[^\n]*注册\/绑定和触发双方证据/);

@@ -11,6 +11,10 @@ const tierNames: Record<Tier, string> = {
 const tierOrder = Object.keys(tierNames) as Tier[];
 const cardWidth = 204, cardHeight = 82, pitch = 224, inset = 16;
 
+export function architectureColumns(width: number) {
+  return width >= 1200 ? 6 : Math.max(2, Math.min(5, Math.floor((width - inset * 2) / pitch)));
+}
+
 function append<T>(map: Map<string, T[]>, key: string, value: T) {
   if (!map.has(key)) map.set(key, []);
   map.get(key)!.push(value);

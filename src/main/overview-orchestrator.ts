@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import Ajv2020 from 'ajv/dist/2020';
 import type { AnalysisResult, Explanation, Feature, Project, ProviderProfile, Run, Scenario, Snapshot } from '../shared';
-import { analysisBudget, hasFunctionGraphs } from '../shared';
+import { analysisBudget, hasFunctionGraphs, terminalRunStatuses } from '../shared';
 import { Store, id, now } from './store';
 import { linesOf, readSource, sha } from './snapshot';
 import { overviewPhaseDirectory, redact, type ActiveProcess, type OverviewPhase, type runCodex } from './providers';
@@ -13,7 +13,6 @@ import { applyOverviewResearch, makeOverviewResearchPrompt, overviewResearchSche
 import { parseDshReply } from './dsh';
 import type { runDshWeb } from './dsh-web';
 
-const terminal = new Set(['completed', 'failed', 'cancelled', 'blocked_external']);
 const parseJsonReply = (raw: string) => JSON.parse(raw.trim());
 
 const summaryRepairSchema = {
@@ -122,7 +121,7 @@ export class OverviewOrchestrator {
     if (
       store
         .all<Run>('run')
-        .some(r => r.binding.scenario_id === previous.binding.scenario_id && !r.reading_question_id && !terminal.has(r.status) && r.status !== 'unknown')
+        .some(r => r.binding.scenario_id === previous.binding.scenario_id && !r.reading_question_id && !terminalRunStatuses.has(r.status) && r.status !== 'unknown')
     ) {
       throw Error('该场景已有进行中的分析，请等待或停止后补查');
     }
@@ -209,7 +208,7 @@ export class OverviewOrchestrator {
       if (explanations.some(item => item.source_status === 'current' && !item.result.fictional && sameBinding(item.result.binding) && hasFunctionGraphs(item.result))) {
         continue;
       }
-      if (runs.some(run => !run.reading_question_id && sameBinding(run.binding) && !terminal.has(run.status) && run.status !== 'unknown')) {
+      if (runs.some(run => !run.reading_question_id && sameBinding(run.binding) && !terminalRunStatuses.has(run.status) && run.status !== 'unknown')) {
         continue;
       }
 
@@ -352,7 +351,7 @@ export class OverviewOrchestrator {
     const { store, directory, resources } = this.host;
     const runId = initial.binding.run_id;
     const current = store.get<Run>('run', runId);
-    if (this.host.isClosing() || terminal.has(current.status) || ['cancel_requested', 'unknown'].includes(current.status)) {
+    if (this.host.isClosing() || terminalRunStatuses.has(current.status) || ['cancel_requested', 'unknown'].includes(current.status)) {
       throw Error('补查或复核已经停止，未启动新的 Agent 任务');
     }
 

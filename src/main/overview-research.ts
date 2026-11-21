@@ -5,23 +5,22 @@ import {parseOverviewReview} from './overview-review';
 import {linesOf,readSource,sha} from './snapshot';
 import {validateResult} from './validation';
 import {overviewRelationSemantics} from './architecture-analysis';
-import {compactEvidenceSchema,groundedQuote,overviewRelationLimit} from './overview-result';
+import {compactEvidenceSchema,groundedQuote,maxCompactEvidenceLines,overviewRelationKinds,overviewRelationLimit} from './overview-result';
 import {indexDiscoveryInstructions} from './prompt-context';
 
 const text=(maxLength:number)=>({type:'string',minLength:1,maxLength});
 const object=(properties:Record<string,object>)=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
 const identifier=text(80),ids={type:'array',items:identifier,minItems:1,maxItems:12,uniqueItems:true};
-const kinds=['execution_boundary','data_read','data_publish','dependency','queue_send','queue_receive'] as const;
 export const overviewResearchSchema=object({
   schema_version:{type:'string',enum:['overview-research-1']},
   run_id:text(200),source_snapshot_id:text(200),draft_sha256:{type:'string',pattern:'^[a-f0-9]{64}$'},
   relations:{type:'array',maxItems:overviewRelationLimit,items:object({edge_id:identifier,outcome:{type:'string',enum:['resolved','unresolved']},reason:text(400),checked_evidence_ids:ids,
-    proposal:{anyOf:[{type:'null'},object({kind:{type:'string',enum:kinds},label:text(100),description:text(600),evidence_ids:ids,source_node_id:identifier,target_node_id:identifier})]}})},
+    proposal:{anyOf:[{type:'null'},object({kind:{type:'string',enum:overviewRelationKinds},label:text(100),description:text(600),evidence_ids:ids,source_node_id:identifier,target_node_id:identifier})]}})},
   evidence:{type:'array',minItems:1,maxItems:60,items:compactEvidenceSchema},
 });
 type Research={schema_version:'overview-research-1';run_id:string;source_snapshot_id:string;draft_sha256:string;
   relations:{edge_id:string;outcome:'resolved'|'unresolved';reason:string;checked_evidence_ids:string[];
-    proposal:{kind:typeof kinds[number];label:string;description:string;evidence_ids:string[];source_node_id:string;target_node_id:string}|null}[];
+    proposal:{kind:typeof overviewRelationKinds[number];label:string;description:string;evidence_ids:string[];source_node_id:string;target_node_id:string}|null}[];
   evidence:{id:string;path:string;start:number;end:number;quote?:string}[]};
 const validate=new Ajv2020({allErrors:true,strict:false}).compile(overviewResearchSchema);
 
@@ -39,7 +38,7 @@ export function makeOverviewResearchPrompt(draft:AnalysisResult,review:OverviewR
 找到明确源码依据时 outcome=resolved，proposal 明示候选 kind、label、description、source_node_id、target_node_id、evidence_ids；允许保留或互换原来的两个端点，不能引入第三组件。不能悄悄变更关系含义：description 说明真实交互，reason 说明检查了哪些实现及修正点。候选还会交给另一次独立复核，本轮不能自称已验证。
 ${overviewRelationSemantics}
 只有沿实际源码补查后仍缺实现、取决于未提供的动态配置，或已达到本轮执行预算时，才 outcome=unresolved、proposal=null；reason 必须具体说明已查哪些入口/路径以及真正缺失的事实，不能泛称需人工确认。已查源码也必须记录 evidence 和 checked_evidence_ids，不能空回包。
-evidence 使用新的 ev-* 证据 ID。每项提供 {id,path,start,end}，每个范围最多40行，quote 可省略；填写时只用范围内的单行短锚点。每个新证据区间必须被本轮一次成功 arc_read_source 的返回行完整覆盖，不得用仅在提示词里见到的旧内容冒充新读取。checked_evidence_ids 只能引用全局新证据；proposal.evidence_ids 是本条 checked_evidence_ids 的非空子集。所有证据都应关联到所补查的关系。
+evidence 使用新的 ev-* 证据 ID。每项提供 {id,path,start,end}，单段含首尾最多 ${maxCompactEvidenceLines} 行，quote 可省略；填写时只用范围内的单行短锚点。每个新证据区间必须被本轮一次成功 arc_read_source 的返回行完整覆盖，不得用仅在提示词里见到的旧内容冒充新读取。checked_evidence_ids 只能引用全局新证据；proposal.evidence_ids 是本条 checked_evidence_ids 的非空子集。所有证据都应关联到所补查的关系。
 待补查关系：${JSON.stringify(input)}`;
 }
 
@@ -88,7 +87,7 @@ export async function applyOverviewResearch(value:unknown,draft:AnalysisResult,r
   for(const item of research.evidence){
     if(oldIds.has(item.id))throw Error(`关系自动补查必须使用新证据 ID：${item.id}`);
     let file=files.get(item.path);if(!file){file=await readSource(storage,snapshot,item.path);files.set(item.path,file);}
-    if(item.end<item.start||item.end>file.line_count||item.end-item.start+1>40)throw Error(`关系自动补查源码行范围无效或超过 40 行：${item.id}`);
+    if(item.end<item.start||item.end>file.line_count||item.end-item.start+1>maxCompactEvidenceLines)throw Error(`关系自动补查源码行范围无效或超过 ${maxCompactEvidenceLines} 行：${item.id}`);
     const lines=linesOf(file.text);
     const receipt=receipts.find(r=>r.source_snapshot_id===snapshot.source_snapshot_id&&r.path===item.path&&r.content_sha256===file!.content_sha256&&r.total_lines===file!.line_count&&r.line_start<=item.start&&r.line_start+r.lines.length-1>=item.end&&lines.slice(item.start-1,item.end).every((line,index)=>r.lines[item.start-r.line_start+index]?.text===line));
     if(!receipt)throw Error(`关系自动补查缺少本轮成功实际读取的连续源码回执（快照、哈希、行内容须一致）：${item.id}`);

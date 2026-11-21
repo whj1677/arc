@@ -124,8 +124,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.architecture-card-title { color: var(--ink); font: 580 15px/22px var(--font-sans); }
-.architecture-card-copy { color: var(--ink-secondary); font-size: 13px; line-height: 19px; }
 .architecture-card-meta { margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 16px; }
 .architecture-link, .architecture-map [data-component-id] { transition: opacity 120ms ease-out; }
 .architecture-node-dimmed { opacity: .22; }

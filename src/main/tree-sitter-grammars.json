@@ -1,0 +1,9 @@
+{
+  "c": "tree-sitter-wasms/out/tree-sitter-c.wasm",
+  "cpp": "@vscode/tree-sitter-wasm/wasm/tree-sitter-cpp.wasm",
+  "python": "tree-sitter-wasms/out/tree-sitter-python.wasm",
+  "javascript": "tree-sitter-wasms/out/tree-sitter-javascript.wasm",
+  "typescript": "@vscode/tree-sitter-wasm/wasm/tree-sitter-typescript.wasm",
+  "tsx": "@vscode/tree-sitter-wasm/wasm/tree-sitter-tsx.wasm",
+  "java": "@vscode/tree-sitter-wasm/wasm/tree-sitter-java.wasm"
+}

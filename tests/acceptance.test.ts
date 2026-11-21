@@ -5,7 +5,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {ArcService} from '../src/main/service';
 import {capture,sha} from '../src/main/snapshot';
-import {AcpConnection} from '../src/main/providers';
+import {AcpConnection} from './acp-client';
 import {analysisBudget} from '../src/shared';
 import {annotationTarget} from '../src/ui/annotation';
 test('actual frozen-source MCP rejects traversal, absolute paths, unknown methods and junctions',async t=>{

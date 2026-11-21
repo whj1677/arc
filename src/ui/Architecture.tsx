@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { AnalysisResult } from '../shared';
-import { architectureMap } from './architecture-map';
+import { architectureColumns, architectureMap } from './architecture-map';
 import { componentContext } from './architecture-context';
 import { CodeModules } from './CodeModules';
 import { edgeNames } from './Graph';
@@ -65,7 +65,7 @@ export function Architecture({ result, selected, select, inspect, modules, openF
   const [hover, setHover] = useState('');
   const [focusOnly, setFocusOnly] = useState(false);
   const marker = 'arch-' + useId().replace(/:/g, '');
-  const columns = width >= 1200 ? 6 : Math.max(2, Math.min(5, Math.floor((width - 32) / 224)));
+  const columns = architectureColumns(width);
   const diagramSearch = view === 'layers' ? search : '';
   const model = useMemo(() => architectureMap(result, diagramSearch, columns), [result, diagramSearch, columns]);
   const contexts = useMemo(() => new Map(model.nodes.map(node => [node.node_id, componentContext(node, result)])), [model.nodes, result]);

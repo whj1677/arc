@@ -1,7 +1,7 @@
-import type {Run} from '../shared';
+import {activeRunStatuses,type Run} from '../shared';
 import {analysisModes} from './discovery-state';
 
-export const activeStatuses=new Set(['queued','waiting_agent','running','validating','cancel_requested']);
+export const activeStatuses = activeRunStatuses;
 export type ActivityItem={id:string;at:string;kind:'message'|'tool'|'status'|'error';text:string};
 export function runEngineName(run:Run){
   if(run.execution_mode)return analysisModes[run.execution_mode].name;

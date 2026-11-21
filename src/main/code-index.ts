@@ -1,12 +1,12 @@
 import {randomUUID} from 'node:crypto';
-import {existsSync} from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import Parser from 'web-tree-sitter';
 import type {Snapshot} from '../shared';
 import {readSource, relativePath} from './snapshot';
+import grammars from './tree-sitter-grammars.json';
 
-type Language = 'c'|'cpp'|'python'|'javascript'|'typescript'|'tsx'|'java';
+type Language = keyof typeof grammars;
 type Kind = 'function'|'method'|'constructor'|'destructor'|'class'|'struct'|'interface'|'initializer';
 type Node = Parser.SyntaxNode;
 export interface CodeSymbol {
@@ -23,23 +23,22 @@ export interface CodeIndex {
   schema_version:number; snapshot_id:string; fingerprint:string; files:string[]; symbols:CodeSymbol[]; calls:CodeCall[];
   modules:CodeModule[]; module_edges:{from:string;to:string;count:number}[]; shared_states:SharedState[]; parse_errors:{file:string;reason:string}[];
 }
-const version = 3;
+const version = 4;
 const extensions:Record<string,Language> = {
   '.c':'c', '.h':'c', '.cc':'cpp', '.cpp':'cpp', '.cxx':'cpp', '.hh':'cpp', '.hpp':'cpp', '.hxx':'cpp',
   '.py':'python', '.js':'javascript', '.mjs':'javascript', '.cjs':'javascript', '.jsx':'javascript',
   '.ts':'typescript', '.mts':'typescript', '.cts':'typescript', '.tsx':'tsx', '.java':'java',
 };
-function asset(file:string, dependency:string) {
-  if (typeof __dirname === 'string' && path.basename(__dirname) === 'dist') return path.join(__dirname, 'tree-sitter', file);
-  const bundled = path.resolve('dist/tree-sitter',file);
-  return existsSync(bundled) ? bundled : path.resolve('node_modules', dependency, file);
+function asset(dependencyPath:string) {
+  if (typeof __dirname === 'string' && path.basename(__dirname) === 'dist') return path.join(__dirname, 'tree-sitter', path.basename(dependencyPath));
+  return path.resolve('node_modules', dependencyPath);
 }
 let runtime:Promise<void>|undefined;
 const languages = new Map<Language, Promise<Parser.Language>>();
 function grammar(language:Language) {
   let loaded = languages.get(language);
   if (!loaded) {
-    loaded = Parser.Language.load(asset(`tree-sitter-${language}.wasm`, 'tree-sitter-wasms/out'));
+    loaded = Parser.Language.load(asset(grammars[language]));
     languages.set(language, loaded);
   }
   return loaded;
@@ -57,6 +56,10 @@ const indexNodes = [...Object.keys(typeKinds), ...functionNodes, ...callNodes, '
 const typeSymbol = (kind:Kind) => kind === 'class' || kind === 'interface' || kind === 'struct';
 const field = (node:Node, key:string) => node.childForFieldName(key);
 const separator = (language:Language) => language === 'cpp' || language === 'c' ? '::' : '.';
+function endLine(node:Node, lineCount:number) {
+  const {row, column} = node.endPosition;
+  return Math.min(lineCount, column === 0 && row > node.startPosition.row ? row : row + 1);
+}
 function declaratorName(node:Node) {
   let part:Node|null = field(node,'declarator');
   while (part && part.type.endsWith('_declarator')) {
@@ -245,7 +248,7 @@ function valueName(node:Node, text:string, scopes:Scope[]) {
   return {name,qualifier:qualifier === '::' ? '::' : qualifier.replace(/::$/,'')};
 }
 
-function extract(tree:Parser.Tree, text:string, file:string, lang:Language, index:CodeIndex, namespaces:Set<string>, facts:CppFacts) {
+function extract(tree:Parser.Tree, text:string, lineCount:number, file:string, lang:Language, index:CodeIndex, namespaces:Set<string>, facts:CppFacts) {
   const root = tree.rootNode;
   const cpp = lang === 'c' || lang === 'cpp';
   const packageName = lang === 'java' ? root.namedChildren.find(n => n.type === 'package_declaration')?.lastNamedChild?.text : '';
@@ -293,7 +296,7 @@ function extract(tree:Parser.Tree, text:string, file:string, lang:Language, inde
       const name = binding.text, qualified = scope.name ? scope.name+'::'+name : name;
       const line = binding.startPosition.row+1, id = `${file}:${line}:${binding.startPosition.column+1}:initializer`;
       const start = node.parent!.startIndex;
-      const symbol:CodeSymbol = {id,name,qualified_name:qualified,kind:'initializer',file,start_line:line,end_line:node.endPosition.row+1,
+      const symbol:CodeSymbol = {id,name,qualified_name:qualified,kind:'initializer',file,start_line:line,end_line:endLine(node,lineCount),
         signature:text.slice(start,Math.min(value.startIndex,start+240)).replace(/\s+/g,' ').trim(),language:lang,has_body:false,public_entry:false};
       facts.initializers.set(id,symbol);
       scopes.push({end:node.endIndex,name:qualified,kind:'initializer',caller:symbol,bodyStart:value.startIndex});
@@ -323,7 +326,7 @@ function extract(tree:Parser.Tree, text:string, file:string, lang:Language, inde
       const id = `${file}:${node.startPosition.row+1}:${node.startPosition.column+1}:${node.type}`;
       const signature = text.slice(owner.startIndex, Math.min(body?.startIndex ?? owner.endIndex, owner.startIndex+400)).replace(/\s+/g,' ').trim().slice(0,240);
       const isStatic = cpp && owner.namedChildren.some(child=>child.type === 'storage_class_specifier' && child.text === 'static');
-      const symbol:CodeSymbol = {id,name,qualified_name:qualified,kind,file,start_line:owner.startPosition.row+1,end_line:owner.endPosition.row+1,
+      const symbol:CodeSymbol = {id,name,qualified_name:qualified,kind,file,start_line:owner.startPosition.row+1,end_line:endLine(owner,lineCount),
         signature,language:lang,has_body:!!body,public_entry:publicEntry(owner,scope,file,lang,name,signature,isStatic)};
       index.symbols.push(symbol);
       // A static inline function in a header can belong to a consumer's translation unit.
@@ -501,7 +504,7 @@ async function* indexSources(storage:string, snapshot:Snapshot) {
 }
 
 async function buildIndex(storage:string, snapshot:Snapshot):Promise<CodeIndex> {
-  runtime ??= Parser.init({locateFile:(file:string)=>asset(file,'web-tree-sitter')});
+  runtime ??= Parser.init({locateFile:(file:string)=>asset(`web-tree-sitter/${file}`)});
   await runtime;
   const index:CodeIndex = {schema_version:version,snapshot_id:snapshot.source_snapshot_id,fingerprint:snapshot.fingerprint,
     files:[],symbols:[],calls:[],modules:[],module_edges:[],shared_states:[],parse_errors:[]};
@@ -525,7 +528,7 @@ async function buildIndex(storage:string, snapshot:Snapshot):Promise<CodeIndex> 
         continue;
       }
       try {
-        extract(tree,text,file,lang,index,namespaces,facts);
+        extract(tree,text,source.line_count,file,lang,index,namespaces,facts);
         index.files.push(file);
         if (tree.rootNode.hasError) index.parse_errors.push({file,reason:'语法树含错误节点，已索引可识别部分'});
       } finally { tree.delete(); }

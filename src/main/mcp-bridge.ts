@@ -18,7 +18,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {ownedArcRegistration,writeConnection,adoptConnection} from './mcp-registration';
 import {listFrozenFiles} from './prompt-context';
-import {readingAnswerSchema,readingInstructions,preloadReadingSource} from './reading-question';
+import {readingAnswerSchema,readingInstructions,preloadReadingSource,validateReadingAnswer} from './reading-question';
 import {flushDevelopmentWrites,pendingDevelopmentWrites,rememberDevelopmentWorkspace} from './development-outbox';
 import {engineeringCategories,type CompletionBinding,type EngineeringTask} from '../engineering';
 const exec=promisify(execFile);
@@ -468,7 +468,9 @@ export class ArcMcpBridge {
     }
     if(name==='arc_validate_result'){
       const raw=JSON.stringify(args.result);if(!raw||Buffer.byteLength(raw)>2*1024*1024)throw Error('结果必须小于 2 MiB');
-      const snapshot=this.service.store.get<Snapshot>('snapshot',run.binding.source_snapshot_id);return validateResult(args.result,run,snapshot,this.service.directory);
+      const snapshot=this.service.store.get<Snapshot>('snapshot',run.binding.source_snapshot_id);
+      const value = normalizeTransport(structuredClone(args.result), []);
+      return run.reading_question_id ? validateReadingAnswer(value, run, snapshot, this.service.directory) : validateResult(value, run, snapshot, this.service.directory);
     }
     if(name==='arc_submit_result'){
       const raw=JSON.stringify(args.result);if(!raw||Buffer.byteLength(raw)>2*1024*1024)throw Error('结果必须小于 2 MiB');

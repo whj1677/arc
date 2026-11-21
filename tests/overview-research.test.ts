@@ -36,7 +36,7 @@ async function fixture(t:TestContext,unknown=false,extraLines=0){
   // Exact official CLI item.completed shape; this is a local fixture, not a
   // claim that a real model executed during this unit test.
   const receipt={source_snapshot_id:'snapshot',path:'main.ts',content_sha256:hash,total_lines:lines.length,line_start:1,lines:lines.map((text,index)=>({line:index+1,text}))};
-  const event=(payload:unknown=receipt)=>({phase:'overview_research',type:'item.completed',item:{id:'item_6',type:'mcp_tool_call',server:'arc_frozen_source',tool:'arc_read_source',arguments:{path:'main.ts',line_start:1,line_count:4},result:{content:[{type:'text',text:JSON.stringify(payload)}],structured_content:null},error:null,status:'completed'}});
+  const event=(payload:unknown=receipt)=>({phase:'overview_research',type:'item.completed',item:{id:'item_6',type:'mcp_tool_call',server:'arc_frozen_source',tool:'arc_read_source',arguments:{path:'main.ts',line_start:1,line_count:lines.length},result:{content:[{type:'text',text:JSON.stringify(payload)}],structured_content:null},error:null,status:'completed'}});
   const apply=(v:unknown=research,events:unknown[]=[event()])=>applyOverviewResearch(v,draft,review,run,snapshot,storage,events);
   return {draft,review,research,receipt,event,apply,run,snapshot,storage};
 }
@@ -70,7 +70,11 @@ test('research rejects wrong bindings, missing relations, new endpoints and inva
   const endpoint=structuredClone(f.research);endpoint.relations[0].proposal!.target_node_id='sender';await assert.rejects(f.apply(endpoint),/原端点/);
   const badQuote=structuredClone(f.research);badQuote.evidence[0].quote='return db.get("invented");';await assert.rejects(f.apply(badQuote),/引用原文不在/);
   const badRange=structuredClone(f.research);badRange.evidence[0].end=5;await assert.rejects(f.apply(badRange),/行范围无效/);
-  const long=await fixture(t,false,40),tooWide=structuredClone(long.research);tooWide.evidence[1].end=43;await assert.rejects(long.apply(tooWide),/超过 40 行/);
+  const long=await fixture(t,false,79),wide=structuredClone(long.research);
+  wide.evidence[1].end=82;
+  assert.equal((await long.apply(wide)).draft.evidence.find(e=>e.evidence_id==='new-config')?.line_end,82);
+  wide.evidence[1].end=83;
+  await assert.rejects(long.apply(wide),/超过 80 行：new-config/);
   const reused=structuredClone(f.research);reused.evidence[0].id='old-read';reused.relations[0].checked_evidence_ids=['old-read'];reused.relations[0].proposal!.evidence_ids=['old-read'];await assert.rejects(f.apply(reused),/新证据 ID/);
   const noProposal=structuredClone(f.research);noProposal.relations[0].proposal=null;await assert.rejects(f.apply(noProposal),/修订提案不一致/);
 });
@@ -86,6 +90,7 @@ test('research prompt scopes automatic source follow-up to rejected relations an
   const prompt=makeOverviewResearchPrompt(f.draft,review),input=JSON.parse(prompt.split('待补查关系：')[1]);
   assert.deepEqual(input.relations.map((item:any)=>item.edge_id),['wrong-read']);assert.equal(input.relations[0].endpoint_roles[0].label,'数据库');assert.equal(input.relations[0].original_evidence[0].path,'main.ts');
   assert.match(prompt,/调用链上下游/);assert.match(prompt,/不要把“请用户核对\/补查”当作结果/);assert.match(prompt,/本轮一次成功 arc_read_source/);
+  assert.match(prompt,/单段含首尾最多 80 行/);
   assert.ok(prompt.includes(overviewRelationSemantics));
   const strict=(schema:any)=>{if(schema&&typeof schema==='object'){if(schema.properties){assert.equal(schema.additionalProperties,false);assert.deepEqual(schema.required,Object.keys(schema.properties));}Object.values(schema).forEach(strict);}};strict(overviewResearchSchema);
 });

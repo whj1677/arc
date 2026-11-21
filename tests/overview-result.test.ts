@@ -9,12 +9,12 @@ import {overviewDiscoveryQuestion,previousCatalogQuestion} from '../src/main/arc
 import {promptContext} from '../src/main/prompt-context';
 import {analysisBudget,type Run} from '../src/shared';
 
-async function fixture(t:TestContext){
+async function fixture(t:TestContext,extraLines=0){
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-overview-')),root=path.join(dir,'source'),storage=path.join(dir,'data');
   t.after(async()=>{assert.equal(path.dirname(dir),os.tmpdir());await fs.rm(dir,{recursive:true});});
   await fs.mkdir(root);
   const source=['export const queue:string[] = [];','export const store:string[] = [];','export function submit(value:string) {','  queue.push(value);','}','export function receive() {','  const value=queue.shift();','  if(value)store.push(value);','  return value;','}'].join('\r\n');
-  await fs.writeFile(path.join(root,'main.ts'),source);
+  await fs.writeFile(path.join(root,'main.ts'),source+'\r\n// padding'.repeat(extraLines));
   const snapshot=await capture(root,'project',storage,'');
   const run:Run={binding:{project_id:'project',feature_id:'feature',scenario_id:'scenario',question_revision_id:'revision',source_snapshot_id:snapshot.source_snapshot_id,run_id:'overview-run'},provider_id:'codex',status:'running',created_at:new Date().toISOString(),question:'了解工程全貌',title:'工程全貌',submission_key:'overview-submit',output_path:''};
   const value={schema_version:'overview-1',summary:{text:'提交先入队，接收时读取队列并写入存储。',evidence_ids:['e-send','e-receive']},scope:'main.ts 的提交、队列和接收实现',unresolved:['真实调用方与运行时行为未验证'],components:[
@@ -65,6 +65,15 @@ test('one repair receives all bad source anchors while snapshot storage errors s
   await assert.rejects(prepareOverview(value,run,snapshot,path.join(storage,'missing')),error=>!(error instanceof OverviewValidationError));
 });
 
+test('compact evidence accepts 41 to 80 lines and rejects 81 within the source file',async t=>{
+  const {snapshot,storage}=await fixture(t,72);
+  for(const end of [42,81]){
+    const [evidence]=await compactEvidence([{id:'ev',path:'main.ts',start:2,end}],snapshot,storage);
+    assert.equal(evidence.line_end,end);
+  }
+  await assert.rejects(compactEvidence([{id:'ev',path:'main.ts',start:2,end:82}],snapshot,storage),/不超过 80 行，文件共 82 行/);
+});
+
 test('frozen line ranges hydrate missing anchors and genuine 240-character delimiter drift only',async t=>{
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-anchor-')),root=path.join(dir,'src'),storage=path.join(dir,'data');
   t.after(()=>fs.rm(dir,{recursive:true,force:true}));await fs.mkdir(root);
@@ -96,6 +105,7 @@ test('compact overview verifies exact source and maps facts to the existing resu
   assert.equal(result.reading_guide,undefined);assert.equal(result.function_walkthroughs,undefined);
   assert.deepEqual(await prepareOverview(value,run,snapshot,storage),result,'conversion is deterministic');
   const prompt=overviewPrompt(run,snapshot,promptContext(snapshot,[]));assert.match(prompt,/overview-1/);assert.match(prompt,/不表示同步完成/);assert.match(prompt,/unresolved/);
+  assert.match(prompt,/优先聚焦 40 行内，单段含首尾最多 80 行/);
   const check=(schema:any)=>{if(schema&&typeof schema==='object'){if(schema.properties){assert.equal(schema.additionalProperties,false);assert.deepEqual(schema.required,Object.keys(schema.properties));}Object.values(schema).forEach(check);}};check(overviewSchema);
 });
 

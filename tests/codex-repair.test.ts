@@ -26,9 +26,9 @@ test('Codex overview repairs an oversized evidence range before semantic review'
     features:[{label:'计算功能',items:[{...calculation,id:'calculate-feature'}]}],
     readings:[{node_id:'calculate-feature',entry:'输入 x',outcome:'返回 x + 3',
       steps:[{text:'将输入加三并返回',evidence_ids:['ev']}],boundary:'仅核对函数体'}],
-    relations:[],evidence:[{id:'ev',path:'source.c',start:1,end:3,quote:'return x + 3;'}],
+    relations:[],evidence:[{id:'ev',path:'source.c',start:1,end:80,quote:String.raw`return x + 3\u003b`}],
   };
-  const invalid={...overview,evidence:[{...overview.evidence[0],end:45}]};
+  const invalid={...overview,evidence:[{...overview.evidence[0],end:81,quote:'return x + 3;'}]};
   const {dir,project,service}=await context(async options=>{
     calls.push(options);
     assert.equal(options.shouldStart?.(),true);
@@ -42,7 +42,7 @@ test('Codex overview repairs an oversized evidence range before semantic review'
     return {code:0,raw:JSON.stringify(calls.length===1?invalid:overview),stderr:''};
   });
   t.after(async()=>{service.store.close();await fs.rm(dir,{recursive:true,force:true});});
-  await fs.appendFile(path.join(project,'source.c'),'// padding\r\n'.repeat(42));
+  await fs.appendFile(path.join(project,'source.c'),'// padding\r\n'.repeat(78));
   const opened=await service.openProject(project),scenario=service.overview(opened.project_id);
   const preferences={model:'selected-model',reasoning_effort:'high'} as const;
   service.store.put('settings','codex_preferences',preferences);
@@ -58,12 +58,45 @@ test('Codex overview repairs an oversized evidence range before semantic review'
   assert.equal(repair.outputSchema,overviewSchema);
   assert.equal(repair.outputDirectory,path.join(service.directory,'runs',runId,'repair'));
   assert.equal(repair.outputPath,path.join(repair.outputDirectory!,'result.json'));
-  assert.ok(repair.prompt.split('\n').includes('源码引用校验失败：ev (source.c:1-45, quote="return x + 3;")：源码行范围必须有效且不超过 40 行，文件共 45 行'));
+  assert.ok(repair.prompt.split('\n').includes('源码引用校验失败：ev (source.c:1-81, quote="return x + 3;")：源码行范围必须有效且不超过 80 行，文件共 81 行'));
+  assert.match(repair.prompt,/含首尾最多 80 行/);
   assert.ok(repair.prompt.includes(JSON.stringify(invalid)));
-  assert.equal(service.store.events(runId).filter(event=>event.stage==='repairing_validation').length,1);
+  const events=service.store.events(runId);
+  assert.equal(events.filter(event=>event.stage==='repairing_validation').length,1);
+  assert.deepEqual(events.filter(event=>event.type==='local.format_normalization').map(event=>event.changes),[
+    ['ev: JSON string escape decoded once; exact match in source.c:1-80'],
+  ]);
   const saved=service.store.get<Run>('run',runId);
   assert.equal(saved.status,'completed',saved.error);
-  assert.equal(service.data().explanations[0].result.evidence[0].line_end,3);
+  const [evidence]=service.data().explanations[0].result.evidence;
+  assert.equal(evidence.line_end,80);
+  assert.equal(evidence.note,'return x + 3;');
+});
+
+test('Codex overview fails without repair when a frozen source file is missing',async t=>{
+  let calls=0;
+  const {dir,project,service}=await context(async options=>{
+    if(++calls===1) await fs.unlink(path.join(service.directory,'snapshots',options.snapshot.source_snapshot_id,'source.c'));
+    const calculation={id:'calculator',label:'计算',description:'计算输入加三',evidence_ids:['ev']};
+    return {code:0,stderr:'',raw:JSON.stringify({
+      schema_version:'overview-1',summary:{text:'计算输入加三',evidence_ids:['ev']},
+      scope:'calculate 函数',unresolved:[],
+      components:[{...calculation,kind:'stage',inputs:['x'],outputs:['x + 3']}],
+      features:[],readings:[],relations:[],evidence:[{id:'ev',path:'source.c',start:1,end:3}],
+    })};
+  });
+  t.after(async()=>{service.store.close();await fs.rm(dir,{recursive:true,force:true});});
+  const opened=await service.openProject(project),scenario=service.overview(opened.project_id);
+  service.store.put('provider','codex',{status:'available',checked_at:new Date().toISOString()});
+  const run=await service.startRun(scenario.scenario_id,'codex','missing-frozen-source-key');
+  const runId=run.binding.run_id;
+  await service.executing.get(runId);
+
+  const saved=service.store.get<Run>('run',runId);
+  assert.equal(saved.status,'failed');
+  assert.match(saved.error!,/ENOENT.*realpath.*source\.c/);
+  assert.equal(calls,1);
+  assert.ok(!service.store.events(runId).some(event=>event.stage==='repairing_validation'));
 });
 
 for(const outcome of ['completed','still invalid','invalid JSON','cancel before repair','cancel during repair'] as const) {

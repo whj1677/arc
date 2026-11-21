@@ -131,6 +131,25 @@ test('MCP rejects forged binding, preserves raw result, accepts valid result onc
  const bad=await bridge.call('arc_begin_analysis',{request_id:'bad'});const rejected=await bridge.call('arc_submit_result',{run_id:bad.binding.run_id,result:{...value,result_id:'bad',binding:t.binding}});assert.equal(rejected.status,'failed');assert.equal(service.data().explanations.length,1);
  }finally{await bridge.close();await service.shutdown();service.store.close();}
 });
+test('MCP validates reading-1 answers against the claimed question without changing the run or input',async()=>{
+ const {dir,service,project,bridge}=await setup();
+ try{
+  await bridge.enable(project.project_id);
+  const question=await service.askReading({project_id:project.project_id,target:{kind:'file',id:'a.ts'},question:'value 的初始值是多少？',mode:'mcp',submission_key:'validate-reading-key'});
+  const task=await bridge.call('arc_begin_analysis',{request_id:'validate-reading',question_id:question.question_id});
+  const run_id=task.binding.run_id,[file]=task.files.files;
+  const result={schema_version:'reading-1',question_id:question.question_id,binding:task.binding,answer:'value 的初始值为 1。[ev]',
+   evidence:[{evidence_id:'ev',source_snapshot_id:task.binding.source_snapshot_id,path:file.path,line_start:1,line_end:1,content_sha256:file.content_sha256,role:'definition',note:'value 的定义',symbol_id:null}],uncertainties:[]};
+  const checked=await bridge.call('arc_validate_result',{run_id,result});
+  assert.equal(checked.anchors,'passed');
+  assert.deepEqual(checked.errors,[]);
+  assert.equal(result.evidence[0].symbol_id,null);
+  const rejected=await bridge.call('arc_validate_result',{run_id,result:{...result,question_id:'another-question'}});
+  assert.deepEqual(rejected.errors,['追问身份不匹配']);
+  assert.equal(service.store.get('run',run_id).status,'running');
+  assert.equal(service.data().questions?.[0].answer,undefined);
+ }finally{await bridge.close();await service.shutdown();service.store.close();await fs.rm(dir,{recursive:true,force:true});}
+});
 test('activity exposes public events, detects silence, avoids fake progress or reasoning',()=>{
  const run:any={status:'running',created_at:'2026-10-20T00:00:00Z',binding:{run_id:'r'}};
  const events=[{type:'local.stage',stage:'mcp_connected',message:'connected',received_at:run.created_at},{type:'item.completed',item:{type:'reasoning',text:'secret'}},{type:'item.completed',item:{type:'agent_message',id:'m',text:'public'},received_at:run.created_at},{type:'item.completed',item:{type:'mcp_tool_call',id:'tool',tool:'arc_read_source',arguments:{path:'a.ts'},status:'completed'},received_at:run.created_at}];

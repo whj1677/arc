@@ -1,5 +1,5 @@
 import {discoveredFeature} from '../discovered-feature';
-import {hasFunctionGraphs,isExecutionMode,type ExecutionMode,type Explanation,type Run,type WorkspaceData} from '../shared';
+import {activeRunStatuses,hasFunctionGraphs,isExecutionMode,type ExecutionMode,type Explanation,type Run,type WorkspaceData} from '../shared';
 
 export const analysisModes={
   codex:{name:'Codex',option:'Codex 直连 · 推荐',start:'启动 Codex 分析',retry:'通过 Codex 重新分析',
@@ -41,7 +41,7 @@ export function catalogGraphState(data:WorkspaceData,overview:Explanation,nodeId
   const ready=readyReports.findLast(e=>e.result.binding.source_snapshot_id===latestSnapshot)??readyReports.at(-1);
   const latest=reports.findLast(e=>e.result.binding.source_snapshot_id===latestSnapshot)??reports.at(-1);
   const runs=data.runs.filter(r=>!r.reading_question_id&&matches(r.binding));
-  const run=runs.filter(r=>['queued','waiting_agent','running','validating','cancel_requested'].includes(r.status)).at(-1)??runs.at(-1);
+  const run=runs.filter(r=>activeRunStatuses.has(r.status)).at(-1)??runs.at(-1);
   const waiting=!!scene&&scope.source_snapshot_id===project?.snapshot_id&&waitingForAgent(data,scene.scenario_id);
   const status=run&&graphStatuses[run.status]|| (waiting?'等待领取':latest&&!hasFunctionGraphs(latest.result)?'证据缺口':'');
   return {ready,latest,run,status,archived:!!(feature?.archived||scene?.archived)};

@@ -86,7 +86,7 @@ test('indexes seven grammars from frozen files and resolves call sites to defini
     finally { await fs.rename(frozen + '.held', frozen); }
     assert.deepEqual(await service.codeIndexSummary(snapshot.source_snapshot_id), summary);
   } finally { service.store.db.close(); }
-  await fs.writeFile(cache,JSON.stringify({...index,schema_version:2,symbols:[]}));
+  await fs.writeFile(cache,JSON.stringify({...index,schema_version:3,symbols:[]}));
   assert.deepEqual(await getCodeIndex(storage,snapshot),index);
 });
 
@@ -114,7 +114,7 @@ test('indexes callback registration sites and unique shared objects across C/C++
   }
   const snapshot = await capture(root,'registration',storage,'');
   const index = await getCodeIndex(storage,snapshot);
-  assert.equal(index.schema_version,3);
+  assert.equal(index.schema_version,4);
   const graph = (symbol:string)=>getCallGraph(index,{symbol,direction:'outgoing',depth:1});
   assert.deepEqual(graph('handler').edges.map(e=>[e.syntax,e.callee_name,e.line,e.targets]),[['reference','notify',3,[]]]);
   assert.deepEqual(graph('ops').edges.map(e=>[e.line,e.syntax,e.targets[0]?.signature]),[[3,'reference','void tick(void)']]);
@@ -151,6 +151,24 @@ async function indexFixture(t:TestContext, sources:Record<string,string>) {
   }
   return getCodeIndex(storage,await capture(root,'scope',storage,''));
 }
+
+test('symbol and initializer end lines stay within files with a trailing newline',async t=>{
+  const index = await indexFixture(t,{
+    'partial.c':'int eof(void) {\n #define MACRO 1\n',
+    'table.c':'void tick(void) {}\nvoid (*handlers[])(void) = {\n  tick\n};\n',
+  });
+  assert.equal(index.symbols.find(s=>s.name==='eof')?.end_line,2);
+  assert.equal(index.symbols.find(s=>s.kind==='initializer' && s.name==='handlers')?.end_line,4);
+});
+
+test('indexes modern TypeScript and TSX without parse errors',async t=>{
+  const index = await indexFixture(t,{
+    'modern.ts':'export class Resource { accessor counter: number = 0; }\nexport function choose<const T>(value: T): T { return value; }\n',
+    'view.tsx':'export const View = <const T,>({ value }: { value: T }) => <div>{String(value)}</div>;\n',
+  });
+  assert.deepEqual(index.parse_errors,[]);
+  assert.deepEqual(index.symbols.map(s=>s.name),['Resource','choose','View']);
+});
 
 test('a C99 static array parameter preserves external linkage and a public prototype',async t=>{
   const index = await indexFixture(t,{
@@ -247,7 +265,7 @@ test('shared states match filtered module pages and support independent slices',
   const files = ['main.c','feature/run.c','feature/io/port.c','other/state.c'];
   const rootStates = Array.from({length:17},(_,i)=>({name:`root${i}`,file:files[0],line:i+1,access_dirs:['.','other']}));
   const state = {name:'io',file:files[3],line:1,access_dirs:['feature/io','other']};
-  const index:CodeIndex = {schema_version:3,snapshot_id:'s',fingerprint:'f',files,symbols:[],calls:[],module_edges:[],parse_errors:[],
+  const index:CodeIndex = {schema_version:4,snapshot_id:'s',fingerprint:'f',files,symbols:[],calls:[],module_edges:[],parse_errors:[],
     modules:dirs.map((dir,i)=>({dir,files:[files[i]],symbol_count:0,key_symbols:[]})),shared_states:[...rootStates,state]};
   const first = listModules(index,{limit:1});
   assert.equal(first.shared_state_count,17);

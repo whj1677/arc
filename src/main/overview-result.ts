@@ -13,9 +13,11 @@ const identifier=text(80),evidenceIds=list(identifier,12,1);
 const described={id:identifier,label:text(80),description:text(400),evidence_ids:evidenceIds};
 const component={...described,kind:{type:'string',enum:['stage','resource','execution_boundary']},inputs:list(text(150),8),outputs:list(text(150),8)};
 const anchorRange={id:identifier,path:text(2000),start:{type:'integer',minimum:1},end:{type:'integer',minimum:1}};
+export const maxCompactQuoteLength = 240;
 // Each alternative starts with a distinct key and requires every field for Codex structured output.
-export const compactEvidenceSchema={anyOf:[object(anchorRange),object({quote:{type:'string',maxLength:240,description:'范围内的单行短锚点；只给准确行号时留空。'},...anchorRange})]};
-const relationKinds=['execution_boundary','data_read','data_publish','dependency','queue_send','queue_receive'] as const;
+export const compactEvidenceSchema={anyOf:[object(anchorRange),object({quote:{type:'string',maxLength:maxCompactQuoteLength,description:'范围内的单行短锚点；只给准确行号时留空。'},...anchorRange})]};
+export const maxCompactEvidenceLines = 80;
+export const overviewRelationKinds=['execution_boundary','data_read','data_publish','dependency','queue_send','queue_receive'] as const;
 export const overviewRelationLimit=48;
 export const deferredCatalogReadingBoundary='已定位模块与入口实现，详细步骤与函数双图待进入该功能后按需展开';
 export const deferredCatalogDeclarationBoundary='已定位公共 API 声明，入口实现、详细步骤与函数双图待按需查证';
@@ -28,7 +30,7 @@ export const overviewSchema=object({
   components:list({anyOf:[object(component),object({parent_id:identifier,...component})]},30,1),
   features:list(object({label:text(100),items:list(object(described),24,1)}),16),
   readings:resultSchema.properties.feature_catalog.properties.readings,
-  relations:list(object({...described,source:identifier,target:identifier,kind:{type:'string',enum:relationKinds}}),overviewRelationLimit),
+  relations:list(object({...described,source:identifier,target:identifier,kind:{type:'string',enum:overviewRelationKinds}}),overviewRelationLimit),
   evidence:list(compactEvidenceSchema,512,1),
 });
 // The generator requires readings. Replaying a persisted older draft must yield its original hash.
@@ -43,7 +45,7 @@ type Overview={
   components:(Described&{kind:'stage'|'resource'|'execution_boundary';inputs:string[];outputs:string[];parent_id?:string})[];
   features:{label:string;items:Described[]}[];
   readings?:CatalogReading[];
-  relations:(Described&{source:string;target:string;kind:typeof relationKinds[number]})[];
+  relations:(Described&{source:string;target:string;kind:typeof overviewRelationKinds[number]})[];
   evidence:{id:string;path:string;start:number;end:number;quote?:string}[];
 };
 
@@ -72,7 +74,7 @@ function decodedSourceQuote(original:string,physical:string,normalized:string){
 export function groundedQuote(original:string|undefined,physical:string):string|undefined{
   const excerpt=physical.replace(/\r\n/g,'\n'),trimmed=excerpt.trim();
   if(!trimmed)return undefined;
-  const canonical=()=>Array.from(trimmed).slice(0,240).join('').trimEnd();
+  const canonical=()=>Array.from(trimmed).slice(0,maxCompactQuoteLength).join('').trimEnd();
   if(!original?.trim())return canonical();
   if(excerpt.includes(original.replace(/\r\n/g,'\n')))return original;
   const normalized=trimmed.replace(/\s+/g,' '),quote=original.trim().replace(/\s+/g,' ');
@@ -80,7 +82,7 @@ export function groundedQuote(original:string|undefined,physical:string):string|
   // Only the last delimiter of a capped quote may drift. Prove the entire preceding
   // source span, including whitespace, so padding cannot manufacture a long match.
   const delimiter=/[,;:.(){}\[\]]/;
-  if(Array.from(original).length!==240||!delimiter.test(original.at(-1)!))return;
+  if(Array.from(original).length!==maxCompactQuoteLength||!delimiter.test(original.at(-1)!))return;
   const prefix=original.slice(0,-1).replace(/\r\n/g,'\n');
   for(let at=excerpt.indexOf(prefix);at>=0;at=excerpt.indexOf(prefix,at+1)){
     const next=excerpt.slice(at+prefix.length).trimStart()[0];
@@ -96,7 +98,7 @@ export async function compactEvidence(items:Overview['evidence'],snapshot:Snapsh
     if(!paths.has(item.path)){badIds.push(item.id);errors.push(anchor+'：文件不在本次授权快照内');continue;}
     let file=files.get(item.path);
     if(!file){file=await readSource(storage,snapshot,item.path);files.set(item.path,file);}
-    if(!Number.isInteger(item.start)||!Number.isInteger(item.end)||item.start<1||item.end<item.start||item.end>file.line_count||item.end-item.start+1>40){badIds.push(item.id);errors.push(`${anchor}：源码行范围必须有效且不超过 40 行，文件共 ${file.line_count} 行`);continue;}
+    if(!Number.isInteger(item.start)||!Number.isInteger(item.end)||item.start<1||item.end<item.start||item.end>file.line_count||item.end-item.start+1>maxCompactEvidenceLines){badIds.push(item.id);errors.push(`${anchor}：源码行范围必须有效且不超过 ${maxCompactEvidenceLines} 行，文件共 ${file.line_count} 行`);continue;}
     // Keep lone CR and every source character intact. Only CRLF is normalized.
     const offsets=[0,...[...file.text.matchAll(/\r\n|\n|\r/g)].map(match=>match.index!+match[0].length)];
     const physical=file.text.slice(offsets[item.start-1],offsets[item.end]??file.text.length);
@@ -170,6 +172,6 @@ ${architectureCoverageInstructions}
 源码明确归属的内部组件可用 parent_id 指向所属组件 id，顶层省略 parent_id。父子归属与协作关系分别查证；逐个检查尚无协作关系的核心组件。
 relations 仅连接 components。${overviewRelationSemantics}每条 description 说明源码能证明的交互与方向。禁止 sync_call、return、control_flow；不能从函数名、await、界面提示或提交返回推导整个业务已完成。没有明确关系依据就省略并记入 unresolved。
 evidence 只保留直接支撑结论的短锚点；components、features 和 readings 引用同一处源码时复用 evidence id，避免逐行摘录。
-evidence={id,path,start,end,quote}，path 为快照相对路径，start/end 为准确行号且一段最多40行。可只给准确行号，由 ARC 提取源码。填写 quote 时只摘能定位行为的单行短锚点，例如 SQL 语句或函数调用。不要重复整段代码、行号前缀、删节号或转述；ARC 会用完整 start/end 片段独立核对含义。片段行范围应足以支持结论，不能只因缩短quote而漏掉关键实现。哈希、任务绑定和最终图格式由 ARC 核对并补充，不输出它们。只返回紧凑结果，不生成附件。
+evidence={id,path,start,end,quote}，path 为快照相对路径，start/end 为准确行号。优先聚焦 40 行内，单段含首尾最多 ${maxCompactEvidenceLines} 行。可只给准确行号，由 ARC 提取源码。填写 quote 时只摘能定位行为的单行短锚点，例如 SQL 语句或函数调用。不要重复整段代码、行号前缀、删节号或转述；ARC 会用完整 start/end 片段独立核对含义。片段行范围应足以支持结论，不能只因缩短quote而漏掉关键实现。哈希、任务绑定和最终图格式由 ARC 核对并补充，不输出它们。只返回紧凑结果，不生成附件。
 定位线索与已有理解（可能不完整，须结合本次源码核对）：${JSON.stringify(context)}`;
 }

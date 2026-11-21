@@ -24,7 +24,7 @@ import type {
   Snapshot,
   WorkspaceData,
 } from '../shared';
-import { hasFunctionGraphs, readingLimits } from '../shared';
+import { activeRunStatuses, hasFunctionGraphs, readingLimits, terminalRunStatuses } from '../shared';
 import { explanationFreshness } from '../freshness';
 import { Store, id, now } from './store';
 import { capture, freshness, readSource, sha } from './snapshot';
@@ -38,7 +38,7 @@ import { catalogFeatureClues, promptContext } from './prompt-context';
 import { proposeScenarios, scenarioTitleKey } from './scenario-breakdown';
 import { readingAnswerSchema, validateReadingAnswer } from './reading-question';
 import { isCatalogOverview, overviewDiscoveryQuestion, previousCatalogQuestion, shallowOverviewQuestion } from './architecture-analysis';
-import { overviewSchema, prepareOverview } from './overview-result';
+import { maxCompactEvidenceLines, overviewSchema, OverviewValidationError, prepareOverview } from './overview-result';
 import { featureGraphSchema, prepareFeatureGraph } from './feature-graph-result';
 import { parseDshReply } from './dsh';
 import { runDshWeb } from './dsh-web';
@@ -49,7 +49,6 @@ import { WalkthroughRefreshCoordinator } from './walkthrough-refresh';
 import { OverviewOrchestrator } from './overview-orchestrator';
 import { exportProjectBundle, importAnalysisResult, loadDemoProject } from './project-io';
 
-export const terminal = new Set(['completed', 'failed', 'cancelled', 'blocked_external']);
 const parseJsonReply = (raw: string) => JSON.parse(raw.trim());
 
 const oldOverviewQuestion =
@@ -157,7 +156,7 @@ export class ArcService {
     });
 
     for (const run of this.store.all<Run>('run')) {
-      if (!terminal.has(run.status) && !['unknown', 'waiting_agent'].includes(run.status)) {
+      if (!terminalRunStatuses.has(run.status) && !['unknown', 'waiting_agent'].includes(run.status)) {
         if (this.overviews.cancelUnstartedChild(run)) continue;
         run.status = 'unknown';
         run.error = 'Arc 上次退出前未记录终态；不会自动重发。请核查原会话，或明确新建关联重试。';
@@ -351,7 +350,7 @@ export class ArcService {
     const cached = matches.findLast(e => e.source_status === 'current' && hasFunctionGraphs(e.result)) ?? matches.at(-1);
     const active = this.store
       .all<Run>('run')
-      .find(r => !r.reading_question_id && r.binding.scenario_id === scene.scenario_id && !terminal.has(r.status) && r.status !== 'unknown');
+      .find(r => !r.reading_question_id && r.binding.scenario_id === scene.scenario_id && !terminalRunStatuses.has(r.status) && r.status !== 'unknown');
     if (requestMcp && !cached && !active) {
       this.store.put('setting', 'mcp-requested-analysis', {
         project_id: projectId,
@@ -439,7 +438,7 @@ export class ArcService {
     const source = this.analysisSnapshot(scene);
     const active = this.store
       .all<Run>('run')
-      .find(r => !r.reading_question_id && r.binding.scenario_id === scenarioId && ['queued', 'waiting_agent', 'running', 'validating', 'cancel_requested'].includes(r.status));
+      .find(r => !r.reading_question_id && r.binding.scenario_id === scenarioId && activeRunStatuses.has(r.status));
     if (active) return { run_id: active.binding.run_id };
     this.store.put('setting', 'mcp-requested-analysis', {
       project_id: scene.project_id,
@@ -751,7 +750,7 @@ export class ArcService {
           r.binding.scenario_id === scenarioId &&
           (r.provider_id === providerId ||
             (r.overview_parent_run_id && r.binding.source_snapshot_id === project.snapshot_id && r.binding.question_revision_id === scenario.question_revision_id)) &&
-          !terminal.has(r.status) &&
+          !terminalRunStatuses.has(r.status) &&
           r.status !== 'unknown',
       );
     if (busy) throw new Error('该场景同一 Provider 已有进行中的运行；请先等待或停止');
@@ -838,7 +837,7 @@ export class ArcService {
   private fail(runId: string, error: unknown) {
     this.active.delete(runId);
     const run = this.store.get<Run>('run', runId);
-    if (terminal.has(run.status)) return;
+    if (terminalRunStatuses.has(run.status)) return;
     run.status = (error as any)?.remoteUnknown ? 'unknown' : 'failed';
     run.error = redact((error as Error).message);
     run.ended_at = now();
@@ -851,7 +850,7 @@ export class ArcService {
     const seq = sequence ?? this.store.nextSequence(runId);
     const clean = JSON.parse(redact(JSON.stringify(event)));
     if (!this.store.event(runId, eventId || `${runId}:${seq}`, seq, { sequence: seq, received_at: now(), ...clean })) return;
-    if (terminal.has(run.status)) return;
+    if (terminalRunStatuses.has(run.status)) return;
     if (typeof event.thread_id === 'string') run.external_id = event.thread_id;
     this.store.put('run', runId, run);
     this.emit({ type: 'run_event', run_id: runId, event: clean });
@@ -859,14 +858,14 @@ export class ArcService {
 
   private localResultStopped(run: Run) {
     if (run.status === 'unknown') throw Object.assign(Error('分析停止状态未确认，迟到结果不发布'), { remoteUnknown: true });
-    if (run.status === 'cancel_requested' || (this.closing && !terminal.has(run.status))) {
+    if (run.status === 'cancel_requested' || (this.closing && !terminalRunStatuses.has(run.status))) {
       run.status = 'cancelled';
       run.ended_at = now();
       run.error = '已确认本地进程退出；保留此前事件及原始部分。';
       this.store.put('run', run.binding.run_id, run);
       this.changed();
     }
-    return terminal.has(run.status);
+    return terminalRunStatuses.has(run.status);
   }
 
   private async acquireLocalSlot(run: Run): Promise<boolean> {
@@ -1100,9 +1099,10 @@ export class ArcService {
       this.store.put('run', runId, run);
       this.changed();
       const prepare = async (raw: unknown) => {
-        if (!featureDetail) return prepareOverview(raw, initial, snapshot, this.directory);
         const audit: string[] = [];
-        const draft = await prepareFeatureGraph(raw, run, snapshot, this.directory, audit);
+        const draft = featureDetail
+          ? await prepareFeatureGraph(raw, run, snapshot, this.directory, audit)
+          : await prepareOverview(raw, initial, snapshot, this.directory, audit);
         if (audit.length) this.event(runId, { type: 'local.format_normalization', changes: audit });
         return draft;
       };
@@ -1110,15 +1110,15 @@ export class ArcService {
       try {
         draft = await prepare(value);
       } catch (error) {
-        if (provider !== 'codex') throw error;
+        if (provider !== 'codex' || !(error instanceof OverviewValidationError)) throw error;
         if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
         const format = featureDetail ? 'feature-graph-1' : '工程全貌';
         this.event(runId, { type: 'local.stage', stage: 'repairing_validation', message: `${format} 校验发现偏差，正在让 Codex 定向修正（最多 1 轮）` });
         if (this.localResultStopped(this.store.get<Run>('run', runId))) return;
         const repairPrompt = [
           `只修正以下 ARC 校验错误，输出完整、符合 ${format} Schema 的 JSON。`,
-          (error as Error).message,
-          '每条 evidence 的 start..end（对应 line_start..line_end）必须是有效源码行，含首尾最多 40 行。可只给行号或提供该范围内的单行短锚点 quote。用 arc_read_source / arc_list_files 核对源码。',
+          error.message,
+          `每条 evidence 的 start..end（对应 line_start..line_end）必须是有效源码行，含首尾最多 ${maxCompactEvidenceLines} 行。可只给行号或提供该范围内的单行短锚点 quote。用 arc_read_source / arc_list_files 核对源码。`,
           '上一轮草稿 JSON：',
           JSON.stringify(value),
         ].join('\n');
@@ -1314,7 +1314,7 @@ export class ArcService {
       this.localWaiters.delete(runId);
       waiter.resume(false);
     }
-    if (terminal.has(run.status)) return run;
+    if (terminalRunStatuses.has(run.status)) return run;
     const active = this.active.get(runId);
     if (run.origin === 'mcp') {
       run.status = 'cancelled';

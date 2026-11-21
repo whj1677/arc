@@ -78,6 +78,9 @@ export function readingLimits(run: Pick<Run, 'overview_format' | 'reading_questi
   if (run.reading_question_id) return run.provider_id === 'dsh' ? { label: '阅读追问', total: 12, idle: 5 } : { label: '阅读追问', total: 5 };
   return { label: '功能与调用链分析', total: budget.featureMinutes, idle: budget.featureIdleMinutes };
 }
+export const terminalRunStatuses: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled', 'blocked_external']);
+export const activeRunStatuses: ReadonlySet<string> = new Set(['queued', 'waiting_agent', 'running', 'validating', 'cancel_requested']);
+
 export interface Run {
   binding: RunBinding; provider_id: ProviderId; status: string; created_at: string; ended_at?: string;
   execution_mode?: ExecutionMode;
