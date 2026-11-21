@@ -230,6 +230,20 @@ function MiniArchitectureOverlay({
 const callerGuardRule = (caller: HudExternalCaller) =>
   `保持 ${caller.target_symbol} 兼容（范围外 ${caller.caller_file}:${caller.caller_line} 正在调用）`;
 
+/** Format inline backtick code tokens cleanly inside spec prose without raw markdown noise. */
+function RichInlineText({ text }: { text: string }) {
+  const parts = text.split(/(`[^`\n]+`)/g);
+  return (
+    <>
+      {parts.map((part, idx) =>
+        part.startsWith('`') && part.endsWith('`') && part.length > 2
+          ? <code key={idx} className="hud-inline-code">{part.slice(1, -1)}</code>
+          : <React.Fragment key={idx}>{part}</React.Fragment>,
+      )}
+    </>
+  );
+}
+
 export function PreDevHud({
   task,
   hud,
@@ -257,6 +271,7 @@ export function PreDevHud({
 }) {
   const [snapshot, setSnapshot] = useState(task);
   const [assumptionEdits, setAssumptionEdits] = useState<Record<number, string>>({});
+  const [editingAssumption, setEditingAssumption] = useState<number | null>(null);
   const [questionReplies, setQuestionReplies] = useState<Record<number, string>>({});
   const [openDrawer, setOpenDrawer] = useState<string | null>(null);
   const [showRevise, setShowRevise] = useState(false);
@@ -270,6 +285,7 @@ export function PreDevHud({
   const syncSnapshot = (next: EngineeringTask) => {
     setSnapshot(next);
     setAssumptionEdits({});
+    setEditingAssumption(null);
     setQuestionReplies({});
     setBoundaryError('');
     setSnippet(null);
@@ -647,7 +663,7 @@ export function PreDevHud({
         </div>
       )}
 
-      {/* Main Compact Spec Body */}
+      {/* Airy Two-Column Editorial Spec & Decision Workbench */}
       <div className="hud-before-body">
         {error && <p role="alert" className="warning" style={{ margin: 0 }}>{error}</p>}
 
@@ -663,88 +679,181 @@ export function PreDevHud({
             </button>
           </div>
         ) : (
-          <>
-            {(snapshot.summary || scope.length > 0) && (
-              <div className="hud-spec-lead">
-                {snapshot.summary && <p className="hud-spec-summary">{snapshot.summary}</p>}
-                {scope.length > 0 && (
-                  <div className="hud-scope-inline" aria-label="建议修改文件">
-                    {scope.map(file => (
-                      <code key={file} title={file}>{shortFile(file)}</code>
-                    ))}
+          <div className={`hud-before-grid${assumptions.length > 0 || openQuestions.length > 0 ? ' has-decisions' : ''}`}>
+            {/* Left Column: Reading Zone (Codebase Conclusion + Structured Plan Cards) */}
+            <div className="hud-before-plan">
+              {(snapshot.summary || scope.length > 0) && (
+                <div className="hud-lead-card">
+                  {snapshot.summary && (
+                    <>
+                      <div className="hud-lead-eyebrow">源码核对结论</div>
+                      <p className="hud-spec-summary"><RichInlineText text={snapshot.summary} /></p>
+                    </>
+                  )}
+                  {scope.length > 0 && (
+                    <div className="hud-scope-block" aria-label="建议修改文件">
+                      <span className="hud-scope-caption">涉及文件 · {scope.length}</span>
+                      <div className="hud-scope-inline">
+                        {scope.map(file => (
+                          <code key={file} title={file}>{shortFile(file)}</code>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {pkg.behaviors.length > 0 && (
+                <section className="hud-section" aria-label="方案拆解">
+                  <div className="hud-section-head">
+                    <strong>方案拆解</strong>
+                    <span className="hud-section-count">{pkg.behaviors.length} 项</span>
                   </div>
+                  <ol className="hud-behaviors">
+                    {pkg.behaviors.map((item, idx) => (
+                      <li key={item.id} className="hud-behavior-card">
+                        <div className="hud-behavior-head">
+                          <span className="hud-behavior-index">{String(idx + 1).padStart(2, '0')}</span>
+                          <span className="hud-behavior-title"><RichInlineText text={item.behavior} /></span>
+                        </div>
+                        {item.design && (
+                          <p className="hud-behavior-design"><RichInlineText text={item.design} /></p>
+                        )}
+                        {item.files.length > 0 && (
+                          <div className="hud-behavior-foot">
+                            {item.files.map(f => (
+                              <code key={f} className="hud-behavior-file" title={f}>{shortFile(f)}</code>
+                            ))}
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              )}
+            </div>
+
+            {/* Right Column: Decision Zone (Open Questions First, Then Calm Click-to-Edit Assumptions) */}
+            {(openQuestions.length > 0 || assumptions.length > 0) && (
+              <div className="hud-before-decisions">
+                {openQuestions.length > 0 && (
+                  <section className="hud-section" aria-label="待你确认">
+                    <div className="hud-section-head">
+                      <span className="hud-section-title">
+                        <i className="hud-dot ok" />
+                        <strong>待你确认</strong>
+                        <span className="hud-section-count">{openQuestions.length} 项</span>
+                      </span>
+                      <span className="hud-section-hint">留空按默认推进</span>
+                    </div>
+                    <div className="hud-decision-list">
+                      {openQuestions.map((q, idx) => {
+                        const ans = questionReplies[idx] ?? '';
+                        const answered = Boolean(ans.trim());
+                        return (
+                          <div key={'q' + idx} className={`hud-question-card${answered ? ' is-answered' : ''}`}>
+                            <div className="hud-question-head">
+                              <span className="hud-question-badge">Q{idx + 1}</span>
+                              <p className="hud-question-text"><RichInlineText text={q} /></p>
+                              {answered && <span className="hud-answered-tag">已答复</span>}
+                            </div>
+                            <textarea
+                              className="hud-question-input"
+                              rows={ans.length > 24 || ans.includes('\n') ? 2 : 1}
+                              aria-label={`回答待确认项 ${idx + 1}`}
+                              placeholder="写下你的明确决定（可选）…"
+                              value={ans}
+                              disabled={busy || stale}
+                              onChange={e => setQuestionReplies(prev => ({ ...prev, [idx]: e.target.value }))}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                )}
+
+                {assumptions.length > 0 && (
+                  <section className="hud-section" aria-label="AI 默认假设">
+                    <div className="hud-section-head">
+                      <span className="hud-section-title">
+                        <i className="hud-dot warn" />
+                        <strong>AI 默认假设</strong>
+                        <span className="hud-section-count">{assumptions.length} 项</span>
+                      </span>
+                      <span className="hud-section-hint">点击可改写</span>
+                    </div>
+                    <div className="hud-decision-list">
+                      {assumptions.map((text, idx) => {
+                        const val = assumptionEdits[idx] ?? text;
+                        const trimmed = val.trim();
+                        const cleared = assumptionEdits[idx] !== undefined && !trimmed;
+                        const edited = assumptionEdits[idx] !== undefined && !!trimmed && trimmed !== text.trim();
+                        const isEditing = editingAssumption === idx;
+                        return (
+                          <div
+                            key={'a' + idx}
+                            className={`hud-assumption-card${edited ? ' is-edited' : cleared ? ' is-cleared' : ''}${isEditing ? ' is-editing' : ''}`}
+                          >
+                            {isEditing ? (
+                              <div className="hud-assumption-editor">
+                                <textarea
+                                  className="hud-assumption-textarea"
+                                  aria-label={`编辑 AI 假设 ${idx + 1}`}
+                                  rows={3}
+                                  autoFocus
+                                  placeholder="留空忽略该条假设，点还原恢复原意"
+                                  value={val}
+                                  disabled={busy || stale}
+                                  onChange={e => setAssumptionEdits(prev => ({ ...prev, [idx]: e.target.value }))}
+                                />
+                                <div className="hud-assumption-actions">
+                                  {(edited || cleared) && (
+                                    <button
+                                      type="button"
+                                      className="hud-assumption-reset"
+                                      onClick={() => {
+                                        setAssumptionEdits(prev => {
+                                          const next = { ...prev };
+                                          delete next[idx];
+                                          return next;
+                                        });
+                                        setEditingAssumption(null);
+                                      }}
+                                    >
+                                      还原默认
+                                    </button>
+                                  )}
+                                  <button type="button" className="hud-mini-btn" onClick={() => setEditingAssumption(null)}>
+                                    完成
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                className="hud-assumption-view"
+                                disabled={busy || stale}
+                                onClick={() => setEditingAssumption(idx)}
+                                title="点击调整这条 AI 默认假设"
+                              >
+                                <span className="hud-assumption-text">
+                                  {cleared ? <em className="muted">（已留空忽略）</em> : <RichInlineText text={val} />}
+                                </span>
+                                <span className="hud-assumption-cue">
+                                  {edited ? '已微调' : cleared ? '已忽略' : '微调'}
+                                </span>
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
                 )}
               </div>
             )}
-
-            {pkg.behaviors.length > 0 && (
-              <ol className="hud-behaviors">
-                {pkg.behaviors.map((item, idx) => (
-                  <li key={item.id} className="hud-behavior-item">
-                    <span className="hud-behavior-index">{idx + 1}</span>
-                    <div className="hud-behavior-content">
-                      <div className="hud-behavior-head">
-                        <span className="hud-behavior-title">{item.behavior}</span>
-                        {item.files.map(f => (
-                          <code key={f} className="hud-behavior-file" title={f}>{shortFile(f)}</code>
-                        ))}
-                      </div>
-                      {item.design && <p className="hud-behavior-design">{item.design}</p>}
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            )}
-
-            {(assumptions.length > 0 || openQuestions.length > 0) && (
-              <div className="hud-inline-notes">
-                {assumptions.map((text, idx) => {
-                  const val = assumptionEdits[idx] ?? text;
-                  const trimmed = val.trim();
-                  const cleared = assumptionEdits[idx] !== undefined && !trimmed;
-                  const edited = assumptionEdits[idx] !== undefined && !!trimmed && trimmed !== text.trim();
-                  return (
-                    <div key={'a' + idx} className={`hud-assumption-row${edited ? ' is-edited' : cleared ? ' is-cleared' : ''}`}>
-                      <span className="hud-assumption-tag">{edited ? '已微调' : cleared ? '留空忽略' : 'AI 补全'}</span>
-                      <input
-                        className="hud-assumption-input"
-                        aria-label={`编辑 AI 假设 ${idx + 1}`}
-                        placeholder="留空忽略编辑，点还原恢复"
-                        value={val}
-                        disabled={busy || stale}
-                        onChange={e => setAssumptionEdits(prev => ({ ...prev, [idx]: e.target.value }))}
-                      />
-                      {(edited || cleared) && (
-                        <button
-                          type="button"
-                          className="hud-assumption-reset"
-                          onClick={() => setAssumptionEdits(prev => {
-                            const next = { ...prev };
-                            delete next[idx];
-                            return next;
-                          })}
-                        >
-                          还原
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-                {openQuestions.map((q, idx) => (
-                  <div key={'q' + idx} className="hud-question-row">
-                    <span>待确认：{q}</span>
-                    <input
-                      type="text"
-                      placeholder="可选回答…"
-                      value={questionReplies[idx] ?? ''}
-                      disabled={busy || stale}
-                      onChange={e => setQuestionReplies(prev => ({ ...prev, [idx]: e.target.value }))}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
+          </div>
         )}
       </div>
 

@@ -300,10 +300,12 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
   const [dispatches,setDispatches]=useState<Dispatch[]>([]);
   const [taskAttempts,setAttempts]=useState<DevelopmentAttempt[]>([]),[taskEvents,setEvents]=useState<ActivityEvent[]>([]),[history,setHistory]=useState<EngineeringTask[]>([]),[historical,setHistorical]=useState<EngineeringTask|null>(null);
   const [log,setLog]=useState(''),[showContext,setShowContext]=useState(false);
+  const [goalExpanded,setGoalExpanded]=useState(false);
   const [diff,setDiff]=useState<{path:string;before:string;after:string;truncated:boolean}|null>(null);
-  useEffect(()=>{selectedTasks.set(project.project_id,selectedId);},[project.project_id,selectedId]);
+  useEffect(()=>{selectedTasks.set(project.project_id,selectedId);setGoalExpanded(false);},[project.project_id,selectedId]);
   const current=tasks.find(t=>t.task_id===selectedId),task=historical||current;
   const stage=task&&taskDetailStage(task);
+  useEffect(()=>{if(stage&&stage!=='analysis'&&notice.includes('只读分析'))setNotice('');},[stage,notice]);
   const mode=page==='materials'?'materials':current?recordMode:'new';
   const {hud,loading:hudLoading,error:hudError,reload:reloadHud}=useTaskHud(task?.task_id,task?.version,!historical&&!!task&&mode==='records');
   const attempts=taskAttempts.filter(item=>item.task_id===task?.task_id&&task.attempt_ids.includes(item.attempt_id));
@@ -407,7 +409,10 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
         onSettings={onSettings} goal={goal} onGoalChange={setGoal} goalInput={goalInput} busy={busy} disabled={cannotStart}
         onSubmit={start} onCancel={tasks.length?()=>selectTask((current??visible[0]??tasks[0]).task_id):undefined}/>:<>
         <header className="engineering-requirement-header">
-          <h2>{task.goal}</h2>
+          <div className="task-goal-heading">
+            <h2 className={!goalExpanded&&task.goal.length>90?'is-clamped':undefined} title={task.goal}>{task.goal}</h2>
+            {task.goal.length>90&&<button type="button" className="task-goal-toggle" onClick={()=>setGoalExpanded(v=>!v)}>{goalExpanded?'收起':'展开原话'}</button>}
+          </div>
           <div className="task-header-meta">
             <div className="task-status-line">
               <span className="tag">{workflowLabel(task)}</span>

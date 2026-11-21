@@ -1576,16 +1576,42 @@ dialog::backdrop {
   margin: 2px 0 0;
 }
 .engineering-requirement-header {
-  margin-bottom: 12px;
-  padding: 0 0 10px;
+  margin-bottom: 14px;
+  padding: 0 0 12px;
   border-bottom: 1px solid var(--border);
 }
-.engineering-requirement-header h2 {
-  margin: 0 0 6px;
-  font-size: 16px;
-  font-weight: 580;
-  line-height: 1.45;
+.task-goal-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
 }
+.engineering-requirement-header h2 {
+  margin: 0;
+  font-size: 16.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  max-width: 72ch;
+}
+.engineering-requirement-header h2.is-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.task-goal-toggle {
+  flex: none;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+.task-goal-toggle:hover { background: var(--soft); }
 .task-header-meta, .task-header-actions {
   display: flex;
   flex-wrap: wrap;
