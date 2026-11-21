@@ -119,6 +119,9 @@ export function hasFunctionGraphs(result:AnalysisResult):boolean {
 }
 export interface Explanation { result_id: string; scenario_id: string; created_at: string; source_status: string; result: AnalysisResult }
 export interface ProjectFreshness { snapshot_id: string; changed_files: string[]; checked_at: string }
+export type ProgramPathKey = 'codex_path' | 'dsh_path' | 'node_path' | 'git_path';
+export type ProviderPathConfig = Partial<Record<ProgramPathKey, string>>;
+export type RuntimeToolStatus = { id: 'node' | 'git'; label: string; status: 'available' | 'missing'; path?: string; version?: string; reason?: string };
 export interface ProviderProfile { provider_id: ProviderId; requested_name: string; product: string; status: string; version?: string; path?: string; reason: string; transport: string; auth: string; capabilities: Record<string,string>; checked_at: string }
 export interface ReadingState {
   entrance: 'overview' | 'walk'; view: string; scenario_id: string; result_id: string;

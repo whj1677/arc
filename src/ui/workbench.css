@@ -2109,6 +2109,24 @@ details.task-model-section > summary { color: var(--ink); font-weight: 550; curs
 .custom-codex-model input { flex: 1; }
 .analysis-selected-model { display: inline-block; max-width: 16ch; margin-left: 6px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; color: var(--muted); }
 @media (max-width: 540px) { .agent-codex-fields { grid-template-columns: minmax(0, 1fr); } }
+.agent-runtime-paths { min-width: 0; margin-top: 14px; border-top: 1px solid var(--border); }
+.agent-runtime-paths > summary { color: var(--ink); font-size: 13px; font-weight: 550; }
+.agent-runtime-paths > p { margin: 0 0 8px; color: var(--muted); }
+.agent-runtime-list {
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.agent-runtime-entry { min-width: 0; padding: 8px 10px; }
+.agent-runtime-entry + .agent-runtime-entry { border-top: 1px solid var(--border); }
+.agent-runtime-heading { display: flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; }
+.agent-runtime-heading label { margin: 0; color: var(--ink); font-size: 13px; font-weight: 550; }
+.agent-runtime-heading .agent-state { overflow-wrap: anywhere; }
+.agent-runtime-entry p { margin: 4px 0 6px; font-size: 12px; overflow-wrap: anywhere; }
+.agent-runtime-controls { gap: 5px; }
+.agent-runtime-controls input { flex: 1 1 210px; width: 100%; padding: 5px 8px; font-size: 13px; }
+.agent-runtime-controls button { min-height: 30px; padding: 5px 8px; font-size: 12px; }
 .agent-settings-advanced > summary { cursor: pointer; font-weight: 550; }
 .agent-settings-advanced > .agent-connection-card { margin-top: 12px; }
 .agent-error-box {

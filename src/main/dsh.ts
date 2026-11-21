@@ -7,7 +7,8 @@ import { load } from 'js-yaml';
 import { satisfies } from 'semver';
 import type { ProviderProfile } from '../shared';
 import { redact } from './providers';
-import { locate, windowsPackageDirs } from './executables';
+import { getDefaultExecutableOverride, locate, windowsNodeDirs, windowsPackageDirs } from './executables';
+import { inside } from './snapshot';
 import { now } from './store';
 
 const exec = promisify(execFile);
@@ -23,7 +24,7 @@ export async function resolveDsh(configured?: string) {
     file = configured;
   } else if (process.platform === 'win32') {
     const directories = (process.env.PATH ?? '').split(path.delimiter).map(directory => directory.trim().replace(/^"(.*)"$/, '$1')).filter(Boolean);
-    directories.push(...windowsPackageDirs(),path.join(process.env.USERPROFILE||os.homedir(),'scoop','shims'));
+    directories.push(...windowsPackageDirs(), ...windowsNodeDirs(), path.join(process.env.USERPROFILE||os.homedir(),'scoop','shims'));
     const candidates = [...new Set(directories)].flatMap(directory => ['dsh.exe', 'dsh.cmd'].map(name => path.join(directory, name)));
     const available = await Promise.all(candidates.map(async item => (await fs.stat(item).catch(() => null))?.isFile()));
     const index = available.indexOf(true);
@@ -37,13 +38,18 @@ export async function resolveDsh(configured?: string) {
     const content = await fs.readFile(file, 'utf8');
     const explicit = content.match(/^\s*"([^"\r\n]+node\.exe)"\s+"([^"\r\n]+\.[cm]?js)"\s+%\*\s*$/im);
     if (explicit && path.isAbsolute(explicit[1]) && path.isAbsolute(explicit[2])) {
-      await Promise.all([fs.access(explicit[1]), fs.access(explicit[2])]);
-      return { command: explicit[1], prefix: [explicit[2]], path: file };
+      const command = getDefaultExecutableOverride('node') ? await locate('node') : explicit[1];
+      await Promise.all([fs.access(command), fs.access(explicit[2])]);
+      return { command, prefix: [explicit[2]], path: file };
     }
-    // npm's generated cmd shim points at a package entry relative to itself.
-    const relative = content.match(/"%dp0%[\\/]?(node_modules[\\/]@deepseek-ai[\\/]dsh[\\/]lib[\\/]bin\.js)"\s+%\*/i)?.[1];
+    // Read the package entry from the shim without running the batch script.
+    const relative = content.match(/"%(?:~dp0|dp0%)[\\/]?((?:[^"\r\n]+[\\/])?@deepseek-ai[\\/]dsh[\\/]lib[\\/]bin\.js)"\s+%\*/i)?.[1];
     if (!relative) throw Error('无法识别 DSH 启动器，请检查官方安装。');
-    const entry = path.resolve(path.dirname(file), relative);
+    const directory = await fs.realpath(path.dirname(file));
+    const candidate = path.resolve(directory, relative.replace(/[\\/]/g, path.sep));
+    if (path.win32.isAbsolute(relative) || !inside(directory, candidate)) throw Error('DSH 启动入口超出启动器目录。');
+    const entry = await fs.realpath(candidate);
+    if (!inside(directory, entry)) throw Error('DSH 启动入口超出启动器目录。');
     await fs.access(entry);
     return { command: await locate('node'), prefix: [entry], path: file };
   }

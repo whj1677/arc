@@ -1,11 +1,25 @@
-import React, {useEffect,useState} from 'react';
-import type { CodexPreferences, CodexReasoningEffortPreference, Project, Scenario, WorkspaceData } from '../shared';
+import React, {useEffect,useRef,useState} from 'react';
+import type { CodexPreferences, CodexReasoningEffortPreference, ProgramPathKey, Project, ProviderPathConfig, RuntimeToolStatus, Scenario, WorkspaceData } from '../shared';
 import { CodexModelSelect } from './CodexModelSelect';
 import { ExternalExecutor } from './EngineeringSections';
 import { EngineeringManagement } from './EngineeringWorkspace';
 import {analysisModes,type AnalysisMode} from './discovery-state';
 
 const api = window.arc;
+
+interface EnvironmentSettings {
+  data_directory: string;
+  version: string;
+  provider_config: ProviderPathConfig;
+  runtime_tools: RuntimeToolStatus[];
+}
+
+const programPaths = [
+  { id: 'codex', key: 'codex_path', label: 'OpenAI Codex', title: '选择 Codex 程序（codex.exe 或 codex.cmd）' },
+  { id: 'dsh', key: 'dsh_path', label: 'DeepSeek Harness (DSH)', title: '选择 DSH 程序（dsh.cmd 或 dsh.exe）' },
+  { id: 'node', key: 'node_path', label: 'Node.js（必需）', title: '选择 Node.js 程序（node.exe）' },
+  { id: 'git', key: 'git_path', label: 'Git（推荐）', title: '选择 Git 程序（git.exe）' },
+] as const;
 
 export interface SettingsModalProps {
   data: WorkspaceData;
@@ -15,7 +29,7 @@ export interface SettingsModalProps {
   scenarioId: string;
   mcp: any;
   setMcp: (value: any) => void;
-  settings: any;
+  settings: EnvironmentSettings | null;
   error: string;
   connectionError: string;
   notice: string;
@@ -63,16 +77,48 @@ export function SettingsModal({
   const [detecting,setDetecting]=useState(false);
   const [desktopExpanded,setDesktopExpanded]=useState(openDesktop);
   const [detectionError,setDetectionError]=useState('');
-  async function detectEngines(){
+  const [envSettings, setEnvSettings] = useState(settings);
+  const refreshedEnvSettings = useRef(false);
+  const [pathDraft, setPathDraft] = useState<ProviderPathConfig>({});
+  const selectedEngine = (mode === 'codex' || mode === 'dsh') ? data.providers.find(p => p.provider_id === mode) : undefined;
+  const engineNeedsPath = !!selectedEngine && selectedEngine.status !== 'available' && selectedEngine.status !== 'auth_required';
+  const nodeMissing = envSettings?.runtime_tools.find(tool => tool.id === 'node')?.status === 'missing';
+  const [pathsExpanded, setPathsExpanded] = useState(engineNeedsPath || nodeMissing);
+
+  useEffect(() => {
+    // The parent's opening request may finish after a newer local refresh.
+    if (!refreshedEnvSettings.current) setEnvSettings(settings);
+  }, [settings]);
+  useEffect(() => {
+    if (engineNeedsPath || nodeMissing) setPathsExpanded(true);
+  }, [engineNeedsPath, nodeMissing, mode]);
+
+  async function detectEngines(override?: { key: ProgramPathKey; path: string }) {
     setDetecting(true);
     setDetectionError('');
     try {
-      await api.invoke('providers_probe');
-      await reload();
+      await api.invoke('providers_probe', override && { config: { [override.key]: override.path } });
+      const [updated] = await Promise.all([api.invoke<EnvironmentSettings>('settings'), reload()]);
+      refreshedEnvSettings.current = true;
+      setEnvSettings(updated);
+      if (override) setPathDraft(draft => {
+        const next = { ...draft };
+        delete next[override.key];
+        return next;
+      });
     } catch(e) {
       setDetectionError((e as Error).message);
     } finally {
       setDetecting(false);
+    }
+  }
+  async function pickProgram(key: ProgramPathKey, title: string) {
+    setDetectionError('');
+    try {
+      const picked = await api.invoke<string | null>('pick_program', { title });
+      if (picked) await detectEngines({ key, path: picked });
+    } catch (e) {
+      setDetectionError((e as Error).message);
     }
   }
   useEffect(()=>{void detectEngines();},[]);
@@ -131,6 +177,46 @@ export function SettingsModal({
         </fieldset>
         {detectionError&&<p role="alert" className="warning">{detectionError}</p>}
         {!detecting&&data.providers.filter(p=>p.provider_id===mode&&p.status!=='available').map(p=><p key={p.provider_id} className="muted">{p.status==='auth_required'?`请先在 ${analysisModes[mode].name} 中登录，再检测。`:p.reason}</p>)}
+        <details className="agent-runtime-paths" open={pathsExpanded} onToggle={event => setPathsExpanded(event.currentTarget.open)}>
+          <summary>程序路径与运行环境（自定义安装位置）</summary>
+          <p>默认自动探测常见安装位置；若程序装在自定义盘符或未加入 PATH，可在此手动指定。</p>
+          <div className="agent-runtime-list" aria-busy={detecting}>
+            {programPaths.map(({ id, key, label, title }) => {
+              const tool = id === 'codex' || id === 'dsh'
+                ? data.providers.find(provider => provider.provider_id === id)
+                : envSettings?.runtime_tools.find(runtime => runtime.id === id);
+              const saved = envSettings?.provider_config[key] ?? '';
+              const draft = pathDraft[key] ?? saved;
+              const ready = tool?.status === 'available';
+              const needsLogin = tool?.status === 'auth_required';
+              const status = detecting ? '检测中…' : ready ? '已就绪' : needsLogin ? '需登录' : tool?.path || saved ? '不可用' : '未检测到';
+              const detail = ready || needsLogin ? tool?.path : tool?.reason;
+              const disabled = detecting || pending;
+              return <div className="agent-runtime-entry" key={key} role="group" aria-labelledby={`program-label-${id}`}>
+                <div className="agent-runtime-heading">
+                  <label id={`program-label-${id}`} htmlFor={`program-path-${id}`}>{label}</label>
+                  <span className={`agent-state${ready && !detecting ? ' ready' : ''}`}>
+                    {status}{!detecting && tool?.version && ` · ${tool.version}`}
+                  </span>
+                </div>
+                <p id={`program-detail-${id}`} className={tool?.reason && !ready && !needsLogin ? 'warning' : 'muted'}>
+                  {saved ? '手动指定' : '自动检测'}{detail && ` · ${detail}`}
+                </p>
+                <div className="row agent-runtime-controls">
+                  <input id={`program-path-${id}`} aria-describedby={`program-detail-${id}`} value={draft}
+                    placeholder="留空自动检测" disabled={disabled} spellCheck={false} autoComplete="off"
+                    onChange={event => {
+                      const path = event.target.value;
+                      setPathDraft(current => ({ ...current, [key]: path }));
+                    }}/>
+                  <button disabled={disabled} onClick={() => void pickProgram(key, title)}>选择程序…</button>
+                  {draft !== saved && <button disabled={disabled} onClick={() => void detectEngines({ key, path: draft })}>应用</button>}
+                  {saved && <button disabled={disabled} onClick={() => void detectEngines({ key, path: '' })}>恢复自动</button>}
+                </div>
+              </div>;
+            })}
+          </div>
+        </details>
       </section>
 
       <details className="provider-card agent-settings-advanced" open={desktopExpanded} onToggle={event=>setDesktopExpanded(event.currentTarget.open)}>
@@ -193,7 +279,7 @@ export function SettingsModal({
             }
           />
         )}
-        <p className="path">{settings?.data_directory}</p>
+        <p className="path">{envSettings?.data_directory}</p>
         <div className="row">
           <button
             onClick={() =>
@@ -249,7 +335,7 @@ export function SettingsModal({
             )}
           </div>
         )}
-        <p className="muted">Arc {settings?.version} · Windows 桌面</p>
+        <p className="muted">Arc {envSettings?.version} · Windows 桌面</p>
       </details>
     </div>
   );

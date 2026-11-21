@@ -6,6 +6,7 @@ import {promisify} from 'node:util';
 import {inspectVerificationOutput} from '../delivery-audit';
 import {locateVerificationShell,type DevelopmentCommand} from './development-runner';
 import type {ProjectEnvironment} from './env-probe';
+import {getDefaultExecutableOverride,windowsGitDirs} from './executables';
 import {redact,stopTree} from './providers';
 
 type Kind = 'typecheck' | 'test' | 'build';
@@ -88,12 +89,22 @@ export function selectHostVerificationCommands(env:ProjectEnvironment,writeScope
   return {commands,skipped};
 }
 
+function windowsVerificationToolDirs() {
+  const git = getDefaultExecutableOverride('git');
+  const node = getDefaultExecutableOverride('node');
+  const gitDirs = windowsGitDirs();
+  if (git && path.isAbsolute(git)) gitDirs.unshift(path.dirname(git));
+  const gitDir = gitDirs.find(dir => existsSync(path.join(dir,'git.exe')));
+  const nodeDir = node && path.isAbsolute(node) && existsSync(node) ? path.dirname(node) : undefined;
+  return [nodeDir,gitDir].filter(Boolean);
+}
+
 function hostEnvironment() {
   const env = {...process.env};
   if (windows) {
-    const gitDir = path.join(env.ProgramFiles ?? 'C:\\Program Files','Git','cmd');
     const key = Object.keys(env).find(name => name.toUpperCase() === 'PATH') ?? 'PATH';
-    if (existsSync(path.join(gitDir,'git.exe'))) env[key] = [gitDir,env[key]].filter(Boolean).join(path.delimiter);
+    const toolDirs = windowsVerificationToolDirs();
+    if (toolDirs.length) env[key] = [...toolDirs,env[key]].filter(Boolean).join(path.delimiter);
   }
   return env;
 }

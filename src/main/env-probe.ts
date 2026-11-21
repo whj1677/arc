@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {promisify} from 'node:util';
+import {getDefaultExecutableOverride,windowsGitDirs} from './executables';
 import {inside,safeFile} from './snapshot';
 import {now,type Store} from './store';
 
@@ -88,9 +89,10 @@ async function hostDirectories(root:string){
 async function probeTool(tool:ToolSpec,root:string,hostDirs:string[]):Promise<Pick<ToolProbe,'status'|'version'|'detail'>>{
   if(tool.wrapper)return {status:'declared',detail:'工程提供包装脚本，探测时未运行'};
   const dirs=[...hostDirs];
-  if(windows&&tool.id==='git'){
-    for(const dir of [process.env.ProgramFiles,process.env['ProgramFiles(x86)']])if(dir)dirs.push(path.join(dir,'Git','cmd'));
-    if(process.env.LOCALAPPDATA)dirs.push(path.join(process.env.LOCALAPPDATA,'Programs','Git','cmd'));
+  if(windows&&(tool.id==='git'||tool.id==='node')){
+    const override=getDefaultExecutableOverride(tool.id);
+    if(override&&path.isAbsolute(override))dirs.unshift(path.dirname(override));
+    if(tool.id==='git')dirs.push(...windowsGitDirs());
   }
   const extensions=windows?['.exe','.cmd','.bat']:[''];
   for(const dir of new Set(dirs))for(const ext of extensions){

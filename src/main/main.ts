@@ -181,10 +181,14 @@ app.whenReady().then(async()=>{
         case 'run_revalidate':value=await service.revalidate(args.run_id);break;
         case 'run_events':service.store.get('run',args.run_id);value=service.store.events(args.run_id);break;
         case 'index_cancel':service.cancelIndex(args.project_id);break;
-        case 'settings':value={data_directory:service.directory,version:app.getVersion(),platform:process.platform};break;
+        case 'settings':value={data_directory:service.directory,version:app.getVersion(),platform:process.platform,provider_config:service.providerPathConfig(),runtime_tools:await service.probeRuntimeTools()};break;
         case 'export_project':{const dest=await dialog.showSaveDialog(window!,{title:'导出理解资料和快照（本地文件）',defaultPath:'Arc-工程理解.json',filters:[{name:'Arc JSON',extensions:['json']}]});if(dest.filePath)value=await service.exportProject(args.project_id,dest.filePath);break;}
         case 'backup':{const dest=await dialog.showSaveDialog(window!,{defaultPath:`Arc-backup-${Date.now()}.sqlite`});if(dest.filePath){service.store.backup(dest.filePath);value=dest.filePath;}break;}
-        case 'pick_program':{const picked=await dialog.showOpenDialog(window!,{properties:['openFile'],title:'选择已安装的官方程序'});value=picked.canceled?null:picked.filePaths[0];break;}
+        case 'pick_program':{
+          const filters=process.platform==='win32'?[{name:'可执行程序',extensions:['exe','cmd']},{name:'所有文件',extensions:['*']}]:undefined;
+          const picked=await dialog.showOpenDialog(window!,{properties:['openFile'],title:args?.title??'选择已安装的官方程序',filters});
+          value=picked.canceled?null:picked.filePaths[0];break;
+        }
         default:throw new Error('未授权操作');
       }
       return {ok:true,value};

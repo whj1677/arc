@@ -1,32 +1,59 @@
 Arc 同事内测运行说明
 2026-11-21
 
-启动与升级
+一、需要提前安装哪些软件（前置环境）
 
-完整保留 Arc-win32-x64 目录，双击其中的 Arc.exe。若 Windows SmartScreen 提示应用未签名，点击「更多信息 → 仍要运行」。
-升级前先关闭 Arc，再用新版覆盖整个 Arc-win32-x64 目录。个人历史数据保存在 %APPDATA%\Arc，覆盖程序目录后仍可继续使用。
+1. 【必装】Node.js（推荐 v22 LTS，至少 v22.13.0）
+   用于运行内置的冻结源码只读 MCP 工具，也为 npm / pnpm 安装的命令行工具提供运行环境。
+   安装：https://nodejs.org/ 的 Windows 安装包，或使用 nvm for Windows、Volta、Scoop。现有 v20 用户请升级，内置 MCP 工具依赖 node:sqlite。
+   验证：node -v
 
-前置环境
+2. 【必装（二选一，或都装）】AI Agent 引擎
 
-1. 本机需安装 Node.js，用于运行内置的冻结源码只读 MCP 工具。
-2. 至少安装并登录以下一种工具：OpenAI Codex CLI（≥ 0.163.0，推荐使用 Codex Desktop 随附的 CLI 或 npm 版 CLI），或 DeepSeek Harness（DSH ≥ 0.2.1-rc.2）。
-3. 如需使用「需求与开发」的差异对比与验证功能，建议安装 Git。
+   方案 A（推荐）：OpenAI Codex（≥ 0.163.0）
+   Arc 支持自动识别三类常见安装：
+   ① Codex Desktop 桌面客户端随附的 CLI。
+   ② 全局命令行安装：npm install -g @openai/codex，也可使用 pnpm、Volta 或 Scoop。
+   ③ VS Code 或 Cursor 的 OpenAI Codex 扩展随附的 CLI。
+   安装后请在 Codex 中完成登录。终端验证：codex --version 和 codex login status。
+   如果终端找不到 codex，可在 Arc 中查看检测结果，或在 PowerShell 中用完整路径执行对应命令，例如 & 'D:\Tools\codex.exe' login status。
 
-3 步快速上手
+   方案 B：DeepSeek Harness（DSH ≥ 0.2.1-rc.2）
+   安装示例：npm install -g @deepseek-ai/dsh。安装后在 DSH 中完成登录或配置本机模型凭据。
+   验证：dsh --version
 
-1. 打开 Arc，点击左下角「打开工程」，选择本地源码目录。Arc 全程只读访问原工程，并在本机生成冻结快照。要查看内置静态模块依赖，可直接切换到「代码模块依赖」，无需调用模型。
+3. 【推荐安装】Git for Windows
+   用于按 .gitignore 过滤构建产物，并支持「需求与开发」的差异对比、校验与回滚。
+   安装：https://git-scm.com/download/win
+   验证：git --version
+
+二、程序装在其他盘符 / 未加入 PATH 怎么办？
+
+Arc 会自动探测 PATH、Codex Desktop、VS Code / Cursor 扩展目录，以及 npm、pnpm、Volta、nvm、Scoop、npm_config_prefix 和常见 Program Files 安装目录。
+如果软件装在 D:\Tools\ 等自定义位置，打开 Arc → 左下角「连接 Agent」→ 展开「程序路径与运行环境」→ 点击对应的「选择程序…」。
+选中 codex.exe / codex.cmd、dsh.cmd / dsh.exe、node.exe 或 git.exe 后，Arc 会立即保存并检测。也可填写完整路径后点击「应用」，或点击「恢复自动」清除手动设置。
+如果选中的 codex.cmd 无法定位到实际程序，请选择安装目录中的 codex.exe。
+
+三、启动与升级
+
+完整解压并保留 Arc-win32-x64 目录，双击其中的 Arc.exe。确认安装包来自可信的内部发布渠道后，如遇 Windows SmartScreen 的未签名提示，可点击「更多信息 → 仍要运行」。
+升级前关闭 Arc，再用新版替换整个 Arc-win32-x64 目录。个人历史数据保存在 %APPDATA%\Arc，升级后仍可继续使用。
+
+四、3 步快速上手
+
+1. 打开 Arc，点击左下角「打开工程」，选择本地源码目录。理解工程时，Arc 只读访问原工程，并在本机生成冻结快照。要查看内置静态模块依赖，可直接切换到「代码模块依赖」，无需调用模型。
 2. 顶部「分析方式」默认推荐 Codex 直连，也可切换到 DSH。在设置或菜单中可选择模型和推理强度，无需手动打开终端或另建桌面会话。
 3. 在「工程全貌」点击「分析工程」，生成分层系统架构与功能目录。进入「功能走读」可查看首轮线索，也可点击「生成本组」或「批量选择」，按需展开函数调用链与调用时间图（双图）。
 
-高级连接（可选）
+五、高级连接（可选）
 
 如需接入已有 Codex 桌面会话或外部 Agent，可通过左下角「连接 Agent」启用本机 MCP / 桌面会话派发。
 
-数据与安全边界
+六、数据与安全边界
 
 所有分析记录、快照与工程资料均保存在本机 %APPDATA%\Arc。调用模型分析时，所选快照的源码会发送到本机已登录的 Codex 或 DSH 所使用的模型服务。
 静态分析与模型复核不等于运行时测试或硬件验证。
 
-版本信息
+七、版本信息
 
 目录内的 BUILD-INFO.json 记录对应的 Git 提交、构建时间与校验哈希。

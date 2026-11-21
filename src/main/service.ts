@@ -1,6 +1,9 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
+import { satisfies } from 'semver';
 import { loadCodexModelCatalog } from './codex-models';
 import type { GoalRefinement } from '../engineering';
 import type {
@@ -10,8 +13,10 @@ import type {
   Explanation,
   ExecutionMode,
   Feature,
+  ProgramPathKey,
   Project,
   ProjectFreshness,
+  ProviderPathConfig,
   ProviderProfile,
   ReadingAnswer,
   ReadingAsk,
@@ -19,6 +24,7 @@ import type {
   ReadingState,
   Revision,
   Run,
+  RuntimeToolStatus,
   Scenario,
   ScenarioBreakdownResult,
   Snapshot,
@@ -30,6 +36,7 @@ import { Store, id, now } from './store';
 import { capture, freshness, readSource, sha } from './snapshot';
 import { getCodeIndex } from './code-index';
 import { codeIndexSummary } from './code-index-query';
+import { locate, setDefaultExecutableOverrides } from './executables';
 import { makePrompt, probeProviders, redact, runCodex, runCodexPromptRefinement, stopTree, type ActiveProcess } from './providers';
 import { buildRefinementContext, goalRefinementSchema, parseGoalRefinement, refinementPrompt } from './prompt-refiner';
 import { normalizeTransport, schema, validateResult } from './validation';
@@ -49,6 +56,7 @@ import { WalkthroughRefreshCoordinator } from './walkthrough-refresh';
 import { OverviewOrchestrator } from './overview-orchestrator';
 import { exportProjectBundle, importAnalysisResult, loadDemoProject } from './project-io';
 
+const exec = promisify(execFile);
 const parseJsonReply = (raw: string) => JSON.parse(raw.trim());
 
 const oldOverviewQuestion =
@@ -67,6 +75,10 @@ const text = (value: unknown, max = 20000): string => {
   }
   return value.trim();
 };
+
+export function isSupportedNodeVersion(version: string) {
+  return satisfies(version.trim(), '>=22.13.0');
+}
 
 export class ArcService {
   readonly store: Store;
@@ -97,6 +109,7 @@ export class ArcService {
     private readonly dshRunner: typeof runDshWeb = runDshWeb,
   ) {
     this.store = new Store(directory);
+    this.syncToolPathOverrides();
     this.engineering = new EngineeringService(this.store, type => this.emit({type:type??'changed'}));
     this.engineering.onTaskFinished = task => {
       void this.refreshTaskWalkthrough(task.task_id);
@@ -672,20 +685,58 @@ export class ArcService {
     return this.store.maybe('reading', key);
   }
 
+  providerPathConfig(): ProviderPathConfig {
+    return this.store.maybe<ProviderPathConfig>('settings', 'providers') ?? {};
+  }
+
+  private syncToolPathOverrides(config = this.providerPathConfig()) {
+    setDefaultExecutableOverrides({ node: config.node_path, git: config.git_path });
+  }
+
   async probe(config?: Record<string, string>, only?: 'codex' | 'dsh') {
+    const saved = this.providerPathConfig();
     if (config) {
       for (const [key, value] of Object.entries(config)) {
-        if (!['codex_path', 'dsh_path'].includes(key) || typeof value !== 'string') throw new Error('不支持的连接配置');
+        if (!['codex_path', 'dsh_path', 'node_path', 'git_path'].includes(key) || typeof value !== 'string') throw new Error('不支持的连接配置');
+        const pathKey = key as ProgramPathKey;
+        const file = value.trim();
+        if (file) saved[pathKey] = file;
+        else delete saved[pathKey];
       }
-      config = { ...this.store.maybe('settings', 'providers'), ...config };
-      this.store.put('settings', 'providers', config);
+      this.store.put('settings', 'providers', saved);
+      this.syncToolPathOverrides(saved);
     }
-    const saved = config || this.store.maybe<Record<string, string>>('settings', 'providers') || {};
     const profiles = await probeProviders(saved, only);
     if (only !== 'dsh') this.codexModels = loadCodexModelCatalog();
     for (const p of profiles) this.store.put('provider', p.provider_id, p);
     this.changed();
     return profiles;
+  }
+
+  async probeRuntimeTools(): Promise<RuntimeToolStatus[]> {
+    const saved = this.providerPathConfig();
+    return Promise.all((['node', 'git'] as const).map(async (id): Promise<RuntimeToolStatus> => {
+      const label = id === 'node' ? 'Node.js' : 'Git';
+      let file = saved[`${id}_path`];
+      try {
+        file = await locate(id, file);
+        const { stdout } = await exec(file, ['--version'], { windowsHide: true, timeout: 4000 });
+        const version = stdout.trim();
+        if (id === 'node' && !isSupportedNodeVersion(version)) {
+          return {
+            id,
+            label,
+            status: 'missing',
+            path: file,
+            version,
+            reason: '当前 Node.js 版本低于最低要求（≥ v22.13.0，内置 MCP 工具依赖 node:sqlite），请升级或指定 v22+ 的 node.exe。',
+          };
+        }
+        return { id, label, status: 'available', path: file, version };
+      } catch (error) {
+        return { id, label, status: 'missing', path: file, reason: redact((error as Error).message) };
+      }
+    }));
   }
 
   askReading(input: ReadingAsk): Promise<ReadingQuestion> {
@@ -1389,5 +1440,6 @@ export class ArcService {
     await this.walkthroughs.shutdown();
     await Promise.allSettled(this.checkingFreshness.values());
     while (this.indexing.size) await new Promise(resolve => setTimeout(resolve, 20));
+    setDefaultExecutableOverrides({});
   }
 }
