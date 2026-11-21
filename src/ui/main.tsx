@@ -27,6 +27,7 @@ import {
 import { timelineModel } from './timeline-model';
 import { savedBusinessPath } from './home-reading';
 import { EngineeringOverviewSections, EngineeringWorkspace } from './EngineeringWorkspace';
+import type { TaskArchitectureOverlay } from './DevelopmentHud';
 import { WorkbenchNavigation } from './WorkbenchNavigation';
 import { edgeSelection, readingQuestionTarget } from './reading-target';
 import { compactTitle, isLegacyOverview, modernReading } from './presentation';
@@ -99,6 +100,8 @@ function App() {
   const [bookmark, setBookmark] = useState<HomeBookmark | null>(null);
   const [focusDevelopment, setFocusDevelopment] = useState(false);
   const [requestedTask, setRequestedTask] = useState('');
+  const [archOverlay, setArchOverlay] = useState<TaskArchitectureOverlay | null>(null);
+  useEffect(() => { setArchOverlay(null); }, [projectId]);
   const [indexes, setIndexes] = useState<Record<string, any>>({});
   const [eventState, setEventState] = useState<{ runId: string; items: any[] }>({ runId: '', items: [] });
   const [showDetail, setShowDetail] = useState(false);
@@ -388,6 +391,7 @@ function App() {
 
   function switchView(view: string, overrides: Partial<ReadingState> = {}) {
     closePopovers();
+    if (view !== 'system') setArchOverlay(null);
     if (view === 'files') overrides = { files_open: false, detail_tab: 'details', ...overrides };
     setReading(r => {
       const featurePosition = featureViewPosition(r, view, result?.binding.source_snapshot_id || '');
@@ -704,6 +708,7 @@ function App() {
   }
 
   function chooseScenario(id: string, value?: Partial<ReadingState>) {
+    setArchOverlay(null);
     const scene = data.scenarios.find(s => s.scenario_id === id);
     if (!value && (scene?.kind === 'feature_overview' || scene?.kind === 'breakdown')) {
       const graph = data.explanations.findLast(e => e.scenario_id === id && e.result.binding.question_revision_id === scene.question_revision_id && hasFunctionGraphs(e.result));
@@ -1723,6 +1728,20 @@ function App() {
       inspectComponent={inspectComponent}
       evidence={evidence}
       showMcp={showMcp}
+      taskOverlay={
+        archOverlay && scenarioId === project?.overview_scenario_id && (!archOverlay.resultId || result?.result_id === archOverlay.resultId)
+          ? {
+              ...archOverlay,
+              onClear: () => setArchOverlay(null),
+              onReturnTask: () => {
+                const taskId = archOverlay.taskId;
+                setArchOverlay(null);
+                setRequestedTask(taskId);
+                switchView('engineering', { mode: 'normal', catalog_hidden: true });
+              },
+            }
+          : null
+      }
     />
   );
 
@@ -2099,6 +2118,14 @@ function App() {
                   focusGoal={focusDevelopment}
                   onGoalFocused={() => setFocusDevelopment(false)}
                   back={() => setEntrance('overview')}
+                  onArchitectureOverlay={overlay => {
+                    chooseScenario(project.overview_scenario_id || '', {
+                      ...overviewLanding,
+                      ...(overlay.resultId ? { result_id: overlay.resultId } : {}),
+                      source_snapshot_id: project.snapshot_id,
+                    });
+                    setArchOverlay(overlay);
+                  }}
                   onArchitecture={id => {
                     const savedExp = data.explanations.find(e => e.result_id === id);
                     if (savedExp) {

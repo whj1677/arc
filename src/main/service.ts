@@ -50,6 +50,7 @@ import { featureGraphSchema, prepareFeatureGraph } from './feature-graph-result'
 import { parseDshReply } from './dsh';
 import { runDshWeb } from './dsh-web';
 import { EngineeringService } from './engineering-service';
+import { buildTaskHud, previousFeatureResultId } from './development-hud';
 import { DevelopmentService } from './development-service';
 import { ReadingService } from './reading-service';
 import { WalkthroughRefreshCoordinator } from './walkthrough-refresh';
@@ -99,6 +100,7 @@ export class ArcService {
   private readonly readingService: ReadingService;
   private readonly breakdowns = new Map<Promise<ScenarioBreakdownResult>, AbortController>();
   private readonly walkthroughs: WalkthroughRefreshCoordinator;
+  private readonly featureRefreshes = new Map<string, {refreshing: boolean; error?: string}>();
   private readonly overviews: OverviewOrchestrator;
 
   constructor(
@@ -750,7 +752,9 @@ export class ArcService {
   private analysisHistory(run: Run) {
     const annotations = this.store.all<Annotation>('annotation').filter(a => a.scenario_id === run.binding.scenario_id);
     const explanations = this.store.all<Explanation>('explanation');
-    const last = explanations.findLast(e => e.scenario_id === run.binding.scenario_id);
+    const last = run.feature_refresh_task_id && run.refresh_from_result_id
+      ? explanations.find(e => e.result_id === run.refresh_from_result_id && e.scenario_id === run.binding.scenario_id)
+      : explanations.findLast(e => e.scenario_id === run.binding.scenario_id);
     const discovery = this.store.get<Feature>('feature', run.binding.feature_id).discovery;
     const overview = discovery && explanations.find(e => run.overview_parent_run_id
       ? e.result.binding.run_id === run.overview_parent_run_id : e.result_id === discovery.result_id)?.result;
@@ -771,20 +775,21 @@ export class ArcService {
 
   async startRun(
     scenarioId: string,
-    mode: Exclude<ExecutionMode, 'mcp'>,
+    mode: ExecutionMode,
     submissionKey: string,
     previousRunId?: string,
-    options: { sourceSnapshotId?: string; developmentTaskId?: string; refreshFromResultId?: string; projectAnalysis?: boolean } = {},
+    options: { sourceSnapshotId?: string; developmentTaskId?: string; refreshFromResultId?: string; featureRefreshTaskId?: string; projectAnalysis?: boolean } = {},
   ) {
     if (this.closing) throw new Error('Arc 正在退出，未派发新任务');
-    if (mode !== 'codex' && mode !== 'dsh' && mode !== 'codex_desktop') throw new Error('请选择支持的执行通道');
+    if (!['codex', 'dsh', 'codex_desktop'].includes(mode) && !(mode === 'mcp' && options.featureRefreshTaskId)) throw new Error('请选择支持的执行通道');
     const providerId = mode === 'dsh' ? 'dsh' : 'codex';
     const dispatch = mode === 'codex_desktop' ? this.dispatchRun : undefined;
     if (mode === 'codex_desktop' && !dispatch) throw new Error('Codex 桌面会话派发通道不可用');
     if (!/^[\w-]{8,100}$/.test(submissionKey)) throw new Error('提交幂等键无效');
     const existing = this.store.all<Run>('run').find(r => r.submission_key === submissionKey);
     if (existing) {
-      if (existing.binding.scenario_id !== scenarioId || (existing.execution_mode ?? existing.provider_id) !== mode || existing.development_task_id !== options.developmentTaskId) {
+      if (existing.binding.scenario_id !== scenarioId || (existing.execution_mode ?? existing.provider_id) !== mode ||
+          existing.development_task_id !== options.developmentTaskId || existing.feature_refresh_task_id !== options.featureRefreshTaskId) {
         throw new Error('幂等键归属冲突');
       }
       return existing;
@@ -840,12 +845,33 @@ export class ArcService {
       submission_key: submissionKey,
       previous_run_id: previousRunId,
       output_path: path.join(this.directory, 'runs', runId, 'result.json'),
-      ...(options.developmentTaskId ? { development_task_id: options.developmentTaskId, refresh_from_result_id: options.refreshFromResultId } : {}),
+      ...(options.developmentTaskId ? { development_task_id: options.developmentTaskId } : {}),
+      ...(options.featureRefreshTaskId ? { feature_refresh_task_id: options.featureRefreshTaskId } : {}),
+      ...(options.refreshFromResultId ? { refresh_from_result_id: options.refreshFromResultId } : {}),
     };
     if (options.projectAnalysis && !options.developmentTaskId && project.overview_scenario_id === scenarioId) {
       run.overview_followup_mode = dispatch ? 'dispatch' : 'direct';
     }
     if (isCatalogOverview(scenario.question)) run.overview_format = 'overview-1';
+
+    if (mode === 'mcp') {
+      run.status = 'waiting_agent';
+      run.origin = 'mcp';
+      this.store.transaction(() => {
+        this.store.put('run', runId, run);
+        const requested = this.store.maybe<{feature_refresh_run_id?: string}>('setting', 'mcp-requested-analysis');
+        const waiting = requested?.feature_refresh_run_id
+          ? this.store.maybe<Run>('run', requested.feature_refresh_run_id) : undefined;
+        if (waiting?.status !== 'waiting_agent' || !waiting.feature_refresh_task_id ||
+            waiting.binding.project_id !== project.project_id) {
+          this.store.put('setting', 'mcp-requested-analysis', {
+            ...run.binding, created_at: run.created_at, feature_refresh_run_id: runId,
+          });
+        }
+      });
+      this.changed();
+      return run;
+    }
 
     this.store.put('run', runId, run);
     this.changed();
@@ -867,6 +893,60 @@ export class ArcService {
 
   refreshTaskWalkthrough(taskId: string, submissionKey?: string): Promise<void> {
     return this.walkthroughs.refreshTask(taskId, submissionKey);
+  }
+
+  private latestFeatureRefreshRun(taskId: string, scenarioId: string): Run | undefined {
+    const row = this.store.db.prepare(`SELECT json FROM objects WHERE kind='run'
+      AND json_extract(json,'$.feature_refresh_task_id')=?
+      AND json_extract(json,'$.binding.scenario_id')=?
+      ORDER BY json_extract(json,'$.created_at') DESC, rowid DESC LIMIT 1`).get(taskId, scenarioId);
+    return row ? JSON.parse(String(row.json)) : undefined;
+  }
+
+  private featureRefreshState(taskId: string, scenarioId: string) {
+    const run = this.latestFeatureRefreshRun(taskId, scenarioId);
+    if (run && activeRunStatuses.has(run.status)) return {refreshing: true};
+    const transient = this.featureRefreshes.get(`${taskId}/${scenarioId}`);
+    if (transient || !run) return transient;
+    return run.status === 'completed'
+      ? {refreshing: false}
+      : {refreshing: false, error: run.error || `走读更新未完成（${run.status}）`};
+  }
+
+  taskHud(taskId: string) {
+    return buildTaskHud(this.store, this.directory, taskId,
+      (task, scenario) => this.featureRefreshState(task, scenario));
+  }
+
+  async refreshFeatureWalkthrough(taskId: string, scenarioId: string, submissionKey: string,
+      enableExternal?: (mode: ExecutionMode, projectId: string) => Promise<void>): Promise<void> {
+    const task = this.engineering.task(taskId);
+    const scene = this.store.get<Scenario>('scenario', scenarioId);
+    if (task.project_id !== scene.project_id) throw Error('开发任务与功能走读不属于同一工程');
+    if (scene.archived || this.store.get<Feature>('feature', scene.feature_id).archived) throw Error('请先恢复已归档功能或场景');
+    if (typeof submissionKey !== 'string' || !/^[\w-]{8,100}$/.test(submissionKey)) throw Error('提交幂等键无效');
+    const mode = task.execution_mode ?? (task.analysis_channel === 'dsh' ? 'dsh' : 'codex');
+    if (enableExternal) await enableExternal(mode, task.project_id);
+    if (task.reading?.scenario_id === scenarioId) return this.refreshTaskWalkthrough(taskId, submissionKey);
+    const key = `${taskId}/${scenarioId}`;
+    if (this.featureRefreshState(taskId, scenarioId)?.refreshing) return;
+    this.featureRefreshes.set(key, {refreshing: true});
+    this.changed();
+    try {
+      const previous = previousFeatureResultId(this.store, task, scenarioId);
+      const sourceSnapshotId = task.end_state?.snapshot_id ?? (await this.refresh(task.project_id)).source_snapshot_id;
+      const run = await this.startRun(scenarioId, mode, submissionKey, undefined, {
+        sourceSnapshotId, refreshFromResultId: previous, featureRefreshTaskId: taskId,
+      });
+      this.featureRefreshes.delete(key);
+      void this.executing.get(run.binding.run_id)?.finally(() => this.changed());
+    } catch (error) {
+      if (this.latestFeatureRefreshRun(taskId, scenarioId)?.submission_key === submissionKey) this.featureRefreshes.delete(key);
+      else this.featureRefreshes.set(key, {refreshing: false, error: redact((error as Error).message)});
+      throw error;
+    } finally {
+      this.changed();
+    }
   }
 
   trackExternalWalkthrough(runId: string) {
@@ -1368,6 +1448,9 @@ export class ArcService {
     if (terminalRunStatuses.has(run.status)) return run;
     const active = this.active.get(runId);
     if (run.origin === 'mcp') {
+      if (run.feature_refresh_task_id && this.store.maybe('setting', 'mcp-requested-analysis')?.feature_refresh_run_id === runId) {
+        this.store.put('setting', 'mcp-requested-analysis', null);
+      }
       run.status = 'cancelled';
       run.ended_at = now();
       run.error = 'Arc 已撤销本次任务的读取和结果写回权限；Agent 对话不会被远程停止，请在 Agent 中停止生成。';

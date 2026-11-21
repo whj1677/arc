@@ -3,6 +3,7 @@ import type { AnalysisResult } from '../shared';
 import { architectureColumns, architectureMap } from './architecture-map';
 import { componentContext } from './architecture-context';
 import { CodeModules } from './CodeModules';
+import type { TaskArchitectureOverlay } from './DevelopmentHud';
 import { edgeNames } from './Graph';
 import { edgeSelection } from './reading-target';
 
@@ -15,6 +16,7 @@ interface Props {
   openFile?: (path: string) => void;
   zoom: number;
   search: string;
+  taskOverlay?: (TaskArchitectureOverlay & { onClear: () => void; onReturnTask: () => void }) | null;
 }
 type Node = AnalysisResult['nodes'][number];
 type Edge = AnalysisResult['edges'][number];
@@ -58,7 +60,7 @@ function RoleIcon({ kind }: { kind: Node['kind'] }) {
   </svg>;
 }
 
-export function Architecture({ result, selected, select, inspect, modules, openFile, zoom, search }: Props) {
+export function Architecture({ result, selected, select, inspect, modules, openFile, zoom, search, taskOverlay }: Props) {
   const root = useRef<HTMLElement>(null);
   const [width, setWidth] = useState(820);
   const [view, setView] = useState<'layers' | 'relations' | 'code'>('layers');
@@ -89,6 +91,18 @@ export function Architecture({ result, selected, select, inspect, modules, openF
   const reset = () => { setHover(''); select(''); };
 
   return <section ref={root} className="architecture-map" aria-label="系统协作导图">
+    {taskOverlay && view === 'layers' && (
+      <div className="architecture-task-hud-banner" role="status">
+        <span>
+          <strong>开发任务影响叠加</strong> · {taskOverlay.goal.length > 48 ? taskOverlay.goal.slice(0, 48) + '…' : taskOverlay.goal}
+          {' '}（实框直改 / 虚线波及）
+        </span>
+        <span className="row">
+          <button type="button" className="hud-mini-btn" onClick={taskOverlay.onReturnTask}>返回任务</button>
+          <button type="button" className="hud-mini-btn" onClick={taskOverlay.onClear}>关闭叠加</button>
+        </span>
+      </div>
+    )}
     <header className="architecture-map-heading">
       <div className="architecture-view-switch" role="group" aria-label="架构视图">
         <button aria-pressed={view === 'layers'} onClick={() => chooseView('layers')}>分层架构图</button>
@@ -151,15 +165,16 @@ export function Architecture({ result, selected, select, inspect, modules, openF
               x={layer.x + 15} y={layer.y + 25}>●  {layer.title}<tspan dx="8">· {layer.roots.length}</tspan></text>)}
             {model.nodes.map(node => {
               const context = contexts.get(node.node_id)!;
+              const overlayRole = taskOverlay?.nodes.get(node.node_id);
               return <foreignObject key={node.node_id} {...model.boxes.get(node.node_id)} data-component-id={node.node_id} data-zoom-anchor
                 className={focusId && !activeNodes.has(node.node_id) ? 'architecture-node-dimmed' : undefined}>
-                <button className={'architecture-card architecture-node kind-' + node.kind + (model.hubs.has(node.node_id) ? ' is-hub' : '')} aria-pressed={selected === node.node_id}
+                <button className={'architecture-card architecture-node kind-' + node.kind + (model.hubs.has(node.node_id) ? ' is-hub' : '') + (overlayRole ? ' hud-' + overlayRole : '')} aria-pressed={selected === node.node_id}
                   onMouseEnter={() => setHover(node.node_id)} onMouseLeave={() => setHover('')}
                   onFocus={() => setHover(node.node_id)} onBlur={() => setHover('')} onClick={() => select(node.node_id)}>
                   <span className="architecture-card-header">
                     <span className="architecture-card-icon" aria-hidden="true"><RoleIcon kind={node.kind}/></span>
                     <strong className="architecture-card-title" title={node.label}>{node.label}</strong>
-                    {model.hubs.has(node.node_id) && <span className="architecture-hub-badge">核心</span>}
+                    {overlayRole ? <span className={'architecture-hud-tag ' + overlayRole}>{overlayRole === 'direct' ? '直改' : '波及'}</span> : model.hubs.has(node.node_id) && <span className="architecture-hub-badge">核心</span>}
                   </span>
                   <span className="architecture-card-copy">{node.description}</span>
                   <span className="architecture-card-meta"><span>{model.degrees.get(node.node_id) ?? 0} 关系</span>

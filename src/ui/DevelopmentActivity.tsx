@@ -1,8 +1,10 @@
 import React,{useEffect,useState} from 'react';
+import type {TaskHudSnapshot} from '../development-hud';
 import type {DevelopmentAttempt,EngineeringTask} from '../engineering';
 import type {Dispatch} from '../main/external-dispatch';
 import {TaskBoundaries} from './TaskBoundaries';
 import {verificationEvidenceLabel} from '../delivery-audit';
+import {FlightHudBar,PreDevHud,type TaskArchitectureOverlay} from './DevelopmentHud';
 
 export type ActivityEvent={attempt_id:string;received_at:string;type:string;message?:string;item?:{type:string;text?:string;command?:string;aggregated_output?:string;exit_code?:number}};
 const receiptNames:Record<Dispatch['state'],string>={queued:'已排队，等待发送',sending:'正在发送',awaiting_claim:'已发送，等待 Agent 领取',running:'Agent 已领取',completed:'回填完成',blocked:'派发受阻',unknown:'派发状态待核对',cancelled:'派发已取消'};
@@ -25,7 +27,6 @@ export function publicActivity(event:ActivityEvent){
 }
 export function DevelopmentActivity({task,attempt,dispatch,events,onSettings}:{task:EngineeringTask;attempt?:DevelopmentAttempt;dispatch?:Dispatch;events:ActivityEvent[];onSettings:()=>void}){
   const terminal=['completed','failed','blocked','cancelled','interrupted'].includes(task.status);
-  const [expanded,setExpanded]=useState(!terminal&&task.workflow!=='ready');
   const lines=events.filter(event=>event.attempt_id===attempt?.attempt_id).flatMap(event=>{
     const text=publicActivity(event);
     return text?[{at:event.received_at,text}]:[];
@@ -37,17 +38,8 @@ export function DevelopmentActivity({task,attempt,dispatch,events,onSettings}:{t
   const stepIsLatest=step?.progress&&(!latest||step.updated_at>=latest.at);
   const backfilled=terminal||task.workflow==='ready';
   const at=[dispatch?.last_activity,dispatch?.claimed_at,dispatch?.sent_at,dispatch?.created_at,attempt?.ended_at,attempt?.started_at,latest?.at,step?.updated_at,backfilled?task.updated_at:undefined].filter((s):s is string=>!!s).sort().at(-1);
-  const message=(backfilled?task.summary:'')||dispatch?.error||attempt?.error||(stepIsLatest?step.progress:latest?.text)||'尚未收到本轮的公开输出。';
-  return <section className="development-activity" aria-label="执行动态">
-    <div className="development-activity-heading"><button type="button" aria-expanded={expanded} onClick={()=>setExpanded(!expanded)}>执行动态 {expanded?'▴':'▾'}</button>
-      {!backfilled&&<span role="status">{attempt?.provider_id==='dsh'?'DeepSeek Harness · ':''}{receipt}</span>}
-      {at&&<time dateTime={at} title={new Date(at).toLocaleString()}>最近记录 {new Date(at).toLocaleTimeString()}</time>}
-    </div>
-    {expanded&&<div className="development-activity-body"><p>{message.length>240?message.slice(0,240)+'…':message}</p>
-      {!!lines.length&&<details><summary>查看已收到的输出 · {lines.length} 条</summary><ol>{lines.map((line,i)=><li key={i}><time>{new Date(line.at).toLocaleTimeString()}</time><pre>{line.text}</pre></li>)}</ol></details>}
-      {dispatch&&['blocked','unknown'].includes(dispatch.state)&&<button onClick={onSettings}>核对连接与派发</button>}
-    </div>}
-  </section>;
+  const message=(backfilled?task.summary:'')||(backfilled?'':dispatch?.error||attempt?.error)||(stepIsLatest?step.progress:latest?.text)||'尚未收到本轮的公开输出。';
+  return <FlightHudBar task={task} attempt={attempt} dispatch={dispatch} lines={lines} receipt={receipt} latestMessage={message} latestAt={at} onSettings={onSettings}/>;
 }
 function RequirementQuestions({task}:{task:EngineeringTask}){
   const pkg=task.requirement_package!;
@@ -118,53 +110,30 @@ export function SavedRequirementPackage({task,readOnly=false,onSaved}:{task:Engi
   </details>;
 }
 
-function ApprovalGroup({title,items,format='bullets',empty}:{title:string;items:string[];format?:'bullets'|'numbered'|'files';empty?:string}){
-  const [expanded,setExpanded]=useState(false);
-  const List=format==='numbered'?'ol':'ul';
-  const filenames=format==='files'?items.map(path=>path.split('/').at(-1)||path):[];
-  const distinctFiles=new Set(filenames).size===filenames.length;
-  const abbreviated=format==='files'&&distinctFiles&&items.some((path,index)=>path!==filenames[index]);
+function ApprovalGroup({title,items}:{title:string;items:string[]}){
   return <section>
-    <div className="approval-group-title"><h4>{title}</h4><span>{items.length} {format==='files'?'个文件':'项'}</span></div>
-    {items.length?<List className={format==='files'?'approval-file-list':undefined}>{items.map((item,index)=><li key={index}>{format==='files'?<code title={item}>{abbreviated&&!expanded?filenames[index]:item}</code>:item}</li>)}</List>:<p>{empty}</p>}
-    {abbreviated&&<button type="button" className="approval-expand" aria-expanded={expanded} onClick={()=>setExpanded(!expanded)}>{expanded?'收起完整路径':'查看完整路径'}</button>}
+    <div className="approval-group-title"><h4>{title}</h4><span>{items.length} 项</span></div>
+    <ul>{items.map((item,index)=><li key={index}>{item}</li>)}</ul>
   </section>;
 }
 
-function ApprovalOverview({snapshot,scope,disabled,onSaved,onSavingChange}:{snapshot:EngineeringTask;scope:string[];disabled:boolean;onSaved:(task:EngineeringTask)=>void;onSavingChange:(saving:boolean)=>void}){
-  const pkg=snapshot.requirement_package;
-  if(!pkg)return <p>此版本没有正式需求包。</p>;
-  return <>
-    <section aria-label="批准内容" className="approval-overview">
-      <ApprovalGroup title="行为变化" items={pkg.behaviors.map(item=>item.behavior)} format="numbered"/>
-      <ApprovalGroup title="建议修改文件" items={scope} format="files" empty="未列出建议修改文件。"/>
-      <ApprovalGroup title="验收方式" items={pkg.behaviors.map(item=>item.verification)} format="numbered"/>
-      <RequirementQuestions task={snapshot}/>
-    </section>
-    <TaskBoundaries task={snapshot} title="本轮不改与已撤销红线" disabled={disabled} onSaved={onSaved} onSavingChange={onSavingChange}/>
-    <details className="approval-source"><summary>查看完整需求包</summary><RequirementPackage task={snapshot} showBoundaries={false}/></details>
-  </>;
-}
-
-export function PlanDecision({task,busy,error,onDecision,onTaskSaved}:{task:EngineeringTask;busy:boolean;error:string;onDecision:(snapshot:EngineeringTask,revision?:string)=>void;onTaskSaved?:(task:EngineeringTask)=>void}){
-  const [snapshot,setSnapshot]=useState(task),[feedback,setFeedback]=useState('');
-  const [saving,setSaving]=useState(false);
-  const stale=snapshot.version!==task.version;
-  const scope=snapshot.proposed_scope??snapshot.scope;
-  const refresh=()=>{setSnapshot(task);setFeedback('');};
-  return <section className="plan-decision engineering-approval" aria-label="审阅待确认方案">
-      <header><h3>审阅待确认方案 <small>v{snapshot.version}</small></h3></header>
-      <div className="plan-review-body">
-        {stale&&<div role="alert">任务已更新至 v{task.version}，当前展示 v{snapshot.version}。<button disabled={busy} onClick={refresh}>查看最新版本</button></div>}
-        {error&&<p role="alert">{error}</p>}
-        <ApprovalOverview snapshot={snapshot} scope={scope} disabled={busy||stale} onSavingChange={setSaving}
-          onSaved={updated=>{setSnapshot(updated);onTaskSaved?.(updated);}}/>
-      </div>
-      <footer className="plan-review-actions">
-        {snapshot.requirement_package?<><label>修订意见<textarea aria-label="修订意见" placeholder="需要补充或调整什么？" rows={1} value={feedback} onChange={event=>setFeedback(event.target.value)}/></label>
-          <div className="row"><button disabled={busy||saving||stale||!feedback.trim()} onClick={()=>onDecision(snapshot,feedback.trim())}>退回补充</button>
-          <button className="primary" disabled={busy||saving||stale||!scope.length} onClick={()=>onDecision(snapshot)}>按此方案执行</button></div></>:
-          <button disabled={busy||stale} onClick={()=>onDecision(snapshot,'根据当前目标和既有资料重新进行只读分析，生成完整需求包。')}>重新分析并生成需求包</button>}
-      </footer>
-  </section>;
+export function PlanDecision({task,hud=null,hudLoading=false,hudError='',busy,error,onDecision,onTaskSaved,onOpenArchitectureOverlay}:{
+  task:EngineeringTask;hud?:TaskHudSnapshot|null;hudLoading?:boolean;hudError?:string;busy:boolean;error:string;
+  onDecision:(snapshot:EngineeringTask,revision?:string,notes?:string[])=>Promise<boolean>|boolean|void;
+  onTaskSaved?:(task:EngineeringTask)=>void;
+  onOpenArchitectureOverlay?:(overlay:TaskArchitectureOverlay)=>void;
+}){
+  return <PreDevHud
+    task={task}
+    hud={hud}
+    hudLoading={hudLoading}
+    hudError={hudError}
+    busy={busy}
+    error={error}
+    onApprove={(snapshot,notes)=>void onDecision(snapshot,undefined,notes)}
+    onRevise={(snapshot,revision)=>onDecision(snapshot,revision)}
+    onTaskSaved={onTaskSaved}
+    onOpenArchitectureOverlay={onOpenArchitectureOverlay}
+    renderFullPackage={snapshot=>snapshot.requirement_package?<RequirementPackage task={snapshot} showBoundaries={false}/>:undefined}
+  />;
 }

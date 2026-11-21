@@ -537,7 +537,14 @@ export class EngineeringService {
       if(!input.task_id||task.workflow!=='ready'||task.status!=='pending')throw Error('请先完成只读分析并审阅当前需求包');
       this.validatePackage(task);
       if(input.scope?.some(file=>!task.proposed_scope?.includes(file)))throw Error('新增文件需要先修订需求包，再审阅批准');
-      task.approval={reviewed_version:task.version,scope:[...(input.scope??[])]};
+      const approvalNotes: string[] = [];
+      if (input.notes !== undefined) {
+        if (!Array.isArray(input.notes) || input.notes.length > 20) throw Error('补充说明最多可填写 20 条');
+        approvalNotes.push(...new Set(input.notes.map(value => requireText(value, 2000))));
+        const existing = new Set(task.decisions.map(note => note.trim()));
+        task.decisions.push(...approvalNotes.filter(note => !existing.has(note)));
+      }
+      task.approval={reviewed_version:task.version,scope:[...(input.scope??[])],...(approvalNotes.length?{notes:approvalNotes}:{})};
       task.scope=[...task.approval.scope];
     }else{
       task.analysis_channel=submission.channel;
@@ -608,7 +615,8 @@ export class EngineeringService {
     const key=this.receiptKey('update',input.task_id,input.submission_key),prior=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(prior)return prior;
     return this.store.transaction(()=>{const task=this.task(input.task_id);this.checkUpdate(task,input);
       if(input.summary!==undefined)task.summary=requireText(input.summary);
-      if(input.decisions)task.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)task.unresolved=input.unresolved.map(s=>requireText(s));
+      if(input.decisions)task.decisions=[...new Set([...(task.approval?.notes??[]),...input.decisions.map(s=>requireText(s))])];
+      if(input.unresolved)task.unresolved=input.unresolved.map(s=>requireText(s));
       if(input.requirement_package!==undefined)this.setRequirementPackage(task,input.requirement_package);
       if(input.proposed_scope)task.proposed_scope=input.proposed_scope.map(relativePath);
       if(input.steps)this.mergeSteps(task,input.steps);
@@ -670,7 +678,9 @@ export class EngineeringService {
       // Keep known task changes across attempts, but exclude files only changed between attempts.
       .filter(p=>!attemptFiles||previousChanges.has(p)||attemptFiles.get(p)!==afterFiles.get(p))
       .map(p=>({path:p,before_sha256:beforeFiles.get(p)??null,after_sha256:afterFiles.get(p)??null,ownership:comparison.dirty.includes(p)||task.rebind_preexisting_files?.some(f=>f.path===p)?'preexisting_overlap' as const:'task_change' as const,...(assets.has(p)?{text_diff_unavailable:true}:{})}));
-    const saved=this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;if(!maySave())throw Error('执行已停止，拒绝迟到开发结果');const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);if(input.decisions)current.decisions=input.decisions.map(s=>requireText(s));if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
+    const saved=this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;if(!maySave())throw Error('执行已停止，拒绝迟到开发结果');const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);
+      if(input.decisions)current.decisions=[...new Set([...(current.approval?.notes??[]),...input.decisions.map(s=>requireText(s))])];
+      if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
       if(ownershipUnknown)current.unresolved=[...new Set([...current.unresolved,'无法确认提交完成时与采集时的代码状态一致。报告已保存，差异归属待核查。'])];
       if(diffReview)current.diff_review=diffReview;
       if(input.requirement_package!==undefined)this.setRequirementPackage(current,input.requirement_package);

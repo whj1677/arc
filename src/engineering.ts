@@ -128,7 +128,7 @@ export interface EngineeringTask {
   workflow?:'analysis'|'ready'|'execution'; proposed_scope?:string[];
   requirement_package?:RequirementPackage;
   boundaries?:{non_goals:string[];revoked:string[]};
-  approval?:{reviewed_version:number;scope:string[]};
+  approval?:{reviewed_version:number;scope:string[];notes?:string[]};
   analysis_channel?:'codex'|'kimi'|'dsh';
   execution_mode?:ExecutionMode;
   fast_mode?:boolean;
@@ -159,6 +159,7 @@ export interface DevelopmentAttempt {
 export interface ContextRequest {view?:'strict'|'execution';task_id?:string;project_id?:string; workspace_path?:string; cached?:boolean;refresh?:boolean;query?:string;entry_id?:string;result_id?:string;category?:ContextEntry['category'];offset?:number;limit?:number}
 export interface CreateEngineeringTask extends ContextRequest {
   goal:string; submission_key:string; task_id?:string; scope?:string[]; reading?:TaskReadingBinding;
+  notes?: string[];
   fast_mode?:boolean;
   boundaries?:EngineeringTask['boundaries'];
 }

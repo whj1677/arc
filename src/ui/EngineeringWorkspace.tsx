@@ -6,6 +6,7 @@ import {SourceExcerpt} from './SourceExcerpt';
 import {TextDiffView} from './TextDiffView';
 import {EngineeringSections,ContextBody,ContextText,ExternalExecutor,type EngineeringSection} from './EngineeringSections';
 import {DevelopmentActivity,PlanDecision,SavedRequirementPackage,publicActivity,taskDetailStage,type ActivityEvent} from './DevelopmentActivity';
+import {DeliveryHud,useTaskHud,type TaskArchitectureOverlay} from './DevelopmentHud';
 import {ProjectEnvironmentCard} from './ProjectEnvironmentCard';
 import {RequirementComposer,type RequirementSubmission} from './RequirementComposer';
 import type {CodexModelSelection} from './CodexModelSelect';
@@ -288,7 +289,7 @@ function RollbackAction({task,readOnly,busy,onRollback}:{task:EngineeringTask;re
   </span>;
 }
 
-export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,onTaskOpened,onSettings,defaultEngine,codexModel,onEngineChange,enginePending,focusGoal,onGoalFocused,back,onArchitecture,onRestored,onReading}:{project:Project;snapshotFiles?:SourceFile[];page:'materials'|'records';requestedTask:string;onTaskOpened:()=>void;onSettings:()=>void;defaultEngine:AnalysisMode;codexModel:CodexModelSelection;onEngineChange:(mode:AnalysisMode)=>void;enginePending:boolean;focusGoal:boolean;onGoalFocused:()=>void;back:()=>void;onArchitecture:(resultId?:string)=>void;onRestored:(projectId:string)=>void;onReading:(task:EngineeringTask)=>void}){
+export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,onTaskOpened,onSettings,defaultEngine,codexModel,onEngineChange,enginePending,focusGoal,onGoalFocused,back,onArchitecture,onArchitectureOverlay,onRestored,onReading}:{project:Project;snapshotFiles?:SourceFile[];page:'materials'|'records';requestedTask:string;onTaskOpened:()=>void;onSettings:()=>void;defaultEngine:AnalysisMode;codexModel:CodexModelSelection;onEngineChange:(mode:AnalysisMode)=>void;enginePending:boolean;focusGoal:boolean;onGoalFocused:()=>void;back:()=>void;onArchitecture:(resultId?:string)=>void;onArchitectureOverlay?:(overlay:TaskArchitectureOverlay)=>void;onRestored:(projectId:string)=>void;onReading:(task:EngineeringTask)=>void}){
   const {context,error:contextError,reload:reloadContext,more,checking}=useContext(project.project_id);
   const [tasks,setTasks]=useState<EngineeringTask[]>(()=>taskLists.get(project.project_id)??[]),[selectedId,setSelectedId]=useState(()=>requestedTask||selectedTasks.get(project.project_id)||''),[query,setQuery]=useState(''),[filter,setFilter]=useState('');
   const [tasksLoaded,setTasksLoaded]=useState(()=>taskLists.has(project.project_id));
@@ -304,6 +305,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
   const current=tasks.find(t=>t.task_id===selectedId),task=historical||current;
   const stage=task&&taskDetailStage(task);
   const mode=page==='materials'?'materials':current?recordMode:'new';
+  const {hud,loading:hudLoading,error:hudError,reload:reloadHud}=useTaskHud(task?.task_id,task?.version,!historical&&!!task&&mode==='records');
   const attempts=taskAttempts.filter(item=>item.task_id===task?.task_id&&task.attempt_ids.includes(item.attempt_id));
   const events=taskEvents.filter(event=>attempts.some(item=>item.attempt_id===event.attempt_id));
   const latestAttempt=attempts.find(item=>item.attempt_id===task?.attempt_ids.at(-1));
@@ -333,12 +335,13 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
   useEffect(()=>{if(focusGoal){newRequirement();onGoalFocused();}},[focusGoal]);
   useEffect(()=>{if(requestedTask&&tasksLoaded){selectTask(requestedTask);onTaskOpened();}},[requestedTask,tasksLoaded]);
   useEffect(()=>{let valid=true;void api.invoke('reading_get',{key:'engineering-selection/'+project.project_id}).then(value=>{if(valid&&!requestedTask&&!focusGoal&&value?.task_id){setSelectedId(value.task_id);setSection(['plan','architecture','design','tasks','verification_plan'].includes(value.section)?value.section:'tasks');}}).catch(e=>setError(e.message));return()=>{valid=false;};},[project.project_id]);
-  async function decide(snapshot:EngineeringTask,revision?:string){
-    if(busy||!current)return;
-    if(snapshot.task_id!==current.task_id||snapshot.version!==current.version){setError('任务版本已变化，请重新审阅。');return;}
-    await action(()=>api.invoke('development_start',{project_id:project.project_id,task_id:snapshot.task_id,expected_version:snapshot.version,
+  async function decide(snapshot:EngineeringTask,revision?:string,notes?:string[]):Promise<boolean>{
+    if(busy||!current)return false;
+    if(snapshot.task_id!==current.task_id||snapshot.version!==current.version){setError('任务版本已变化，请重新审阅。');return false;}
+    const result=await action(()=>api.invoke('development_start',{project_id:project.project_id,task_id:snapshot.task_id,expected_version:snapshot.version,
       phase:revision?'analysis':'execution',goal:revision??'按已审阅的正式需求包和批准范围执行，完成必要验证并回填。',
-      scope:revision?[]:[...(snapshot.proposed_scope??snapshot.scope)],submission_key:crypto.randomUUID()}),revision?'修订意见已提交到原任务':snapshot.execution_mode==='mcp'?'已确认需求包，等待外部 Agent 领取':'已确认需求包并排队执行');
+      scope:revision?[]:[...(snapshot.proposed_scope??snapshot.scope)],...(notes?.length?{notes}:{}),submission_key:crypto.randomUUID()}),revision?'修订意见已提交到原任务':snapshot.execution_mode==='mcp'?'已确认需求包，等待外部 Agent 领取':'已确认需求包并排队执行');
+    return result!==undefined;
   }
 
   useEffect(()=>{
@@ -346,7 +349,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
     if(page==='records')void reload().catch(e=>setError(e.message));
     return()=>{alive.current=false;};
   },[reload,page,context]);
-  useEffect(()=>{let valid=true,reading=false;setHistorical(null);setLog('');setHistory([]);setDiff(null);setAttempts([]);setEvents([]);setDispatches([]);const read=async()=>{if(!selectedId||reading)return;reading=true;try{const value=await api.invoke<{attempts:DevelopmentAttempt[];events:ActivityEvent[]}>('development_events',{task_id:selectedId});if(valid){setAttempts(value.attempts);setEvents(value.events);if(current?.execution_mode&&current.execution_mode!=='codex_desktop')return;const external=await api.invoke<{queue:Dispatch[]}>('executor_status',{project_id:project.project_id});if(valid){setDispatches(external.queue??[]);}}}catch(e){if(valid)setError((e as Error).message);}finally{reading=false;}};void read();const timer=setInterval(()=>void read(),2500);return()=>{valid=false;clearInterval(timer);};},[selectedId,current?.execution_mode]);
+  useEffect(()=>{let valid=true,reading=false;setHistorical(null);setLog('');setHistory([]);setDiff(null);setAttempts([]);setEvents([]);setDispatches([]);const read=async()=>{if(!selectedId||reading)return;reading=true;try{const value=await api.invoke<{attempts:DevelopmentAttempt[];events:ActivityEvent[]}>('development_events',{task_id:selectedId});if(valid){setAttempts(value.attempts);setEvents(value.events);if(current?.execution_mode&&current.execution_mode!=='codex_desktop')return;const external=await api.invoke<{queue:Dispatch[]}>('executor_status',{project_id:project.project_id});if(valid){setDispatches(external.queue??[]);}}}catch(e){if(valid)setError((e as Error).message);}finally{reading=false;}};void read();const off=api.onEvent(e=>{if(e.type==='development_event'||e.type==='engineering_changed'||e.type==='changed')void read();});const timer=setInterval(()=>void read(),8000);return()=>{valid=false;off();clearInterval(timer);};},[selectedId,current?.execution_mode]);
   async function action(fn:()=>Promise<unknown>,message=''){setBusy(true);setError('');setNotice('');try{const result=await fn();if(alive.current){if(message)setNotice(message);await reload();await reloadContext();}return result;}catch(e){if(alive.current)setError((e as Error).message);}finally{if(alive.current)setBusy(false);}}
   const cannotStart=busy||enginePending||inProgress||project.fictional||context?.workspace.status!=='bound'||!goal.trim();
   async function start(submission?:RequirementSubmission){
@@ -428,7 +431,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
           {waitingMcp&&!historical&&<p role="status">等待外部 Agent 领取。在已接入 ARC MCP 的对话中领取任务 <code>{task.task_id}</code>。 <button onClick={onSettings}>连接 Agent</button></p>}
           {task.reading?.evidence&&<p aria-label="关联源码位置">关联源码 · <code>{task.reading.evidence.path}:{task.reading.evidence.line_start}–{task.reading.evidence.line_end}</code></p>}
         </header>
-        {stage==='approval'&&!historical&&<PlanDecision key={task.task_id} task={task} busy={busy} error={error} onTaskSaved={taskSaved} onDecision={(snapshot,revision)=>void decide(snapshot,revision)}/>}
+        {stage==='approval'&&!historical&&<PlanDecision key={task.task_id} task={task} hud={hud} hudLoading={hudLoading} hudError={hudError} busy={busy} error={error} onTaskSaved={taskSaved} onOpenArchitectureOverlay={onArchitectureOverlay} onDecision={(snapshot,revision,notes)=>decide(snapshot,revision,notes)}/>}
         {!historical&&stage!=='approval'&&(stage==='analysis'||latestDispatch||panelAttempt)&&<DevelopmentActivity key={`${stage}:${ended}:${latestDispatch?.dispatch_id||panelAttempt?.attempt_id||task.task_id}`} dispatch={latestDispatch} attempt={panelAttempt} task={task} events={events} onSettings={onSettings}/>}
         {section!=='tasks'?<EngineeringSections taskId={selectedId} projectId={project.project_id} section={section} onSection={selectSection} tasks={tasks} onTask={id=>selectTask(id,true)} onArchitecture={onArchitecture} onDevelop={newRequirement}/>:<>
         {continuation&&!historical&&!inProgress&&stage!=='approval'&&<form className="development-form continuation-card" onSubmit={e=>{e.preventDefault();void start();}}>
@@ -443,6 +446,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
         {history.length>0&&<label className="engineering-version-picker">查看记录版本<select aria-label="工程任务版本" value={historical?.version??''} onChange={e=>setHistorical(history.find(item=>item.version===Number(e.target.value))||null)}><option value="">当前版本</option>{history.map(item=><option key={item.version} value={item.version}>v{item.version} · {stateNames[item.status]} · {when(item.updated_at)}</option>)}</select></label>}
         {task.origin==='legacy_import'&&<p className="warning">AEC 历史任务 · 待复核。原文与来源已保存，旧验证声明不视为本次真实执行。</p>}
         {stage==='delivery'&&<>
+        {!historical&&<DeliveryHud task={task} hud={hud} onReloadHud={reloadHud} onOpenArchitectureOverlay={onArchitectureOverlay} onTargetedContinue={prefill=>{selectSection('tasks');setContinuation(true);setGoal(prefill);requestAnimationFrame(()=>goalInput.current?.focus());}}/>}
         <DeliveryAuditBar key={`audit:${task.task_id}`} task={task} entries={context?.material_sources??context?.entries??[]} onRefresh={()=>reloadContext(true)} busy={busy||!!historical}/>
         {task.verification_status==='stale'&&<p className="task-review-notice">上次验证对应较早的代码版本，需重新验证。</p>}
         {ended&&task.summary&&<section className="task-outcome" aria-label="本次交付结果"><h3>本次交付结果</h3><ContextText text={task.summary}/></section>}

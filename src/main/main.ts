@@ -69,6 +69,7 @@ app.whenReady().then(async()=>{
         case 'project_environment':value=await service.engineering.projectEnvironment(args.project_id,args.refresh);break;
         case 'project_environment_save':value=await service.engineering.saveEnvironmentCommands(args.project_id,args.effective_commands);break;
         case 'engineering_task':value=await service.engineering.currentTask(args.task_id);break;
+        case 'engineering_task_hud':value=await service.taskHud(args.task_id);break;
         case 'engineering_history':value=service.engineering.history(args.kind,args.id);break;
         case 'engineering_open_link':{const url=new URL(args.url);if(!['https:','http:','mailto:'].includes(url.protocol))throw Error('不支持此链接协议');await shell.openExternal(url.href);value={opened:true};break;}
         case 'engineering_revise':value=service.engineering.reviseContext(args);break;
@@ -117,6 +118,9 @@ app.whenReady().then(async()=>{
         }
         case 'development_events':value=service.development.events(args.task_id);break;
         case 'walkthrough_retry':void service.refreshTaskWalkthrough(args.task_id,args.submission_key);value=service.engineering.task(args.task_id);break;
+        case 'walkthrough_feature_refresh':
+          value=await service.refreshFeatureWalkthrough(args.task_id,args.scenario_id,args.submission_key,enableExternal);
+          break;
         case 'engineering_connect':{
           const workspace=await service.engineering.connect(args.project_id),legacy=await scanAecLegacy(workspace.root_path);
           // Preserve old managed rules as source history before replacing them.

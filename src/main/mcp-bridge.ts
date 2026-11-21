@@ -24,6 +24,9 @@ import {engineeringCategories,type CompletionBinding,type EngineeringTask} from 
 const exec=promisify(execFile);
 const property={type:'string'};
 const strings={type:'array',items:property};
+const featureRefreshRequest = (run: Run) => ({
+  ...run.binding, created_at: run.created_at, feature_refresh_run_id: run.binding.run_id,
+});
 const stepSchema={type:'object',additionalProperties:false,required:['step_id','title','change','status','progress','criteria','evidence_ids','unresolved'],properties:{step_id:property,title:property,change:property,status:{type:'string',enum:['pending','in_progress','completed','blocked','failed','superseded']},progress:property,criteria:{type:'array',minItems:1,maxItems:20,items:{type:'object',additionalProperties:false,required:['criterion_id','text','evidence_ids'],properties:{criterion_id:property,text:property,evidence_ids:strings}}},evidence_ids:strings,unresolved:strings}};
 const tool=(name:string,description:string,properties:any={},required:string[]=[],read=true)=>({name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},annotations:{readOnlyHint:read,destructiveHint:false,idempotentHint:read,openWorldHint:false}});
 const packageList={type:'array',items:{type:'string',minLength:1,maxLength:6000},maxItems:40};
@@ -233,6 +236,12 @@ export class ArcMcpBridge {
       return true;
     });
   }
+  private waitingFeatureRefreshRuns(projectId: string) {
+    return this.service.store.all<Run>('run')
+      .filter(run => run.feature_refresh_task_id && run.execution_mode === 'mcp' &&
+        run.status === 'waiting_agent' && run.binding.project_id === projectId)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
   private checkFeatureClaim(run:Run){
     try{this.service.checkOverviewChild(run);}
     catch(error){
@@ -370,14 +379,29 @@ export class ArcMcpBridge {
     if(dispatched&&!this.dispatch.items(dispatched.binding.project_id).some(item=>item.run_id===args.dispatch_run_id&&item.state==='running'))throw Error('未确认的派发领取');
     if(dispatched)this.authorizeDevelopment(dispatched.binding.project_id);
     const grant=dispatched?{project_id:dispatched.binding.project_id}:this.grant(),project=this.service.store.get<Project>('project',grant.project_id);
-    const requested=this.service.store.maybe<any>('setting','mcp-requested-analysis');
+    const queuedRequest=this.service.store.maybe<any>('setting','mcp-requested-analysis');
+    const refreshes = name === 'arc_current_project' || name === 'arc_begin_analysis'
+      ? this.waitingFeatureRefreshRuns(project.project_id) : [];
+    const queuedRunId = queuedRequest?.feature_refresh_run_id ?? queuedRequest?.run_id;
+    const requested = name === 'arc_current_project' && refreshes.length &&
+      (queuedRequest?.project_id !== project.project_id ||
+        (queuedRunId && this.service.store.maybe<Run>('run', queuedRunId)?.status !== 'waiting_agent'))
+      ? featureRefreshRequest(refreshes[0]) : queuedRequest;
     const requestedScene=requested?.project_id===project.project_id?this.service.store.maybe<Scenario>('scenario',requested.scenario_id):undefined;
     const waiting=this.service.store.all<ReadingQuestion>('reading_question').filter(q=>{
       if(q.project_id!==project.project_id)return false;
       const run=this.service.store.get<Run>('run',q.run_id);
       return run.status==='waiting_agent'&&run.execution_mode!=='codex_desktop';
     });
-    if(name==='arc_current_project')return {next_analysis:this.nextAnalysis(project.project_id,client?.configured_provider||'codex'),requested_questions:waiting.map(q=>({question_id:q.question_id,question:q.question,scenario_id:q.scenario_id,target:q.target,result_id:q.result_id,source_snapshot_id:q.source_snapshot_id,instruction:'这是用户在 ARC 登记的阅读追问；传 question_id 给 arc_begin_analysis 领取，只返回该任务的轻量合同。'})),requested_analysis:requestedScene&&!requestedScene.archived?{scenario_id:requestedScene.scenario_id,title:requestedScene.title,question:requestedScene.question,source_snapshot_id:requested.source_snapshot_id,development_task_id:requested.development_task_id,project_analysis:requested.project_analysis===true,instruction:requested.project_analysis===true?'用户已在 ARC 启动本次完整工程分析。请领取所示场景并沿提交回执的 next_analysis 在当前对话连续分析已排定的功能。':'用户在功能目录中选中了此功能；仅当本次对话要求展开所选功能时，将此 scenario_id 传给 arc_begin_analysis。若带 development_task_id，可原样传入，或只沿此场景领取，ARC 都会绑定原开发任务；不得改领阅读追问。不要批量分析其他功能。'}:null,project,scenarios:this.service.data().scenarios.filter(s=>s.project_id===project.project_id&&!s.archived),connection:this.status(),instructions:'在当前 Agent 对话选择模型和推理强度，再领取任务。分析只读冻结源码；把公开进度和最终结果写回 Arc。MCP 不暴露或控制 Agent 内部推理。'};
+    if(name==='arc_current_project')return {
+      next_analysis:this.nextAnalysis(project.project_id,client?.configured_provider||'codex'),
+      requested_refreshes: refreshes.map(run => ({
+        run_id: run.binding.run_id, task_id: run.feature_refresh_task_id, scenario_id: run.binding.scenario_id,
+        source_snapshot_id: run.binding.source_snapshot_id, title: run.title,
+      })),
+      requested_questions:waiting.map(q=>({question_id:q.question_id,question:q.question,scenario_id:q.scenario_id,target:q.target,result_id:q.result_id,source_snapshot_id:q.source_snapshot_id,instruction:'这是用户在 ARC 登记的阅读追问；传 question_id 给 arc_begin_analysis 领取，只返回该任务的轻量合同。'})),
+      requested_analysis:requestedScene&&!requestedScene.archived?{scenario_id:requestedScene.scenario_id,title:requestedScene.title,question:requestedScene.question,source_snapshot_id:requested.source_snapshot_id,development_task_id:requested.development_task_id,project_analysis:requested.project_analysis===true,instruction:requested.project_analysis===true?'用户已在 ARC 启动本次完整工程分析。请领取所示场景并沿提交回执的 next_analysis 在当前对话连续分析已排定的功能。':'用户在功能目录中选中了此功能；仅当本次对话要求展开所选功能时，将此 scenario_id 传给 arc_begin_analysis。若带 development_task_id，可原样传入，或只沿此场景领取，ARC 都会绑定原开发任务；不得改领阅读追问。不要批量分析其他功能。'}:null,
+      project,scenarios:this.service.data().scenarios.filter(s=>s.project_id===project.project_id&&!s.archived),connection:this.status(),instructions:'在当前 Agent 对话选择模型和推理强度，再领取任务。分析只读冻结源码；把公开进度和最终结果写回 Arc。MCP 不暴露或控制 Agent 内部推理。'};
     if(name==='arc_begin_analysis'){
       // An explicit local configuration label, never proof of host identity.
       const provider=client?.configured_provider||'codex';
@@ -397,10 +421,21 @@ export class ArcMcpBridge {
       const requestedDevelopmentTaskId=!run&&!childId&&!args.question_id&&requested?.project_id===project.project_id&&(!args.scenario_id||requested.scenario_id===args.scenario_id)&&typeof requested.development_task_id==='string'?requested.development_task_id:undefined,developmentTaskId=run?.development_task_id??args.development_task_id??requestedDevelopmentTaskId,developmentTask=developmentTaskId?this.service.engineering.task(string(developmentTaskId,100)):undefined;
       if(developmentTask&&(developmentTask.project_id!==project.project_id||!developmentTask.reading||args.question_id||args.scenario_id&&args.scenario_id!==developmentTask.reading.scenario_id))throw Error('开发任务与分析场景归属不一致');
       if(!run){
-        const questionId=args.question_id?string(args.question_id,100):!childId&&!developmentTask&&!args.scenario_id?waiting.at(-1)?.question_id:undefined;
-        const child=!questionId&&!developmentTask&&(childId||args.scenario_id||!requestedScene)?this.waitingFeatureRuns(project.project_id,provider).find(item=>(!childId||item.binding.run_id===childId)&&(!args.scenario_id||item.binding.scenario_id===args.scenario_id)):undefined;
+        // Claim the frozen HUD run even if the working tree has since been refreshed.
+        const refresh = !args.question_id && !developmentTask && !childId
+          ? args.scenario_id
+            ? refreshes.find(item => item.binding.scenario_id === args.scenario_id)
+            : refreshes.find(item => item.binding.run_id === requested?.feature_refresh_run_id) ?? refreshes[0]
+          : undefined;
+        const questionId=args.question_id?string(args.question_id,100):!refresh&&!childId&&!developmentTask&&!args.scenario_id?waiting.at(-1)?.question_id:undefined;
+        const child=!refresh&&!questionId&&!developmentTask&&(childId||args.scenario_id||!requestedScene)?this.waitingFeatureRuns(project.project_id,provider).find(item=>(!childId||item.binding.run_id===childId)&&(!args.scenario_id||item.binding.scenario_id===args.scenario_id)):undefined;
         if(childId&&!child)throw Error('该功能子运行不属于当前授权工程、原 MCP 宿主或待领取队列');
-        if(child){
+        if (refresh) {
+          run = refresh;
+          run.status = 'running';
+          run.mcp_connection_id = this.connectionId;
+          run.mcp_request_key = key;
+        }else if(child){
           this.checkFeatureClaim(child);
           run=child;run.status='running';run.mcp_connection_id=this.connectionId;run.mcp_request_key=key;
         }else if(questionId){
@@ -424,7 +459,10 @@ export class ArcMcpBridge {
         }
         this.service.store.transaction(()=>{
           this.service.store.put('run',claimed.binding.run_id,claimed);
-          if(projectAnalysis)this.service.store.put('setting','mcp-requested-analysis',null);
+          if (requested?.feature_refresh_run_id === claimed.binding.run_id) {
+            const next = this.waitingFeatureRefreshRuns(project.project_id)[0];
+            this.service.store.put('setting', 'mcp-requested-analysis', next ? featureRefreshRequest(next) : null);
+          } else if (projectAnalysis) this.service.store.put('setting', 'mcp-requested-analysis', null);
         });
         this.service.event(run.binding.run_id,{type:'local.stage',stage:'mcp_connected',message:`Agent 已通过 MCP 领取任务；宿主标签 ${provider} 来自本地配置，身份、模型和推理强度未由 Arc 核验`,client:{name:typeof client?.name==='string'?client.name.slice(0,100):'unknown',configured_provider:provider,identity:'MCP client self-reported'}});
         if(created&&developmentTask){const current=this.service.engineering.task(developmentTask.task_id);if(current.walkthrough?.status!=='pending')throw Error('原任务当前不可开始走读更新');this.service.engineering.saveWalkthrough(current.task_id,{...current.walkthrough,status:'running',run_id:run.binding.run_id,source_snapshot_id:run.binding.source_snapshot_id,updated_at:now()},current.walkthrough.update_id);this.service.trackExternalWalkthrough(run.binding.run_id);this.service.store.put('setting','mcp-requested-analysis',null);}

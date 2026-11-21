@@ -16,6 +16,7 @@ import { FunctionChain } from './FunctionChain';
 import { Graph } from './Graph';
 import { FeatureCatalog, CatalogFeatureReading } from './FeatureCatalog';
 import { Architecture } from './Architecture';
+import type { TaskArchitectureOverlay } from './DevelopmentHud';
 import { ZoomSurface } from './ZoomSurface';
 import { Timeline } from './Timeline';
 import { FeatureReading } from './FeatureReading';
@@ -83,6 +84,7 @@ export interface CanvasPaneProps {
   inspectComponent: (id: string) => void;
   evidence: (item: SourceEvidence) => void;
   showMcp: () => void;
+  taskOverlay?: (TaskArchitectureOverlay & { onClear: () => void; onReturnTask: () => void }) | null;
 }
 
 export function CanvasPane({
@@ -140,6 +142,7 @@ export function CanvasPane({
   inspectComponent,
   evidence,
   showMcp,
+  taskOverlay,
 }: CanvasPaneProps) {
   const fileSnapshotId = reading.view === 'files' && !featureReading ? sourceSnapshot?.source_snapshot_id : undefined;
   const analyzedPaths = useMemo(
@@ -347,6 +350,7 @@ export function CanvasPane({
                   modules={() => switchView('modules', { stage: '' })}
                   inspect={inspectComponent}
                   openFile={file => chooseFile(file, result.binding.source_snapshot_id)}
+                  taskOverlay={taskOverlay}
                 />
                 {!overviewSections && (
                   <div className="overview-feature-entry">

@@ -107,6 +107,7 @@ export interface Run {
   overview_parent_run_id?:string;
   overview_followup_mode?:'direct'|'dispatch'|'manual';
   development_task_id?:string;
+  feature_refresh_task_id?:string;
   refresh_from_result_id?:string;
 }
 export function hasFunctionGraphs(result:AnalysisResult):boolean {
