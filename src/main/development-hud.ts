@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { activeContextEntries, type EngineeringTask } from '../engineering';
 import {
-  computeStructureDiff, computeWalkthroughDiff, type HudImpactedFeature,
+  computeAstCallGraphDiff, computeStructureDiff, computeWalkthroughDiff, type HudImpactedFeature,
   type TaskHudImpact, type TaskHudSnapshot,
 } from '../development-hud';
 import {
@@ -189,6 +189,9 @@ export async function buildTaskHud(
     if (!indexes.has(id)) indexes.set(id, getCodeIndex(directory, snapshot(id)));
     return indexes.get(id)!;
   }
+  async function frozenSources(snap: Snapshot, files: string[]) {
+    return new Map(await Promise.all(files.map(async file => [file, (await readSource(directory, snap, file)).text] as const)));
+  }
   const beforeIndex = await index(beforeId);
   const { impacted, byId } = impactedFeatures(store, project, task, new Set([...impactScope, ...changedFiles]), snapshot, featureRefreshState);
   const impact: TaskHudImpact = {
@@ -203,8 +206,22 @@ export async function buildTaskHud(
     task_id: taskId, version: task.version, impact, walkthrough_diffs: [], impacted_features: impacted,
   };
   if (task.end_state && task.changes_status !== 'needs_review') {
-    hud.structure_diff = computeStructureDiff(beforeIndex, await index(task.end_state.snapshot_id),
+    const afterId = task.end_state.snapshot_id;
+    const afterIndex = await index(afterId);
+    hud.structure_diff = computeStructureDiff(beforeIndex, afterIndex,
       scopeDeclared ? declaredScope : [], changedFiles);
+    if (changedFiles.length) {
+      const beforeSnap = snapshot(beforeId), afterSnap = snapshot(afterId);
+      const sharedFiles = changedFiles.filter(file => beforeSnap.files.some(f => f.path === file) &&
+        afterSnap.files.some(f => f.path === file));
+      const [beforeSources, afterSources] = await Promise.all([
+        frozenSources(beforeSnap, sharedFiles), frozenSources(afterSnap, sharedFiles),
+      ]);
+      const astCallGraph = computeAstCallGraphDiff({
+        beforeIndex, afterIndex, beforeSnapshotId: beforeId, afterSnapshotId: afterId, changedFiles, beforeSources, afterSources,
+      });
+      if (astCallGraph) hud.ast_call_graph = astCallGraph;
+    }
   }
   for (const feature of impacted) {
     if (!feature.previous_result_id || !feature.refreshed_result_id || !feature.has_call_graph) continue;
@@ -217,9 +234,8 @@ export async function buildTaskHud(
     const afterHashes = new Map(afterSnap.files.map(file => [file.path, file.content_sha256]));
     const changedSources = beforeSnap.files.filter(file => referenced.has(file.path) &&
       afterHashes.has(file.path) && afterHashes.get(file.path) !== file.content_sha256);
-    const sources = async (snap: Snapshot) => new Map(await Promise.all(changedSources.map(async ({path: file}) =>
-      [file, (await readSource(directory, snap, file)).text] as const)));
-    const [beforeSources, afterSources] = await Promise.all([sources(beforeSnap), sources(afterSnap)]);
+    const files = changedSources.map(file => file.path);
+    const [beforeSources, afterSources] = await Promise.all([frozenSources(beforeSnap, files), frozenSources(afterSnap, files)]);
     hud.walkthrough_diffs.push(computeWalkthroughDiff({
       feature_id: feature.feature_id, scenario_id: feature.scenario_id, feature_label: feature.label, before, after,
       beforeSnapshot: beforeSnap, afterSnapshot: afterSnap, beforeIndex: await index(from), afterIndex: await index(to),

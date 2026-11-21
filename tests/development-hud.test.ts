@@ -6,7 +6,7 @@ import {test, type TestContext} from 'node:test';
 import {ArcService} from '../src/main/service';
 import {ArcMcpBridge} from '../src/main/mcp-bridge';
 import {approvedRequirement} from '../src/task-boundaries';
-import {computeStructureDiff, computeWalkthroughDiff} from '../src/development-hud';
+import {computeAstCallGraphDiff, computeStructureDiff, computeWalkthroughDiff} from '../src/development-hud';
 import type {CodeCall, CodeIndex, CodeSymbol} from '../src/main/code-index';
 import type {AnalysisResult, Explanation, Run, Scenario, Snapshot} from '../src/shared';
 
@@ -30,6 +30,192 @@ function index(symbols: CodeSymbol[], calls: CodeCall[] = []): CodeIndex {
     symbols, calls, modules: [], module_edges: [], shared_states: [], parse_errors: [],
   };
 }
+
+test('local AST call graph compares callable changes and prioritizes external contract risks', () => {
+  const file = 'api/service.ts';
+  const oldApi = symbol('submit', file, 1, 'submit(value: string)');
+  const newApi = symbol('submit', file, 1, 'submit(value: number)');
+  const sibling = symbol('helper', file, 4);
+  const retired = symbol('retired', file, 7);
+  const enabled = symbol('enabled', 'jobs/worker.ts');
+  const client = symbol('consume'), removedClient = symbol('legacy'), newCallee = symbol('notify');
+  const ordinary = Array.from({length: 9}, (_, i) => symbol(`utility${i}`));
+  const unrelated = symbol('otherCandidate');
+  const type = {...symbol('Config', file, 13), kind: 'interface' as const};
+  const beforeIndex = index([oldApi, sibling, retired, client, removedClient, unrelated, ...ordinary], [
+    ...ordinary.map(target => call(oldApi, target)), call(ordinary[0], ordinary[1]),
+    call(oldApi, sibling, 3), call(oldApi, sibling, 2), call(oldApi, retired), call(client, oldApi),
+    {...call(removedClient, retired), target_ids: [retired.id, unrelated.id]},
+  ]);
+  const afterIndex = index([newApi, sibling, enabled, client, removedClient, newCallee, unrelated, type, ...ordinary], [
+    ...ordinary.map(target => call(newApi, target)), call(ordinary[0], ordinary[1]),
+    call(newApi, sibling), call(newApi, enabled), call(newApi, newCallee),
+    call(client, newApi),
+  ]);
+  const options = {
+    beforeIndex, afterIndex, beforeSnapshotId: 'before', afterSnapshotId: 'after', changedFiles: ['api\\service.ts', enabled.file],
+    beforeSources: new Map([[file, 'function submit(value: string) {\n  return helper() + retired(); }\n\nfunction helper() {\n  return 1; } // old comment']]),
+    afterSources: new Map([[file, 'function submit(value: number) {\n  return helper() + enabled(); }\n\nfunction  helper() {\n  return 1; } // new comment']]),
+  };
+  const diff = computeAstCallGraphDiff(options)!;
+  assert.deepEqual([diff.before_snapshot_id, diff.after_snapshot_id], ['before', 'after']);
+  assert.equal(diff.omitted_changes, 0);
+  assert.equal(diff.omitted_neighbors, 4);
+  assert.equal(diff.path.label, '本地 AST 调用图');
+  assert.equal(diff.path.entry_symbol, client.name);
+  assert.deepEqual(diff.path.steps, []);
+  const nodes = new Map(diff.path.participants.map(node => [node.symbol, node]));
+  assert.deepEqual([...nodes.values()].filter(node => node.code_changed).map(node => [node.symbol, node.status]), [
+    ['submit', 'modified'], ['retired', 'removed'], ['enabled', 'added'],
+  ]);
+  assert.equal(nodes.get('helper')?.status, 'unchanged');
+  assert.equal(nodes.get('submit')?.before_signature, oldApi.signature);
+  assert.equal(nodes.get('submit')?.after_signature, newApi.signature);
+  assert.equal(nodes.get('Config'), undefined);
+  assert.equal(nodes.get(unrelated.name), undefined);
+  const external = diff.path.participants.filter(node => node.file !== file && node.file !== enabled.file);
+  assert.equal(external.length, 8);
+  assert.deepEqual(external.slice(0, 3).map(node => node.symbol), [client.name, removedClient.name, newCallee.name]);
+  assert.ok(external.every(node => node.status === 'unchanged'));
+  const edge = (from: CodeSymbol, to: CodeSymbol) => diff.path.edges.find(edge =>
+    edge.from_key === `${from.file}::${from.qualified_name}` && edge.to_key === `${to.file}::${to.qualified_name}`);
+  assert.equal(edge(client, newApi)?.after_label, '未同步调用');
+  assert.equal(edge(client, newApi)?.ast_confirmed, true);
+  assert.equal(edge(removedClient, retired)?.before_label, '候选未同步调用');
+  assert.equal(edge(removedClient, retired)?.ast_confirmed, false);
+  assert.equal(edge(oldApi, retired)?.before_label, '移除调用');
+  assert.equal(edge(newApi, enabled)?.after_label, '跨文件新增');
+  assert.equal(edge(newApi, sibling)?.after_label, '调用');
+  assert.equal(edge(ordinary[0], ordinary[1])?.after_label, '跨文件调用');
+  assert.equal(new Set(diff.path.edges.map(edge => edge.key)).size, diff.path.edges.length);
+  assert.ok(diff.path.edges.every(edge => edge.kind === 'sync_call'));
+  assert.deepEqual(diff.path.counts, {
+    added_nodes: 1, removed_nodes: 1, modified_nodes: 1, added_edges: 2, removed_edges: 2,
+    added_steps: 0, removed_steps: 0, modified_steps: 0, noise_count: 0,
+  });
+
+  assert.equal(computeAstCallGraphDiff({...options, changedFiles: []}), undefined);
+  const commentOnly = {...options, beforeIndex: index([sibling]), afterIndex: index([sibling, type])};
+  assert.equal(computeAstCallGraphDiff(commentOnly), undefined);
+  const edited = computeAstCallGraphDiff({...commentOnly,
+    afterSources: new Map([[file, options.afterSources.get(file)!.replace('return 1;', 'return 2;')]]),
+  });
+  assert.equal(edited?.path.participants[0].status, 'modified');
+});
+
+test('local AST call graph aligns C++ overloads and routes calls to the edited definition', () => {
+  const file = 'api/score.cpp';
+  const first = {...symbol('score', file, 1, 'int score(int value)'), language: 'cpp' as const};
+  const second = {...symbol('score', file, 3, 'int score(double value)'), language: 'cpp' as const};
+  const next = {...second, signature: 'int  score(double value)'};
+  const caller = {...symbol('consume', 'app/client.cpp'), language: 'cpp' as const};
+  const beforeSource = 'int score(int value) {\n  return 1; }\nint score(double value) {\n  return 2; }';
+  const options = {
+    beforeIndex: index([first, second, caller], [call(caller, first), call(caller, second)]),
+    afterIndex: index([first, next, caller], [call(caller, first), call(caller, next)]),
+    beforeSnapshotId: 'before', afterSnapshotId: 'after', changedFiles: [file],
+    beforeSources: new Map([[file, beforeSource]]),
+    afterSources: new Map([[file, beforeSource.replace('return 2;', 'return 3;')]]),
+  };
+  const firstKey = `${file}::score::int score(int value)`;
+  const secondKey = `${file}::score::int score(double value)`;
+  const diff = computeAstCallGraphDiff(options)!;
+  assert.deepEqual(diff.path.participants.filter(node => node.code_changed).map(node => [node.key, node.status]), [
+    [secondKey, 'modified'],
+  ]);
+  assert.deepEqual(diff.path.edges.map(edge => [edge.to_key, edge.status]), [[secondKey, 'unchanged']]);
+
+  const addedOverload = computeAstCallGraphDiff({...options,
+    beforeIndex: index([second, caller], [call(caller, second)]),
+  })!;
+  assert.deepEqual(addedOverload.path.participants.filter(node => node.code_changed).map(node => [node.key, node.status]), [
+    [firstKey, 'added'], [secondKey, 'modified'],
+  ]);
+  assert.deepEqual(addedOverload.path.edges.map(edge => [edge.to_key, edge.status]), [
+    [secondKey, 'unchanged'], [firstKey, 'added'],
+  ]);
+});
+
+test('local AST call graph preserves Python indentation and ignores comments and blank lines', () => {
+  const file = 'jobs/worker.py';
+  const worker = {...symbol('work', file, 1, 'def work():'), language: 'python' as const, end_line: 4};
+  const next = {...worker, end_line: 6};
+  const commented = 'def work():\n    if enabled: # condition\n\n        # explain\n        log("# started")  \n    finish()';
+  const options = {
+    beforeIndex: index([worker]), afterIndex: index([next]),
+    beforeSnapshotId: 'before', afterSnapshotId: 'after', changedFiles: [file],
+    beforeSources: new Map([[file, 'def work():\n    if enabled:\n        log("# started")\n    finish()']]),
+    afterSources: new Map([[file, commented]]),
+  };
+  assert.equal(computeAstCallGraphDiff(options), undefined);
+  const diff = computeAstCallGraphDiff({...options,
+    afterSources: new Map([[file, commented.replace('        log', '    log')]]),
+  })!;
+  assert.equal(diff.path.participants[0].status, 'modified');
+});
+
+test('local AST call graph distinguishes callback references from direct calls and candidate risks', () => {
+  const old = symbol('handle', 'api/handler.ts', 1, 'handle(value: string)');
+  const next = {...old, signature: 'handle(value: number)'};
+  const local = symbol('local', old.file, 4);
+  const cross = symbol('cross');
+  const registered = symbol('registered'), added = symbol('added'), removed = symbol('removed');
+  const mixed = symbol('mixed'), candidate = symbol('candidate'), candidateRef = symbol('candidateRef');
+  const switched = symbol('switched');
+  const other = symbol('other');
+  const reference = (from: CodeSymbol, to: CodeSymbol): CodeCall => ({...call(from, to), syntax: 'reference'});
+  const ambiguous = (edge: CodeCall): CodeCall => ({...edge, target_ids: [...edge.target_ids, other.id]});
+  const surrounding = [local, cross, registered, added, removed, mixed, candidate, candidateRef, switched, other];
+  const edges = (target: CodeSymbol) => [
+    reference(target, local), reference(target, cross), reference(registered, target),
+    reference(mixed, target), ambiguous(call(mixed, target)), call(mixed, target, 3),
+    ambiguous(call(candidate, target)), ambiguous(reference(candidateRef, target)),
+  ];
+  const source = (target: CodeSymbol) => `${target.signature} {\n  return value; }\n\nfunction local() {\n  return 1; }`;
+  const diff = computeAstCallGraphDiff({
+    beforeIndex: index([old, ...surrounding], [...edges(old), reference(removed, old), call(switched, old)]),
+    afterIndex: index([next, ...surrounding], [...edges(next), reference(added, next), reference(switched, next)]),
+    beforeSnapshotId: 'before', afterSnapshotId: 'after', changedFiles: [old.file],
+    beforeSources: new Map([[old.file, source(old)]]), afterSources: new Map([[next.file, source(next)]]),
+  })!;
+  const key = (target: CodeSymbol) => `${target.file}::${target.qualified_name}`;
+  const pair = (from: CodeSymbol, to: CodeSymbol) => diff.path.edges.filter(edge =>
+    edge.from_key === key(from) && edge.to_key === key(to),
+  ).map(edge => [edge.kind, edge.status, edge.after_label ?? edge.before_label, edge.ast_confirmed]);
+  assert.deepEqual(pair(next, local), [['reference', 'unchanged', '回调引用', true]]);
+  assert.deepEqual(pair(next, cross), [['reference', 'unchanged', '跨文件回调引用', true]]);
+  assert.deepEqual(pair(registered, next), [['reference', 'unchanged', '未同步回调引用', true]]);
+  assert.deepEqual(pair(added, next), [['reference', 'added', '新增回调引用', true]]);
+  assert.deepEqual(pair(removed, old), [['reference', 'removed', '移除回调引用', true]]);
+  assert.deepEqual(pair(mixed, next), [['sync_call', 'unchanged', '未同步调用', true]]);
+  assert.deepEqual(pair(candidate, next), [['sync_call', 'unchanged', '候选未同步调用', false]]);
+  assert.deepEqual(pair(candidateRef, next), [['reference', 'unchanged', '候选未同步回调引用', false]]);
+  assert.deepEqual(pair(switched, next), [
+    ['sync_call', 'removed', '跨文件移除', true], ['reference', 'added', '新增回调引用', true],
+  ]);
+});
+
+test('local AST call graph caps seeds and unchanged internal participants', () => {
+  const file = 'api/service.ts';
+  const bodyChanges = Array.from({length: 14}, (_, i) => symbol(`changed${i}`));
+  const siblings = Array.from({length: 7}, (_, i) => symbol(`helper${i}`, file, 3 + 2 * i));
+  const old = symbol('submit', file, 1, 'submit(value: string)');
+  const next = symbol('submit', file, 1, 'submit(value: number)');
+  const siblingSource = siblings.map(({name}) => `function ${name}() {\n  return 1; }`).join('\n');
+  const diff = computeAstCallGraphDiff({
+    beforeIndex: index([...bodyChanges, ...siblings, old], siblings.map(target => call(old, target))),
+    afterIndex: index([...bodyChanges, ...siblings, next], siblings.map(target => call(next, target))),
+    beforeSnapshotId: 'before', afterSnapshotId: 'after', changedFiles: [file, ...bodyChanges.map(sym => sym.file)],
+    beforeSources: new Map([[file, 'function submit(value: string) {\n  return 1; }\n' + siblingSource]]),
+    afterSources: new Map([[file, 'function submit(value: number) {\n  return 1; }\n' + siblingSource]]),
+  })!;
+  assert.equal(diff.path.counts.modified_nodes, 14);
+  assert.equal(diff.path.entry_symbol, 'submit');
+  assert.equal(diff.path.participants.filter(node => node.status === 'unchanged').length, 6);
+  assert.equal(diff.path.edges.length, 6);
+  assert.equal(diff.omitted_changes, 1);
+  assert.equal(diff.omitted_neighbors, 0);
+});
 
 test('structure diff aligns symbols and call edges across line drift and reports untouched callers of changed contracts', () => {
   const file = 'api/service.ts';
@@ -158,6 +344,22 @@ function snapshot(result: AnalysisResult, hashes: Record<string, string>): Snaps
 }
 
 const feature = {feature_id: 'submit', feature_label: '提交', scenario_id: 'submit.overview'};
+
+test('walkthrough editor lines track their own snapshot and exclude callsite evidence', () => {
+  const before = walkthrough('old', [{to: 'save'}]);
+  const generated = walkthrough('new', [{to: 'save'}]);
+  const after: AnalysisResult = {...generated, evidence: generated.evidence.map(item => item.evidence_id === 'new-def-save'
+    ? {...item, role: 'callsite', line_start: 10, line_end: 10}
+    : {...item, line_start: 6, line_end: 7})};
+  const [walk] = computeWalkthroughDiff({...feature, before, after,
+    beforeSnapshot: snapshot(before, {entry: 'old-entry', save: 'old-save'}),
+    afterSnapshot: snapshot(after, {entry: 'new-entry', save: 'new-save'}),
+  }).paths;
+  assert.deepEqual(walk.participants.map(node => [node.symbol, node.before_editor_line, node.after_editor_line]), [
+    ['entry', 1, 6], ['save', 1, undefined],
+  ]);
+  assert.equal(walk.participants.find(node => node.symbol === 'save')?.after_line, 10);
+});
 
 test('walkthrough aligns regenerated IDs and uses LCS through inserted and deleted steps and repeated calls', () => {
   const before = walkthrough('old', [{to: 'validate'}, {to: 'obsolete'}, {to: 'save', condition: 'ready'}, {to: 'validate'}]);
@@ -367,6 +569,12 @@ test('task HUD connects pre-change impact and saved walkthroughs to their own fr
     task_id: task.task_id, expected_version: task.version, submission_key: 'done', status: 'completed',
   });
   const after = service.store.get<Snapshot>('snapshot', finished.end_state!.snapshot_id);
+  const immediate = await service.taskHud(task.task_id);
+  assert.deepEqual(immediate.walkthrough_diffs, []);
+  const ast = immediate.ast_call_graph!;
+  assert.deepEqual([ast.before_snapshot_id, ast.after_snapshot_id], [before.source_snapshot_id, after.source_snapshot_id]);
+  assert.deepEqual(ast.path.participants.map(node => [node.symbol, node.status]), [['sample', 'modified'], ['consumer', 'unchanged']]);
+  assert.equal(ast.path.edges[0].after_label, '未同步调用');
 
   const later = await service.engineering.createTask({
     project_id: project.project_id, goal: '再次调整测量', scope: [header], submission_key: 'hud-task-b',
@@ -411,6 +619,7 @@ test('task HUD connects pre-change impact and saved walkthroughs to their own fr
   assert.equal(featureWithoutGraph.has_call_graph, false);
   assert.equal(review.walkthrough_diffs.some(diff => diff.scenario_id === graphless.scenario_id), false);
   assert.equal(review.structure_diff, undefined);
+  assert.equal(review.ast_call_graph, undefined);
 });
 
 async function fixture(t: TestContext) {

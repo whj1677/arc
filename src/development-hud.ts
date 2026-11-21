@@ -133,6 +133,8 @@ export interface WalkthroughDiffNode {
   after_node_id?: string;
   before_line?: number;
   after_line?: number;
+  before_editor_line?: number;
+  after_editor_line?: number;
   before_signature?: string | null;
   after_signature?: string | null;
   code_changed: boolean;
@@ -143,7 +145,7 @@ export interface WalkthroughDiffEdge {
   status: Exclude<DiffStatus, 'modified'>;
   from_key: string;
   to_key: string;
-  kind: 'sync_call' | 'execution_boundary';
+  kind: 'sync_call' | 'execution_boundary' | 'reference';
   before_label?: string;
   after_label?: string;
   ast_confirmed: boolean;
@@ -211,11 +213,20 @@ export interface WalkthroughDiff {
   paths: WalkthroughPathDiff[];
 }
 
+export interface AstCallGraphDiff {
+  before_snapshot_id: string;
+  after_snapshot_id: string;
+  path: WalkthroughPathDiff;
+  omitted_changes: number;
+  omitted_neighbors: number;
+}
+
 export interface TaskHudSnapshot {
   task_id: string;
   version: number;
   impact: TaskHudImpact;
   structure_diff?: TaskHudStructureDiff;
+  ast_call_graph?: AstCallGraphDiff;
   walkthrough_diffs: WalkthroughDiff[];
   impacted_features: HudImpactedFeature[];
 }
@@ -409,11 +420,185 @@ function symbolKey(file: string | null, symbol: string) {
 }
 
 function stripComments(code: string, file: string) {
+  if (file.endsWith('.py')) {
+    // Keep indentation and line breaks outside comments, and leave string contents intact.
+    const parts = /("""(?:\\[\s\S]|(?!""")[^\\])*"""|'''(?:\\[\s\S]|(?!''')[^\\])*'''|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*')|^[ \t\f]*(?:#[^\n]*)?(?:\n|$)|[ \t\f]+(?=#|$)|#[^\n]*/gm;
+    return code.replace(parts, (_, literal?: string) => literal ?? '').trimEnd();
+  }
   // Collapse comments and whitespace together while preserving quoted text.
-  const parts = file.endsWith('.py')
-    ? /("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*')|(?:#[^\r\n]*|\s)+/g
-    : /("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`)|(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|\s)+/g;
+  const parts = /("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`)|(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|\s)+/g;
   return code.replace(parts, (_, literal?: string) => literal ?? ' ').trim();
+}
+
+function symbolBody(symbol: CodeSymbol, lines: readonly string[] | undefined) {
+  if (lines) return stripComments(lines.slice(symbol.start_line - 1, symbol.end_line).join('\n'), symbol.file);
+}
+
+function callableGroups(index: CodeIndex) {
+  const groups = new Map<string, CodeSymbol[]>();
+  for (const symbol of index.symbols) {
+    if (symbol.kind === 'class' || symbol.kind === 'struct' || symbol.kind === 'interface') continue;
+    const key = symbolKey(symbol.file, symbol.qualified_name);
+    const group = groups.get(key);
+    if (group) group.push(symbol);
+    else groups.set(key, [symbol]);
+  }
+  return groups;
+}
+
+function callableSymbols(groups: ReturnType<typeof callableGroups>, other: ReturnType<typeof callableGroups>) {
+  const symbols = new Map<string, CodeSymbol>();
+  const keys = new Map<string, string>();
+  for (const [name, group] of groups) {
+    const overloaded = group.length > 1 || (other.get(name)?.length ?? 0) > 1;
+    for (const symbol of group) {
+      const key = overloaded ? name + '::' + normalizeSignature(symbol) : name;
+      keys.set(symbol.id, key);
+      const current = symbols.get(key);
+      if (!current || (!current.has_body && symbol.has_body)) symbols.set(key, symbol);
+    }
+  }
+  return { symbols, keys };
+}
+
+function callGraphEdges(index: CodeIndex, keys: ReadonlyMap<string, string>, contractChanges: ReadonlySet<string>) {
+  type Edge = Pick<WalkthroughDiffEdge, 'from_key' | 'to_key' | 'kind' | 'ast_confirmed'>;
+  const pairs = new Map<string, Edge>();
+  for (const call of index.calls) {
+    const from = keys.get(call.caller_id);
+    if (!from) continue;
+    for (const id of call.target_ids) {
+      const to = keys.get(id);
+      if (!to || from === to || (call.target_ids.length !== 1 && !contractChanges.has(to))) continue;
+      const key = from + '->' + to;
+      const edge = pairs.get(key);
+      const kind = call.syntax === 'reference' ? 'reference' : 'sync_call';
+      const ast_confirmed = call.target_ids.length === 1;
+      if (!edge || (edge.kind === 'reference' && kind === 'sync_call') ||
+          (edge.kind === kind && ast_confirmed && !edge.ast_confirmed)) {
+        pairs.set(key, { from_key: from, to_key: to, kind, ast_confirmed });
+      }
+    }
+  }
+  return new Map([...pairs].map(([key, edge]) => [edge.kind === 'reference' ? key + ':reference' : key, edge]));
+}
+
+export function computeAstCallGraphDiff(options: {
+  beforeIndex: CodeIndex;
+  afterIndex: CodeIndex;
+  beforeSnapshotId: string;
+  afterSnapshotId: string;
+  changedFiles: readonly string[];
+  beforeSources?: ReadonlyMap<string, string>;
+  afterSources?: ReadonlyMap<string, string>;
+}): AstCallGraphDiff | undefined {
+  const changed = new Set(options.changedFiles.map(file => file.replaceAll('\\', '/')));
+  if (!changed.size) return;
+
+  const beforeGroups = callableGroups(options.beforeIndex), afterGroups = callableGroups(options.afterIndex);
+  const before = callableSymbols(beforeGroups, afterGroups), after = callableSymbols(afterGroups, beforeGroups);
+  const symbols = new Map([...before.symbols, ...after.symbols]);
+  const sourceLines = (sources?: ReadonlyMap<string, string>) => new Map([...sources ?? []]
+    .filter(([file]) => changed.has(file)).map(([file, source]) => [file, source.split(/\r\n|\n|\r/)]));
+  const beforeLines = sourceLines(options.beforeSources), afterLines = sourceLines(options.afterSources);
+  const statuses = new Map<string, DiffStatus>();
+  const contractChanges = new Set<string>();
+  const prioritySeeds: string[] = [], bodySeeds: string[] = [];
+  for (const [key, symbol] of symbols) {
+    if (!changed.has(symbol.file)) continue;
+    const old = before.symbols.get(key), next = after.symbols.get(key);
+    const signatureChanged = !!old && !!next && normalizeSignature(old) !== normalizeSignature(next);
+    if (!next || signatureChanged) contractChanges.add(key);
+    if (!old || !next || signatureChanged) {
+      statuses.set(key, !old ? 'added' : !next ? 'removed' : 'modified');
+      prioritySeeds.push(key);
+      continue;
+    }
+    const oldBody = symbolBody(old, beforeLines.get(symbol.file));
+    if (oldBody !== undefined && oldBody === symbolBody(next, afterLines.get(symbol.file))) {
+      statuses.set(key, 'unchanged');
+    } else {
+      statuses.set(key, 'modified');
+      bodySeeds.push(key);
+    }
+  }
+  const seeds = [...prioritySeeds, ...bodySeeds].slice(0, 14);
+  if (!seeds.length) return;
+  const selectedSeeds = new Set(seeds);
+
+  const beforeEdges = callGraphEdges(options.beforeIndex, before.keys, contractChanges);
+  const afterEdges = callGraphEdges(options.afterIndex, after.keys, contractChanges);
+  const allEdges = new Map([...beforeEdges, ...afterEdges]);
+  const internal = new Set<string>();
+  const external = new Map<string, number>();
+  for (const [key, { from_key: from, to_key: to }] of allEdges) {
+    const fromSeed = selectedSeeds.has(from), toSeed = selectedSeeds.has(to);
+    if (fromSeed === toSeed) continue;
+    const neighbor = fromSeed ? to : from;
+    if (changed.has(symbols.get(neighbor)!.file)) {
+      if (internal.size < 6 && statuses.get(neighbor) === 'unchanged') internal.add(neighbor);
+    } else {
+      const edgeChanged = beforeEdges.has(key) !== afterEdges.has(key);
+      const priority = !fromSeed && contractChanges.has(to) ? 0 : edgeChanged ? 1 : 2;
+      external.set(neighbor, Math.min(external.get(neighbor) ?? priority, priority));
+    }
+  }
+  const maxNeighbors = 8;
+  const neighbors = [...external.keys()].sort((a, b) => external.get(a)! - external.get(b)!).slice(0, maxNeighbors);
+  const included = new Set([...seeds, ...internal, ...neighbors]);
+  const participants = [...included].map((key): WalkthroughDiffNode => {
+    const symbol = symbols.get(key)!;
+    const old = before.symbols.get(key), next = after.symbols.get(key);
+    const status = statuses.get(key) ?? 'unchanged';
+    const signature = normalizeSignature(symbol);
+    const description = signature.length > 64 ? signature.slice(0, 63).trimEnd() + '…'
+      : signature || (symbol.public_entry ? '公开入口' : '内部函数');
+    return {
+      key, status, symbol: symbol.qualified_name, label: symbol.name, description, file: symbol.file,
+      before_node_id: undefined, after_node_id: undefined, before_line: old?.start_line, after_line: next?.start_line,
+      before_editor_line: old?.start_line, after_editor_line: next?.start_line,
+      before_signature: old?.signature, after_signature: next?.signature, code_changed: status !== 'unchanged',
+    };
+  });
+
+  const edges: WalkthroughDiffEdge[] = [];
+  const incoming = new Set<string>();
+  for (const [key, { from_key, to_key, kind, ast_confirmed }] of allEdges) {
+    if (!included.has(from_key) || !included.has(to_key)) continue;
+    const fromFile = symbols.get(from_key)!.file;
+    const crossFile = fromFile !== symbols.get(to_key)!.file;
+    const status = !beforeEdges.has(key) ? 'added' : !afterEdges.has(key) ? 'removed' : 'unchanged';
+    const edge: WalkthroughDiffEdge = { key, status, from_key, to_key, kind, ast_confirmed };
+    const reference = kind === 'reference';
+    const action = reference ? '回调引用' : '调用';
+    if (!ast_confirmed) {
+      const label = '候选未同步' + action;
+      if (status === 'removed') edge.before_label = label;
+      else edge.after_label = label;
+    } else if (status === 'added') edge.after_label = crossFile && !reference ? '跨文件新增' : '新增' + action;
+    else if (status === 'removed') edge.before_label = crossFile && !reference ? '跨文件移除' : '移除' + action;
+    else if (!changed.has(fromFile) && contractChanges.has(to_key)) edge.after_label = '未同步' + action;
+    else edge.after_label = crossFile ? '跨文件' + action : action;
+    edges.push(edge);
+    incoming.add(to_key);
+  }
+  const entry = neighbors.find(key => !incoming.has(key)) ?? participants.find(node => !incoming.has(node.key))?.key ?? seeds[0];
+  const count = (rows: { status: DiffStatus }[], status: DiffStatus) => rows.filter(row => row.status === status).length;
+  return {
+    before_snapshot_id: options.beforeSnapshotId,
+    after_snapshot_id: options.afterSnapshotId,
+    omitted_changes: Math.max(0, prioritySeeds.length + bodySeeds.length - seeds.length),
+    omitted_neighbors: external.size - neighbors.length,
+    path: {
+      path_key: entry, label: '本地 AST 调用图', entry_symbol: symbols.get(entry)!.qualified_name,
+      status: 'modified', participants, edges, steps: [],
+      counts: {
+        added_nodes: count(participants, 'added'), removed_nodes: count(participants, 'removed'),
+        modified_nodes: count(participants, 'modified'), added_edges: count(edges, 'added'), removed_edges: count(edges, 'removed'),
+        added_steps: 0, removed_steps: 0, modified_steps: 0, noise_count: 0,
+      },
+    },
+  };
 }
 
 function sourceFacts(snapshot?: Snapshot, index?: CodeIndex, sources?: ReadonlyMap<string, string>) {
@@ -455,8 +640,7 @@ function sourceFacts(snapshot?: Snapshot, index?: CodeIndex, sources?: ReadonlyM
       if (!symbol) return;
       const source = sources?.get(symbol.file);
       if (source === undefined) return;
-      const slice = source.split(/\r\n|\n|\r/).slice(symbol.start_line - 1, symbol.end_line).join('\n');
-      return stripComments(slice, symbol.file);
+      return symbolBody(symbol, source.split(/\r\n|\n|\r/));
     },
   };
 }
@@ -494,12 +678,14 @@ function walkthroughPaths(result: AnalysisResult) {
   const evidence = new Map(result.evidence.map(item => [item.evidence_id, item]));
   const nodes = new Map(result.nodes.filter(node => node.kind === 'function').map(node => {
     const details = node.function_details;
-    const definition = (details && evidence.get(details.definition_evidence_id)) ?? evidence.get(node.evidence_ids[0]);
+    const reference = details && evidence.get(details.definition_evidence_id);
+    const definition = reference ?? evidence.get(node.evidence_ids[0]);
     const file = definition?.path ?? null;
     const symbol = details?.symbol || node.label;
     return [node.node_id, {
       key: symbolKey(file, symbol), file, symbol, label: node.label, description: node.description,
       id: node.node_id, line: definition?.line_start, signature: details?.signature,
+      editorLine: reference?.role === 'definition' || reference?.role === 'declaration' ? reference.line_start : undefined,
     }];
   }));
   return (result.function_walkthroughs ?? []).map(path => {
@@ -549,6 +735,7 @@ function diffNodes(before: Path | undefined, after: Path | undefined, changes: C
     rows.push({
       key, status, symbol: node.symbol, file: node.file, label: node.label, description: node.description,
       before_node_id: old?.id, after_node_id: next?.id, before_line: old?.line, after_line: next?.line,
+      before_editor_line: old?.editorLine, after_editor_line: next?.editorLine,
       before_signature: old?.signature, after_signature: next?.signature, code_changed: changed,
     });
   }
