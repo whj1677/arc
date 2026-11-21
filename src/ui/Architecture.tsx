@@ -17,6 +17,7 @@ interface Props {
   zoom: number;
   search: string;
   taskOverlay?: (TaskArchitectureOverlay & { onClear: () => void; onReturnTask: () => void }) | null;
+  onZoomableChange?: (zoomable: boolean) => void;
 }
 type Node = AnalysisResult['nodes'][number];
 type Edge = AnalysisResult['edges'][number];
@@ -60,10 +61,11 @@ function RoleIcon({ kind }: { kind: Node['kind'] }) {
   </svg>;
 }
 
-export function Architecture({ result, selected, select, inspect, modules, openFile, zoom, search, taskOverlay }: Props) {
+export function Architecture({ result, selected, select, inspect, modules, openFile, zoom, search, taskOverlay, onZoomableChange }: Props) {
   const root = useRef<HTMLElement>(null);
   const [width, setWidth] = useState(820);
   const [view, setView] = useState<'layers' | 'relations' | 'code'>('layers');
+  useEffect(() => { onZoomableChange?.(view === 'layers'); }, [view, onZoomableChange]);
   const [hover, setHover] = useState('');
   const [focusOnly, setFocusOnly] = useState(false);
   const marker = 'arch-' + useId().replace(/:/g, '');

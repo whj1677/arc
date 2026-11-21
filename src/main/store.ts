@@ -26,6 +26,11 @@ export class Store {
     catch(error) { this.db.exec('ROLLBACK'); this.db.close(); throw error; }
   }
   all<T = any>(kind: string): T[] { return this.db.prepare('SELECT json FROM objects WHERE kind=? ORDER BY rowid').all(kind).map((r: any) => JSON.parse(r.json)); }
+  recentProjectExplanations(projectId: string): Explanation[] {
+    return this.db.prepare(`SELECT json FROM objects WHERE kind='explanation'
+      AND json_extract(json,'$.result.binding.project_id')=? ORDER BY rowid DESC LIMIT 10`)
+      .all(projectId).reverse().map(row => JSON.parse(String(row.json)));
+  }
   latestOverview(project: Project): Explanation | undefined {
     if (!project.overview_scenario_id) return;
     const row = this.db.prepare(`SELECT json FROM objects WHERE kind='explanation'

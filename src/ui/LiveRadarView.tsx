@@ -313,6 +313,8 @@ export function LiveRadarView({
 }) {
   const [mode, setMode] = useState<RadarMode>('worktree');
   const [selectedCommit, setSelectedCommit] = useState('');
+  const [focusFile, setFocusFile] = useState('');
+  const [sourceOnly, setSourceOnly] = useState(true);
   const [radar, setRadar] = useState<LiveWorkspaceRadar | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -329,9 +331,10 @@ export function LiveRadarView({
   const seqRef = useRef(0);
   const fingerprintRef = useRef('');
 
-  const loadRadar = useCallback(async (opts?: { nextMode?: RadarMode; nextCommit?: string; force?: boolean }) => {
+  const loadRadar = useCallback(async (opts?: { nextMode?: RadarMode; nextCommit?: string; nextFocusFile?: string; force?: boolean }) => {
     const reqMode = opts?.nextMode ?? mode;
     const reqCommit = opts?.nextCommit !== undefined ? opts.nextCommit : selectedCommit;
+    const reqFocus = opts?.nextFocusFile !== undefined ? opts.nextFocusFile : focusFile;
     const mine = ++seqRef.current;
     setLoading(true);
     setError('');
@@ -340,36 +343,47 @@ export function LiveRadarView({
         project_id: project.project_id,
         mode: reqMode,
         ...(reqMode === 'commit' && reqCommit ? { commit: reqCommit } : {}),
+        ...(reqFocus ? { focus_file: reqFocus } : {}),
         ...(!opts?.force && fingerprintRef.current ? { previous_fingerprint: fingerprintRef.current } : {}),
       });
       if (mine !== seqRef.current) return;
       const changed = value.fingerprint !== fingerprintRef.current;
       fingerprintRef.current = value.fingerprint;
       setRadar(value);
+      if (reqFocus && !value.changed_files.some(f => f.path === reqFocus)) {
+        setFocusFile('');
+      }
       if (reqMode === 'commit' && !reqCommit && value.recent_commits[0]) {
         setSelectedCommit(value.recent_commits[0].sha);
       }
       if (changed) {
         setSelectedTarget(null);
-        setActiveTab(value.ast_call_graph ? 'graph' : 'files');
-        setSelectedFile(prev => (value.changed_files.some(f => f.path === prev) ? prev : value.changed_files[0]?.path ?? ''));
+        if (value.ast_call_graph) {
+          setActiveTab('graph');
+        } else if (!reqFocus) {
+          setActiveTab('files');
+        }
+        const preferred = value.changed_files.find(f => f.is_source) ?? value.changed_files[0];
+        setSelectedFile(prev => (value.changed_files.some(f => f.path === prev) ? prev : preferred?.path ?? ''));
       }
     } catch (e) {
       if (mine === seqRef.current) setError((e as Error).message);
     } finally {
       if (mine === seqRef.current) setLoading(false);
     }
-  }, [project.project_id, mode, selectedCommit]);
+  }, [project.project_id, mode, selectedCommit, focusFile]);
 
   useEffect(() => {
     fingerprintRef.current = '';
     setMode('worktree');
+    setFocusFile('');
+    setSourceOnly(true);
     setRadar(null);
     setSelectedCommit('');
     setSelectedTarget(null);
     setOpenDrawer(null);
     setSelectedFile('');
-    void loadRadar({ nextMode: 'worktree', nextCommit: '', force: true });
+    void loadRadar({ nextMode: 'worktree', nextCommit: '', nextFocusFile: '', force: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.project_id]);
 
@@ -460,13 +474,53 @@ export function LiveRadarView({
     }
   }
 
+  const sourceFiles = useMemo(
+    () => (activeRadar?.changed_files ?? []).filter(f => f.is_source),
+    [activeRadar],
+  );
+  const focusLabels = useMemo(() => {
+    const baseCounts = new Map<string, number>();
+    for (const f of sourceFiles) {
+      const base = shortFile(f.path);
+      baseCounts.set(base, (baseCounts.get(base) ?? 0) + 1);
+    }
+    const twoCounts = new Map<string, number>();
+    for (const f of sourceFiles) {
+      const parts = f.path.split('/');
+      const two = parts.length >= 2 ? parts.slice(-2).join('/') : f.path;
+      twoCounts.set(two, (twoCounts.get(two) ?? 0) + 1);
+    }
+    return new Map(sourceFiles.map(f => {
+      const base = shortFile(f.path);
+      if ((baseCounts.get(base) ?? 0) <= 1) return [f.path, base];
+      const parts = f.path.split('/');
+      const two = parts.length >= 2 ? parts.slice(-2).join('/') : f.path;
+      if ((twoCounts.get(two) ?? 0) <= 1) return [f.path, two];
+      return [f.path, parts.length >= 3 ? parts.slice(-3).join('/') : f.path];
+    }));
+  }, [sourceFiles]);
+  const nonSourceCount = (activeRadar?.changed_files.length ?? 0) - sourceFiles.length;
+  const hasMixedFiles = sourceFiles.length > 0 && nonSourceCount > 0;
+  const visibleChangedFiles = useMemo(() => {
+    const all = activeRadar?.changed_files ?? [];
+    const sorted = [...all].sort((a, b) => Number(!!b.is_source) - Number(!!a.is_source) || a.path.localeCompare(b.path));
+    return hasMixedFiles && sourceOnly ? sorted.filter(f => f.is_source) : sorted;
+  }, [activeRadar, hasMixedFiles, sourceOnly]);
+
   function switchMode(next: RadarMode, commitSha = '') {
     setMode(next);
     setSelectedCommit(commitSha);
+    setFocusFile('');
     fingerprintRef.current = '';
     setSelectedTarget(null);
     setOpenDrawer(null);
-    void loadRadar({ nextMode: next, nextCommit: commitSha, force: true });
+    void loadRadar({ nextMode: next, nextCommit: commitSha, nextFocusFile: '', force: true });
+  }
+
+  function selectFocusFile(nextFile: string) {
+    setFocusFile(nextFile);
+    setSelectedTarget(null);
+    void loadRadar({ nextFocusFile: nextFile });
   }
 
   return (
@@ -478,8 +532,18 @@ export function LiveRadarView({
             <i className={`hud-dot ${activeRadar?.changed_files.length ? 'pulse' : 'ok'}`} />
             <h2>变更雷达</h2>
             {radar?.branch && <span className="radar-branch-chip">{radar.branch}</span>}
+            {radar?.git_subpath && (
+              <span className="radar-speed-chip" title={`检测到嵌套 Git 仓库：${radar.git_subpath}`}>
+                子仓库 · {radar.git_subpath}
+              </span>
+            )}
+            {radar?.source === 'snapshot' && (
+              <span className="radar-branch-chip" title="非 Git 目录：实时对比 ARC 基准快照与当前工作区">
+                基准快照对比
+              </span>
+            )}
             {activeRadar && (
-              <span className="radar-speed-chip" title="纯本地 Git + 增量 AST 计算耗时（零 LLM 等待）">
+              <span className="radar-speed-chip" title="纯本地增量 AST 计算耗时（零 LLM 等待）">
                 {activeRadar.computed_ms} ms{activeRadar.cache_hit ? ' · 缓存' : ' · 本地 AST'}
               </span>
             )}
@@ -490,23 +554,25 @@ export function LiveRadarView({
         </div>
 
         <div className="radar-header-controls">
-          <div className="hud-segmented" role="group" aria-label="对比范围">
-            <button
-              type="button"
-              aria-pressed={mode === 'worktree'}
-              onClick={() => switchMode('worktree')}
-            >
-              工作区未提交
-            </button>
-            <button
-              type="button"
-              aria-pressed={mode === 'commit'}
-              disabled={!radar?.recent_commits.length}
-              onClick={() => switchMode('commit', selectedCommit || radar?.recent_commits[0]?.sha || '')}
-            >
-              提交记录
-            </button>
-          </div>
+          {radar?.source !== 'snapshot' && (
+            <div className="hud-segmented" role="group" aria-label="对比范围">
+              <button
+                type="button"
+                aria-pressed={mode === 'worktree'}
+                onClick={() => switchMode('worktree')}
+              >
+                工作区未提交
+              </button>
+              <button
+                type="button"
+                aria-pressed={mode === 'commit'}
+                disabled={!radar?.recent_commits.length}
+                onClick={() => switchMode('commit', selectedCommit || radar?.recent_commits[0]?.sha || '')}
+              >
+                提交记录
+              </button>
+            </div>
+          )}
 
           {mode === 'commit' && radar && radar.recent_commits.length > 0 && (
             <select
@@ -546,10 +612,10 @@ export function LiveRadarView({
           <strong>{radar ? '正在切换并对比本地变更…' : '正在建立本机增量 AST 索引…'}</strong>
           <p>首次扫描会缓存基准提交的语法树，之后每次切回窗口仅重析改动文件（约 100–300ms）。</p>
         </section>
-      ) : activeRadar && !activeRadar.is_git ? (
+      ) : activeRadar && !activeRadar.is_git && !activeRadar.snapshot_id ? (
         <section className="radar-empty-card">
-          <strong>当前目录尚未初始化 Git 仓库</strong>
-          <p>变更雷达通过本地 Git 对比工作区与提交历史，无需新建任务即可毫秒级生成调用链与影响面。</p>
+          <strong>当前目录尚未初始化 Git 仓库且尚无基准快照</strong>
+          <p>请先在「工程全貌」刷新一次源码快照，或在工程内初始化 Git 仓库即可启用毫秒级调用链与影响雷达。</p>
         </section>
       ) : activeRadar && activeRadar.changed_files.length === 0 ? (
         <section className="radar-empty-card">
@@ -568,7 +634,11 @@ export function LiveRadarView({
             </>
           ) : (
             <>
-              <strong>当前工作区干净（与 {activeRadar.branch || 'HEAD'} 一致）</strong>
+              <strong>
+                {activeRadar.source === 'snapshot'
+                  ? '当前工作区与 ARC 基准快照一致'
+                  : `当前工作区干净（与 ${activeRadar.branch || 'HEAD'} 一致）`}
+              </strong>
               <p>在 VS Code / Codex / Antigravity 任意修改代码后切回 ARC，这里会自动亮起调用链变化与未同步契约预警。</p>
               {activeRadar.recent_commits[0] && (
                 <div className="radar-empty-actions">
@@ -717,7 +787,7 @@ export function LiveRadarView({
                   <button
                     type="button"
                     aria-pressed={activeTab === 'graph'}
-                    disabled={!astGraph}
+                    disabled={!astGraph && !focusFile}
                     onClick={() => setActiveTab('graph')}
                   >
                     本地 AST 调用图
@@ -747,6 +817,32 @@ export function LiveRadarView({
                 </div>
               )}
             </div>
+
+            {activeTab === 'graph' && (astGraph || focusFile || loading) && sourceFiles.length >= 2 && (
+              <div className="radar-focus-bar" role="group" aria-label="按改动文件聚焦调用图">
+                <span className="radar-focus-label">聚焦文件</span>
+                <button
+                  type="button"
+                  className={`radar-focus-chip${!focusFile ? ' is-active' : ''}`}
+                  aria-pressed={!focusFile}
+                  onClick={() => selectFocusFile('')}
+                >
+                  全部源码 ({sourceFiles.length})
+                </button>
+                {sourceFiles.slice(0, 24).map(f => (
+                  <button
+                    key={f.path}
+                    type="button"
+                    className={`radar-focus-chip${focusFile === f.path ? ' is-active' : ''}`}
+                    aria-pressed={focusFile === f.path}
+                    title={f.path}
+                    onClick={() => selectFocusFile(focusFile === f.path ? '' : f.path)}
+                  >
+                    {focusLabels.get(f.path) ?? shortFile(f.path)}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {activeTab === 'graph' && astGraph ? (
               <div className={`hud-stage${selectedTarget ? ' has-inspector' : ''}`}>
@@ -780,10 +876,55 @@ export function LiveRadarView({
                   />
                 )}
               </div>
+            ) : activeTab === 'graph' && loading ? (
+              <div className="radar-focus-empty">
+                <strong>正在更新调用图视图…</strong>
+                <p>正在复用本机缓存索引计算调用链。</p>
+              </div>
+            ) : activeTab === 'graph' && focusFile ? (
+              <div className="radar-focus-empty">
+                <strong>“{focusLabels.get(focusFile) ?? shortFile(focusFile)}” 仅包含类型定义、常量或注释改动</strong>
+                <p>该文件本次未涉及可调用函数的结构变化，因此本地 AST 调用图为空。</p>
+                <div className="radar-empty-actions">
+                  <button type="button" className="primary" onClick={() => selectFocusFile('')}>
+                    查看全部改动源码 ({sourceFiles.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedFile(focusFile);
+                      setActiveTab('files');
+                    }}
+                  >
+                    查看该文件 Diff
+                  </button>
+                </div>
+              </div>
             ) : (
               <div className="radar-files-split">
                 <aside className="radar-file-list" aria-label="改动文件清单">
-                  {activeRadar.changed_files.map(file => {
+                  {hasMixedFiles && (
+                    <div className="radar-file-filter">
+                      <button
+                        type="button"
+                        aria-pressed={sourceOnly}
+                        onClick={() => {
+                          setSourceOnly(true);
+                          if (!sourceFiles.some(f => f.path === selectedFile) && sourceFiles[0]) setSelectedFile(sourceFiles[0].path);
+                        }}
+                      >
+                        仅源码 ({sourceFiles.length})
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={!sourceOnly}
+                        onClick={() => setSourceOnly(false)}
+                      >
+                        全部 ({activeRadar.changed_files.length})
+                      </button>
+                    </div>
+                  )}
+                  {visibleChangedFiles.map(file => {
                     const active = selectedFile === file.path;
                     const badge = file.status === 'added' ? 'A' : file.status === 'removed' ? 'D' : 'M';
                     return (
@@ -806,6 +947,11 @@ export function LiveRadarView({
                 </aside>
 
                 <div className="radar-file-diff-pane">
+                  {!astGraph && !focusFile && (
+                    <div className="radar-nonsource-note">
+                      本次变动不含可解析源码文件，已自动展示文件清单与差异对比。
+                    </div>
+                  )}
                   {fileDiffLoading ? (
                     <p className="muted" style={{ padding: 16 }}>读取实时文件差异…</p>
                   ) : fileDiffError ? (
@@ -823,10 +969,16 @@ export function LiveRadarView({
                       before={fileDiff.before}
                       after={fileDiff.after}
                       truncated={fileDiff.truncated}
-                      beforeLabel={activeRadar.mode === 'worktree' ? `改前（${activeRadar.branch || 'HEAD'}）` : '父提交'}
+                      beforeLabel={
+                        activeRadar.source === 'snapshot'
+                          ? '改前（ARC 快照）'
+                          : activeRadar.mode === 'worktree'
+                            ? `改前（${activeRadar.branch || 'HEAD'}）`
+                            : '父提交'
+                      }
                       afterLabel={activeRadar.mode === 'worktree' ? '当前工作区' : `提交 ${activeRadar.target_ref.slice(0, 7)}`}
                       closeLabel="返回调用图"
-                      onClose={astGraph ? () => setActiveTab('graph') : undefined}
+                      onClose={astGraph || focusFile ? () => setActiveTab('graph') : undefined}
                     />
                   ) : (
                     <p className="muted" style={{ padding: 16 }}>在左侧选择一个改动文件查看前后对比。</p>

@@ -35,6 +35,7 @@ import { activeRunStatuses, hasFunctionGraphs, readingLimits, terminalRunStatuse
 import { explanationFreshness } from '../freshness';
 import { Store, id, now } from './store';
 import { capture, freshness, readSource, sha } from './snapshot';
+import { pruneUnreferencedSnapshots } from './snapshot-gc';
 import { getCodeIndex } from './code-index';
 import { codeIndexSummary } from './code-index-query';
 import { locate, setDefaultExecutableOverrides } from './executables';
@@ -52,8 +53,7 @@ import { parseDshReply } from './dsh';
 import { runDshWeb } from './dsh-web';
 import { EngineeringService } from './engineering-service';
 import { buildTaskHud, previousFeatureResultId } from './development-hud';
-import type { RadarMode } from '../live-radar';
-import { buildLiveWorkspaceRadar, liveWorkspaceImpact, openLiveWorkspaceFile, readLiveFileDiff, type FileDiffOptions } from './live-radar';
+import { buildLiveWorkspaceRadar, liveWorkspaceImpact, openLiveWorkspaceFile, readLiveFileDiff, type FileDiffOptions, type RadarOptions } from './live-radar';
 import { DevelopmentService } from './development-service';
 import { ReadingService } from './reading-service';
 import { WalkthroughRefreshCoordinator } from './walkthrough-refresh';
@@ -105,6 +105,7 @@ export class ArcService {
   private readonly walkthroughs: WalkthroughRefreshCoordinator;
   private readonly featureRefreshes = new Map<string, {refreshing: boolean; error?: string}>();
   private readonly overviews: OverviewOrchestrator;
+  private readonly snapshotCleanup: Promise<void>;
 
   constructor(
     readonly directory: string,
@@ -114,6 +115,8 @@ export class ArcService {
     private readonly dshRunner: typeof runDshWeb = runDshWeb,
   ) {
     this.store = new Store(directory);
+    this.snapshotCleanup = pruneUnreferencedSnapshots(directory, this.store)
+      .catch(error => console.warn('无法完成未引用快照清理', error));
     this.syncToolPathOverrides();
     this.engineering = new EngineeringService(this.store, type => this.emit({type:type??'changed'}));
     this.engineering.onTaskFinished = task => {
@@ -921,12 +924,12 @@ export class ArcService {
       (task, scenario) => this.featureRefreshState(task, scenario));
   }
 
-  liveRadar(projectId: string, options?: { mode?: RadarMode; commit?: string; previousFingerprint?: string }) {
-    return buildLiveWorkspaceRadar(this.store, projectId, options);
+  liveRadar(projectId: string, options?: RadarOptions) {
+    return buildLiveWorkspaceRadar(this.store, this.directory, projectId, options);
   }
 
   liveFileDiff(projectId: string, options: FileDiffOptions) {
-    return readLiveFileDiff(this.store, projectId, options);
+    return readLiveFileDiff(this.store, this.directory, projectId, options);
   }
 
   openLiveFile(projectId: string, file: string, line: number | undefined, editor: SourceEditor,
@@ -935,7 +938,7 @@ export class ArcService {
   }
 
   liveImpact(projectId: string, files: string[]) {
-    return liveWorkspaceImpact(this.store, this.store.get<Project>('project', projectId), files);
+    return liveWorkspaceImpact(this.store, this.directory, this.store.get<Project>('project', projectId), files);
   }
 
   async refreshFeatureWalkthrough(taskId: string, scenarioId: string, submissionKey: string,
@@ -1541,6 +1544,7 @@ export class ArcService {
     await this.overviews.waitQueue();
     clearTimeout(timer);
     await this.walkthroughs.shutdown();
+    await this.snapshotCleanup;
     await Promise.allSettled(this.checkingFreshness.values());
     while (this.indexing.size) await new Promise(resolve => setTimeout(resolve, 20));
     setDefaultExecutableOverrides({});

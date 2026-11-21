@@ -15,15 +15,20 @@ export interface RadarChangedFile {
   staged?: boolean;
   unstaged?: boolean;
   binary?: boolean;
+  is_source?: boolean;
 }
 
 export interface LiveWorkspaceRadar {
   project_id: string;
   workspace_path: string;
+  source: 'git' | 'snapshot';
   is_git: boolean;
+  git_subpath?: string;
+  snapshot_id?: string;
   branch: string | null;
   head_sha: string | null;
   mode: RadarMode;
+  focus_file?: string;
   base_ref: string;
   target_ref: string;
   fingerprint: string;

@@ -6,6 +6,7 @@ import {execFileSync} from 'node:child_process';
 import {DatabaseSync} from 'node:sqlite';
 import {Store} from '../src/main/store';
 import {capture,readSource} from '../src/main/snapshot';
+import {pruneUnreferencedSnapshots} from '../src/main/snapshot-gc';
 import {EngineeringService} from '../src/main/engineering-service';
 import {effectiveTaskBoundaries} from '../src/task-boundaries';
 import {requirementPrompt} from '../src/main/dsh-development';
@@ -40,6 +41,8 @@ test('project materials keep one effective full revision through scans and resta
     assert.ok(first.entries.some(e=>e.key==='initial:architecture'&&e.text.includes('尚未取得工程全貌分析')));
     const body='# 构建说明\n\n| 阶段 | 命令 |\n| --- | --- |\n| 测试 | `npm test` |\n\n```sh\nnpm test\n```\n\n[说明](https://example.com)\n'+('完整说明。'.repeat(400));
     const edited=await f.service.saveEntry({project_id:'p',category:'build',entry_id:source.entry_id,key:'编译说明',text:body,expected_version:source.version,submission_key:'edit-build'},'user');
+    const bySource=await f.service.context({project_id:'p',query:'PACKAGE.JSON'});
+    assert.ok(bySource.entries.some(e=>e.entry_id===edited.entry_id));
     const rule=await f.service.saveEntry({project_id:'p',category:'rule',key:'工程边界',text:'只修改获准文件；历史验证不能证明当前代码通过。',expected_version:0,submission_key:'new-rule'},'user');
     await f.service.saveEntry({project_id:'p',category:'issue',key:'已知问题',text:'硬件兼容性尚未验证。',expected_version:0,submission_key:'new-issue'},'user');
     const own=await f.service.createTask({project_id:'p',goal:'current task',submission_key:'own'}),other=await f.service.createTask({project_id:'p',goal:'other task',submission_key:'other'});
@@ -102,6 +105,53 @@ test('cached project pages reuse both SQLite records and a fresh check still rea
     await f.service.context({project_id:'p',cached:true});
     assert.equal(capture.mock.callCount(),2);assert.equal(scan.mock.callCount(),2);
   }finally{await f.cleanup();}
+});
+
+test('execution pagination checks the worktree once and recreates a missing frozen directory',async t=>{
+  const f=await fixture();
+  try{
+    const task=await f.service.createTask({project_id:'p',goal:'read materials',submission_key:'pages'});
+    const context=await f.service.context({project_id:'p'});
+    for(let i=0;i<81;i++){
+      const entry={...context.entries[0],entry_id:'page-'+i,key:'page-'+i};
+      f.store.put('engineering_context',entry.entry_id,entry);
+    }
+    const capture=t.mock.method(f.service,'captureState');
+    const full=await f.service.executionContext('p',task.task_id);
+    assert.ok(full.entries.length>80);
+    assert.equal(capture.mock.callCount(),1);
+    assert.equal(full.code_state.snapshot_id,context.code_state.snapshot_id);
+    await fs.rm(path.join(f.store.directory,'snapshots',full.code_state.snapshot_id),{recursive:true});
+    const repaired=await f.service.captureState('p');
+    assert.notEqual(repaired.snapshot_id,full.code_state.snapshot_id);
+    assert.equal(repaired.fingerprint,full.code_state.fingerprint);
+    assert.ok((await readSource(f.store.directory,f.store.get('snapshot',repaired.snapshot_id),'sum.js')).text);
+  }finally{await f.cleanup();}
+});
+
+test('snapshot pruning protects nested references, historical versions and both ten-minute grace periods',async()=>{
+  const temp=path.resolve('.test-data');await fs.mkdir(temp,{recursive:true});
+  const directory=await fs.mkdtemp(path.join(temp,'snapshot-gc-')),store=new Store(directory);
+  try{
+    const root=path.join(directory,'snapshots'),old=new Date(Date.now()-20*60_000);
+    await fs.mkdir(root);
+    const names=['source-task','source-version','source-attempt','source-new-row','source-new-dir','source-garbage','source-no-row'];
+    for(const name of names){
+      const dir=path.join(root,name);
+      await fs.mkdir(dir);
+      if(name!=='source-new-dir')await fs.utimes(dir,old,old);
+      if(name!=='source-no-row')store.put('snapshot',name,{source_snapshot_id:name,captured_at:name==='source-new-row'?new Date():old});
+    }
+    store.put('engineering_task','gc-task',{verification:[{code_state:{snapshot_id:'source-task'}}]});
+    store.putVersion('engineering_context','gc-context',1,{sources:[{snapshot_id:'source-version'}]});
+    store.putVersion('engineering_context','gc-context',2,{sources:[]});
+    store.put('development_attempt','gc-attempt',{baseline:{snapshot_id:'source-attempt'}});
+    await pruneUnreferencedSnapshots(directory,store);
+    const remaining=await fs.readdir(root);
+    for(const name of names.slice(0,5)){assert.ok(remaining.includes(name));assert.ok(store.maybe('snapshot',name));}
+    assert.ok(!remaining.includes('source-no-row')&&!remaining.includes('source-garbage'));
+    assert.equal(store.maybe('snapshot','source-garbage'),null);
+  }finally{store.close();await fs.rm(directory,{recursive:true,force:true});}
 });
 
 test('initial boundaries are normalized, persisted and included in the first analysis prompt',async()=>{

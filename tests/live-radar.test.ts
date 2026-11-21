@@ -8,8 +8,12 @@ import Parser from 'web-tree-sitter';
 import { assembleCodeIndex, parseSourceUnit } from '../src/main/code-index';
 import { locate } from '../src/main/executables';
 import { buildLiveWorkspaceRadar, readLiveFileDiff } from '../src/main/live-radar';
+import { previewLimit } from '../src/main/live-radar-git';
+import { snapshotPreview } from '../src/main/live-radar-snapshot';
 import { ArcMcpBridge, bridgeTools } from '../src/main/mcp-bridge';
 import { ArcService } from '../src/main/service';
+import { sha } from '../src/main/snapshot';
+import type { Snapshot } from '../src/shared';
 
 const exec = promisify(execFile);
 const original = 'export function submit(value: string) { return value; }\n';
@@ -28,7 +32,7 @@ test('a cached caller can resolve a new target without changing previous indexes
   assert.deepEqual(client.calls[0].target_ids, []);
 });
 
-async function fixture(t: TestContext, initial = true) {
+async function fixture(t: TestContext, initial = true, layout: 'git' | 'nested' | 'plain' = 'git') {
   const temporary = path.resolve('.test-data');
   await fs.mkdir(temporary, { recursive: true });
   const directory = await fs.mkdtemp(path.join(temporary, 'live-radar-'));
@@ -39,11 +43,21 @@ async function fixture(t: TestContext, initial = true) {
     arc.store.close();
     await fs.rm(directory, { recursive: true, force: true });
   });
-  await fs.mkdir(root);
+  const repo = layout === 'nested' ? path.join(root, 'sub') : root;
+  await fs.mkdir(repo, {recursive: true});
+  if (layout !== 'git') {
+    // Keep Git discovery from crossing the fixture boundary into the ARC checkout.
+    const previous = process.env.GIT_CEILING_DIRECTORIES;
+    process.env.GIT_CEILING_DIRECTORIES = directory;
+    t.after(() => {
+      if (previous === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+      else process.env.GIT_CEILING_DIRECTORIES = previous;
+    });
+  }
   const program = await locate('git');
-  const git = async (...args: string[]) => (await exec(program, ['-C', root, ...args], { windowsHide: true })).stdout.trim();
+  const git = async (...args: string[]) => (await exec(program, ['-C', repo, ...args], { windowsHide: true })).stdout.trim();
   const write = async (file: string, content: string | Buffer) => {
-    const destination = path.join(root, file);
+    const destination = path.join(repo, file);
     await fs.mkdir(path.dirname(destination), { recursive: true });
     await fs.writeFile(destination, content);
   };
@@ -55,21 +69,22 @@ async function fixture(t: TestContext, initial = true) {
     await git('update-ref', 'HEAD', revision);
     return revision;
   }
-  await git('init', '-b', 'radar');
-  await git('config', 'core.autocrlf', 'false');
+  if (layout !== 'plain') {
+    await git('init', '-b', 'radar');
+    await git('config', 'core.autocrlf', 'false');
+  }
   let head = '';
   if (initial) {
     await write('api.ts', original);
     await write('consumer.ts', consumer);
     await write('old.ts', 'export function obsolete() {}\n');
     await write('.gitignore', 'ignore-me.ts\n');
-    head = await record('Initial API');
+    if (layout !== 'plain') head = await record('Initial API');
   }
   const project = await arc.openProject(root);
-  const radar = (options?: Parameters<typeof buildLiveWorkspaceRadar>[2]) =>
-    buildLiveWorkspaceRadar(arc.store, project.project_id, options);
+  const radar = (options?: Parameters<typeof arc.liveRadar>[1]) => arc.liveRadar(project.project_id, options);
   const diff = (file: string, base_ref = 'HEAD', target_ref = 'WORKTREE') =>
-    readLiveFileDiff(arc.store, project.project_id, { path: file, base_ref, target_ref });
+    arc.liveFileDiff(project.project_id, { path: file, base_ref, target_ref });
   return { root, arc, project, write, git, record, head, radar, diff };
 }
 
@@ -221,26 +236,180 @@ test('fingerprinted previews reject changed files, newly dirty callers and super
   await assert.rejects(preview('api.ts'), /雷达快照已过期/);
 });
 
-test('a non-Git project returns a clean empty radar', async t => {
-  const { root, arc } = await fixture(t, false);
-  const directory = path.dirname(root);
-  const plain = path.join(directory, 'plain');
-  await fs.mkdir(plain);
-  // Isolate the temporary fixture from the enclosing ARC checkout.
-  const originalCeiling = process.env.GIT_CEILING_DIRECTORIES;
-  process.env.GIT_CEILING_DIRECTORIES = directory;
-  try {
-    const project = await arc.openProject(plain);
-    const result = await arc.liveRadar(project.project_id);
-    assert.equal(result.is_git, false);
-    assert.equal(result.head_sha, null);
-    assert.deepEqual(result.changed_files, []);
-    assert.deepEqual(result.recent_commits, []);
-    assert.deepEqual(result.impact.scope_files, []);
-  } finally {
-    if (originalCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
-    else process.env.GIT_CEILING_DIRECTORIES = originalCeiling;
+test('a non-Git project without a saved snapshot returns a clean empty radar', async t => {
+  const { arc, project, radar } = await fixture(t, true, 'plain');
+  arc.store.put('project', project.project_id, {...project, snapshot_id: undefined});
+  const result = await radar();
+  assert.equal(result.source, 'snapshot');
+  assert.equal(result.is_git, false);
+  assert.equal(result.head_sha, null);
+  assert.deepEqual(result.changed_files, []);
+  assert.deepEqual(result.recent_commits, []);
+  assert.deepEqual(result.impact.scope_files, []);
+});
+
+test('a single child Git repository reports project-relative paths through radar, preview and open', async t => {
+  const { root, arc, project, write, radar } = await fixture(t, true, 'nested');
+  await fs.mkdir(path.join(root, '.tools-hidden'));
+  await fs.mkdir(path.join(root, 'node_modules'));
+  await write('api.ts', revised);
+  const scan = await radar({ focus_file: 'sub/api.ts' });
+  assert.equal(scan.source, 'git');
+  assert.equal(scan.is_git, true);
+  assert.equal(scan.git_subpath, 'sub');
+  assert.deepEqual(scan.changed_files.map(f => [f.path, f.is_source]), [['sub/api.ts', true]]);
+  assert.deepEqual(scan.structure_diff?.signature_changed_symbols[0]?.unupdated_external_callers?.map(c => c.caller_file), ['sub/consumer.ts']);
+  assert.deepEqual(scan.ast_call_graph?.path.participants.map(p => p.file).sort(), ['sub/api.ts', 'sub/consumer.ts']);
+  assert.deepEqual(scan.impact.scope_files, ['sub/api.ts']);
+  assert.deepEqual(scan.impact.external_callers.map(c => c.caller_file), ['sub/consumer.ts']);
+  const pair = await arc.liveFileDiff(project.project_id, {
+    base_ref: scan.base_ref, target_ref: scan.target_ref, path: 'sub/api.ts', fingerprint: scan.fingerprint,
+  });
+  assert.deepEqual([pair.path, pair.before, pair.after], ['sub/api.ts', original, revised]);
+  await assert.rejects(arc.liveFileDiff(project.project_id, {base_ref: scan.base_ref, target_ref: 'WORKTREE', path: 'api.ts'}));
+  const opened: string[] = [];
+  const openPath = async (file: string) => { opened.push(file); return ''; };
+  await arc.openLiveFile(project.project_id, 'sub/api.ts', 1, 'default', openPath);
+  await write('ignore-me.ts', 'excluded');
+  await assert.rejects(arc.openLiveFile(project.project_id, 'sub/ignore-me.ts', 1, 'default', openPath));
+  assert.deepEqual(opened, [await fs.realpath(path.join(root, 'sub/api.ts'))]);
+});
+
+test('a visible source file beside a nested Git repository keeps the radar in snapshot mode', async t => {
+  const { root, radar } = await fixture(t, true, 'nested');
+  await fs.writeFile(path.join(root, 'main.c'), 'int main(void) { return 0; }\n');
+  const scan = await radar();
+  assert.equal(scan.source, 'snapshot');
+  assert.equal(scan.is_git, false);
+  assert.equal(scan.git_subpath, undefined);
+  assert.deepEqual(scan.changed_files.map(f => [f.path, f.status]), [['main.c', 'added']]);
+});
+
+test('a non-Git radar compares frozen bytes with the live tree, including same-size edits', async t => {
+  const { root, arc, project, write, radar } = await fixture(t, true, 'plain');
+  const edited = original.replace('value: string', 'value: number');
+  await write('api.ts', edited);
+  await fs.unlink(path.join(root, 'old.ts'));
+  await write('notes.txt', 'added');
+  await write('.env', 'excluded');
+  await write('generated/CMakeCache.txt', 'generated directory');
+  await write('generated/api.ts', revised);
+  const scan = await radar();
+  assert.equal(scan.source, 'snapshot');
+  assert.equal(scan.is_git, false);
+  assert.equal(scan.snapshot_id, project.snapshot_id);
+  assert.deepEqual([scan.base_ref, scan.target_ref], ['SNAPSHOT', 'WORKTREE']);
+  assert.deepEqual(scan.changed_files.map(f => [f.path, f.status, f.is_source]), [
+    ['api.ts', 'modified', true], ['notes.txt', 'added', false], ['old.ts', 'removed', true],
+  ]);
+  assert.deepEqual(scan.structure_diff?.removed_symbols.map(s => s.symbol), ['obsolete']);
+  assert.deepEqual(scan.structure_diff?.signature_changed_symbols.map(s => s.symbol), ['submit']);
+  assert.ok(scan.ast_call_graph?.path.participants.some(p => p.file === 'consumer.ts'));
+  assert.deepEqual(scan.impact.external_callers.map(c => c.caller_file), ['consumer.ts']);
+  const preview = (file: string) => readLiveFileDiff(arc.store, arc.directory, project.project_id, {
+    path: file, base_ref: 'SNAPSHOT', target_ref: 'WORKTREE', fingerprint: scan.fingerprint,
+  });
+  const pair = await preview('api.ts');
+  assert.deepEqual([pair.before, pair.after], [original, edited]);
+  assert.equal((await preview('old.ts')).after, '');
+  assert.equal((await preview('notes.txt')).before, '');
+  const opened: string[] = [];
+  const openPath = async (file: string) => { opened.push(file); return ''; };
+  await arc.openLiveFile(project.project_id, 'api.ts', 1, 'default', openPath);
+  await assert.rejects(arc.openLiveFile(project.project_id, 'generated/api.ts', 1, 'default', openPath));
+  assert.deepEqual(opened, [await fs.realpath(path.join(root, 'api.ts'))]);
+});
+
+test('a snapshot preview rejects corruption beyond the preview cap', async t => {
+  const temporary = path.resolve('.test-data');
+  await fs.mkdir(temporary, { recursive: true });
+  const storage = await fs.mkdtemp(path.join(temporary, 'snapshot-preview-'));
+  t.after(() => fs.rm(storage, { recursive: true, force: true }));
+  const file = 'large.txt';
+  const bytes = Buffer.alloc(previewLimit + 2, 'a');
+  const snapshot: Snapshot = {
+    source_snapshot_id: 'source-test', project_id: 'test', captured_at: '', root_path: storage,
+    files: [{ path: file, bytes: bytes.length, content_sha256: sha(bytes), line_count: 1, encoding: 'utf-8' }],
+    excluded: [], fingerprint: '', commit: null, dirty: null, build_config: '', consistency: 'verified',
+  };
+  const directory = path.join(storage, 'snapshots', snapshot.source_snapshot_id);
+  await fs.mkdir(directory, { recursive: true });
+  const blob = path.join(directory, file);
+  await fs.writeFile(blob, bytes);
+  assert.deepEqual(await snapshotPreview(storage, snapshot, file), bytes.subarray(0, previewLimit + 1));
+  bytes[previewLimit + 1] = 0x62;
+  await fs.writeFile(blob, bytes);
+  assert.deepEqual(await snapshotPreview(storage, snapshot, file), { missing: true });
+});
+
+test('a cold scan with only a documentation edit returns project impact without parsing source', async t => {
+  const { arc, project, write, radar } = await fixture(t);
+  arc.store.put('engineering_context', 'docs', {
+    entry_id: 'docs', key: 'Docs', category: 'rule', text: 'Keep documentation current',
+    project_id: project.project_id, status: 'current', sources: [{ path: 'README.md' }],
+  });
+  await write('README.md', '# Instructions');
+  await parseSourceUnit('warm.c', '');
+  const initializes = t.mock.method(Parser.prototype as Parser & { initialize(): void }, 'initialize');
+  const scan = await radar({ focus_file: 'README.md' });
+  assert.equal(scan.focus_file, 'README.md');
+  assert.equal(initializes.mock.callCount(), 0);
+  assert.deepEqual(scan.changed_files.map(f => [f.path, f.is_source]), [['README.md', false]]);
+  assert.equal(scan.structure_diff, undefined);
+  assert.equal(scan.ast_call_graph, undefined);
+  assert.deepEqual(scan.impact.related_constraints.map(c => c.entry_id), ['docs']);
+});
+
+test('a C baseline parses an ambiguous header once and changes grammar only when C++ is introduced', async t => {
+  const { write, radar, record } = await fixture(t, false);
+  const header = 'int read_value(void);\n';
+  await write('value.h', header);
+  await write('value.c', 'int read_value(void) { return 1; }\n');
+  await record('Initial C sources');
+  await write('value.c', 'int read_value(void) { return 2; }\n');
+  await parseSourceUnit('warm.c', '');
+  const initializes = t.mock.method(Parser.prototype as Parser & { initialize(): void }, 'initialize');
+  const initial = await radar();
+  assert.equal(initializes.mock.callCount(), 3);
+  await write('first.cpp', 'int first() { return 1; }\n');
+  const withCpp = await radar({ previousFingerprint: initial.fingerprint });
+  assert.ok(withCpp.structure_diff?.added_symbols.some(s => s.symbol === 'first'));
+  assert.equal(initializes.mock.callCount(), 5);
+});
+
+test('changing focus on the same fingerprint scopes the call graph and reuses both indexes', async t => {
+  const { write, radar } = await fixture(t);
+  await write('api.ts', revised);
+  await write('other.ts', 'export function other() { return 7; }\n');
+  const full = await radar();
+  const initializes = t.mock.method(Parser.prototype as Parser & { initialize(): void }, 'initialize');
+  for (const file of ['other.ts', 'api.ts']) {
+    const scan = await radar({ previousFingerprint: full.fingerprint, focus_file: file });
+    assert.equal(scan.focus_file, file);
+    assert.equal(scan.fingerprint, full.fingerprint);
+    assert.deepEqual(scan.changed_files, full.changed_files);
+    assert.deepEqual(scan.structure_diff, full.structure_diff);
+    assert.deepEqual(scan.ast_call_graph?.path.participants.filter(p => p.code_changed).map(p => p.file), [file]);
   }
+  assert.equal(initializes.mock.callCount(), 0);
+  await assert.rejects(radar({ focus_file: '../outside.ts' }));
+});
+
+test('API focus keeps a caller updated in the same diff out of contract risks', async t => {
+  const { write, radar, record } = await fixture(t, false);
+  await write('api.ts', original);
+  await write('caller.ts', consumer);
+  await record('Initial API and caller');
+  await write('api.ts', revised);
+  await write('caller.ts', consumer.replace('submit("42")', 'submit(42, true)'));
+
+  const scan = await radar({ focus_file: 'api.ts' });
+  assert.equal(scan.focus_file, 'api.ts');
+  assert.deepEqual(scan.structure_diff?.signature_changed_symbols[0]?.unupdated_external_callers, []);
+  const graph = scan.ast_call_graph!.path;
+  const caller = graph.participants.find(p => p.file === 'caller.ts')!;
+  assert.equal(caller.code_changed, true);
+  assert.equal(graph.edges.find(edge => edge.from_key === caller.key)?.after_label, '跨文件调用');
 });
 
 test('commit mode handles unborn history, the root tree and a selected commit independent of live bytes', async t => {
@@ -316,16 +485,16 @@ test('a project opened inside a larger repository has project-relative paths in 
   const nested = await arc.openProject(path.join(root, 'component'));
   await write('component/api.ts', revised);
   await write('private.ts', 'export function unrelated() {}');
-  const local = await buildLiveWorkspaceRadar(arc.store, nested.project_id);
+  const local = await buildLiveWorkspaceRadar(arc.store, arc.directory, nested.project_id);
   assert.deepEqual(local.changed_files.map(f => f.path), ['api.ts']);
   assert.equal(local.structure_diff?.signature_changed_symbols[0]?.symbol, 'submit');
   const second = await record('Update nested and outer APIs', first);
   await write('private.ts', 'export function unrelated() { return 1; }');
   await record('Only update outer APIs', second);
-  const selected = await buildLiveWorkspaceRadar(arc.store, nested.project_id, { mode: 'commit', commit: second });
+  const selected = await buildLiveWorkspaceRadar(arc.store, arc.directory, nested.project_id, { mode: 'commit', commit: second });
   assert.deepEqual(selected.changed_files.map(f => f.path), ['api.ts']);
   assert.deepEqual(selected.recent_commits.map(c => c.sha), [second, first]);
-  const pair = await readLiveFileDiff(arc.store, nested.project_id, {
+  const pair = await readLiveFileDiff(arc.store, arc.directory, nested.project_id, {
     base_ref: selected.base_ref, target_ref: selected.target_ref, path: 'api.ts',
   });
   assert.equal(pair.before, original);

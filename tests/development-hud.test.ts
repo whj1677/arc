@@ -7,6 +7,7 @@ import {ArcService} from '../src/main/service';
 import {ArcMcpBridge} from '../src/main/mcp-bridge';
 import {approvedRequirement} from '../src/task-boundaries';
 import {computeAstCallGraphDiff, computeStructureDiff, computeWalkthroughDiff} from '../src/development-hud';
+import {assembleCodeIndex, parseSourceUnit} from '../src/main/code-index';
 import type {CodeCall, CodeIndex, CodeSymbol} from '../src/main/code-index';
 import type {AnalysisResult, Explanation, Run, Scenario, Snapshot} from '../src/shared';
 
@@ -101,6 +102,51 @@ test('local AST call graph compares callable changes and prioritizes external co
     afterSources: new Map([[file, options.afterSources.get(file)!.replace('return 1;', 'return 2;')]]),
   });
   assert.equal(edited?.path.participants[0].status, 'modified');
+});
+
+test('C diffs ignore local forward declarations and extern imports while tracking header contracts', async () => {
+  const impl = 'worker.c', header = 'worker.h';
+  const definition = 'static int ready(void) { return 1; }';
+  const beforeSources = new Map([[impl, 'static int ready(void);\nextern void notify(void);\n' + definition],
+    [header, 'int read(int value);']]);
+  const afterSources = new Map([[impl, definition], [header, 'long read(int value);']]);
+  const parse = async (sources: Map<string, string>) =>
+    assembleCodeIndex(await Promise.all([...sources].map(([file, code]) => parseSourceUnit(file, code))), 'test', 'test');
+  const beforeIndex = await parse(beforeSources), afterIndex = await parse(afterSources);
+  const changedFiles = [impl, header];
+  const structure = computeStructureDiff(beforeIndex, afterIndex, [], changedFiles);
+  assert.deepEqual(structure.removed_symbols, []);
+  assert.deepEqual(structure.added_symbols, []);
+  assert.deepEqual(structure.signature_changed_symbols.map(s => [s.file, s.symbol]), [[header, 'read']]);
+  const graph = computeAstCallGraphDiff({beforeIndex, afterIndex, beforeSources, afterSources, changedFiles,
+    beforeSnapshotId: 'before', afterSnapshotId: 'after'});
+  assert.deepEqual(graph?.path.participants.map(n => [n.key, n.status]), [[header + '::read', 'modified']]);
+});
+
+test('a C++ implementation file tracks pure virtual method signature changes', async () => {
+  const file = 'reader.cpp';
+  const before = 'struct Reader { virtual int read(int value) = 0; };';
+  const after = before.replace('virtual int', 'virtual long');
+  const beforeIndex = assembleCodeIndex([await parseSourceUnit(file, before)], 'before', 'before');
+  const afterIndex = assembleCodeIndex([await parseSourceUnit(file, after)], 'after', 'after');
+  const changedFiles = [file];
+  const structure = computeStructureDiff(beforeIndex, afterIndex, [], changedFiles);
+  assert.deepEqual(structure.signature_changed_symbols.map(s => [s.symbol, s.kind]), [['Reader::read', 'method']]);
+  const graph = computeAstCallGraphDiff({beforeIndex, afterIndex, changedFiles,
+    beforeSnapshotId: 'before', afterSnapshotId: 'after'});
+  assert.deepEqual(graph?.path.participants.map(n => [n.symbol, n.status]), [['Reader::read', 'modified']]);
+});
+
+test('C header redeclarations share a call graph key across signature changes', () => {
+  const file = 'api.h';
+  const first = {...symbol('read', file, 1, 'int read(int value);'), has_body: false, language: 'c' as const};
+  const definition = {...first, has_body: true, signature: 'int  read(int value)'};
+  assert.deepEqual(computeStructureDiff(index([first]), index([definition]), [], [file]).signature_changed_symbols, []);
+  const second = {...first, id: 'redeclared', signature: 'int read(int);'};
+  const next = {...first, signature: 'long read(int value);'};
+  const graph = computeAstCallGraphDiff({beforeIndex: index([first, second]), afterIndex: index([next]),
+    beforeSnapshotId: 'before', afterSnapshotId: 'after', changedFiles: [file]});
+  assert.deepEqual(graph?.path.participants.map(n => [n.key, n.status]), [[file + '::read', 'modified']]);
 });
 
 test('local AST call graph aligns C++ overloads and routes calls to the edited definition', () => {

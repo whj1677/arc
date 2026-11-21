@@ -1223,7 +1223,7 @@ export function CallChainDiffGraph({
     const externalCallers: WalkthroughDiffNode[] = [];
     const externalCallees: WalkthroughDiffNode[] = [];
     for (const n of externalNodes) {
-      if (callsIntoChanged.has(n.key) || hasOutEdge.has(n.key)) externalCallers.push(n);
+      if (callsIntoChanged.has(n.key)) externalCallers.push(n);
       else externalCallees.push(n);
     }
     externalCallers.sort((a, b) =>
@@ -1345,7 +1345,7 @@ export function CallChainDiffGraph({
     let rightBottom = 0;
     let totalMaxX = centerMaxX + 14;
     if (hasRight) {
-      const rightX = centerMaxX + 126;
+      const rightX = centerMaxX + 162;
       const calleeFiles = new Set(externalCallees.map(n => n.file || '')).size;
       const topY = 12;
       const startY = topY + 34;
@@ -1440,7 +1440,7 @@ export function CallChainDiffGraph({
         const sy = a.y + a.h / 2;
         const tx = b.x - 5;
         const ty = b.y + b.h / 2;
-        const busX = centerMaxX + 26 + (calmLane++ % 4) * 8;
+        const busX = centerMaxX + 14 + (calmLane++ % 5) * 6;
         const r = 7;
         if (Math.abs(sy - ty) < 6) {
           d = `M${sx} ${ty} H${tx}`;
@@ -1448,7 +1448,7 @@ export function CallChainDiffGraph({
           const vDir = ty > sy ? 1 : -1;
           d = `M${sx} ${sy} H${busX - r} Q${busX} ${sy} ${busX} ${sy + vDir * r} V${ty - vDir * r} Q${busX} ${ty} ${busX + r} ${ty} H${tx}`;
         }
-        mx = tx - pw / 2 - 8;
+        mx = Math.max(centerMaxX + 48 + pw / 2, tx - pw / 2 - 8);
         my = ty;
       } else if (a.zone === 'left' && b.zone === 'left') {
         // Internal edge between two external callers: clean orthogonal rail strictly left of cards
@@ -1520,10 +1520,10 @@ export function CallChainDiffGraph({
       }
 
       if (showPill) {
-        for (let attempt = 0; attempt < 4; attempt++) {
-          const clash = placedLabels.some(p => Math.abs(p.x - mx) < (p.w + pw) * 0.48 && Math.abs(p.y - my) < pillH + 3);
+        for (let attempt = 0; attempt < 8; attempt++) {
+          const clash = placedLabels.some(p => Math.abs(p.x - mx) < (p.w + pw) * 0.52 && Math.abs(p.y - my) < pillH + 4);
           if (!clash) break;
-          my += (attempt % 2 === 0 ? 1 : -1) * (pillH + 3) * Math.ceil((attempt + 1) / 2);
+          my += (attempt % 2 === 0 ? 1 : -1) * (pillH + 4) * Math.ceil((attempt + 1) / 2);
         }
         placedLabels.push({ x: mx, y: my, w: pw });
       }
@@ -2768,6 +2768,7 @@ export function DeliveryHud({
   const [materialError, setMaterialError] = useState('');
   const [refreshingMaterials, setRefreshingMaterials] = useState(false);
   const [triggering, setTriggering] = useState<string | null>(null);
+  const [showFeaturesDrawer, setShowFeaturesDrawer] = useState(false);
 
   const activeTaskRef = useRef(task.task_id);
   activeTaskRef.current = task.task_id;
@@ -2803,6 +2804,19 @@ export function DeliveryHud({
   useEffect(() => {
     setSelectedTarget(null);
   }, [task.task_id, effectiveTab, activeDiff?.after_result_id, astGraph?.before_snapshot_id, astGraph?.after_snapshot_id, activePath?.path_key]);
+  useEffect(() => {
+    setShowFeaturesDrawer(false);
+  }, [task.task_id]);
+
+  // Keep toolbar single-line even when an edit touches 15+ features: AST first, ready diffs inline (up to 3), rest in a compact drawer
+  const { inlineFeatures, drawerFeatures } = useMemo(() => {
+    const readyList = features.filter(f => diffs.some(d => d.scenario_id === f.scenario_id));
+    const pendingList = features.filter(f => !diffs.some(d => d.scenario_id === f.scenario_id));
+    if (features.length <= 3) return { inlineFeatures: features, drawerFeatures: [] as typeof features };
+    const inline = readyList.slice(0, 3);
+    const inlinedIds = new Set(inline.map(f => f.scenario_id));
+    return { inlineFeatures: inline, drawerFeatures: [...readyList.slice(3), ...pendingList].filter(f => !inlinedIds.has(f.scenario_id)) };
+  }, [features, diffs]);
 
   useEffect(() => {
     setSelectedTab('');
@@ -3039,7 +3053,20 @@ export function DeliveryHud({
         <div className="hud-walkthrough">
           <div className="hud-walkthrough-toolbar">
             <div className="hud-toolbar-left">
-              {features.map(f => {
+              {astGraph && (
+                <button
+                  type="button"
+                  className="hud-pill tone-info"
+                  aria-pressed={isAstTab}
+                  title="零等待本地 Tree-sitter AST 即时静态调用图 Diff（含跨文件外部调用与未同步风险）"
+                  onClick={() => { setSelectedTab(AST_TAB_ID); setViewMode('chain'); }}
+                >
+                  <i className="hud-dot info" />
+                  <span>本地 AST 调用图</span>
+                </button>
+              )}
+
+              {inlineFeatures.map(f => {
                 const ready = diffs.some(d => d.scenario_id === f.scenario_id);
                 const active = effectiveTab === f.scenario_id;
                 const busyFeature = f.refreshing || triggering === f.scenario_id;
@@ -3084,16 +3111,15 @@ export function DeliveryHud({
                 );
               })}
 
-              {astGraph && (
+              {drawerFeatures.length > 0 && (
                 <button
                   type="button"
-                  className="hud-pill tone-info"
-                  aria-pressed={isAstTab}
-                  title="零等待本地 Tree-sitter AST 即时静态调用图 Diff（含跨文件外部调用与未同步风险）"
-                  onClick={() => { setSelectedTab(AST_TAB_ID); setViewMode('chain'); }}
+                  className="hud-pill"
+                  aria-expanded={showFeaturesDrawer}
+                  onClick={() => setShowFeaturesDrawer(v => !v)}
                 >
-                  <i className="hud-dot info" />
-                  <span>本地 AST 调用图</span>
+                  <i className={`hud-dot ${drawerFeatures.some(f => f.refreshing || triggering === f.scenario_id) ? 'pulse' : 'ok'}`} />
+                  <span>受影响功能 ({features.length}) {showFeaturesDrawer ? '▴' : '▾'}</span>
                 </button>
               )}
 
@@ -3147,6 +3173,49 @@ export function DeliveryHud({
               </div>
             )}
           </div>
+
+          {showFeaturesDrawer && drawerFeatures.length > 0 && (
+            <div className="hud-drawer">
+              <div className="hud-drawer-head">
+                <strong>本次改动命中的功能走读（{features.length}）</strong>
+                <button type="button" className="hud-drawer-close" onClick={() => setShowFeaturesDrawer(false)}>收起</button>
+              </div>
+              <div className="hud-caller-list">
+                {drawerFeatures.map(f => {
+                  const ready = diffs.some(d => d.scenario_id === f.scenario_id);
+                  const busyFeature = f.refreshing || triggering === f.scenario_id;
+                  const actionText = ready
+                    ? '查看对比'
+                    : !f.has_call_graph && f.refreshed_result_id
+                      ? '无改前基线'
+                      : !f.has_call_graph
+                        ? (busyFeature ? '生成中…' : f.error ? '重试' : '补建走读')
+                        : (busyFeature ? '刷新中…' : f.error ? '重试' : '刷新 AI 走读');
+                  return (
+                    <div key={f.scenario_id} className="hud-caller-row">
+                      <strong>{f.label}</strong>
+                      <button
+                        type="button"
+                        className="hud-mini-btn"
+                        disabled={!ready && (busyFeature || !task.end_state || (!f.has_call_graph && !!f.refreshed_result_id))}
+                        onClick={() => {
+                          if (ready) {
+                            setSelectedTab(f.scenario_id);
+                            setSelectedPathKey('');
+                            setShowFeaturesDrawer(false);
+                          } else {
+                            void refreshFeature(f.scenario_id);
+                          }
+                        }}
+                      >
+                        {actionText}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {refreshError && <small className="warning">{refreshError}</small>}
 

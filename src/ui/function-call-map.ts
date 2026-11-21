@@ -75,7 +75,15 @@ export function functionCallMap(result:AnalysisResult,pathId:string,selectedId='
     const cx=right+(columnPitch-nodeWidth)/2;
     let nextLabelY=0;
     for(const {id,sx,sy,tx,ty,labelY} of channel.sort((a,b)=>a.labelY-b.labelY)){
-      const cy=Math.max(labelY,nextLabelY);
+      let cy=Math.max(labelY,nextLabelY);
+      // Keep cross-file call labels clear of file-group header strips.
+      for(const group of fileGroups){
+        const headTop=group.bounds.y-4,headBottom=group.bounds.y+36;
+        if(cy+31>headTop&&cy-31<headBottom){
+          const above=headTop-33;
+          cy=above>=nextLabelY&&above>=Math.min(sy,ty)-10?above:headBottom+34;
+        }
+      }
       const d=`M${sx} ${sy} C${cx} ${sy} ${cx} ${cy} ${cx} ${cy} S${cx} ${ty} ${tx} ${ty}`;
       routes.set(id,{d,labelX:cx-callLabelWidth/2,labelY:cy});
       nextLabelY=cy+labelSpacing;

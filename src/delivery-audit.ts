@@ -187,7 +187,8 @@ function auditDiffReview(task: EngineeringTask): {status:'approved'|'repaired'|'
 export function auditDelivery(task: EngineeringTask, contextEntries: (MaterialSourceIndexEntry & {status?: ContextEntry['status']})[], verificationLogs: Record<string, string> = {}) {
   const pathKey = (path: string) => path.replaceAll('\\', '/');
   const scope = new Set((task.approval?.scope ?? task.proposed_scope ?? task.scope).map(pathKey));
-  const out_of_scope = task.changes.filter(change => !scope.has(pathKey(change.path))).map(change => change.path);
+  const scopeDeclared = task.approval !== undefined || (task.proposed_scope?.length ?? 0) > 0 || task.scope.length > 0;
+  const out_of_scope = scopeDeclared ? task.changes.filter(change => !scope.has(pathKey(change.path))).map(change => change.path) : [];
   const overlap = task.changes.filter(change => change.ownership === 'preexisting_overlap').map(change => change.path);
   const scopeWarning = !!(out_of_scope.length || overlap.length || task.changes_status === 'needs_review');
   const sourceTexts = [task.summary, ...(task.steps ?? []).filter(s => s.status !== 'superseded').flatMap(s =>

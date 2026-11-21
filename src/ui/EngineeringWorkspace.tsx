@@ -108,13 +108,39 @@ function useContext(projectId:string){
   return {context,error,reload,more,checking};
 }
 
-function ContextFacts({context,reload}:{context:EngineeringContext;reload:()=>Promise<unknown>}){
+function shortMaterialTitle(name: string): string {
+  if (!name.includes('/') && !name.includes('\\')) return name;
+  const parts = name.replaceAll('\\', '/').split('/').filter(Boolean);
+  return parts.length <= 2 ? name : `…/${parts.slice(-2).join('/')}`;
+}
+
+function ContextFacts({context,reload,onMore}:{context:EngineeringContext;reload:()=>Promise<unknown>;onMore?:()=>Promise<void>}){
   const [selected,setSelected]=useState<ContextEntry|null>(null),[editing,setEditing]=useState(false),[preview,setPreview]=useState(false);
   const [category,setCategory]=useState<ContextEntry['category']>('issue'),[title,setTitle]=useState(''),[body,setBody]=useState('');
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[readingFull,setReadingFull]=useState(false),[notice,setNotice]=useState(''),[versions,setVersions]=useState<ContextEntry[]>([]);
   const [loadingHistory,setLoadingHistory]=useState(false);
+  const [searchText,setSearchText]=useState(''),[filterCategory,setFilterCategory]=useState('');
+  const [remoteResult,setRemoteResult]=useState<{entries:ContextEntry[];total:number}|null>(null);
+  const [searching,setSearching]=useState(false);
   const sourcePanel=useRef<HTMLElement|null>(null),request=useRef(0);
   useEffect(()=>()=>{request.current++;},[]);
+  useEffect(()=>{
+    const q=searchText.trim();
+    if(!q&&!filterCategory){setRemoteResult(null);setSearching(false);return;}
+    let alive=true;
+    setSearching(true);
+    const timer=setTimeout(()=>{
+      void api.invoke<EngineeringContext>('engineering_context',{
+        project_id:context.project_id,task_id:'',cached:true,limit:40,
+        ...(q?{query:q}:{}),...(filterCategory?{category:filterCategory}:{}),
+      }).then(res=>{if(alive)setRemoteResult({entries:res.entries,total:res.total_entries});})
+        .catch(e=>{if(alive)setError((e as Error).message);})
+        .finally(()=>{if(alive)setSearching(false);});
+    },220);
+    return()=>{alive=false;clearTimeout(timer);};
+  },[context.project_id,context.version,searchText,filterCategory]);
+  const listedEntries=remoteResult?remoteResult.entries:context.entries;
+  const listedTotal=remoteResult?remoteResult.total:context.total_entries;
   const initialized=useRef(false);
   useEffect(()=>{if(initialized.current||!context.entries.length)return;initialized.current=true;const mine=request.current;void api.invoke('reading_get',{key:'engineering-material/'+context.project_id}).then(value=>{if(mine!==request.current)return;const entry=context.entries.find(e=>e.entry_id===value?.entry_id)??context.entries[0];void open(entry);}).catch(e=>{if(mine===request.current)setError(e.message);});},[context.entries]);
   function select(entry:ContextEntry,edit:boolean){
@@ -141,7 +167,20 @@ function ContextFacts({context,reload}:{context:EngineeringContext;reload:()=>Pr
     const saved=await api.invoke<ContextEntry>('engineering_save_entry',{project_id:context.project_id,entry_id:selected?.entry_id,expected_version:selected?.version??0,submission_key:crypto.randomUUID(),category,key:title,text:body});setSelected(saved);setEditing(false);setVersions([]);setNotice('已保存当前有效资料；原始来源与旧版本保留。正文编辑未修改源码，也未执行验证。');await reload();
   }catch(e){setError((e as Error).message);}finally{setBusy(false);}}
   return <>
-    <div className="row"><button disabled={busy} onClick={()=>{clearSelection();setCategory('issue');setTitle('');setBody('');setEditing(true);setPreview(false);setError('');}}>新增工程资料</button></div>
+    <div className="row between" style={{flexWrap:'wrap',gap:'8px'}}>
+      <div className="row" style={{flexWrap:'wrap',gap:'8px'}}>
+        <button disabled={busy} onClick={()=>{clearSelection();setCategory('issue');setTitle('');setBody('');setEditing(true);setPreview(false);setError('');}}>新增工程资料</button>
+        <input className="engineering-material-search" type="search" aria-label="搜索工程资料" placeholder="搜索标题、路径或正文…" value={searchText} onChange={e=>setSearchText(e.target.value)}/>
+        <select className="engineering-material-filter" aria-label="按分类筛选工程资料" value={filterCategory} onChange={e=>setFilterCategory(e.target.value)}>
+          <option value="">全部分类</option>
+          {Object.entries(categoryNames).map(([key,label])=><option key={key} value={key}>{label}</option>)}
+        </select>
+        {(searchText||filterCategory)&&<button type="button" onClick={()=>{setSearchText('');setFilterCategory('');}}>清除筛选</button>}
+      </div>
+      <small className="muted">
+        {searching?'搜索中…':remoteResult?`命中 ${listedTotal} 条（展示前 ${listedEntries.length} 条）`:`已加载 ${listedEntries.length} / 共 ${listedTotal} 条`}
+      </small>
+    </div>
     {error&&<p role="alert" className="warning">{error}</p>}{notice&&<p role="status">{notice}</p>}
     <div className="engineering-material-layout"><nav className="engineering-material-directory" aria-label="工程资料目录">{([
       ['认识工程',['purpose','technology','build']],
@@ -149,12 +188,13 @@ function ContextFacts({context,reload}:{context:EngineeringContext;reload:()=>Pr
       ['约束与演变',['rule','issue','decision']],
       ['历史方案与验证',['plan','architecture','design','verification_plan']]
     ] as [string,ContextEntry['category'][]][]).map(([group,categories])=>{
-      const entries=categories.flatMap(kind=>context.entries.filter(e=>e.category===kind&&!e.task_id&&e.status!=='superseded').map(entry=>({entry,label:categoryNames[kind]})));
+      const entries=categories.flatMap(kind=>listedEntries.filter(e=>e.category===kind&&!e.task_id&&e.status!=='superseded').map(entry=>({entry,label:categoryNames[kind]})));
       return entries.length>0&&<section key={group}><h3>{group}</h3>{entries.map(({entry,label})=>{
         const name=contextEntryTitle(entry,label);
-        return <button key={entry.entry_id} disabled={busy} aria-pressed={selected?.entry_id===entry.entry_id} onClick={()=>{if(editing&&!window.confirm('离开编辑将丢弃未保存的正文，是否继续？'))return;void open(entry);}}><span className="engineering-material-kind">{label}</span><strong title={name}>{name}</strong><small>{originNames[entry.origin]} · v{entry.version}{entry.status==='needs_review'?' · 待复核':''}{entry.update_suggestion?' · 有更新建议':''}</small></button>;
+        const display=shortMaterialTitle(name);
+        return <button key={entry.entry_id} disabled={busy} aria-pressed={selected?.entry_id===entry.entry_id} onClick={()=>{if(editing&&!window.confirm('离开编辑将丢弃未保存的正文，是否继续？'))return;void open(entry);}}><span className="engineering-material-kind">{label}</span><strong title={name}>{display}</strong><small>{originNames[entry.origin]} · v{entry.version}{entry.status==='needs_review'?' · 待复核':''}{entry.update_suggestion?' · 有更新建议':''}</small></button>;
       })}</section>;
-    })}</nav><div className="engineering-material-article">
+    })}{!listedEntries.length&&<p className="muted" style={{fontSize:'0.82rem',padding:'8px 0'}}>{searching?'正在筛选资料…':'没有匹配的工程资料。'}</p>}{!remoteResult&&context.next_offset!=null&&onMore&&<button type="button" className="engineering-material-more" onClick={()=>void onMore()}>加载更多（剩余 {Math.max(0,context.total_entries-context.entries.length)} 条）</button>}</nav><div className="engineering-material-article">
     {!selected&&!editing&&<div className="engineering-empty"><h3>{context.entries.length?'选择一份资料开始阅读':'尚未形成工程资料'}</h3><p>{context.entries.length?'从左侧按用途、实现、约束或历史决定选择内容；正文、来源和版本会在这里展示。':'可以先检查来源变化，或新增一条明确的用户补充。空资料不会冒充已经完成工程分析。'}</p></div>}
     {(selected||editing)&&<section ref={sourcePanel} className="engineering-source" aria-label="工程资料全文编辑"><div className="row between engineering-source-header"><h3>{selected?contextEntryTitle(selected,categoryNames[selected.category]):'新增工程级资料'}</h3><div className="row">{selected&&!editing&&<button disabled={busy||readingFull} onClick={()=>void open(selected,true)}>编辑全文</button>}<button disabled={busy} onClick={()=>{clearSelection();setEditing(false);}}>关闭资料</button></div></div>
       {selected&&<p className="engineering-material-question">{categoryQuestions[selected.category]}</p>}
@@ -381,7 +421,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
     {(error||contextError)&&<p className="warning engineering-message" role="alert">{error||contextError}</p>}{notice&&<p className="engineering-message" role="status">{notice}</p>}
     {context?.workspace.status==='unbound'&&<p className="warning engineering-message">历史记录已恢复，但源码工作区尚未绑定。请到「连接 Agent → 工程管理与本地数据 → 接入与恢复」选择实际目录；恢复记录不等于恢复工程代码。</p>}
     {(mode==='materials'||showContext)&&!context&&!contextError&&<section className="engineering-context-panel engineering-materials-home"><div className="arc-skeleton-box" role="status"><span className="arc-skeleton-line wide" aria-hidden="true"/><span className="arc-skeleton-line medium" aria-hidden="true"/><span className="arc-skeleton-line short" aria-hidden="true"/><small>正在读取工程资料与当前工作区；大工程可能需要一些时间。</small></div></section>}
-    {(mode==='materials'||showContext)&&context&&<section className={`engineering-context-panel ${mode==='materials'?'engineering-materials-home':''}`}><div className="row between"><h3>工程资料 · 版本 {context.version}</h3><button disabled={busy||checking} onClick={()=>void reloadContext(true)}>{checking?'正在检查…':'检查来源变化'}</button></div><ContextFacts context={context} reload={reloadContext}/>{context.next_offset!=null&&<button onClick={()=>void more()}>查看更多上下文</button>}</section>}
+    {(mode==='materials'||showContext)&&context&&<section className={`engineering-context-panel ${mode==='materials'?'engineering-materials-home':''}`}><div className="row between"><h3>工程资料 · 版本 {context.version}</h3><button disabled={busy||checking} onClick={()=>void reloadContext(true)}>{checking?'正在检查…':'检查来源变化'}</button></div><ContextFacts context={context} reload={reloadContext} onMore={more}/></section>}
     {mode!=='materials'&&<div className="engineering-columns"><aside className="engineering-list">
       <div className="engineering-list-heading"><h3>开发记录</h3><span className="tag">{visible.length}</span></div>
       {tasks.length>0?<><div className="engineering-list-filters">

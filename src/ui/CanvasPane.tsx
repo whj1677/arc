@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import type {
   AnalysisResult,
   Explanation,
@@ -144,6 +144,14 @@ export function CanvasPane({
   showMcp,
   taskOverlay,
 }: CanvasPaneProps) {
+  const [archZoomable, setArchZoomable] = useState(true);
+  const isCatalogDetail = !catalogReading && !!graphCatalog && !!discovery && !!project;
+  const archNonZoomable = !featureReading && ['system', 'map'].includes(reading.view) && !archZoomable;
+  const featureNonZoomable = featureReading && reading.view !== 'timeline';
+  const hasZoomableContent = (featureReading && !!result && !!readingGuide)
+    || (!featureReading && reading.view === 'files' && !!sourceSnapshot)
+    || (!featureReading && reading.view !== 'files' && !!result);
+  const showZoomFloat = !preview && !catalogReading && !isCatalogDetail && hasZoomableContent && !archNonZoomable && !featureNonZoomable;
   const fileSnapshotId = reading.view === 'files' && !featureReading ? sourceSnapshot?.source_snapshot_id : undefined;
   const analyzedPaths = useMemo(
     () => analyzedSourcePaths(data.explanations, projectId, fileSnapshotId, result),
@@ -351,6 +359,7 @@ export function CanvasPane({
                   inspect={inspectComponent}
                   openFile={file => chooseFile(file, result.binding.source_snapshot_id)}
                   taskOverlay={taskOverlay}
+                  onZoomableChange={setArchZoomable}
                 />
                 {!overviewSections && (
                   <div className="overview-feature-entry">
@@ -501,7 +510,7 @@ export function CanvasPane({
         )}
         {overviewSections}
       </ScrollPanel>
-      {!preview && !catalogReading && (
+      {showZoomFloat && (
         <div className="canvas-zoom-float" role="group" aria-label="画布缩放">
           <small className="zoom-hint">Ctrl＋滚轮</small>
           <button className="icon" aria-label="缩小画布" title="缩小画布" onClick={() => patch({ zoom: clampZoom(reading.zoom - 0.1) })}>

@@ -48,7 +48,7 @@
   height: 100%;
   min-width: 0;
   overflow: hidden;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-left: 3px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -74,9 +74,10 @@
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
-.function-map-node strong, .fn-participant strong { color: var(--ink); font: 580 15px/1.35 var(--font-mono); }
+.function-map-node strong, .fn-participant strong { color: var(--ink); font: 580 13.5px/1.35 var(--font-mono); }
 .function-node-purpose { color: var(--ink-secondary); font-size: 13px; line-height: 1.5; }
 .function-node-location {
   margin-top: auto;

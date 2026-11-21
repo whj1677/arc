@@ -232,7 +232,9 @@ export interface TaskHudSnapshot {
 }
 
 const structureSymbolKey = (s: CodeSymbol) => [s.file, s.kind, s.qualified_name].join('\0');
-const normalizeSignature = (s: CodeSymbol) => s.signature.replace(/\s+/g, ' ').trim();
+const normalizeSignature = (s: CodeSymbol) => s.signature.replace(/;+\s*$/, '').replace(/\s+/g, ' ').trim();
+const implementationDeclaration = (s: CodeSymbol) =>
+  !s.has_body && s.kind === 'function' && /\.(?:c|cc|cpp|cxx)$/i.test(s.file);
 
 function fileDir(file: string) {
   const slash = file.lastIndexOf('/');
@@ -242,7 +244,7 @@ function fileDir(file: string) {
 function symbolsByKey(index: CodeIndex, changed: Set<string>) {
   const groups = new Map<string, CodeSymbol[]>();
   for (const symbol of index.symbols) {
-    if (!changed.has(symbol.file)) continue;
+    if (!changed.has(symbol.file) || implementationDeclaration(symbol)) continue;
     const key = structureSymbolKey(symbol);
     const group = groups.get(key);
     if (group) group.push(symbol);
@@ -437,7 +439,7 @@ function symbolBody(symbol: CodeSymbol, lines: readonly string[] | undefined) {
 function callableGroups(index: CodeIndex) {
   const groups = new Map<string, CodeSymbol[]>();
   for (const symbol of index.symbols) {
-    if (symbol.kind === 'class' || symbol.kind === 'struct' || symbol.kind === 'interface') continue;
+    if (symbol.kind === 'class' || symbol.kind === 'struct' || symbol.kind === 'interface' || implementationDeclaration(symbol)) continue;
     const key = symbolKey(symbol.file, symbol.qualified_name);
     const group = groups.get(key);
     if (group) group.push(symbol);
@@ -452,7 +454,7 @@ function callableSymbols(groups: ReturnType<typeof callableGroups>, other: Retur
   for (const [name, group] of groups) {
     const overloaded = group.length > 1 || (other.get(name)?.length ?? 0) > 1;
     for (const symbol of group) {
-      const key = overloaded ? name + '::' + normalizeSignature(symbol) : name;
+      const key = overloaded && symbol.language !== 'c' ? name + '::' + normalizeSignature(symbol) : name;
       keys.set(symbol.id, key);
       const current = symbols.get(key);
       if (!current || (!current.has_body && symbol.has_body)) symbols.set(key, symbol);
@@ -489,11 +491,13 @@ export function computeAstCallGraphDiff(options: {
   beforeSnapshotId: string;
   afterSnapshotId: string;
   changedFiles: readonly string[];
+  focusFiles?: readonly string[];
   beforeSources?: ReadonlyMap<string, string>;
   afterSources?: ReadonlyMap<string, string>;
 }): AstCallGraphDiff | undefined {
   const changed = new Set(options.changedFiles.map(file => file.replaceAll('\\', '/')));
   if (!changed.size) return;
+  const focusSet = options.focusFiles?.length ? new Set(options.focusFiles.map(file => file.replaceAll('\\', '/'))) : changed;
 
   const beforeGroups = callableGroups(options.beforeIndex), afterGroups = callableGroups(options.afterIndex);
   const before = callableSymbols(beforeGroups, afterGroups), after = callableSymbols(afterGroups, beforeGroups);
@@ -511,7 +515,7 @@ export function computeAstCallGraphDiff(options: {
     if (!next || signatureChanged) contractChanges.add(key);
     if (!old || !next || signatureChanged) {
       statuses.set(key, !old ? 'added' : !next ? 'removed' : 'modified');
-      prioritySeeds.push(key);
+      if (focusSet.has(symbol.file)) prioritySeeds.push(key);
       continue;
     }
     const oldBody = symbolBody(old, beforeLines.get(symbol.file));
@@ -519,12 +523,14 @@ export function computeAstCallGraphDiff(options: {
       statuses.set(key, 'unchanged');
     } else {
       statuses.set(key, 'modified');
-      bodySeeds.push(key);
+      if (focusSet.has(symbol.file)) bodySeeds.push(key);
     }
   }
-  const seeds = [...prioritySeeds, ...bodySeeds].slice(0, 14);
+  const seedCandidates = [...prioritySeeds, ...bodySeeds];
+  const seeds = seedCandidates.slice(0, 14);
   if (!seeds.length) return;
   const selectedSeeds = new Set(seeds);
+  const omittedSeeds = new Set(seedCandidates.slice(seeds.length));
 
   const beforeEdges = callGraphEdges(options.beforeIndex, before.keys, contractChanges);
   const afterEdges = callGraphEdges(options.afterIndex, after.keys, contractChanges);
@@ -536,7 +542,7 @@ export function computeAstCallGraphDiff(options: {
     if (fromSeed === toSeed) continue;
     const neighbor = fromSeed ? to : from;
     if (changed.has(symbols.get(neighbor)!.file)) {
-      if (internal.size < 6 && statuses.get(neighbor) === 'unchanged') internal.add(neighbor);
+      if (internal.size < 6 && !omittedSeeds.has(neighbor)) internal.add(neighbor);
     } else {
       const edgeChanged = beforeEdges.has(key) !== afterEdges.has(key);
       const priority = !fromSeed && contractChanges.has(to) ? 0 : edgeChanged ? 1 : 2;
@@ -587,7 +593,7 @@ export function computeAstCallGraphDiff(options: {
   return {
     before_snapshot_id: options.beforeSnapshotId,
     after_snapshot_id: options.afterSnapshotId,
-    omitted_changes: Math.max(0, prioritySeeds.length + bodySeeds.length - seeds.length),
+    omitted_changes: omittedSeeds.size,
     omitted_neighbors: external.size - neighbors.length,
     path: {
       path_key: entry, label: '本地 AST 调用图', entry_symbol: symbols.get(entry)!.qualified_name,

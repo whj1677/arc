@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import type { Stats } from 'node:fs';
 import fs from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { finished } from 'node:stream/promises';
 import { promisify } from 'node:util';
@@ -28,7 +29,7 @@ export async function gitOptional(root: string, ...args: string[]) {
 }
 
 export function validateRef(ref: string) {
-  if (!['HEAD', 'EMPTY', 'WORKTREE'].includes(ref) &&
+  if (!['HEAD', 'EMPTY', 'WORKTREE', 'SNAPSHOT'].includes(ref) &&
       !(typeof ref === 'string' && /^[0-9a-f]{7,40}(?:~1)?$/.test(ref))) throw Error('无效 Git 引用');
 }
 
@@ -112,6 +113,17 @@ export async function* blobs(root: string, tree: GitTree, files: Iterable<string
 }
 
 export const previewLimit = 200 * 1024;
+export async function readPreview(handle: FileHandle, size: number) {
+  const bytes = Buffer.alloc(Math.min(size, previewLimit + 1));
+  let offset = 0;
+  while (offset < bytes.length) {
+    const {bytesRead} = await handle.read(bytes, offset, bytes.length - offset, offset);
+    if (!bytesRead) break;
+    offset += bytesRead;
+  }
+  return bytes.subarray(0, offset);
+}
+
 export async function blobPreview(root: string, file: string, tree: GitTree) {
   const entry = tree.get(file);
   if (!entry) return Buffer.alloc(0);
@@ -166,14 +178,14 @@ export function missing(error: unknown) {
 }
 
 export const worktreeChangedMessage = '文件在本次雷达扫描后已修改，请刷新变更雷达';
-export async function worktreePreview(root: string, file: string, change?: Change) {
+export async function worktreePreview(root: string, file: string, change?: Change, isGit = true) {
   const absent = () => {
     if (change && change.status !== 'removed') throw Error(worktreeChangedMessage);
     return Buffer.alloc(0);
   };
   if (!await worktreeDirectories(root)(path.posix.dirname(file))) return absent();
   // check-ignore leaves tracked files eligible, including files matching later rules.
-  if (await gitOptional(root, 'check-ignore', '-q', '--', file) !== null) {
+  if (isGit && await gitOptional(root, 'check-ignore', '-q', '--', file) !== null) {
     if (change) return absent();
     throw Error('文件被 Git 忽略');
   }
@@ -189,15 +201,9 @@ export async function worktreePreview(root: string, file: string, change?: Chang
       };
       const stat = await handle.stat();
       check(stat);
-      const bytes = Buffer.alloc(Math.min(stat.size, previewLimit + 1));
-      let offset = 0;
-      while (offset < bytes.length) {
-        const {bytesRead} = await handle.read(bytes, offset, bytes.length - offset, offset);
-        if (!bytesRead) break;
-        offset += bytesRead;
-      }
+      const bytes = await readPreview(handle, stat.size);
       if (change) check(await handle.stat());
-      return bytes.subarray(0, offset);
+      return bytes;
     } finally { await handle.close(); }
   } catch (error) {
     if (missing(error)) return absent();

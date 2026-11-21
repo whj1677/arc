@@ -130,11 +130,27 @@ export class EngineeringService {
       const untracked=await git(workspace.root_path,['ls-files','--others','--exclude-standard','-z']);dirty=[...new Set([...modified.split('\0'),...untracked.split('\0')].filter(Boolean))];
     }
     const cached=this.store.maybe<CodeState>('engineering_state',workspace.workspace_id);
-    let snapshot=cached?this.store.get<Snapshot>('snapshot',cached.snapshot_id):this.store.get<Snapshot>('snapshot',project.snapshot_id);
-    if(!samePath(snapshot.root_path,workspace.root_path)||(await freshness(snapshot)).length){snapshot=await capture(workspace.root_path,projectId,this.store.directory,project.build_config);this.store.put('snapshot',snapshot.source_snapshot_id,snapshot);}
-    const identity=await workspaceFiles(workspace.root_path,snapshot);
+    let snapshot=this.store.get<Snapshot>('snapshot',cached?.snapshot_id??project.snapshot_id);
+    const directory=await fs.lstat(path.join(this.store.directory,'snapshots',snapshot.source_snapshot_id)).catch(error=>{
+      if(error.code==='ENOENT')return null;
+      throw error;
+    });
+    const usable=directory?.isDirectory()&&samePath(snapshot.root_path,workspace.root_path)&&snapshot.build_config===project.build_config;
+    const sameCheckout=usable&&cached&&cached.head===head&&cached.branch===branch&&cached.git_common_dir===common&&
+      cached.dirty.length===dirty.length&&cached.dirty.every((file,i)=>file===dirty[i]);
+    const unchanged=sameCheckout&&cached.workspace_fingerprint&&(await workspaceFiles(workspace.root_path)).fingerprint===cached.workspace_fingerprint;
+    let state:CodeState;
+    if(unchanged){
+      state={...cached,captured_at:now()};
+    }else{
+      if(!usable||(await freshness(snapshot)).length){
+        snapshot=await capture(workspace.root_path,projectId,this.store.directory,project.build_config);
+        this.store.put('snapshot',snapshot.source_snapshot_id,snapshot);
+      }
+      const identity=await workspaceFiles(workspace.root_path,snapshot);
+      state={snapshot_id:snapshot.source_snapshot_id,fingerprint:snapshot.fingerprint,head,branch,git_common_dir:common,dirty,captured_at:now(),workspace_fingerprint:identity.fingerprint,assets:identity.assets};
+    }
     if(common){const after=await git(workspace.root_path,['rev-parse','HEAD']).catch(()=>null),afterBranch=await git(workspace.root_path,['symbolic-ref','--short','-q','HEAD']).catch(()=>null);if(after!==head||afterBranch!==branch)throw Error('采集过程中分支或 HEAD 变化，请重试');}
-    const state:CodeState={snapshot_id:snapshot.source_snapshot_id,fingerprint:snapshot.fingerprint,head,branch,git_common_dir:common,dirty,captured_at:now(),workspace_fingerprint:identity.fingerprint,assets:identity.assets};
     const currentWorkspace=this.store.get<WorkspaceBinding>(workspaceKind,workspace.workspace_id);if(currentWorkspace.status!=='bound'||!samePath(currentWorkspace.root_path,workspace.root_path))throw Error('采集期间工作区已重新绑定，请重新读取');
     this.store.put('engineering_state',workspace.workspace_id,state);return state;
   }
@@ -178,18 +194,23 @@ export class EngineeringService {
     if(entryId)return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:page,total_entries:ordered.length,next_offset:null,analysis_refs:[],recent_tasks:[]};
     const analysis=input.result_id?this.readAnalysis(input.result_id,workspace,state,input):undefined;
     const materialSources=includeMaterialSources?{material_sources:entries.map(({entry_id,key,category,sources})=>({entry_id,key,category,sources:[...new Set(sources.map(s=>s.path))].map(path=>({path}))}))}:{};
-    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.all<Explanation>('explanation').filter(e=>e.result.binding.project_id===projectId).slice(-10).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),architecture:!!e.result.architecture?.node_ids.length,summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),...materialSources,recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id&&(input.view!=='execution'||!input.task_id||t.task_id===input.task_id)).slice(0,5).map(t=>this.currentVerification(t,restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
+    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.recentProjectExplanations(projectId).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),architecture:!!e.result.architecture?.node_ids.length,summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),...materialSources,recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id&&(input.view!=='execution'||!input.task_id||t.task_id===input.task_id)).slice(0,5).map(t=>this.currentVerification(t,restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
   }
   private reclassifyLegacy(projectId:string){
+    const rows=this.store.db.prepare(`SELECT json FROM objects WHERE kind='engineering_context'
+      AND json_extract(json,'$.project_id')=? AND json_extract(json,'$.legacy_import') IS NOT NULL
+      AND json_extract(json,'$.origin')='document'`).all(projectId);
     let reclassified=false;
-    for(const entry of this.store.all<ContextEntry>(contextKind))if(entry.project_id===projectId&&entry.legacy_import&&entry.origin==='document'){
-      const category=engineeringDocumentCategory(entry.legacy_import.import_key.replace(/^aec:/,''));
+    for(const row of rows){
+      const entry=JSON.parse(String(row.json)) as ContextEntry;
+      const category=engineeringDocumentCategory(entry.legacy_import!.import_key.replace(/^aec:/,''));
       if(category&&category!==entry.category){entry.category=category;entry.version++;entry.updated_at=now();this.store.putVersion(contextKind,entry.entry_id,entry.version,entry);reclassified=true;}
     }
     if(reclassified){const current=this.store.get<{version:number}>('engineering_context_state',projectId);current.version++;this.store.put('engineering_context_state',projectId,current);}
   }
   private matchesContext(e:ContextEntry,input:ContextRequest):boolean {
-    return (input.view==='execution'?(!e.task_id||e.task_id===input.task_id):(input.task_id===undefined||(e.task_id??'')===input.task_id))&&(!input.category||e.category===input.category)&&(!input.query||`${e.key}\n${e.text}`.toLowerCase().includes(input.query.toLowerCase()));
+    const q=input.query?.toLowerCase();
+    return (input.view==='execution'?(!e.task_id||e.task_id===input.task_id):(input.task_id===undefined||(e.task_id??'')===input.task_id))&&(!input.category||e.category===input.category)&&(!q||`${e.key}\n${e.text}`.toLowerCase().includes(q)||e.sources.some(s=>s.path.toLowerCase().includes(q)));
   }
   private contextEntry(e:ContextEntry,maxText:number):ContextEntry {
     const source=e.supersedes?this.store.maybe<ContextEntry>(contextKind,e.supersedes):null;
@@ -200,7 +221,7 @@ export class EngineeringService {
   async executionContext(projectId:string,taskId:string):Promise<EngineeringContext>{
     let context=await this.context({project_id:projectId,task_id:taskId,view:'execution',limit:40});
     const entries=[...context.entries];
-    while(context.next_offset!==null){context=await this.context({project_id:projectId,task_id:taskId,view:'execution',limit:40,offset:context.next_offset});entries.push(...context.entries);}
+    while(context.next_offset!==null){context=await this.context({project_id:projectId,task_id:taskId,view:'execution',limit:40,offset:context.next_offset,cached:true});entries.push(...context.entries);}
     const environment_brief=formatEnvironmentBrief(await this.projectEnvironment(projectId));
     const task=this.store.get<EngineeringTask>(taskKind,taskId);
     const query=[task.title,task.goal,...(task.requests??[]).map(request=>request.text)].join('\n');

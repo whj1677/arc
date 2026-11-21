@@ -74,7 +74,8 @@ app.whenReady().then(async()=>{
         case 'workspace_live_radar':{
           const { mode, commit } = args;
           if (mode !== undefined && mode !== 'worktree' && mode !== 'commit') throw Error('工作区比较模式无效');
-          value = await service.liveRadar(args.project_id, {mode, commit, previousFingerprint: args.previousFingerprint ?? args.previous_fingerprint});
+          value = await service.liveRadar(args.project_id, {mode, commit, focus_file: args.focus_file ?? args.focusFile,
+            previousFingerprint: args.previousFingerprint ?? args.previous_fingerprint});
           break;
         }
         case 'workspace_live_diff':{

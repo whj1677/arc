@@ -93,6 +93,13 @@ test('delivery re-inspects stored CTest and GoogleTest logs over saved counters'
   assert.equal(auditDelivery(verified, [], {e:'[  FAILED  ] 1 test, listed below:'}).verification.status, 'failed');
 });
 
+test('unscoped tasks can change files while an explicitly approved empty scope excludes them', () => {
+  const changes = [{path:'worker.c', ownership:'task_change' as const, before_sha256:null, after_sha256:'b'}];
+  assert.deepEqual(auditDelivery({...task, changes}, []).scope, {status:'ok', out_of_scope:[], overlap:[]});
+  assert.deepEqual(auditDelivery({...task, changes, approval:{reviewed_version:2, scope:[]}}, []).scope,
+    {status:'warning', out_of_scope:['worker.c'], overlap:[]});
+});
+
 test('audits approved files and effective redlines and matches current materials by exact source path', () => {
   const step = {step_id:'s', title:'Keep view', change:'', status:'completed' as const, progress:'', criteria:[], evidence_ids:[], unresolved:[], created_at:'', updated_at:''};
   const changes = [{path:'ui/view.ts', ownership:'preexisting_overlap' as const, before_sha256:'a', after_sha256:'b'},
