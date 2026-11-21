@@ -27,7 +27,7 @@ function renderCatalog(unresolved_scope:string[],busy=false,addFeatureFromScope?
     runs.push({binding:{...result.binding,feature_id,scenario_id,run_id:`run-${i}`},provider_id:'codex',status,created_at:'',question:'',title:'',submission_key:'',output_path:''});
   });
   const data:WorkspaceData={projects:[],features,scenarios,revisions:[],annotations:[],runs,explanations:[explanation],providers:[],snapshots:[],codex_preferences:{model:'',reasoning_effort:'auto'},codex_models:{models:[]}};
-  return renderToStaticMarkup(React.createElement(FeatureCatalog,{explanation,data,projectId:project_id,busy,open:noAction,discover:noAction,mode:'codex',setMode:noAction,fillPending:noAction,cancelQueued,addFeatureFromScope}));
+  return renderToStaticMarkup(React.createElement(FeatureCatalog,{explanation,data,projectId:project_id,busy,open:noAction,discover:noAction,mode:'codex',fillPending:noAction,cancelQueued,addFeatureFromScope}));
 }
 
 test('group generation is available only for groups with pending graphs',()=>{

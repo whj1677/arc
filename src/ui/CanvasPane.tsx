@@ -47,7 +47,6 @@ export interface CanvasPaneProps {
   pending: boolean;
   indexes: Record<string, any>;
   expandMode: AnalysisMode;
-  setAnalysisMode: (mode: AnalysisMode) => void;
   catalogReading: boolean;
   catalogExplanation?: Explanation;
   capabilityCount: number;
@@ -105,7 +104,6 @@ export function CanvasPane({
   pending,
   indexes,
   expandMode,
-  setAnalysisMode,
   catalogReading,
   catalogExplanation,
   capabilityCount,
@@ -238,7 +236,6 @@ export function CanvasPane({
             cancelQueued={cancelQueued}
             discover={() => void requestAnalysis(true, true)}
             mode={expandMode}
-            setMode={setAnalysisMode}
           />
         ) : graphCatalog && discovery && project ? (
           <CatalogFeatureReading

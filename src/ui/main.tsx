@@ -1282,7 +1282,7 @@ function App() {
     if (entrance === 'overview') {
       chooseScenario(project?.overview_scenario_id || '', overviewLanding);
     } else {
-      chooseScenario('', { entrance, view: 'capabilities', mode: 'normal', catalog_hidden: false });
+      chooseScenario('', { entrance, view: 'capabilities', mode: 'normal', catalog_hidden: true });
     }
   }
 
@@ -1688,7 +1688,6 @@ function App() {
       pending={pending}
       indexes={indexes}
       expandMode={expandMode}
-      setAnalysisMode={setAnalysisMode}
       catalogReading={catalogReading}
       catalogExplanation={catalogExplanation}
       capabilityCount={capabilityCount}
@@ -1738,6 +1737,42 @@ function App() {
     build: '构建条件',
     settings: '连接 Agent',
   };
+
+  const navToggle = (
+    <button
+      className="icon nav-toggle"
+      aria-label={width >= 900 && !reading.catalog_hidden ? '隐藏目录' : '显示目录'}
+      aria-expanded={width >= 900 ? !reading.catalog_hidden : showCatalog}
+      aria-controls="workspace-navigation"
+      title={width >= 900 && !reading.catalog_hidden ? '隐藏导航' : '显示导航'}
+      onClick={() => {
+        if (width >= 900) patch({ catalog_hidden: !reading.catalog_hidden });
+        else {
+          patch({ catalog_hidden: false });
+          setShowCatalog(!showCatalog);
+        }
+      }}
+    >
+      <svg className="arc-ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="2" y="2.5" width="12" height="11" rx="2" />
+        <path d="M6 2.5v11" />
+      </svg>
+    </button>
+  );
+
+  const boundSnapshotId = result?.binding.source_snapshot_id || project?.snapshot_id || '';
+  const refreshSource = () => void action(() => api.invoke('refresh', { project_id: projectId }), '已冻结新快照；历史说明保留原来源');
+  const sourceOptions = (
+    <details className="source-options">
+      <summary>资料与来源</summary>
+      <div className="popover-content">
+        <span className="source-badge" title={boundSnapshotId}>
+          来源 {short(boundSnapshotId)}
+        </span>
+        <button onClick={refreshSource}>刷新来源</button>
+      </div>
+    </details>
+  );
 
   return (
     <div className="arc-workbench">
@@ -1821,12 +1856,14 @@ function App() {
         ) : (
           <>
             {!engineeringReading && (
-              <div className={overview ? 'context overview-context' : 'context'}>
-                <div>
+              <div className={overview ? 'context overview-context' : catalogReading ? 'context catalog-context' : 'context'}>
+                <div className="context-heading">
+                  {catalogReading && walkNavigation && navToggle}
+                  <div>
                   <div className="breadcrumb" title={project.root_path}>
                     {projectLabel(project)} /{' '}
                     {reading.entrance === 'overview' ? '工程全貌' : data.features.find(f => f.feature_id === scenario?.feature_id)?.name || '功能走读'}
-                    <span className="breadcrumb-kind"> · {currentView}</span>
+                    {!catalogReading && <span className="breadcrumb-kind"> · {currentView}</span>}
                     {project.fictional && <span className="tag amber">演示数据</span>}
                   </div>
                   <h1 title={overview ? project.name : scenario?.title}>
@@ -1844,8 +1881,25 @@ function App() {
                         : '围绕当前问题核对调用、阶段和源码依据'}
                     </span>
                   </div>
+                  </div>
                 </div>
                 <div className="context-actions">
+                  {catalogReading && (otherProjectTasks.length > 0 || pendingScene) && (
+                    <div className="context-tasks" aria-label="本工程进行中的分析">
+                      {otherProjectTasks.map(r => (
+                        <button key={r.binding.run_id} title={`${r.title} · ${statuses[r.status]} · 查看进度`} onClick={() => openTask(r.binding.scenario_id)}>
+                          <span className="context-task-pulse" aria-hidden="true" />
+                          {compactTitle(r.title, 18)} · {statuses[r.status]}
+                        </button>
+                      ))}
+                      {pendingScene && !projectTasks.some(r => r.binding.scenario_id === pendingScene.scenario_id) && (
+                        <button title={`${pendingScene.title} · 等待 Agent 领取`} onClick={() => openTask(pendingScene.scenario_id)}>
+                          <span className="context-task-pulse" aria-hidden="true" />
+                          {compactTitle(pendingScene.title, 18)} · 等待领取
+                        </button>
+                      )}
+                    </div>
+                  )}
                   <div className="analysis-controls">
                     {reading.view === 'files' && !featureReading ? (
                       <button className="primary" onClick={askHere}>
@@ -1891,109 +1945,70 @@ function App() {
                           </button>
                         </>
                       )}
+                      {catalogReading && (
+                        <>
+                          <span className="source-badge" title={boundSnapshotId}>来源 {short(boundSnapshotId)}</span>
+                          <button onClick={refreshSource}>刷新来源</button>
+                        </>
+                      )}
                     </div>
                   </details>
                 </div>
               </div>
             )}
 
-            <div className="workspace-bar">
-              <div className="row">
-                {walkNavigation && (
-                  <button
-                    className="icon"
-                    aria-label={width >= 900 && !reading.catalog_hidden ? '隐藏目录' : '显示目录'}
-                    aria-expanded={width >= 900 ? !reading.catalog_hidden : showCatalog}
-                    aria-controls="workspace-navigation"
-                    title={width >= 900 && !reading.catalog_hidden ? '隐藏导航' : '显示导航'}
-                    onClick={() => {
-                      if (width >= 900) patch({ catalog_hidden: !reading.catalog_hidden });
-                      else {
-                        patch({ catalog_hidden: false });
-                        setShowCatalog(!showCatalog);
-                      }
-                    }}
-                  >
-                    <svg className="arc-ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <rect x="2" y="2.5" width="12" height="11" rx="2" />
-                      <path d="M6 2.5v11" />
-                    </svg>
-                  </button>
-                )}
-                {walkNavigation && !catalogReading && (
-                  <button className="back-to-catalog" onClick={() => setEntrance('walk')}>
-                    ← 返回功能总览
-                  </button>
-                )}
-                {workspaceTabs ? (
-                  <nav className="feature-view-tabs" aria-label={overview ? '工程全貌视图' : '功能阅读视图'}>
-                    {workspaceTabs.map(([view, label]) => (
-                      <button
-                        key={view}
-                        type="button"
-                        className={view.startsWith('functions:') ? 'feature-functions-tab' : undefined}
-                        aria-current={activeTab === view ? 'page' : undefined}
-                        onClick={() => overview ? navigateView(view) : navigateFeatureTab(view)}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </nav>
-                ) : (
-                  <span className="current-view">{catalogReading ? '功能总览' : currentView}</span>
-                )}
-                {!engineeringReading && freshness && (
-                  <button className={`saved-analysis ${freshness.kind}`} onClick={showRun}>
-                    {freshness.kind === 'affected' ? '旧版本说明 · 所引源码已变更'
-                      : freshness.kind === 'other_changed' ? freshness.count ? '历史快照 · 工作区有其他改动' : '历史快照 · 已保存说明'
-                      : '已保存说明 · 查看真实过程'}
-                  </button>
-                )}
-              </div>
-              {!engineeringReading && (
+            {!catalogReading && (
+              <div className="workspace-bar">
                 <div className="row">
-                  <details className="source-options">
-                    <summary>资料与来源</summary>
-                    <div className="popover-content">
-                      <span className="source-badge" title={result?.binding.source_snapshot_id || project.snapshot_id}>
-                        来源 {short(result?.binding.source_snapshot_id || project.snapshot_id)}
-                      </span>
-                      <button onClick={() => void action(() => api.invoke('refresh', { project_id: projectId }), '已冻结新快照；历史说明保留原来源')}>
-                        刷新来源
-                      </button>
-                    </div>
-                  </details>
-                  {!catalogReading && (
-                    <>
-                      <button className="primary workspace-question" onClick={askHere}>
-                        提问
-                      </button>
-                      <button
-                        className="workspace-detail-toggle"
-                        onClick={() => {
-                          setShowDetail(true);
-                          patch({ detail_tab: 'details' });
-                        }}
-                      >
-                        详情
-                      </button>
-                    </>
+                  {walkNavigation && navToggle}
+                  {walkNavigation && (
+                    <button className="back-to-catalog" onClick={() => setEntrance('walk')}>
+                      ← 返回功能总览
+                    </button>
+                  )}
+                  {workspaceTabs ? (
+                    <nav className="feature-view-tabs" aria-label={overview ? '工程全貌视图' : '功能阅读视图'}>
+                      {workspaceTabs.map(([view, label]) => (
+                        <button
+                          key={view}
+                          type="button"
+                          className={view.startsWith('functions:') ? 'feature-functions-tab' : undefined}
+                          aria-current={activeTab === view ? 'page' : undefined}
+                          onClick={() => overview ? navigateView(view) : navigateFeatureTab(view)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </nav>
+                  ) : (
+                    <span className="current-view">{currentView}</span>
+                  )}
+                  {!engineeringReading && freshness && (
+                    <button className={`saved-analysis ${freshness.kind}`} onClick={showRun}>
+                      {freshness.kind === 'affected' ? '旧版本说明 · 所引源码已变更'
+                        : freshness.kind === 'other_changed' ? freshness.count ? '历史快照 · 工作区有其他改动' : '历史快照 · 已保存说明'
+                        : '已保存说明 · 查看真实过程'}
+                    </button>
                   )}
                 </div>
-              )}
-            </div>
-
-            {catalogReading && (otherProjectTasks.length > 0 || pendingScene) && (
-              <section className="project-task-strip" aria-label="本工程进行中的分析">
-                {otherProjectTasks.map(r => (
-                  <button key={r.binding.run_id} onClick={() => openTask(r.binding.scenario_id)}>
-                    {r.title} · {statuses[r.status]} · 查看进度 →
-                  </button>
-                ))}
-                {pendingScene && !projectTasks.some(r => r.binding.scenario_id === pendingScene.scenario_id) && (
-                  <button onClick={() => openTask(pendingScene.scenario_id)}>{pendingScene.title} · 等待 Agent 领取 →</button>
+                {!engineeringReading && (
+                  <div className="row">
+                    {sourceOptions}
+                    <button className="primary workspace-question" onClick={askHere}>
+                      提问
+                    </button>
+                    <button
+                      className="workspace-detail-toggle"
+                      onClick={() => {
+                        setShowDetail(true);
+                        patch({ detail_tab: 'details' });
+                      }}
+                    >
+                      详情
+                    </button>
+                  </div>
                 )}
-              </section>
+              </div>
             )}
 
             {!engineeringReading && !catalogReading && waitingMcp && result && (
@@ -2160,19 +2175,19 @@ function App() {
               </div>
             )}
 
-            <footer>
-              <span>● 本机保存 · {saved}</span>
-              <span>
-                {catalogReading
-                  ? `${capabilityCount} 项已发现功能`
-                  : preview
+            {!catalogReading && (
+              <footer>
+                <span>● 本机保存 · {saved}</span>
+                <span>
+                  {preview
                     ? '来自已保存的工程分析'
                     : scenario
                       ? `${sceneExplanations.length} 个说明版本 · ${sceneAnnotations.length} 条线索`
                       : '用途与关系待真实分析'}
-              </span>
-              <button onClick={() => patch({ ...defaults, entrance: reading.entrance, view: reading.view, catalog_hidden: overview, scenario_id: scenarioId })}>恢复默认布局</button>
-            </footer>
+                </span>
+                <button onClick={() => patch({ ...defaults, entrance: reading.entrance, view: reading.view, catalog_hidden: overview, scenario_id: scenarioId })}>恢复默认布局</button>
+              </footer>
+            )}
           </>
         )}
 

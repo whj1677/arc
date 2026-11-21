@@ -697,6 +697,9 @@ summary {
   border-color: var(--border-subtle);
 }
 .feature-toggle > span { color: var(--muted); }
+.reading-shell .catalog .feature-group { padding: 1px 2px; margin-bottom: 2px; }
+.reading-shell .catalog .feature-toggle { padding: 6px 4px; }
+.reading-shell .catalog .feature-toggle > strong { font-size: 13px; font-weight: 530; line-height: 1.45; }
 .feature-status-dot {
   width: 7px;
   height: 7px;
@@ -942,24 +945,12 @@ footer button:hover {
   border-bottom: 1px solid #c6dbe6;
   color: #2c556a;
 }
-.project-task-strip,
 .result-status,
 .run-activity,
 .reading-shell > .run-activity.terminal:not(.expanded) {
   background: #eff6f0;
   border-color: var(--border);
   color: var(--ink-secondary);
-}
-.project-task-strip {
-  padding: 5px 18px;
-  gap: 8px;
-}
-.project-task-strip button {
-  border-radius: 999px;
-  font-size: 12px;
-  padding: 3px 10px;
-  background: var(--surface);
-  border-color: var(--border-strong);
 }
 .analysis-activity-panel {
   flex: none;
@@ -2299,3 +2290,34 @@ details.task-model-section > summary { color: var(--ink); font-weight: 550; curs
     transition: none !important;
   }
 }
+
+/* Context heading: optional navigation toggle beside breadcrumb and title. */
+.context-heading { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.context-heading > div { flex: 1; min-width: 0; }
+.reading-shell .nav-toggle.icon {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+.reading-shell .nav-toggle.icon:hover { background: var(--bg-subtle); }
+.reading-shell .nav-toggle.icon[aria-expanded=true] { background: var(--soft); color: var(--accent); }
+.reading-shell .catalog-context { align-items: center; padding-block: 12px; }
+.context-tasks { display: flex; flex-wrap: wrap; gap: 6px; margin-right: 4px; }
+.reading-shell .context-tasks button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 3px 11px;
+  border-color: var(--border);
+  border-radius: 999px;
+  background: var(--surface-tint);
+  color: var(--ink-secondary);
+  font-size: 12.5px;
+}
+.reading-shell .context-tasks button:hover { border-color: var(--border-strong); color: var(--ink); }
+.context-task-pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); animation: capability-pulse 1.6s ease-in-out infinite; }
