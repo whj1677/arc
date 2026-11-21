@@ -88,11 +88,11 @@ export function useTaskHud(taskId: string | undefined, taskVersion: number | und
   return { hud: hud?.task_id === taskId ? hud : null, loading, error, reload };
 }
 
-function shortFile(file: string | null | undefined) {
+export function shortFile(file: string | null | undefined) {
   return file ? file.split('/').at(-1) || file : '未定位文件';
 }
 
-function shortSymbol(symbol: string) {
+export function shortSymbol(symbol: string) {
   return symbol.split(/[.:]/).filter(Boolean).at(-1) || symbol;
 }
 
@@ -105,7 +105,7 @@ const stepKindLabels: Record<WalkthroughDiffStep['kind'], string> = {
   work: '处理',
 };
 
-const statusLabels: Record<'added' | 'removed' | 'modified' | 'unchanged' | 'noise', string> = {
+export const statusLabels: Record<'added' | 'removed' | 'modified' | 'unchanged' | 'noise', string> = {
   added: '新增',
   removed: '已移除',
   modified: '已改动',
@@ -1003,7 +1003,7 @@ export function FlightHudBar({
 /* ==========================================================================
    3. Post-Dev Diagram-First HUD (Full-Width Call Graph + Lifeline Sequence Diff)
    ========================================================================== */
-type SelectedTarget =
+export type SelectedTarget =
   | { kind: 'node'; node: WalkthroughDiffNode }
   | { kind: 'edge'; edge: WalkthroughDiffEdge }
   | { kind: 'step'; step: WalkthroughDiffStep };
@@ -1059,9 +1059,9 @@ function useDiagramViewport(svgWidth: number, svgHeight: number, selectedId: str
   return { frameRef, zoomMode, setZoomMode, renderW, renderH, hasMoreY };
 }
 
-const isRiskLabel = (label?: string) => Boolean(label && label.includes('未同步'));
+export const isRiskLabel = (label?: string) => Boolean(label && label.includes('未同步'));
 
-function CallChainDiffGraph({
+export function CallChainDiffGraph({
   pathDiff,
   viewFilter,
   hideNoise,
@@ -1384,6 +1384,7 @@ function CallChainDiffGraph({
 
     let riskLane = 0;
     let calmLane = 0;
+    let crossCenterLane = 0;
     const placedLabels: { x: number; y: number; w: number }[] = [];
 
     edgeGeoms = visibleEdges.flatMap(edge => {
@@ -1489,6 +1490,24 @@ function CallChainDiffGraph({
           mx = (sx + tx) / 2;
           my = midY;
         }
+      } else if (a.zone === 'center' && b.zone === 'center' && a.bandIndex !== b.bandIndex) {
+        // Cross-file call between two modified files stacked in center hub: route through clean vertical aisle so zero cards are crossed
+        const bothCol0 = a.x < centerX + 4 && b.x < centerX + 4;
+        const lane = crossCenterLane++;
+        const railX = bothCol0
+          ? centerX + nodeW + 45 + (lane % 3) * 10
+          : centerMaxX + 20 + (lane % 4) * 12;
+        const sx = a.x + a.w;
+        const sy = a.y + a.h / 2;
+        const tx = b.x + b.w + 5;
+        const ty = b.y + b.h / 2;
+        const r = 8;
+        const vDir = ty > sy ? 1 : -1;
+        d = `M${sx} ${sy} H${railX - r} Q${railX} ${sy} ${railX} ${sy + vDir * r} V${ty - vDir * r} Q${railX} ${ty} ${railX - r} ${ty} H${tx}`;
+        const upperBand = bands[changedBandIds[Math.min(a.bandIndex, b.bandIndex)]];
+        mx = railX;
+        my = upperBand ? upperBand.y + upperBand.h + bandGap / 2 : (sy + ty) / 2;
+        if (!hasRight) totalMaxX = Math.max(totalMaxX, railX + pw / 2 + 16);
       } else {
         const sx = a.x + a.w / 2;
         const sy = b.y > a.y ? a.y + a.h : a.y;
@@ -2263,7 +2282,7 @@ function TimelineSequenceDiff({
 /* ==========================================================================
    3C. On-Demand Right-Hand Source Diff & Inline Ask Inspector
    ========================================================================== */
-function sliceAroundLine<T extends { type: 'add' | 'del' | 'same' | 'gap'; oldLine?: number; newLine?: number }>(
+export function sliceAroundLine<T extends { type: 'add' | 'del' | 'same' | 'gap'; oldLine?: number; newLine?: number }>(
   rows: T[],
   focusLine: number,
   maxRows = 60,
@@ -2615,7 +2634,7 @@ function WalkthroughInspector({
   );
 }
 
-function StructureDiffDrawer({ diff, onClose }: { diff: TaskHudStructureDiff; onClose: () => void }) {
+export function StructureDiffDrawer({ diff, onClose }: { diff: TaskHudStructureDiff; onClose: () => void }) {
   const brokenCallers = [
     ...diff.signature_changed_symbols,
     ...diff.removed_symbols,

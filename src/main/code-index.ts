@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import Parser from 'web-tree-sitter';
 import type {Snapshot} from '../shared';
-import {readSource, relativePath} from './snapshot';
+import {linesOf, readSource, relativePath} from './snapshot';
 import grammars from './tree-sitter-grammars.json';
 
 type Language = keyof typeof grammars;
@@ -29,6 +29,16 @@ const extensions:Record<string,Language> = {
   '.py':'python', '.js':'javascript', '.mjs':'javascript', '.cjs':'javascript', '.jsx':'javascript',
   '.ts':'typescript', '.mts':'typescript', '.cts':'typescript', '.tsx':'tsx', '.java':'java',
 };
+export function supportsSourceFile(file:string) {
+  return Object.hasOwn(extensions,path.extname(file).toLowerCase());
+}
+export function ambiguousCHeader(file:string, text:string) {
+  return path.extname(file).toLowerCase() === '.h' && !/\b(?:class|namespace|template)\b|::/.test(text);
+}
+export function hasCppSources(files:Iterable<string>) {
+  for (const file of files) if (extensions[path.extname(file).toLowerCase()] === 'cpp') return true;
+  return false;
+}
 function asset(dependencyPath:string) {
   if (typeof __dirname === 'string' && path.basename(__dirname) === 'dist') return path.join(__dirname, 'tree-sitter', path.basename(dependencyPath));
   return path.resolve('node_modules', dependencyPath);
@@ -155,6 +165,13 @@ interface CppFacts {
   uses:ValueUse[]; globals:Map<string,SharedState[]>; initializers:Map<string,CodeSymbol>; internal:Set<string>;
   imports:Map<CodeCall,ImportedCall>; members:Map<string,Set<string>>;
 }
+function emptyCppFacts():CppFacts {
+  return {uses:[],globals:new Map(),initializers:new Map(),internal:new Set(),imports:new Map(),members:new Map()};
+}
+export interface SourceUnit {
+  file:string; parsed:boolean; symbols:CodeSymbol[]; calls:CodeCall[]; namespaces:Set<string>;
+  facts:CppFacts; parse_errors:CodeIndex['parse_errors'];
+}
 const statementScopes = new Set(['compound_statement','for_statement','for_range_loop','if_statement','while_statement','switch_statement']);
 const cIndexNodes = [...indexNodes, 'declaration','parameter_declaration','init_declarator','identifier',
   ...statementScopes,'using_declaration','preproc_def','preproc_function_def'];
@@ -248,7 +265,8 @@ function valueName(node:Node, text:string, scopes:Scope[]) {
   return {name,qualifier:qualifier === '::' ? '::' : qualifier.replace(/::$/,'')};
 }
 
-function extract(tree:Parser.Tree, text:string, lineCount:number, file:string, lang:Language, index:CodeIndex, namespaces:Set<string>, facts:CppFacts) {
+function extract(tree:Parser.Tree, text:string, lineCount:number, file:string, lang:Language, index:SourceUnit) {
+  const {namespaces,facts} = index;
   const root = tree.rootNode;
   const cpp = lang === 'c' || lang === 'cpp';
   const packageName = lang === 'java' ? root.namedChildren.find(n => n.type === 'package_declaration')?.lastNamedChild?.text : '';
@@ -451,7 +469,7 @@ function resolveCalls(index:CodeIndex, facts:CppFacts) {
     }
   }
   index.calls = index.calls.filter(call=>call.syntax !== 'reference' || references.has(call));
-  for (const id of usedInitializers) index.symbols.push(facts.initializers.get(id)!);
+  for (const id of usedInitializers) index.symbols.push({...facts.initializers.get(id)!});
 }
 
 function summarize(index:CodeIndex) {
@@ -496,50 +514,86 @@ function summarize(index:CodeIndex) {
 }
 
 async function* indexSources(storage:string, snapshot:Snapshot) {
-  const files = snapshot.files.filter(file=>extensions[path.extname(file.path).toLowerCase()]);
+  const files = snapshot.files.filter(file=>supportsSourceFile(file.path));
   // Bound the decoded text held at once; each read still verifies its frozen hash and path.
   for (let start=0; start<files.length; start+=16) {
     yield* await Promise.all(files.slice(start,start+16).map(file=>readSource(storage,snapshot,file.path)));
   }
 }
 
-async function buildIndex(storage:string, snapshot:Snapshot):Promise<CodeIndex> {
+export async function parseSourceUnit(file:string, source:string, hasCpp=false, lineCount=linesOf(source).length):Promise<SourceUnit> {
+  const ext = path.extname(file).toLowerCase();
+  let lang = extensions[ext];
+  if (!lang) throw Error(`不支持 AST 索引的文件: ${file}`);
+  const text = source.replace(/\r\n?/g,'\n');
+  if (ext === '.h' && (hasCpp || !ambiguousCHeader(file, text))) lang = 'cpp';
   runtime ??= Parser.init({locateFile:(file:string)=>asset(`web-tree-sitter/${file}`)});
   await runtime;
-  const index:CodeIndex = {schema_version:version,snapshot_id:snapshot.source_snapshot_id,fingerprint:snapshot.fingerprint,
-    files:[],symbols:[],calls:[],modules:[],module_edges:[],shared_states:[],parse_errors:[]};
-  const hasCpp = snapshot.files.some(f=>extensions[path.extname(f.path).toLowerCase()] === 'cpp');
-  const namespaces = new Set<string>();
-  const facts:CppFacts = {uses:[],globals:new Map(),initializers:new Map(),internal:new Set(),imports:new Map(),members:new Map()};
+  const language = await grammar(lang);
+  const unit:SourceUnit = {file,parsed:false,symbols:[],calls:[],namespaces:new Set(),facts:emptyCppFacts(),parse_errors:[]};
   const parser = new Parser();
   try {
-    for await (const source of indexSources(storage,snapshot)) {
-      const file = source.path;
-      const ext = path.extname(file).toLowerCase();
-      let lang = extensions[ext];
-      const text = source.text.replace(/\r\n?/g,'\n');
-      if (ext === '.h' && (hasCpp || /\b(?:class|namespace|template)\b|::/.test(text))) lang = 'cpp';
-      parser.setLanguage(await grammar(lang));
-      let tree:Parser.Tree;
-      try { tree = parser.parse(text); }
-      catch (error) {
-        index.parse_errors.push({file,reason:(error as Error).message});
-        parser.reset();
-        continue;
-      }
-      try {
-        extract(tree,text,source.line_count,file,lang,index,namespaces,facts);
-        index.files.push(file);
-        if (tree.rootNode.hasError) index.parse_errors.push({file,reason:'语法树含错误节点，已索引可识别部分'});
-      } finally { tree.delete(); }
+    parser.setLanguage(language);
+    let tree:Parser.Tree;
+    try { tree = parser.parse(text); }
+    catch (error) {
+      unit.parse_errors.push({file,reason:(error as Error).message});
+      return unit;
     }
+    try {
+      extract(tree,text,lineCount,file,lang,unit);
+      unit.parsed = true;
+      if (tree.rootNode.hasError) unit.parse_errors.push({file,reason:'语法树含错误节点，已索引可识别部分'});
+    } finally { tree.delete(); }
   } finally { parser.delete(); }
-  for (const s of index.symbols) {
-    if (s.language === 'cpp' && s.kind === 'method' && namespaces.has(s.qualified_name.split('::').slice(0,-1).join('::'))) s.kind = 'function';
+  return unit;
+}
+
+export function assembleCodeIndex(units:Iterable<SourceUnit>, snapshotId:string, fingerprint:string):CodeIndex {
+  const index:CodeIndex = {schema_version:version,snapshot_id:snapshotId,fingerprint,
+    files:[],symbols:[],calls:[],modules:[],module_edges:[],shared_states:[],parse_errors:[]};
+  const namespaces = new Set<string>(), facts = emptyCppFacts();
+  for (const unit of units) {
+    if (unit.parsed) index.files.push(unit.file);
+    for (const error of unit.parse_errors) index.parse_errors.push({...error});
+    for (const symbol of unit.symbols) index.symbols.push({...symbol});
+    for (const name of unit.namespaces) namespaces.add(name);
+    // Resolution mutates target_ids and uses object identity for C++ imports.
+    for (const original of unit.calls) {
+      const call = {...original,target_ids:[]};
+      index.calls.push(call);
+      const binding = unit.facts.imports.get(original);
+      if (binding) facts.imports.set(call,binding);
+    }
+    for (const use of unit.facts.uses) facts.uses.push(use);
+    for (const [id,symbol] of unit.facts.initializers) facts.initializers.set(id,symbol);
+    for (const id of unit.facts.internal) facts.internal.add(id);
+    for (const [name,sites] of unit.facts.globals) {
+      const all = facts.globals.get(name) ?? [];
+      for (const site of sites) all.push(site);
+      facts.globals.set(name,all);
+    }
+    for (const [name,members] of unit.facts.members) {
+      const all = facts.members.get(name) ?? new Set<string>();
+      for (const member of members) all.add(member);
+      facts.members.set(name,all);
+    }
+  }
+  for (const symbol of index.symbols) {
+    if (symbol.language === 'cpp' && symbol.kind === 'method' && namespaces.has(symbol.qualified_name.split('::').slice(0,-1).join('::'))) symbol.kind = 'function';
   }
   resolveCalls(index,facts);
   summarize(index);
   return index;
+}
+
+async function buildIndex(storage:string, snapshot:Snapshot):Promise<CodeIndex> {
+  const units:SourceUnit[] = [];
+  const hasCpp = hasCppSources(snapshot.files.map(file=>file.path));
+  for await (const source of indexSources(storage,snapshot)) {
+    units.push(await parseSourceUnit(source.path,source.text,hasCpp,source.line_count));
+  }
+  return assembleCodeIndex(units,snapshot.source_snapshot_id,snapshot.fingerprint);
 }
 
 export async function getCodeIndex(storage:string, snapshot:Snapshot):Promise<CodeIndex> {

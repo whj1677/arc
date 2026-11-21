@@ -9,6 +9,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {randomBytes} from 'node:crypto';
 import type {ArcService} from './service';
+import type { LiveWorkspaceRadar } from '../live-radar';
 import type {Run,Snapshot,Scenario,Project,ReadingQuestion} from '../shared';
 import {id,now} from './store';
 import {schema,normalizeTransport,validateResult} from './validation';
@@ -34,6 +35,7 @@ const requirementPackageSchema={type:'object',additionalProperties:false,require
 const requirementAnalysisInstructions='本次仅做只读需求分析，不修改工程或运行构建测试。按 next_offset 读取有关工程与任务上下文，truncated 条目使用 entry_id 取得全文，再核对当前绑定工作区的有关源码。明确原始需求及补充，核对工程依据，在原任务保存 summary、proposed_scope、steps（含验收 criteria）和 requirement_package.behaviors。每项须含唯一 id、可观察 behavior、实现 design、对应的 files、step_ids 和可实际执行的 verification。步骤和建议文件均须对应行为。assumptions 记录推断，open_questions 记录阻塞实施的疑问，non_goals 记录本轮不改范围，revoked 记录用户撤回或禁止再实现的行为。decisions 记录取舍，unresolved 记录未确定项。完成分析后回填 status=completed 并停止，等待用户在 ARC 审阅固定版本、确认本次写入范围。';
 const developmentFields={requirement_package:requirementPackageSchema,proposed_scope:strings,task_id:property,expected_version:{type:'integer',minimum:0},submission_key:property,summary:property,decisions:{type:'array',items:property},unresolved:{type:'array',items:property},verification:{type:'array',items:{type:'object'}},steps:{type:'array',maxItems:40,items:stepSchema},attempt_id:property};
 export const bridgeTools=[
+  tool('arc_workspace_impact','只读查看已授权 Git 工作区的实时影响。传工作区相对文件路径查询调用方、共享状态、架构、功能和约束；省略 files 查看当前变更及未同步调用方。',{workspace_path:property,files:strings},['workspace_path']),
   tool('arc_claim_dispatch','领取 ARC 主动发送的持久任务。重试必须使用同一个派发 ID。返回固定分析合同或开发任务，按原任务继续并回填。',{dispatch_id:property},['dispatch_id'],false),
   tool('arc_save_engineering_entry','保存当前授权工作区的工程概述、构建、规则、问题、模块、接口、决策、技术、方案、架构、设计或验证计划正文；不代表开发或验证完成，不强制填写全部栏目。新建 expected_version=0，编辑先读取条目版本；保留稳定 submission_key 防重。来源固定 agent，无来源为待复核。',{task_id:property,project_id:property,workspace_path:property,entry_id:property,expected_version:{type:'integer',minimum:0},submission_key:property,category:{type:'string',enum:engineeringCategories},key:property,text:property,status:{type:'string',enum:['current','needs_review']},sources:{type:'array',items:{type:'object'}}},['workspace_path','expected_version','submission_key','category','key','text'],false),
   tool('arc_engineering_context','读取当前实际工作区的共享工程事实、规则、来源和近期任务；开发前自动读取，普通只读解释不创建开发任务。执行上下文包含工程级有效资料与当前 task_id 资料，不含其他任务。默认分页摘要；必须按 next_offset 读完相关页，truncated=true 时用 entry_id 取得全文；摘要不是全文。view=strict 保留界面严格任务筛选。query/offset/limit按需查找，entry_id取得条目详情；result_id读取analysis_refs对应的既有工程分析、节点关系和源码依据，保留冻结来源及待复核状态。必须传当前实际工作区，禁止操作另一个授权工程。',{view:{type:'string',enum:['strict','execution']},task_id:property,project_id:property,workspace_path:property,refresh:{type:'boolean'},query:property,entry_id:property,result_id:property,category:property,offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:40}},['workspace_path']),
@@ -53,6 +55,51 @@ export const bridgeTools=[
   tool('arc_task_status','查看本次 MCP 任务状态；若已撤销，应停止操作。',{run_id:property},['run_id']),
 ];
 function string(v:unknown,max=20000){if(typeof v!=='string'||!v.trim()||v.length>max)throw Error('参数必须是非空且长度受限的字符串');return v.trim();}
+
+function summarizeRadar(radar: LiveWorkspaceRadar) {
+  const { changed_files, structure_diff, ast_call_graph, impact } = radar;
+  const omitted: Record<string, number> = {};
+  function preview<T>(key: string, rows: T[], limit: number) {
+    if (rows.length > limit) omitted[key] = rows.length - limit;
+    return rows.slice(0, limit);
+  }
+  const risks = structure_diff
+    ? [...structure_diff.signature_changed_symbols, ...structure_diff.removed_symbols]
+      .filter(s => s.public_entry || s.unupdated_external_callers?.length)
+      .sort((a, b) => (b.unupdated_external_callers?.length ?? 0) - (a.unupdated_external_callers?.length ?? 0))
+    : [];
+  const symbols = [
+    ['signature_changed', structure_diff?.signature_changed_symbols ?? []],
+    ['removed', structure_diff?.removed_symbols ?? []],
+    ['added', structure_diff?.added_symbols ?? []],
+  ] as const;
+  const symbolChanges: {symbol: string; file: string; line: number; status: string}[] = symbols.flatMap(([status, rows]) =>
+    rows.map(({symbol, file, line}) => ({symbol, file, line, status})));
+  const structuralLocations = new Set(symbolChanges.map(s => JSON.stringify([s.file, s.symbol, s.line])));
+  for (const node of ast_call_graph?.path.participants ?? []) {
+    const line = node.after_line ?? node.before_line;
+    if (node.code_changed && node.file && line !== undefined &&
+        !structuralLocations.has(JSON.stringify([node.file, node.symbol, line]))) {
+      symbolChanges.push({symbol: node.symbol, file: node.file, line, status: node.status});
+    }
+  }
+  if (ast_call_graph?.omitted_changes) omitted.call_graph_changes = ast_call_graph.omitted_changes;
+  return {
+    is_git: radar.is_git, base_ref: radar.base_ref, target_ref: radar.target_ref, computed_ms: radar.computed_ms,
+    changed_files: preview('changed_files', changed_files, 40).map(({path, status}) => ({path, status})),
+    contract_risks: preview('contract_risks', risks, 16).map(({symbol, file, line, unupdated_external_callers = []}) => ({
+      symbol, file, line, unupdated_external_callers: unupdated_external_callers.slice(0, 4).map(
+        ({caller_symbol, caller_file, caller_line}) => ({caller_symbol, caller_file, caller_line})),
+      ...(unupdated_external_callers.length > 4 && {omitted_callers: unupdated_external_callers.length - 4}),
+    })),
+    symbol_changes: preview('symbol_changes', symbolChanges, 32),
+    architecture_nodes: preview('architecture_nodes', impact.architecture_nodes, 20),
+    impacted_features: preview('impacted_features', impact.impacted_features, 20)
+      .map(({feature_id, scenario_id, label}) => ({feature_id, scenario_id, label})),
+    related_constraints: impact.related_constraints,
+    ...(Object.keys(omitted).length && {omitted}),
+  };
+}
 export class ArcMcpBridge {
   readonly connectionId=id('mcp');
   private token=randomBytes(32).toString('hex');
@@ -299,8 +346,13 @@ export class ArcMcpBridge {
       const workspace=await this.service.engineering.resolve({project_id:args.project_id,workspace_path:string(args.workspace_path,4000)});this.authorizeDevelopment(workspace.project_id);
       return this.service.engineering.saveEntry({...args,project_id:workspace.project_id,workspace_path:workspace.root_path},'agent',()=>{this.authorizeDevelopment(workspace.project_id);return !this.closed;});
     }
-    if(name==='arc_engineering_context'||name==='arc_begin_development'){
+    if(name==='arc_engineering_context'||name==='arc_begin_development'||name==='arc_workspace_impact'){
       const workspace=await this.service.engineering.resolve({project_id:args.project_id,workspace_path:string(args.workspace_path,4000)});this.authorizeDevelopment(workspace.project_id);
+      if(name==='arc_workspace_impact'){
+        if(args.files===undefined)return summarizeRadar(await this.service.liveRadar(workspace.project_id,{mode:'worktree'}));
+        if(!Array.isArray(args.files)||args.files.some((file:unknown)=>typeof file!=='string'))throw Error('files 必须是相对路径字符串数组');
+        return this.service.liveImpact(workspace.project_id,args.files);
+      }
       if(args.refresh)await this.service.refresh(workspace.project_id);
       const context=await this.service.engineering.context({project_id:workspace.project_id,workspace_path:workspace.root_path,task_id:args.task_id,view:args.view??'execution',refresh:args.refresh,query:args.query,entry_id:args.entry_id,result_id:args.result_id,category:args.category,offset:args.offset,limit:args.limit});
       if(name==='arc_engineering_context')return context;

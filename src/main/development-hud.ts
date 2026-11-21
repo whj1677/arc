@@ -16,7 +16,7 @@ type RefreshState = (taskId: string, scenarioId: string) => { refreshing: boolea
 const testFile = /(?:^|\/)(?:tests?|__tests__)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/)test_[^/]*\.py$|_test\.py$/i;
 const normalizePath = (file: string) => file.replaceAll('\\', '/');
 
-function indexImpact(index: CodeIndex, scope: Set<string>) {
+export function indexImpact(index: CodeIndex, scope: Set<string>) {
   const symbols = new Map(index.symbols.map(symbol => [symbol.id, symbol]));
   const external_callers: TaskHudImpact['external_callers'] = [];
   const callers = new Set<string>();
@@ -51,7 +51,7 @@ function indexImpact(index: CodeIndex, scope: Set<string>) {
   return { external_callers, shared_states, untested_symbols };
 }
 
-function architectureImpact(overview: AnalysisResult | undefined, scope: Set<string>) {
+export function architectureImpact(overview: AnalysisResult | undefined, scope: Set<string>) {
   const architecture_nodes: TaskHudImpact['architecture_nodes'] = [];
   const architecture_edges: TaskHudImpact['architecture_edges'] = [];
   if (overview?.architecture) {
@@ -110,16 +110,10 @@ export function previousFeatureResultId(store: Store, task: EngineeringTask, sce
   return selectPrevious(projectHistory(store, task.project_id, scenarioId), task, scenarioId)?.result_id;
 }
 
-function impactedFeatures(
-  store: Store, project: Project, task: EngineeringTask, files: Set<string>,
-  snapshot: (id: string) => Snapshot, refreshState?: RefreshState,
-) {
+function matchingFeatures(store: Store, project: Project, files: Set<string>, reading?: EngineeringTask['reading']) {
   const features = store.all<Feature>('feature').filter(f => f.project_id === project.project_id && !f.archived);
   const scenes = store.all<Scenario>('scenario').filter(s => s.project_id === project.project_id && !s.archived);
   const explanations = projectHistory(store, project.project_id);
-  const refreshRunIds = new Set(store.db.prepare(`SELECT json_extract(json,'$.binding.run_id') AS run_id
-    FROM objects WHERE kind='run' AND json_extract(json,'$.feature_refresh_task_id')=?`)
-    .all(task.task_id).map(row => String(row.run_id)));
   const byId = new Map(explanations.map(e => [e.result_id, e]));
   const histories = new Map<string, Explanation[]>();
   const matching = new Set<string>();
@@ -129,9 +123,9 @@ function impactedFeatures(
     else histories.set(e.scenario_id, [e]);
     if (e.result.evidence.some(ref => files.has(ref.path))) matching.add(e.scenario_id);
   }
-  const impacted: HudImpactedFeature[] = [];
+  const matches: {feature: Feature; scene: Scenario; history: Explanation[]}[] = [];
   for (const feature of features) {
-    const bound = feature.feature_id === task.reading?.feature_id ? task.reading : undefined;
+    const bound = feature.feature_id === reading?.feature_id ? reading : undefined;
     const candidates = scenes.filter(s => s.feature_id === feature.feature_id &&
       (s.scenario_id !== project.overview_scenario_id || s.scenario_id === bound?.scenario_id));
     // A feature may only have catalog evidence until its first walkthrough is saved.
@@ -141,8 +135,37 @@ function impactedFeatures(
     const matched = candidates.filter(s => matching.has(s.scenario_id) || catalogMatch);
     const scene = candidates.find(s => s.scenario_id === bound?.scenario_id) ??
       matched.find(s => s.kind === 'feature_overview') ?? matched[0];
-    if (!scene) continue;
-    const history = histories.get(scene.scenario_id) ?? [];
+    if (scene) matches.push({feature, scene, history: histories.get(scene.scenario_id) ?? []});
+  }
+  return {matches, byId};
+}
+
+export function impactedFeaturesForFiles(store: Store, project: Project, files: Set<string>): HudImpactedFeature[] {
+  if (!files.size) return [];
+  return matchingFeatures(store, project, files).matches.map(({feature, scene, history}) => ({
+    feature_id: feature.feature_id, scenario_id: scene.scenario_id, label: feature.name,
+    previous_result_id: history[0]?.result_id, has_call_graph: !!history[0] && hasFunctionGraphs(history[0].result),
+    refreshing: false,
+  }));
+}
+
+export function relatedConstraints(store: Store, project: Project, files: Set<string>) {
+  return activeContextEntries(store.projectContextEntries(project.project_id))
+    .filter(e => ['rule', 'decision', 'issue'].includes(e.category) && e.sources.some(s => files.has(s.path)))
+    .slice(0, 12).map(e => ({ entry_id: e.entry_id, category: e.category, key: e.key, excerpt: e.text.slice(0, 180) }));
+}
+
+function impactedFeatures(
+  store: Store, project: Project, task: EngineeringTask, files: Set<string>,
+  snapshot: (id: string) => Snapshot, refreshState?: RefreshState,
+) {
+  const {matches, byId} = matchingFeatures(store, project, files, task.reading);
+  const refreshRunIds = new Set(store.db.prepare(`SELECT json_extract(json,'$.binding.run_id') AS run_id
+    FROM objects WHERE kind='run' AND json_extract(json,'$.feature_refresh_task_id')=?`)
+    .all(task.task_id).map(row => String(row.run_id)));
+  const impacted: HudImpactedFeature[] = [];
+  for (const {feature, scene, history} of matches) {
+    const bound = feature.feature_id === task.reading?.feature_id ? task.reading : undefined;
     const update = bound?.scenario_id === scene.scenario_id ? task.walkthrough : undefined;
     const previous = selectPrevious(history, task, scene.scenario_id);
     const end = task.end_state;
@@ -197,9 +220,7 @@ export async function buildTaskHud(
   const impact: TaskHudImpact = {
     scope_files: [...impactScope], scope_declared: scopeDeclared, ...indexImpact(beforeIndex, impactScope),
     ...architectureImpact(store.latestOverview(project)?.result, impactScope),
-    related_constraints: activeContextEntries(store.projectContextEntries(project.project_id))
-      .filter(e => ['rule', 'decision', 'issue'].includes(e.category) && e.sources.some(s => impactScope.has(s.path)))
-      .slice(0, 12).map(e => ({ entry_id: e.entry_id, category: e.category, key: e.key, excerpt: e.text.slice(0, 180) })),
+    related_constraints: relatedConstraints(store, project, impactScope),
     impacted_features: impacted,
   };
   const hud: TaskHudSnapshot = {

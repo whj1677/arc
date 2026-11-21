@@ -15,8 +15,12 @@ export async function fileSha256(file:string) {
   for await(const bytes of createReadStream(file))hash.update(bytes);
   return hash.digest('hex');
 }
+export function isRelativePath(value: unknown): value is string {
+  return typeof value === 'string' && !!value && !value.includes('\\') && !value.includes(':') && !value.includes('\0') &&
+    !path.posix.isAbsolute(value) && value.split('/').every(part => part && part !== '.' && part !== '..');
+}
 export function relativePath(value: string) {
-  if (!value || value.includes('\\') || value.includes(':') || value.includes('\0') || path.posix.isAbsolute(value) || value.split('/').some(p => p === '..' || p === '.' || !p)) throw new Error('拒绝非规范或越界路径');
+  if (!isRelativePath(value)) throw new Error('拒绝非规范或越界路径');
   return value;
 }
 export function inside(root: string, target: string) {
@@ -36,17 +40,28 @@ export async function safeFile(root: string, file: string) {
   return resolved;
 }
 const ignored = new Set(['.git','node_modules','.arc-local','dist','release','.next','.venv','venv','.idea','.cache','.codex','.dsh','.tools','.test-data','.runtime','.work','.pytest_cache','__pycache__','CMakeFiles']);
+export function generatedMarker(name:string, directory:boolean) {
+  return directory ? name === 'CMakeFiles' : name === 'CMakeCache.txt' || name === 'build.ninja';
+}
 // A directory named build can contain authored source. Check build markers
 // in the listing already needed for traversal, without stat'ing every child.
-async function sourceDirectoryEntries(directory:string) {
+export async function sourceDirectoryEntries(directory:string) {
   if(path.basename(directory)==='CMakeFiles')return null;
   const entries=await fs.readdir(directory,{withFileTypes:true});
-  return entries.some(entry=>entry.isFile()&&(entry.name==='CMakeCache.txt'||entry.name==='build.ninja') ||
-    entry.isDirectory()&&entry.name==='CMakeFiles')?null:entries;
+  return entries.some(entry=>(entry.isFile() || entry.isDirectory()) && generatedMarker(entry.name,entry.isDirectory()))?null:entries;
 }
 const secret = /^(?:\.env(?:\..*)?|\.?auth\.json|\.?credentials(?:\..*)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|.*\.(?:pem|key|p12|pfx))$/i;
-function excludedEntry(name:string) {
+export function excludedEntry(name:string) {
   return ignored.has(name) || secret.test(name) || /^\.tmp_/i.test(name);
+}
+const windowsIgnored = new Set([...ignored].map(name => name.toLowerCase()));
+function windowsPathAlias(part: string) {
+  return /[. ]$/.test(part) || /~\d/.test(part) || /^(?:nul|con|aux|prn|com\d|lpt\d)(?:\.|$)/i.test(part);
+}
+// Live callers supply their own spelling, while snapshot traversal sees canonical directory entries.
+export function livePathComponentAllowed(part: string) {
+  return !excludedEntry(part) && (process.platform !== 'win32' ||
+    (!windowsIgnored.has(part.toLowerCase()) && !windowsPathAlias(part)));
 }
 // Rollback can recreate missing paths, including paths supplied by a restored
 // archive. Apply the same exclusions before consulting its saved manifests.
@@ -54,7 +69,7 @@ export function rollbackPathAllowed(file:string) {
   return relativePath(file).split('/').every(part=>
     !excludedEntry(part)&&!ignored.has(part.toLowerCase())&&
     !/^(?:cmakefiles$|cmake-build-)/i.test(part)&&
-    !(process.platform==='win32'&&(/[. ]$/.test(part)||/~\d/.test(part)||/^(?:nul|con|aux|prn|com\d|lpt\d)(?:\.|$)/i.test(part)))
+    !(process.platform==='win32'&&windowsPathAlias(part))
   );
 }
 export function decode(bytes: Uint8Array) {

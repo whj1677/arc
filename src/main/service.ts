@@ -28,6 +28,7 @@ import type {
   Scenario,
   ScenarioBreakdownResult,
   Snapshot,
+  SourceEditor,
   WorkspaceData,
 } from '../shared';
 import { activeRunStatuses, hasFunctionGraphs, readingLimits, terminalRunStatuses } from '../shared';
@@ -51,6 +52,8 @@ import { parseDshReply } from './dsh';
 import { runDshWeb } from './dsh-web';
 import { EngineeringService } from './engineering-service';
 import { buildTaskHud, previousFeatureResultId } from './development-hud';
+import type { RadarMode } from '../live-radar';
+import { buildLiveWorkspaceRadar, liveWorkspaceImpact, openLiveWorkspaceFile, readLiveFileDiff, type FileDiffOptions } from './live-radar';
 import { DevelopmentService } from './development-service';
 import { ReadingService } from './reading-service';
 import { WalkthroughRefreshCoordinator } from './walkthrough-refresh';
@@ -916,6 +919,23 @@ export class ArcService {
   taskHud(taskId: string) {
     return buildTaskHud(this.store, this.directory, taskId,
       (task, scenario) => this.featureRefreshState(task, scenario));
+  }
+
+  liveRadar(projectId: string, options?: { mode?: RadarMode; commit?: string; previousFingerprint?: string }) {
+    return buildLiveWorkspaceRadar(this.store, projectId, options);
+  }
+
+  liveFileDiff(projectId: string, options: FileDiffOptions) {
+    return readLiveFileDiff(this.store, projectId, options);
+  }
+
+  openLiveFile(projectId: string, file: string, line: number | undefined, editor: SourceEditor,
+      openPath: (file: string) => Promise<string>) {
+    return openLiveWorkspaceFile(this.store, projectId, file, line, editor, openPath);
+  }
+
+  liveImpact(projectId: string, files: string[]) {
+    return liveWorkspaceImpact(this.store, this.store.get<Project>('project', projectId), files);
   }
 
   async refreshFeatureWalkthrough(taskId: string, scenarioId: string, submissionKey: string,

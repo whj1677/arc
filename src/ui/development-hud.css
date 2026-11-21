@@ -948,7 +948,7 @@ button.hud-pill[aria-pressed="true"] {
 .hud-file-band-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
   font-size: 11px;
   pointer-events: none;

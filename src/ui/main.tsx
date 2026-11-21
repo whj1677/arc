@@ -27,6 +27,7 @@ import {
 import { timelineModel } from './timeline-model';
 import { savedBusinessPath } from './home-reading';
 import { EngineeringOverviewSections, EngineeringWorkspace } from './EngineeringWorkspace';
+import { LiveRadarView } from './LiveRadarView';
 import type { TaskArchitectureOverlay } from './DevelopmentHud';
 import { WorkbenchNavigation } from './WorkbenchNavigation';
 import { edgeSelection, readingQuestionTarget } from './reading-target';
@@ -172,7 +173,7 @@ function App() {
   const overviewReviewGaps = overviewRun?.overview_format && !result?.fictional ? result?.gaps.filter(gap => gap.gap_id.startsWith('overview-review-') && gap.related_node_ids.length) || [] : [];
 
   const catalogReading = reading.view === 'capabilities' || (reading.entrance === 'walk' && !scenarioId);
-  const engineeringReading = ['engineering', 'materials'].includes(reading.view);
+  const engineeringReading = ['engineering', 'materials', 'radar'].includes(reading.view);
   const overview = reading.entrance === 'overview';
   const overviewSectionsVisible = overview && reading.view === 'system' && !project?.fictional;
   const walkNavigation = reading.entrance === 'walk' && !engineeringReading;
@@ -500,7 +501,7 @@ function App() {
       .then(r => {
         const featureScenario = !!scenarioId && scenarioId !== project?.overview_scenario_id;
         if (r) r = featureReadingPosition(modernReading(r));
-        if (r && featureScenario && ['home', 'engineering', 'materials'].includes(r.view)) {
+        if (r && featureScenario && ['home', 'engineering', 'materials', 'radar'].includes(r.view)) {
           r = { ...r, entrance: 'walk', view: 'timeline' };
         }
         if (current) {
@@ -1291,7 +1292,7 @@ function App() {
     }
   }
 
-  function openWorkbench(view: 'overview' | 'walk' | 'materials' | 'engineering') {
+  function openWorkbench(view: 'overview' | 'walk' | 'materials' | 'radar' | 'engineering') {
     if (!project) {
       openModal('open');
       return;
@@ -1300,7 +1301,7 @@ function App() {
       setEntrance(view);
       return;
     }
-    if (view === 'engineering' || view === 'materials') {
+    if (view === 'engineering' || view === 'materials' || view === 'radar') {
       switchView(view, { mode: 'normal', catalog_hidden: true });
     }
   }
@@ -1736,8 +1737,12 @@ function App() {
               onReturnTask: () => {
                 const taskId = archOverlay.taskId;
                 setArchOverlay(null);
-                setRequestedTask(taskId);
-                switchView('engineering', { mode: 'normal', catalog_hidden: true });
+                if (taskId === '__live_radar__') {
+                  switchView('radar', { mode: 'normal', catalog_hidden: true });
+                } else {
+                  setRequestedTask(taskId);
+                  switchView('engineering', { mode: 'normal', catalog_hidden: true });
+                }
               },
             }
           : null
@@ -1798,7 +1803,7 @@ function App() {
       <WorkbenchNavigation
         projects={data.projects}
         projectId={projectId}
-        active={reading.view === 'materials' ? 'materials' : engineeringReading ? 'engineering' : reading.entrance === 'walk' ? 'walk' : 'overview'}
+        active={reading.view === 'materials' ? 'materials' : reading.view === 'radar' ? 'radar' : engineeringReading ? 'engineering' : reading.entrance === 'walk' ? 'walk' : 'overview'}
         onProject={id => {
           const p = data.projects.find(item => item.project_id === id);
           if (p) void chooseProject(p);
@@ -2102,7 +2107,20 @@ function App() {
                   <Separator side="left_width" value={reading.left_width} change={changeWidth} reset={() => patch({ left_width: 220 })} />
                 </>
               )}
-              {engineeringReading ? (
+              {reading.view === 'radar' ? (
+                <LiveRadarView
+                  key={project.project_id}
+                  project={project}
+                  onOpenArchitectureOverlay={overlay => {
+                    chooseScenario(project.overview_scenario_id || '', {
+                      ...overviewLanding,
+                      ...(overlay.resultId ? { result_id: overlay.resultId } : {}),
+                      source_snapshot_id: project.snapshot_id,
+                    });
+                    setArchOverlay(overlay);
+                  }}
+                />
+              ) : engineeringReading ? (
                 <EngineeringWorkspace
                   key={project.project_id}
                   project={project}

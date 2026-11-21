@@ -6,13 +6,19 @@ export function TextDiffView({
   before,
   after,
   truncated,
+  beforeLabel = '任务开始时',
+  afterLabel = '任务结束时',
+  closeLabel = '关闭对比',
   onClose,
 }: {
   path: string;
   before: string;
   after: string;
   truncated: boolean;
-  onClose: () => void;
+  beforeLabel?: string;
+  afterLabel?: string;
+  closeLabel?: string;
+  onClose?: () => void;
 }) {
   const [viewMode, setViewMode] = useState<'split' | 'unified'>('split');
   const [contextOnly, setContextOnly] = useState(true);
@@ -53,18 +59,20 @@ export function TextDiffView({
               {contextOnly ? '显示全文' : '仅看变更'}
             </button>
           )}
-          <button type="button" onClick={onClose}>
-            关闭对比
-          </button>
+          {onClose && (
+            <button type="button" onClick={onClose}>
+              {closeLabel}
+            </button>
+          )}
         </div>
       </div>
 
-      {truncated && <p className="warning engineering-diff-warning">文件较长，当前显示部分内容；完整版本保存在引用快照。</p>}
+      {truncated && <p className="warning engineering-diff-warning">文件较长，当前显示前 200KB 内容。</p>}
 
       {viewMode === 'split' ? (
         <div className="engineering-diff-split">
           <section>
-            <h4>任务开始时</h4>
+            <h4>{beforeLabel}</h4>
             <pre className="diff-code">
               {!before ? (
                 <span className="diff-line diff-line-empty">此版本不存在该文件</span>
@@ -90,7 +98,7 @@ export function TextDiffView({
             </pre>
           </section>
           <section>
-            <h4>任务结束时</h4>
+            <h4>{afterLabel}</h4>
             <pre className="diff-code">
               {!after ? (
                 <span className="diff-line diff-line-empty">此版本不存在该文件</span>

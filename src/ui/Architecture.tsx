@@ -94,11 +94,11 @@ export function Architecture({ result, selected, select, inspect, modules, openF
     {taskOverlay && view === 'layers' && (
       <div className="architecture-task-hud-banner" role="status">
         <span>
-          <strong>开发任务影响叠加</strong> · {taskOverlay.goal.length > 48 ? taskOverlay.goal.slice(0, 48) + '…' : taskOverlay.goal}
+          <strong>{taskOverlay.taskId === '__live_radar__' ? '变更雷达影响叠加' : '开发任务影响叠加'}</strong> · {taskOverlay.goal.length > 48 ? taskOverlay.goal.slice(0, 48) + '…' : taskOverlay.goal}
           {' '}（实框直改 / 虚线波及）
         </span>
         <span className="row">
-          <button type="button" className="hud-mini-btn" onClick={taskOverlay.onReturnTask}>返回任务</button>
+          <button type="button" className="hud-mini-btn" onClick={taskOverlay.onReturnTask}>{taskOverlay.taskId === '__live_radar__' ? '返回变更雷达' : '返回任务'}</button>
           <button type="button" className="hud-mini-btn" onClick={taskOverlay.onClear}>关闭叠加</button>
         </span>
       </div>

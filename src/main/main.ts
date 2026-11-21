@@ -71,6 +71,24 @@ app.whenReady().then(async()=>{
         case 'project_environment_save':value=await service.engineering.saveEnvironmentCommands(args.project_id,args.effective_commands);break;
         case 'engineering_task':value=await service.engineering.currentTask(args.task_id);break;
         case 'engineering_task_hud':value=await service.taskHud(args.task_id);break;
+        case 'workspace_live_radar':{
+          const { mode, commit } = args;
+          if (mode !== undefined && mode !== 'worktree' && mode !== 'commit') throw Error('工作区比较模式无效');
+          value = await service.liveRadar(args.project_id, {mode, commit, previousFingerprint: args.previousFingerprint ?? args.previous_fingerprint});
+          break;
+        }
+        case 'workspace_live_diff':{
+          const {base_ref, target_ref, path, fingerprint} = args;
+          value = await service.liveFileDiff(args.project_id, {base_ref, target_ref, path, fingerprint});
+          break;
+        }
+        case 'workspace_open_file':{
+          const {path: file, line, editor} = args;
+          if (typeof file !== 'string' || !['default','vscode','trae'].includes(editor) ||
+              (line !== undefined && (!Number.isSafeInteger(line) || line < 1))) throw Error('源码打开请求无效。');
+          await service.openLiveFile(args.project_id, file, line, editor, shell.openPath);
+          value = {opened: true};break;
+        }
         case 'engineering_history':value=service.engineering.history(args.kind,args.id);break;
         case 'engineering_open_link':{const url=new URL(args.url);if(!['https:','http:','mailto:'].includes(url.protocol))throw Error('不支持此链接协议');await shell.openExternal(url.href);value={opened:true};break;}
         case 'engineering_revise':value=service.engineering.reviseContext(args);break;
