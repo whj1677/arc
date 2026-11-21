@@ -19,8 +19,10 @@ export function SourceEditorActions({ location }: { location: SourceEditorLocati
 
   return <>
     <div className="row" role="group" aria-label="在编辑器中打开源码" aria-busy={opening}>
-      <button type="button" disabled={opening} onClick={() => void open('default')}>在默认编辑器中打开</button>
-      <button type="button" disabled={opening} onClick={() => void open('vscode')}>在 VS Code 中打开</button>
+      <button type="button" disabled={opening} onClick={() => void open('default')}>在默认编辑器中打开（仅文件）</button>
+      <button type="button" disabled={opening} onClick={() => void open('vscode')}>
+        {location.line === undefined ? '在 VS Code 中打开' : `在 VS Code 中打开到第 ${location.line} 行`}
+      </button>
     </div>
     {error && <small className="warning" role="alert">{error}</small>}
   </>;

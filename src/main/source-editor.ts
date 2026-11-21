@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 import type { Snapshot, SourceEditor, SourceEditorLocation } from '../shared';
 import { locate } from './executables';
@@ -29,8 +29,16 @@ export async function editorSourceFile(snapshot: Snapshot, location: Pick<Source
   }
 }
 
-export function vscodeSourceArgs(file: string, line?: number) {
-  return line === undefined ? [file] : ['--goto', `${file}:${line}`];
+export function vscodeSourceLaunch(program: string, file: string, line?: number) {
+  const args = line === undefined ? [file] : ['--goto', `${file}:${line}:1`];
+  const env = { ...process.env };
+  if (process.platform === 'win32') {
+    // Match the official code.cmd without passing source paths through cmd.exe.
+    args.unshift(path.join(path.dirname(program), 'resources', 'app', 'out', 'cli.js'));
+    delete env.VSCODE_DEV;
+    env.ELECTRON_RUN_AS_NODE = '1';
+  }
+  return { args, env };
 }
 
 export async function openSourceInVSCode(file: string, line?: number) {
@@ -41,9 +49,11 @@ export async function openSourceInVSCode(file: string, line?: number) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     throw new Error('未找到 VS Code。请安装 VS Code 或将其命令行目录加入 PATH。');
   }
+  const { args, env } = vscodeSourceLaunch(program, file, line);
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(program, vscodeSourceArgs(file, line), { windowsHide: true, stdio: 'ignore', detached: true });
-    child.once('error', error => reject(new Error(`无法启动 VS Code：${error.message}`)));
-    child.once('spawn', () => { child.unref(); resolve(); });
+    execFile(program, args, { windowsHide: true, env }, error => {
+      if (error) reject(new Error(`无法启动 VS Code：${error.message}`));
+      else resolve();
+    });
   });
 }

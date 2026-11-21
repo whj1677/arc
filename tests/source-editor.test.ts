@@ -4,7 +4,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import type { Snapshot } from '../src/shared';
 import { locate } from '../src/main/executables';
-import { editorSourceFile, vscodeSourceArgs } from '../src/main/source-editor';
+import { editorSourceFile, vscodeSourceLaunch } from '../src/main/source-editor';
 import { sha } from '../src/main/snapshot';
 
 test('editor opens the bound source in the workspace and rejects stale or invalid locations', async t => {
@@ -38,18 +38,22 @@ test('editor opens the bound source in the workspace and rejects stale or invali
 
 test('VS Code goto passes the full Windows path and line as one argument', () => {
   const file = 'C:\\测试工程\\with spaces & symbols\\read.ts';
-  assert.deepEqual(vscodeSourceArgs(file, 15), ['--goto', `${file}:15`]);
-  assert.deepEqual(vscodeSourceArgs(file), [file]);
+  const program = path.resolve('VS Code', 'Code.exe');
+  const cli = process.platform === 'win32' ? [path.join(path.dirname(program), 'resources', 'app', 'out', 'cli.js')] : [];
+  assert.deepEqual(vscodeSourceLaunch(program, file, 15).args, [...cli, '--goto', `${file}:15:1`]);
+  assert.deepEqual(vscodeSourceLaunch(program, file).args, [...cli, file]);
 });
 
-test('Windows resolves the native VS Code executable beside the PATH launcher', { skip: process.platform !== 'win32' }, async t => {
+test('Windows resolves the PATH launcher and uses the official CLI environment', { skip: process.platform !== 'win32' }, async t => {
   const scratch = path.resolve('.test-data');
   await fs.mkdir(scratch, { recursive: true });
   const root = await fs.mkdtemp(path.join(scratch, 'VS Code 目录-'));
-  const oldPath = process.env.PATH;
+  const { PATH: oldPath, VSCODE_DEV: oldDev, ELECTRON_RUN_AS_NODE: oldRunAsNode } = process.env;
   t.after(async () => {
-    if (oldPath === undefined) delete process.env.PATH;
-    else process.env.PATH = oldPath;
+    for (const [key, value] of Object.entries({ PATH: oldPath, VSCODE_DEV: oldDev, ELECTRON_RUN_AS_NODE: oldRunAsNode })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     await fs.rm(root, { recursive: true, force: true });
   });
   const bin = path.join(root, 'bin');
@@ -58,6 +62,12 @@ test('Windows resolves the native VS Code executable beside the PATH launcher', 
   await fs.writeFile(path.join(bin, 'code.cmd'), '');
   await fs.writeFile(executable, '');
   process.env.PATH = bin;
+  process.env.VSCODE_DEV = '1';
+  process.env.ELECTRON_RUN_AS_NODE = '0';
 
-  assert.equal(await locate('code'), executable);
+  const program = await locate('code');
+  assert.equal(program, executable);
+  const { env } = vscodeSourceLaunch(program, 'read.ts', 15);
+  assert.equal(env.ELECTRON_RUN_AS_NODE, '1');
+  assert.equal(env.VSCODE_DEV, undefined);
 });
