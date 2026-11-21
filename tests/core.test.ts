@@ -16,12 +16,13 @@ test('snapshot honors Git ignored untracked outputs and retains tracked sources 
  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'arc-ignore-')),root=path.join(dir,'project');await fs.mkdir(root);
  execFileSync('git',['init',root],{windowsHide:true,stdio:'ignore'});
  await fs.writeFile(path.join(root,'.gitignore'),'.verify-build/\n/build/\ndata/\n*.generated.py\n');
- for(const file of ['app/main.py','web/src/main.tsx','server/build/manager.mjs','build/generated.js','.verify-build/vendor.py','data/private.txt','app/tracked.generated.py','app/ignored.generated.py']){await fs.mkdir(path.dirname(path.join(root,file)),{recursive:true});await fs.writeFile(path.join(root,file),'// sample source\n');}
- execFileSync('git',['-C',root,'add','-f','app/tracked.generated.py'],{windowsHide:true});
+ for(const file of ['app/main.py','web/src/main.tsx','server/build/manager.mjs','build/generated.js','.verify-build/vendor.py','data/private.txt','app/tracked.generated.py','app/ignored.generated.py','build_cross/stale.cpp','.tmp_protocol_dump/capture.c']){await fs.mkdir(path.dirname(path.join(root,file)),{recursive:true});await fs.writeFile(path.join(root,file),'// sample source\n');}
+ await fs.writeFile(path.join(root,'build_cross/CMakeCache.txt'),'cache');
+ execFileSync('git',['-C',root,'add','-f','app/tracked.generated.py','build_cross/stale.cpp','.tmp_protocol_dump/capture.c'],{windowsHide:true});
  const snap=await capture(root,'project',path.join(dir,'snapshots'),'');
  const names=snap.files.map(f=>f.path);assert.ok(names.includes('app/main.py'));assert.ok(names.includes('web/src/main.tsx'));assert.ok(names.includes('app/tracked.generated.py'));
  assert.ok(names.includes('server/build/manager.mjs'));
- for(const file of ['build/generated.js','.verify-build/vendor.py','data/private.txt','app/ignored.generated.py'])assert.ok(!names.includes(file));
+ for(const file of ['build/generated.js','.verify-build/vendor.py','data/private.txt','app/ignored.generated.py','build_cross/stale.cpp','.tmp_protocol_dump/capture.c'])assert.ok(!names.includes(file));
  assert.ok(snap.excluded.some(e=>/Git/.test(e.reason)));
  assert.deepEqual(await freshness(snap),[]);
  await fs.writeFile(path.join(root,'app/new.py'),'new source');assert.deepEqual(await freshness(snap),['app/new.py']);
@@ -32,20 +33,32 @@ test('all snapshot walkers skip generated CMake directories from a non-Git wrapp
  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
  await fs.mkdir(repo,{recursive:true});
  execFileSync('git',['init',repo],{windowsHide:true,stdio:'ignore'});
- const generated=['src/CMakeFiles','CMAKE-BUILD-debug','build_host','build/_deps'];
+ const generated=['CMAKE-BUILD-debug','build_host','build/_deps','src/build_gtest','.tmp_protocol_dump'];
  for(const name of generated){
    const build=path.join(repo,name);await fs.mkdir(build,{recursive:true});
    await fs.writeFile(path.join(build,'generated.cpp'),'int generated;');
-   if(name.startsWith('build'))await fs.writeFile(path.join(build,'CMakeCache.txt'),'cache');
  }
+ await fs.writeFile(path.join(repo,'CMAKE-BUILD-debug/CMakeCache.txt'),'cache');
+ await fs.writeFile(path.join(repo,'build_host/CMakeCache.txt'),'cache');
+ await fs.writeFile(path.join(repo,'build/_deps/build.ninja'),'ninja');
+ await fs.mkdir(path.join(repo,'src/build_gtest/CMakeFiles'));
  await fs.mkdir(path.join(repo,'src/app'));
+ await fs.mkdir(path.join(repo,'src/build_tools'));
  await fs.writeFile(path.join(repo,'src/app/controller.cpp'),'int controller;');
+ await fs.writeFile(path.join(repo,'src/build_config.h'),'#define TARGET 1\n');
+ const compile='export const compile = () => true;\n';
+ await fs.writeFile(path.join(repo,'src/build_tools/compile.ts'),compile);
+ await fs.writeFile(path.join(repo,'.tmp_display_consts.cpp'),'int scratch;');
  const snap=await capture(root,'wrapped',path.join(dir,'data'),'');
  assert.equal(snap.commit,null);
- assert.deepEqual(snap.files.map(file=>file.path),['bams_code/src/app/controller.cpp']);
+ assert.deepEqual(snap.files.map(file=>file.path),['bams_code/src/app/controller.cpp','bams_code/src/build_config.h','bams_code/src/build_tools/compile.ts']);
+ assert.equal((await readSource(path.join(dir,'data'),snap,'bams_code/src/build_tools/compile.ts')).text,compile);
  for(const name of generated)assert.ok(snap.excluded.some(entry=>entry.path==='bams_code/'+name));
+ const legacyFile={...snap.files[0],path:'bams_code/build_host/generated.cpp',content_sha256:sha('int generated;')};
+ assert.deepEqual(await freshness({...snap,files:[...snap.files,legacyFile]}),[legacyFile.path]);
  const initial=await workspaceFiles(root,snap);
  for(const name of generated)await fs.writeFile(path.join(repo,name,'new.cpp'),'int changed;');
+ await fs.writeFile(path.join(repo,'.tmp_display_consts.cpp'),'int changed;');
  assert.deepEqual(await freshness(snap),[]);
  assert.deepEqual(await workspaceFiles(root,snap),initial);
  assert.deepEqual(initial.assets,[]);

@@ -79,6 +79,8 @@ test('review prompt carries frozen source excerpts, component labels and exact d
   assert.equal(input.evidence.length,1);assert.match(input.evidence[0].source,/1: export const read/);
   assert.equal(input.components[0].label,'读取服务');assert.equal(input.relations[0].claims[0].statement,'数据库读取服务');
   assert.match(prompt,/Promise.*不代表同步调用/);assert.match(prompt,/非空子集/);assert.match(prompt,/不得把初稿结论本身当作支持依据/);
+  assert.match(prompt,/同一共享字段的写入与读取.*同一回调槽的注册与调用/);
+  assert.match(prompt,/原始 evidence_ids 已覆盖双方.*给 supported.*覆盖双方的原始依据/);
   await fs.writeFile(path.join(dir,'snapshots','frozen','src','read.ts'),'changed');
   await assert.rejects(makeOverviewReviewPrompt(result,snapshot,dir),/哈希不匹配/);
 });

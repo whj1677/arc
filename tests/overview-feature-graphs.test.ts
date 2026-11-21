@@ -18,13 +18,13 @@ const overview={
   schema_version:'overview-1',summary:{text:'两个入口均调用 record。',evidence_ids:['definition']},
   scope:'main.c',unresolved:[],components:[{id:'component',kind:'stage',label:'读写接口',description:'对外提供读写入口。',inputs:[],outputs:[],evidence_ids:['definition']}],
   features:[{label:'接口',items:capabilities.map(name=>({id:name,label:name,description:name===declaredEntry?`声明 ${name} 入口。`:`从 ${name} 调用 record。`,evidence_ids:[name+'-line']}))}],
-  readings:[...entries.map(name=>({node_id:name,entry:name,outcome:'返回记录值',steps:[{text:'调用 record。',evidence_ids:[name+'-line']}],boundary:'仅静态调用'})),
+  readings:[...entries.map(name=>({node_id:name,entry:name,outcome:'返回记录值',steps:[{text:'调用 record。',evidence_ids:[name+'-line','definition']}],boundary:'仅静态调用'})),
     {node_id:deferredEntry,entry:`调用 ${deferredEntry}`,outcome:'返回 record() 的结果',steps:[],boundary:deferredCatalogReadingBoundary},
     {node_id:declaredEntry,entry:'',outcome:'',steps:[],boundary:deferredCatalogDeclarationBoundary}],
   relations:[],evidence:source.map((quote,i)=>({id:i?capabilities[i-1]+'-line':'definition',path:'main.c',start:i+1,end:i+1,quote})),
 };
 function detail(name:string){
-  const line=entries.indexOf(name)+2;
+  const line=capabilities.indexOf(name)+2;
   const functions=[name,'record'].map(symbol=>({id:symbol,label:symbol,symbol,description:symbol,signature:null,
     definition_evidence_id:symbol+'-def',evidence_ids:[symbol+'-def'],params:[],returns:'整数记录值',side_effects:[]}));
   const first={id:'start',kind:'entry',from_function_id:null,to_function_id:name,text:'由入口触发',input:'无',output:'进入函数',condition:null,evidence_ids:[name+'-def']};
@@ -49,8 +49,20 @@ test('one project analysis schedules frozen feature graphs, continues after a fa
       return {code:0,stderr:'',raw:JSON.stringify({schema_version:'overview-review-1',run_id:options.run.binding.run_id,
         source_snapshot_id:options.snapshot.source_snapshot_id,draft_sha256:sha(JSON.stringify(draft)),summary:{verdict:'supported',reason:'入口见源码'},relations:[]})};
     }
-    if(!options.run.overview_parent_run_id)return {code:0,stderr:'',raw:JSON.stringify(overview)};
-    const name=entries.find(entry=>options.run.title.includes(entry))!;
+    if(options.run.overview_format)return {code:0,stderr:'',raw:JSON.stringify(overview)};
+    const name=capabilities.find(entry=>options.run.title.includes(entry))!;
+    const context=JSON.parse(options.prompt.split('定位线索（需用本次源码核对）：')[1]);
+    const clue=context.catalog_feature;
+    assert.equal(clue.node_id,name);
+    assert.equal(clue.source_snapshot_id,options.run.binding.source_snapshot_id);
+    assert.equal(clue.entry,name===deferredEntry?`调用 ${name}`:name);
+    assert.equal(context.inventory,undefined);
+    const line=capabilities.indexOf(name)+2;
+    assert.deepEqual(clue.anchors.map((a:any)=>[a.id,a.path,a.start,a.end,a.excerpt]),[
+      ...(name===deferredEntry?[]:[['definition','main.c',1,1,source[0]]]),
+      [name+'-line','main.c',line,line,source[line-1]],
+    ]);
+    assert.deepEqual(clue.steps,name===deferredEntry?[]:[{text:'调用 record。',evidence_ids:[name+'-line','definition']}]);
     attempts.push(name);peak=Math.max(peak,++active);
     try{
       await new Promise(resolve=>setTimeout(resolve,10));
@@ -96,6 +108,16 @@ test('one project analysis schedules frozen feature graphs, continues after a fa
   }
   await analyze('project-pass-three',0);
   assert.equal(attempts.length,3);
+  // An on-demand feature with a source anchor but no overview steps uses the same dispatch.
+  const opened=service.openDiscoveredFeature(project.project_id,saved.result_id,deferredEntry);
+  const manual=await service.startRun(opened.scenario.scenario_id,'codex','open-deferred-feature');
+  await service.executing.get(manual.binding.run_id);
+  assert.equal(service.store.get<Run>('run',manual.binding.run_id).status,'completed');
+  assert.equal(attempts.at(-1),deferredEntry);
+  await fs.writeFile(path.join(root,'main.c'),'// edited\n'+source.join('\n'));
+  const refreshed=await service.refresh(project.project_id);
+  const context=service.analysisContext({...manual,binding:{...manual.binding,source_snapshot_id:refreshed.source_snapshot_id}});
+  assert.ok(!('catalog_feature' in context),'old line numbers must not be carried into a new frozen snapshot');
 });
 
 test('local runs cap feature batches at two, skip cancelled waiters and prioritize overview', {timeout:10000}, async t=>{

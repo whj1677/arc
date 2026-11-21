@@ -36,20 +36,23 @@ export async function safeFile(root: string, file: string) {
   return resolved;
 }
 const ignored = new Set(['.git','node_modules','.arc-local','dist','release','.next','.venv','venv','.idea','.cache','.codex','.dsh','.tools','.test-data','.runtime','.work','.pytest_cache','__pycache__','CMakeFiles']);
-// A directory named build can contain authored source. Check the CMake marker
+// A directory named build can contain authored source. Check build markers
 // in the listing already needed for traversal, without stat'ing every child.
 async function sourceDirectoryEntries(directory:string) {
-  const name=path.basename(directory);
-  if(name==='CMakeFiles'||/^cmake-build-/i.test(name))return null;
+  if(path.basename(directory)==='CMakeFiles')return null;
   const entries=await fs.readdir(directory,{withFileTypes:true});
-  return entries.some(entry=>entry.name==='CMakeCache.txt'&&entry.isFile())?null:entries;
+  return entries.some(entry=>entry.isFile()&&(entry.name==='CMakeCache.txt'||entry.name==='build.ninja') ||
+    entry.isDirectory()&&entry.name==='CMakeFiles')?null:entries;
 }
 const secret = /^(?:\.env(?:\..*)?|\.?auth\.json|\.?credentials(?:\..*)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|.*\.(?:pem|key|p12|pfx))$/i;
+function excludedEntry(name:string) {
+  return ignored.has(name) || secret.test(name) || /^\.tmp_/i.test(name);
+}
 // Rollback can recreate missing paths, including paths supplied by a restored
 // archive. Apply the same exclusions before consulting its saved manifests.
 export function rollbackPathAllowed(file:string) {
   return relativePath(file).split('/').every(part=>
-    !ignored.has(part)&&!ignored.has(part.toLowerCase())&&!secret.test(part)&&
+    !excludedEntry(part)&&!ignored.has(part.toLowerCase())&&
     !/^(?:cmakefiles$|cmake-build-)/i.test(part)&&
     !(process.platform==='win32'&&(/[. ]$/.test(part)||/~\d/.test(part)||/^(?:nul|con|aux|prn|com\d|lpt\d)(?:\.|$)/i.test(part)))
   );
@@ -77,7 +80,7 @@ export async function workspaceFiles(root:string, snapshot?:Snapshot) {
   async function walk(dir:string,prefix='') {
     for(const entry of await sourceDirectoryEntries(dir)??[]){
       const rel=prefix?`${prefix}/${entry.name}`:entry.name;
-      if(gitIgnored.has(rel)||ignored.has(entry.name)||secret.test(entry.name)||entry.isSymbolicLink())continue;
+      if(gitIgnored.has(rel)||excludedEntry(entry.name)||entry.isSymbolicLink())continue;
       if(entry.isDirectory()){await walk(path.join(dir,entry.name),rel);continue;}
       if(!entry.isFile())continue;
       const input=await safeFile(root,rel), before=await fs.stat(input);
@@ -142,13 +145,13 @@ export async function capture(rootPath: string, projectId: string, storage: stri
   async function walk(directory: string, prefix = '') {
     abort();
     const entries = await sourceDirectoryEntries(directory);
-    if(!entries){excluded.push({path:prefix||'.',reason:'CMake 生成目录，不进入源码快照'});return;}
+    if(!entries){excluded.push({path:prefix||'.',reason:'CMake/Ninja 生成目录，不进入源码快照'});return;}
     entries.sort((a,b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
       abort();
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       if(gitIgnored.has(rel)){excluded.push({path:rel,reason:'Git 忽略的未跟踪文件或目录，不进入源码快照'});continue;}
-      if (ignored.has(entry.name) || secret.test(entry.name)) { excluded.push({path:rel,reason:'构建/依赖/状态/凭据默认排除'}); continue; }
+      if (excludedEntry(entry.name)) { excluded.push({path:rel,reason:'构建/临时/依赖/状态/凭据默认排除'}); continue; }
       if (entry.isSymbolicLink()) { excluded.push({path:rel,reason:'符号链接/重解析点不进入快照'}); continue; }
       if (entry.isDirectory()) { await walk(path.join(directory,entry.name),rel); continue; }
       if (!entry.isFile()) continue;
@@ -175,7 +178,7 @@ export async function capture(rootPath: string, projectId: string, storage: stri
   async function verify(directory: string, prefix = '') {
     for (const entry of await sourceDirectoryEntries(directory)??[]) {
       abort();
-      if (ignored.has(entry.name) || secret.test(entry.name) || entry.isSymbolicLink()) continue;
+      if (excludedEntry(entry.name) || entry.isSymbolicLink()) continue;
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       if(gitIgnored.has(rel))continue;
       if (entry.isDirectory()) { await verify(path.join(directory,entry.name),rel); continue; }
@@ -208,27 +211,31 @@ export async function readSource(storage: string, snapshot: Snapshot, file: stri
   return { ...entry, source_snapshot_id:snapshot.source_snapshot_id,text:decode(bytes) };
 }
 export async function freshness(snapshot: Snapshot) {
-  const changes: string[] = [];
+  const additions: string[] = [];
   const gitIgnored=await ignoredByGit(snapshot.root_path);
-  const expected=new Set(snapshot.files.map(f=>f.path));
-  for(const file of snapshot.files) {
-    try { const bytes=await fs.readFile(await safeFile(snapshot.root_path,file.path)); if(sha(bytes)!==file.content_sha256) changes.push(file.path); }
-    catch { changes.push(file.path); }
-  }
-  async function additions(directory:string,prefix='') {
+  const expected=new Map(snapshot.files.map(file=>[file.path,file.content_sha256]));
+  const changed=new Set(expected.keys());
+  async function walk(directory:string,prefix='') {
     for(const entry of await sourceDirectoryEntries(directory)??[]){
-      if(ignored.has(entry.name)||secret.test(entry.name)||entry.isSymbolicLink())continue;
+      if(excludedEntry(entry.name)||entry.isSymbolicLink())continue;
       const rel=prefix?`${prefix}/${entry.name}`:entry.name;
       if(gitIgnored.has(rel))continue;
-      if(entry.isDirectory()){await additions(path.join(directory,entry.name),rel);continue;}
-      if(!entry.isFile()||expected.has(rel))continue;
+      if(entry.isDirectory()){await walk(path.join(directory,entry.name),rel);continue;}
+      if(!entry.isFile())continue;
+      if(expected.has(rel)){
+        try {
+          const bytes=await fs.readFile(await safeFile(snapshot.root_path,rel));
+          if(sha(bytes)===expected.get(rel))changed.delete(rel);
+        } catch { /* Keep unavailable files marked as changed. */ }
+        continue;
+      }
       const input=await safeFile(snapshot.root_path,rel);
       if((await fs.stat(input)).size>2*1024*1024)continue;
       const bytes=await fs.readFile(input);if(bytes.includes(0))continue;
       try{decode(bytes);}catch{continue;}
-      changes.push(rel);
+      additions.push(rel);
     }
   }
-  await additions(snapshot.root_path);
-  return changes;
+  await walk(snapshot.root_path);
+  return [...changed,...additions];
 }

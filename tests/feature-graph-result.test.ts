@@ -153,7 +153,10 @@ test('compact graph transport allows complex subsystems beyond the former path a
   const validate = new Ajv2020({ strict: false }).compile(featureGraphSchema);
   assert.ok(validate(expanded), JSON.stringify(validate.errors));
   assert.equal(validate({ ...expanded, functions: [...expanded.functions, draft.functions[0]] }), false);
-  assert.match(featureGraphPrompt(run, snapshot, promptContext(snapshot, [])), /跨文件核对调用点与接收方定义/);
+  const prompt = featureGraphPrompt(run, snapshot, promptContext(snapshot, []));
+  assert.match(prompt, /list_symbols.*get_call_graph\(symbol, file, depth=2\)/);
+  assert.match(prompt, /跨文件核对调用点与接收方定义/);
+  assert.match(prompt, /syntax=reference[^\n]*注册\/绑定和触发双方证据/);
 });
 
 test('functions, calls and evidence may share an ID while duplicates in one collection fail', async t => {
@@ -183,6 +186,8 @@ test('feature graph rejects broken cross-references and mismatched call/dispatch
   draft.walkthroughs[0].steps[1].kind = 'call';
   draft.functions[0].definition_evidence_id = 'unknown';
   await assert.rejects(prepare(draft), /定义依据不存在：unknown/);
+  draft.functions[0].definition_evidence_id = 'record-def';
+  await assert.rejects(prepare(draft), /定义依据 record-def 重复用于多个函数/);
   draft.functions[0].definition_evidence_id = 'submit-def';
   draft.summary.evidence_ids = ['uncited'];
   await assert.rejects(prepare(draft), /缺失引用 evidence_ids: uncited/);

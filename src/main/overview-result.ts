@@ -16,7 +16,7 @@ const anchorRange={id:identifier,path:text(2000),start:{type:'integer',minimum:1
 // Each alternative starts with a distinct key and requires every field for Codex structured output.
 export const compactEvidenceSchema={anyOf:[object(anchorRange),object({quote:{type:'string',maxLength:240,description:'范围内的单行短锚点；只给准确行号时留空。'},...anchorRange})]};
 const relationKinds=['execution_boundary','data_read','data_publish','dependency','queue_send','queue_receive'] as const;
-export const overviewRelationLimit=30;
+export const overviewRelationLimit=48;
 export const deferredCatalogReadingBoundary='已定位模块与入口实现，详细步骤与函数双图待进入该功能后按需展开';
 export const deferredCatalogDeclarationBoundary='已定位公共 API 声明，入口实现、详细步骤与函数双图待按需查证';
 
@@ -158,7 +158,7 @@ export function overviewPrompt(run:Run,snapshot:Snapshot,context:ReturnType<type
   const {discovery:budget,overviewWalkthroughs}=analysisBudget(snapshot);
   const discovery=`${indexDiscoveryInstructions} 对照 inventory.source_directories 与 entry_file_hints 查找索引以外的源码和构建配置，必要时用 arc_list_files 分页。返回结果前逐项核对 list_modules 的目录及其中有独立职责的实现文件，每个次要模块只需一处能确认入口与职责的短锚点。用 features 或 unresolved 交代查证结果。
 预算共 ${budget.calls} 次源码工具调用（含并行、索引、列表、搜索及读取），这是上限。单次文本搜索最多覆盖 ${budget.searchFiles} 个文件，单次读取最多 ${budget.readLines} 行。完成逐目录清点且证据足够后，提前停止并立即返回完整 JSON。
-逐目录清点全部实质模块，不漏模块。对照 inventory.source_directories 逐一核对真实业务、协议、控制、接口和驱动模块；冻结源码中有实际实现或公共接口的，都应纳入 features。只跳过纯常量、空壳和没有独立职责的重复封装。不要把工程目录收拢成「应用启动 / 主循环 / 故障监控」等笼统功能，也不要把已确认的阈值读写存储、命令分发、数据采集、故障总管、命令下发、日志与校验等子系统省略或推给 unresolved。
+逐目录清点全部实质模块，不漏模块。对照 inventory.source_directories 核查业务、协议、控制、接口和驱动。应用与固件的 features 绑定当前目标的入口依据（构建选择、启动装配、任务表、路由或中断注册）和体现职责的实现。已确认未链接、未调度或已裁减的模块写入 scope，当前构建条件或可达性未核实的写入 unresolved。不要把工程收拢成「应用启动 / 主循环 / 故障监控」等笼统功能，也不要把已确认活跃的阈值读写、命令分发、数据采集、日志与校验等独立子系统推给 unresolved。
 按模块独立职责拆分功能项。同一复杂模块内的数据采集与解码、命令下发，状态展示、阈值读写持久化，或录波采样、后台落盘，各自有独立职责时分别列项。前后端工程按业务域核对页面、路由、服务与后台作业。库 / 内核 / SDK / 框架工程用公共头文件、导出表或构建集成核对核心模块及其公共能力族，避免只看示例 main() 调用的少数 API。
 例如 RTOS 按源码核对任务生命周期、调度与延时、通知、队列、信号量和互斥量、事件组、流与消息缓冲区、软件定时器、堆分配、ISR、节拍、协程、链表和移植层。按业务域分组，目录广度不受架构组件数量限制。scope 写实际查证范围，unresolved 点明确实未能核实的模块和条件。只确认声明时，结论限于接口。`;
   return `首次理解当前工程：一次交付有源码依据的系统架构、能力目录与关键流程的首轮阅读说明。仅输出紧凑 overview-1 JSON，不输出详细分析合同中的 nodes/edges/claims 等重复字段。
@@ -167,7 +167,7 @@ export function overviewPrompt(run:Run,snapshot:Snapshot,context:ReturnType<type
 readings 与 features 同级，每个功能项提供一条，node_id 填功能项 id。按本快照规模，优先为约 ${overviewWalkthroughs} 条端到端主线写 steps，实际数量取决于独立入口和已查明的路径。每步写清具体处理，包含 text 和非空 evidence_ids，较长主线写到已确认的结果或停止边界。entry 和 outcome 由源码支撑，未证实处留空，boundary 写查证边界。其余已确认能力全部列入 features，各绑定能证明职责的入口、实现或公共声明锚点；未展开步骤时填 steps: []，仍将该功能锚点直接证明的触发入口或处理结果分别写入 entry 或 outcome。仅有声明时只写声明能证实的接口，不推断实际运行结果。已确认入口实现时，boundary 填「${deferredCatalogReadingBoundary}」。若仅确认声明，boundary 填「${deferredCatalogDeclarationBoundary}」。首轮不逐项追踪完整调用链，不把异步提交写成完成。
 选择有依据的主要系统组件，组件和功能用途各一句话，I/O 每项只写一个短语，summary 两三句话，不重复描述同一事实。ID 在同类对象内唯一，建议组件和功能用 node-*、关系用 call-*、证据用 ev-*；组件与功能共用节点集合。summary={text,evidence_ids}；组件/功能/关系的 description 和引用均须支持本条结论。summary 的每个分句都必须由它自己的 evidence_ids 支持，可复用组件和功能的证据ID；不要只引用页面说明文字或类声明来证明入口已接通。关系需要引用真正的调用/交接处及必要的接收方；构造函数注入runner不等于证明任务实际调用runner。无法提供这些依据时缩小结论，不写成已实现。components 的 inputs/outputs 只写已看到的数据说明，不猜类型或具体值。
 ${architectureCoverageInstructions}
-在 components 中用 execution_boundary 表达执行边界、stage 表达业务与控制、resource 表达存储与基础资源。源码明确归属的内部组件可用 parent_id 指向所属组件 id，顶层省略 parent_id。父子归属与协作关系分别查证。
+源码明确归属的内部组件可用 parent_id 指向所属组件 id，顶层省略 parent_id。父子归属与协作关系分别查证；逐个检查尚无协作关系的核心组件。
 relations 仅连接 components。${overviewRelationSemantics}每条 description 说明源码能证明的交互与方向。禁止 sync_call、return、control_flow；不能从函数名、await、界面提示或提交返回推导整个业务已完成。没有明确关系依据就省略并记入 unresolved。
 evidence 只保留直接支撑结论的短锚点；components、features 和 readings 引用同一处源码时复用 evidence id，避免逐行摘录。
 evidence={id,path,start,end,quote}，path 为快照相对路径，start/end 为准确行号且一段最多40行。可只给准确行号，由 ARC 提取源码。填写 quote 时只摘能定位行为的单行短锚点，例如 SQL 语句或函数调用。不要重复整段代码、行号前缀、删节号或转述；ARC 会用完整 start/end 片段独立核对含义。片段行范围应足以支持结论，不能只因缩短quote而漏掉关键实现。哈希、任务绑定和最终图格式由 ARC 核对并补充，不输出它们。只返回紧凑结果，不生成附件。

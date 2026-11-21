@@ -61,6 +61,19 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
     }
   }
 
+  const isBoundaryEntry = (id: string) => outgoing.has(id) || !incoming.has(id);
+  const hasExplicitEntry = all.some(node => node.kind === 'execution_boundary' &&
+    rootOf.get(node.node_id) === node.node_id && isBoundaryEntry(node.node_id));
+
+  function isEntry(id: string): boolean {
+    const kind = byId.get(id)!.kind, targets = outgoing.get(id) ?? [];
+    if (kind === 'execution_boundary') return isBoundaryEntry(id);
+    if (hasExplicitEntry || kind !== 'stage' || incoming.has(id) || !outgoing.size) return false;
+    // Preserve entry stages in older maps while keeping orchestration of both business and resources in core.
+    return !(targets.some(target => byId.get(target)!.kind === 'stage') &&
+      targets.some(target => byId.get(target)!.kind === 'resource'));
+  }
+
   const tiers: Record<Tier, Node[]> = { boundary: [], core: [], infrastructure: [] };
   const children = new Map<string, Node[]>();
   for (const node of nodes) {
@@ -70,13 +83,10 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
     }
     const inputs = incoming.get(node.node_id) ?? [];
     let tier: Tier = 'core';
-    if (node.kind === 'resource' || (node.kind === 'execution_boundary' && inputs.some(id => byId.get(id)?.kind === 'resource'))) {
+    if (isEntry(node.node_id)) {
+      tier = 'boundary';
+    } else if (node.kind === 'resource' || (node.kind === 'execution_boundary' && inputs.every(id => !isEntry(id)))) {
       tier = 'infrastructure';
-    } else if (outgoing.size ? inputs.length === 0 : node.kind === 'execution_boundary') {
-      const targets = outgoing.get(node.node_id) ?? [];
-      const bridgesStageAndResource = node.kind === 'stage' &&
-        targets.some(id => byId.get(id)?.kind === 'stage') && targets.some(id => byId.get(id)?.kind === 'resource');
-      if (!bridgesStageAndResource) tier = 'boundary';
     }
     tiers[tier].push(node);
   }

@@ -51,7 +51,7 @@ export function CodeModuleBrowser({ summary, openFile, search = '' }: { summary:
   const sourceGroupsFirst = [...groups].sort(([a], [b]) => Number(b.startsWith('src/')) - Number(a.startsWith('src/')));
   const displayDir = (dir: string) => dir === '.' ? '工程根目录' : dir;
   return <section className="code-module-browser" aria-label="代码模块依赖（静态索引）">
-    <p className="code-module-totals">已索引 <b>{summary.modules.length}</b> 个目录 · <b>{summary.total_files}</b> 个文件 · <b>{summary.total_symbols}</b> 个符号 · <b>{summary.total_calls}</b> 处调用</p>
+    <p className="code-module-totals">已索引 <b>{summary.modules.length}</b> 个目录 · <b>{summary.total_files}</b> 个文件 · <b>{summary.total_symbols}</b> 个符号 · <b>{summary.total_calls}</b> 处调用或函数引用</p>
     {!groups.size ? <p>{summary.modules.length ? '没有匹配的目录、文件或符号。' : '此快照中没有可索引的源码文件。'}</p> :
       <div className="code-module-layout">
         <section className="code-module-directory" aria-label="源码目录">
@@ -67,9 +67,9 @@ export function CodeModuleBrowser({ summary, openFile, search = '' }: { summary:
             </button>)}
           </details>)}
         </section>
-        <section className="code-module-dependencies" aria-label="模块调用和源码文件">
-          <div className="code-module-title"><h3>{selected ? displayDir(selected.dir) : '跨目录调用'}</h3>
-            {selected && <button type="button" onClick={() => selectDir('')}>显示全部调用</button>}
+        <section className="code-module-dependencies" aria-label="模块引用和源码文件">
+          <div className="code-module-title"><h3>{selected ? displayDir(selected.dir) : '跨目录调用与引用'}</h3>
+            {selected && <button type="button" onClick={() => selectDir('')}>显示全部关系</button>}
           </div>
           {selected && <div className="code-module-source">
             {selected.key_symbols.length > 0 && <><h4>主要符号</h4><p>{selected.key_symbols.map(name => <code key={name}>{name}</code>)}</p></>}
@@ -77,17 +77,17 @@ export function CodeModuleBrowser({ summary, openFile, search = '' }: { summary:
             <ul>{selected.files.map(file => <li key={file}>{openFile ?
               <button type="button" data-zoom-anchor title={'打开冻结源码 ' + file} onClick={() => openFile(file)}>{file}</button> : file}</li>)}</ul>
           </div>}
-          {selected && <h4>关联的跨目录调用</h4>}
-          <p className="code-module-note">按已解析的静态调用位置计数。选择目录可查看相关调用和源码。</p>
+          {selected && <h4>关联的跨目录调用与引用</h4>}
+          <p className="code-module-note">按静态解析到目标的调用和函数引用计数，包括回调注册。</p>
           {edges.length > 0 ? <table className="code-module-edges">
-            <thead><tr><th scope="col">调用方</th><th scope="col">被调用方</th><th scope="col">调用点</th></tr></thead>
+            <thead><tr><th scope="col">引用目录</th><th scope="col">目标目录</th><th scope="col">位置数</th></tr></thead>
             <tbody>{edges.map(edge => <tr key={JSON.stringify([edge.from, edge.to])} data-module-from={edge.from} data-module-to={edge.to}>
               {[edge.from, edge.to].map(dir => <td key={dir}>{visibleDirs.has(dir) ?
                 <button type="button" aria-pressed={dir === selected?.dir} onClick={() => selectDir(dir)}>{displayDir(dir)}</button>
                 : displayDir(dir)}</td>)}
               <td>{edge.count}</td>
             </tr>)}</tbody>
-          </table> : <p>索引未解析到{selected ? '与此目录相关的' : ''}跨目录调用。</p>}
+          </table> : <p>索引未解析到{selected ? '与此目录相关的' : ''}跨目录调用或函数引用。</p>}
         </section>
       </div>}
   </section>;

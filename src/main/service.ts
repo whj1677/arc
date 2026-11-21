@@ -34,7 +34,7 @@ import { makePrompt, probeProviders, redact, runCodex, runCodexPromptRefinement,
 import { buildRefinementContext, goalRefinementSchema, parseGoalRefinement, refinementPrompt } from './prompt-refiner';
 import { normalizeTransport, schema, validateResult } from './validation';
 import { discoveredFeature } from '../discovered-feature';
-import { promptContext } from './prompt-context';
+import { catalogFeatureClues, promptContext } from './prompt-context';
 import { proposeScenarios, scenarioTitleKey } from './scenario-breakdown';
 import { readingAnswerSchema, validateReadingAnswer } from './reading-question';
 import { isCatalogOverview, overviewDiscoveryQuestion, previousCatalogQuestion, shallowOverviewQuestion } from './architecture-analysis';
@@ -382,7 +382,7 @@ export class ArcService {
     let feature = discoveredFeature(features, explanations, result, nodeId, project.snapshot_id);
     let scene = feature && scenes.find(s => s.feature_id === feature!.feature_id && s.kind === 'feature_overview');
     if (feature?.archived || scene?.archived) return;
-    if (feature && scene && feature.discovery?.source_snapshot_id !== project.snapshot_id && result.binding.source_snapshot_id === project.snapshot_id) {
+    if (feature && scene && feature.discovery?.result_id !== resultId && result.binding.source_snapshot_id === project.snapshot_id) {
       feature.discovery = { result_id: resultId, node_id: nodeId, source_snapshot_id: project.snapshot_id };
       this.store.put('feature', feature.feature_id, feature);
     }
@@ -699,18 +699,24 @@ export class ArcService {
 
   private analysisHistory(run: Run) {
     const annotations = this.store.all<Annotation>('annotation').filter(a => a.scenario_id === run.binding.scenario_id);
-    const last = this.store.all<Explanation>('explanation').filter(e => e.scenario_id === run.binding.scenario_id).at(-1);
+    const explanations = this.store.all<Explanation>('explanation');
+    const last = explanations.findLast(e => e.scenario_id === run.binding.scenario_id);
+    const discovery = this.store.get<Feature>('feature', run.binding.feature_id).discovery;
+    const overview = discovery && explanations.find(e => run.overview_parent_run_id
+      ? e.result.binding.run_id === run.overview_parent_run_id : e.result_id === discovery.result_id)?.result;
     return {
       annotations,
       previous: last ? { result_id: last.result_id, binding: last.result.binding, summary: last.result.summary } : undefined,
+      catalogFeature: overview && discovery && overview.binding.project_id === run.binding.project_id &&
+        overview.binding.source_snapshot_id === run.binding.source_snapshot_id ? catalogFeatureClues(overview, discovery.node_id) : undefined,
     };
   }
 
   analysisContext(run: Run) {
     if (run.reading_context) return run.reading_context;
     const snapshot = this.store.get<Snapshot>('snapshot', run.binding.source_snapshot_id);
-    const { annotations, previous } = this.analysisHistory(run);
-    return promptContext(snapshot, annotations, previous);
+    const { annotations, previous, catalogFeature } = this.analysisHistory(run);
+    return promptContext(snapshot, annotations, previous, catalogFeature);
   }
 
   async startRun(
@@ -949,7 +955,7 @@ export class ArcService {
       return;
     }
 
-    const { annotations, previous } = this.analysisHistory(initial);
+    const { annotations, previous, catalogFeature } = this.analysisHistory(initial);
     const scenario = this.store.get<Scenario>('scenario', initial.binding.scenario_id);
     const featureDetail = !initial.overview_format && !initial.reading_question_id &&
       (scenario.kind === 'feature_overview' || scenario.kind === 'breakdown');
@@ -957,7 +963,7 @@ export class ArcService {
       freshRun.feature_graph_format = 'feature-graph-1';
       this.store.put('run', runId, freshRun);
     }
-    let prompt = await makePrompt(initial, snapshot, this.directory, annotations, previous, featureDetail);
+    let prompt = await makePrompt(initial, snapshot, this.directory, annotations, previous, featureDetail, catalogFeature);
     const retry = provider === 'codex' && initial.overview_format ? this.overviews.retrySource(initial) : undefined;
     let savedCandidate: string | undefined;
     let inheritedEvidence = false;

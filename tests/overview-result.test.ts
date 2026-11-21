@@ -112,6 +112,15 @@ test('compact architecture preserves major components alongside nested modules a
   await assert.rejects(prepareOverview(nested('queue'),run,snapshot,storage),/父子循环/);
 });
 
+test('compact architecture retains 48 evidence-bound relations and rejects a 49th',async t=>{
+  const {value,run,snapshot,storage}=await fixture(t);
+  const relations=Array.from({length:49},(_,i)=>({...value.relations[i%value.relations.length],id:`relation-${i}`}));
+  const accepted=relations.slice(0,48);
+  const result=await prepareOverview({...value,relations:accepted},run,snapshot,storage);
+  assert.deepEqual(result.architecture?.edge_ids,accepted.map(edge=>edge.id));
+  await assert.rejects(prepareOverview({...value,relations},run,snapshot,storage),/\/relations: must NOT have more than 48 items/);
+});
+
 test('overview generates source-bound readings with the catalog, preserves a legacy draft without readings',async t=>{
   const {value,run,snapshot,storage}=await fixture(t);
   const reading={node_id:'send-feature',entry:'调用 submit',outcome:'字符串进入队列',steps:[{text:'把传入的值加入队列。',evidence_ids:['e-send']}],boundary:'接收时机与外部调用方未查证。'};
@@ -161,7 +170,11 @@ test('overview prompt asks for module-by-module coverage within the first-turn b
     assert.match(instructions,/先用 list_modules.*list_symbols.*get_call_graph.*arc_search_source/);
     assert.match(instructions,/返回结果前逐项核对 list_modules 的目录/);
     assert.match(instructions,/逐目录清点全部实质模块，不漏模块/);
-    assert.match(instructions,/实际实现或公共接口的，都应纳入 features/);
+    assert.match(instructions,/features 绑定当前目标的入口依据.*任务表.*中断注册/);
+    assert.match(instructions,/未链接、未调度或已裁减的模块写入 scope.*可达性未核实的写入 unresolved/);
+    assert.match(instructions,/module_edges、shared_states/);
+    assert.match(instructions,/横向数据流和控制闭环.*执行器输出和回读/);
+    assert.match(instructions,/写入端与读取端.*注册端和调用端/);
     assert.match(instructions,/按模块独立职责拆分功能项/);
     assert.match(instructions,/约 4 条端到端主线写 steps/);
     const large={...snapshot,files:snapshot.files.map(file=>({...file,line_count:130000}))};

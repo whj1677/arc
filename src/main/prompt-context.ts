@@ -2,7 +2,23 @@ import type {Snapshot,Annotation,AnalysisResult,ReadingContext,ReadingQuestion,R
 import {relativePath} from './snapshot';
 import {savedReadingGuide} from '../feature-graph-guide';
 
-export const indexDiscoveryInstructions = '先用 list_modules 清点模块及跨目录调用，用 list_symbols 按 dir、path 或 query 定位入口和定义，再按需用 get_call_graph 查上下游及调用行。静态匹配只提供线索，用 arc_read_source 核对实际定义和调用点。未索引的语言、动态调用或缺失的符号可用 arc_search_source 定向补查。';
+export const indexDiscoveryInstructions = '先用 list_modules 清点模块、跨目录引用和 shared_states 共享状态线索，用 list_symbols 按 dir、path 或 query 定位入口和定义，再按需用 get_call_graph 查上下游、签名和引用行。静态匹配只提供线索，用 arc_read_source 核对实际定义和调用点。未索引的语言、动态调用或缺失的符号可用 arc_search_source 定向补查。';
+
+export function catalogFeatureClues(overview: AnalysisResult, nodeId: string) {
+  const node = overview.nodes.find(item => item.node_id === nodeId);
+  if (!node || !overview.feature_catalog?.groups.some(group => group.node_ids.includes(nodeId))) return;
+  const reading = overview.feature_catalog.readings?.find(item => item.node_id === nodeId);
+  const steps = reading?.steps.map(step => ({ text: step.text, evidence_ids: step.evidence_ids.slice(0, 2) })) ?? [];
+  const evidenceIds = node.evidence_ids.slice(0, 12);
+  const ids = new Set([...evidenceIds, ...steps.flatMap(step => step.evidence_ids)]);
+  const anchors = overview.evidence.filter(item => ids.has(item.evidence_id)).map(item => ({
+    id: item.evidence_id, path: item.path, start: item.line_start, end: item.line_end, symbol: item.symbol_id,
+    excerpt: item.note.trim().split(/\r\n|\r|\n/, 1)[0].slice(0, 160),
+  }));
+  return { result_id: overview.result_id, source_snapshot_id: overview.binding.source_snapshot_id,
+    node_id: nodeId, label: node.label, evidence_ids: evidenceIds, entry: reading?.entry,
+    steps, outcome: reading?.outcome, boundary: reading?.boundary, anchors };
+}
 
 export function readingTarget(result:AnalysisResult|undefined,target:ReadingTarget,snapshot:Snapshot,feature:Feature) {
   if(!target||!['feature','node','edge','file','directory','step','role','handoff','call_step'].includes(target.kind)||typeof target.id!=='string'||!target.id.trim()||target.id.length>2000)throw Error('阅读对象无效');
@@ -150,7 +166,7 @@ function sourceDirectories(snapshot:Snapshot,prefix:string) {
   return result;
 }
 
-export function promptContext(snapshot:Snapshot,annotations:Annotation[],previous?:any) {
+export function promptContext(snapshot:Snapshot,annotations:Annotation[],previous?:any,catalogFeature?:ReturnType<typeof catalogFeatureClues>) {
   const clipped=(value:unknown,max:number)=>{const text=typeof value==='string'?value:JSON.stringify(value??null);return text.length<=max?text:text.slice(0,max)+'…（上下文节选，非完整内容）';};
   const roots=new Map<string,number>();
   const prefix=wrapperPrefix(snapshot);
@@ -160,5 +176,5 @@ export function promptContext(snapshot:Snapshot,annotations:Annotation[],previou
   const entryPattern=/(?:^|\/)(?:package\.json|cargo\.toml|pyproject\.toml|go\.mod|cmakelists\.txt|makefile|readme(?:\.[a-z0-9]+)?|(?:main|index|app|server|cli|init|entry)\.[a-z0-9]+)$/i;
   const entryHints=snapshot.files.filter(f=>entryPattern.test(f.path)&&!nonSourceDirectory.test(f.path)&&f.path.split('/').length<=5).slice(0,20).map(f=>clipped(f.path,180));
   const clues=annotations.slice(-12).map(a=>({text:clipped(a.text,600),source_snapshot_id:a.source_snapshot_id,result_id:a.result_id,object_id:a.object_id,target:a.target}));
-  return {inventory:{total_files:snapshot.files.length,excluded_count:snapshot.excluded.length,largest_roots:rootList,root_file_hints:hints,entry_file_hints:entryHints,source_directories:sourceDirectories(snapshot,prefix),inventory_is_partial:true},clues:{items:clues,omitted_count:Math.max(0,annotations.length-clues.length)},previous:previous?{result_id:previous.result_id,binding:previous.binding,summary_excerpt:clipped(previous.summary?.text??previous.summary,3000)}:null};
+  return {inventory:{total_files:snapshot.files.length,excluded_count:snapshot.excluded.length,largest_roots:rootList,root_file_hints:hints,entry_file_hints:entryHints,source_directories:sourceDirectories(snapshot,prefix),inventory_is_partial:true},clues:{items:clues,omitted_count:Math.max(0,annotations.length-clues.length)},previous:previous?{result_id:previous.result_id,binding:previous.binding,summary_excerpt:clipped(previous.summary?.text??previous.summary,3000)}:null,...(catalogFeature?{catalog_feature:catalogFeature}:{})};
 }

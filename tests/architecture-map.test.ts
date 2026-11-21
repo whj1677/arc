@@ -56,6 +56,15 @@ test('without root-level edges, kinds provide a useful layer fallback', () => {
   assert.deepEqual(m.layers.map(t => [t.id, t.roots]), [['boundary', ['entry']], ['core', ['core']], ['infrastructure', ['queue']]]);
 });
 
+test('explicit entry keeps outgoing-only business stages in core even when search hides the entry', () => {
+  const r = fixture([node('控制入口', undefined, 'execution_boundary'), node('电池状态'), node('功率限制'), node('保护动作')],
+    [edge('启动', '控制入口', '电池状态'), edge('限制功率', '功率限制', '电池状态'), edge('执行保护', '保护动作', '电池状态')]);
+  const [boundary, core] = architectureMap(r).layers;
+  assert.deepEqual([boundary.id, boundary.roots, core.id, new Set(core.roots)],
+    ['boundary', ['控制入口'], 'core', new Set(['电池状态', '功率限制', '保护动作'])]);
+  assert.deepEqual(architectureMap(r, '功率限制').layers.map(layer => [layer.id, layer.roots]), [['core', ['功率限制']]]);
+});
+
 function checkGeometry(m: ReturnType<typeof architectureMap>) {
   for (const [id, box] of m.boxes) {
     for (const [other, b] of m.boxes) {
@@ -92,22 +101,25 @@ function checkGeometry(m: ReturnType<typeof architectureMap>) {
   }
 }
 
-test('queue-fed workers stay in infrastructure while other downstream execution boundaries stay in core', () => {
-  const nodes = [node('isolated'), node('entry'), node('core'), node('queue', undefined, 'resource'),
-    node('worker', undefined, 'execution_boundary'), node('sink', undefined, 'resource'), node('internal', 'core'),
-    node('receiver', undefined, 'execution_boundary')];
-  const edges = [edge('start', 'entry', 'core'), edge('write', 'core', 'queue'), edge('read', 'queue', 'worker'),
-    edge('persist', 'worker', 'sink'), edge('ack', 'sink', 'queue'), edge('self', 'core', 'core'), edge('inner', 'internal', 'core'),
-    edge('deliver', 'entry', 'receiver')];
+test('bidirectional and input boundaries stay at the entry while sinks driven only by lower layers join infrastructure', () => {
+  const nodes = [node('isolated'), node('entry', undefined, 'execution_boundary'), node('core'), node('queue', undefined, 'resource'),
+    node('CAN', undefined, 'execution_boundary'), node('tx-only', undefined, 'execution_boundary'), node('internal', 'core'),
+    node('receiver', undefined, 'execution_boundary'), node('actuator', undefined, 'execution_boundary')];
+  const edges = [edge('start', 'entry', 'core'), edge('write', 'core', 'queue'), edge('tx', 'queue', 'CAN'),
+    edge('rx', 'CAN', 'queue'), edge('send', 'queue', 'tx-only'), edge('self', 'core', 'core'), edge('inner', 'internal', 'core'),
+    edge('deliver', 'entry', 'receiver'), edge('execute', 'core', 'actuator')];
+  const result = fixture(nodes, edges);
   for (const columns of [1, 2, 3]) {
-    const m = architectureMap(fixture(nodes, edges), '', columns);
+    const m = architectureMap(result, '', columns);
     assert.deepEqual(m.layers.map(t => t.id), ['boundary', 'core', 'infrastructure']);
-    assert.deepEqual(new Set(m.layers[2].roots), new Set(['queue', 'worker', 'sink']));
-    assert.deepEqual(new Set(m.layers[1].roots), new Set(['core', 'receiver']));
+    assert.deepEqual(new Set(m.layers[0].roots), new Set(['entry', 'CAN']));
+    assert.deepEqual(new Set(m.layers[2].roots), new Set(['queue', 'tx-only', 'actuator']));
+    assert.deepEqual(new Set(m.layers[1].roots), new Set(['isolated', 'core', 'receiver']));
     assert.ok(m.layers[0].y + m.layers[0].height < m.layers[1].y);
     assert.ok(m.layers[1].y + m.layers[1].height < m.layers[2].y);
     checkGeometry(m);
   }
+  assert.deepEqual(architectureMap(result, 'CAN').layers.map(layer => layer.id), ['boundary']);
 });
 
 test('the 21-component bams topology fits in five or six rows with separated parallel transfers', () => {
@@ -122,9 +134,9 @@ test('the 21-component bams topology fits in five or six rows with separated par
   const r = fixture(nodes, links.map(([a, b], i) => edge('transfer-' + i, a, b)));
   for (const columns of [4, 5, 6]) {
     const m = architectureMap(r, '', columns);
-    assert.deepEqual(m.layers.map(l => l.roots.length), [6, 6, 9]);
-    assert.ok(m.layers[2].roots.includes('writer'));
-    assert.equal(new Set([...m.boxes.values()].map(b => b.y)).size, columns === 6 ? 4 : columns === 5 ? 6 : 7);
+    assert.deepEqual(m.layers.map(l => l.roots.length), [2, 11, 8]);
+    assert.ok(m.layers[0].roots.includes('writer'));
+    assert.equal(new Set([...m.boxes.values()].map(b => b.y)).size, columns === 6 ? 5 : 6);
     assert.ok(m.height <= 1100 && m.width <= columns * 224 + 32);
     for (const b of m.boxes.values()) assert.deepEqual([b.width, b.height], [204, 82]);
     assert.equal(m.degrees.get('battery'), 7);
@@ -132,10 +144,10 @@ test('the 21-component bams topology fits in five or six rows with separated par
     assert.ok(m.layers[1].roots.includes('wave'));
     assert.ok(m.layers[1].roots.includes('events'));
     if (columns === 6) {
-      for (const layer of m.layers.slice(0, 2)) assert.equal(new Set(layer.roots.map(id => m.boxes.get(id)!.y)).size, 1);
+      assert.equal(new Set(m.layers[1].roots.map(id => m.boxes.get(id)!.y)).size, 2);
       const rows = new Map<number, number>();
       for (const id of m.layers[2].roots) { const y = m.boxes.get(id)!.y; rows.set(y, (rows.get(y) ?? 0) + 1); }
-      assert.deepEqual([...rows.values()], [5, 4]);
+      assert.deepEqual([...rows.values()], [4, 4]);
     }
     assert.notEqual(m.links[2].path, m.links[3].path);
     checkGeometry(m);

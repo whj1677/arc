@@ -1,3 +1,4 @@
+import path from 'node:path';
 import type {CodeCall, CodeIndex, CodeSymbol} from './code-index';
 import type {CodeIndexSummary} from '../shared';
 
@@ -30,7 +31,11 @@ function location({id, qualified_name, file, start_line, end_line}: CodeSymbol) 
   return {id, qualified_name, file, start_line, end_line};
 }
 
-export function listModules(index: CodeIndex, args: Page & {dir?: string}) {
+function graphLocation(symbol:CodeSymbol) {
+  return {...location(symbol),signature:symbol.signature};
+}
+
+export function listModules(index: CodeIndex, args: Page & {dir?: string; shared_state_offset?: number; shared_state_limit?: number}) {
   const {rows, total, next_offset} = page(index.modules.filter(module => inDirectory(module.dir, args.dir)), args);
   const ids = new Map(index.symbols.map(symbol => [symbol.id, symbol]));
   const modules = rows.map(module => ({
@@ -40,8 +45,11 @@ export function listModules(index: CodeIndex, args: Page & {dir?: string}) {
   }));
   const dirs = new Set(rows.map(module => module.dir));
   const edges = index.module_edges.filter(edge => dirs.has(edge.from) || dirs.has(edge.to)).sort((a, b) => b.count - a.count);
+  const states = index.shared_states.filter(state => dirs.has(path.posix.dirname(state.file)) || state.access_dirs.some(dir => dirs.has(dir)));
+  const {shared_state_offset = 0, shared_state_limit = 16} = args;
   return {
     modules, total, next_offset, module_edges: edges.slice(0, 100), module_edge_count: edges.length,
+    shared_states: states.slice(shared_state_offset, shared_state_offset + shared_state_limit), shared_state_count: states.length,
     indexed_file_count: index.files.length, parse_error_count: index.parse_errors.length, parse_errors: index.parse_errors.slice(0, 12),
   };
 }
@@ -63,7 +71,7 @@ export function getCallGraph(index: CodeIndex, args: Page & {symbol: string; fil
   const roots = definitions.length && matches.every(s => (s.language === 'c' || s.language === 'cpp') &&
     s.qualified_name === matches[0].qualified_name && s.kind === matches[0].kind) ? definitions : matches;
   if (roots.length !== 1) {
-    return {roots: roots.slice(0, 40).map(location), match_count: roots.length, ambiguous: roots.length > 1, edges: [], total: 0, next_offset: null};
+    return {roots: roots.slice(0, 40).map(graphLocation), match_count: roots.length, ambiguous: roots.length > 1, edges: [], total: 0, next_offset: null};
   }
   const byId = new Map(index.symbols.map(s => [s.id, s]));
   const calls = new Set<CodeCall>();
@@ -97,8 +105,8 @@ export function getCallGraph(index: CodeIndex, args: Page & {symbol: string; fil
   if (direction !== 'outgoing') traverse(true);
   const {rows, total, next_offset} = page([...calls], args);
   const edges = rows.map(call => ({
-    caller: location(byId.get(call.caller_id)!), callee_name: call.callee_name, qualifier: call.qualifier,
-    file: call.file, line: call.line, targets: call.target_ids.map(id => location(byId.get(id)!)),
+    caller: graphLocation(byId.get(call.caller_id)!), callee_name: call.callee_name, qualifier: call.qualifier, syntax:call.syntax,
+    file: call.file, line: call.line, targets: call.target_ids.map(id => graphLocation(byId.get(id)!)),
   }));
-  return {roots: roots.map(location), match_count: 1, ambiguous: false, edges, total, next_offset};
+  return {roots: roots.map(graphLocation), match_count: 1, ambiguous: false, edges, total, next_offset};
 }
