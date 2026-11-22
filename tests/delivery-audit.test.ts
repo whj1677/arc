@@ -53,10 +53,14 @@ test('independent review uses the final structured verdict and reads saved revie
     auditDelivery({...task, diff_review, decisions}, []).review;
   const approved = '独立 Diff 审查（approved）：已核实边界';
   const blocked = '独立 Diff 审查（needs_fix）：缺少空输入处理';
+  const empty = {verdict:'no_diff' as const, summary:'批准范围内无代码差异，无需审查。'};
+  const noDiff = {status:'no_diff', label:'无可审差异', summary:empty.summary};
   assert.deepEqual(audited(undefined, ['参考' + approved]), {status:'none', label:''});
   assert.deepEqual(audited({verdict:'approved', summary:'已核实边界'}), {status:'approved', label:'通过', summary:'已核实边界'});
   assert.deepEqual(audited({verdict:'approved', summary:'已修复', repaired:true}), {status:'repaired', label:'自修后通过', summary:'已修复'});
   assert.deepEqual(audited({verdict:'needs_fix', summary:'仍需修复'}, [blocked, approved]), {status:'needs_fix', label:'有阻断项', summary:'仍需修复'});
+  assert.deepEqual(audited(empty, [blocked, approved]), noDiff);
+  assert.deepEqual(audited(undefined, [blocked, approved, '独立 Diff 审查（no_diff）：' + empty.summary]), noDiff);
   assert.deepEqual(audited(undefined, [approved]), {status:'approved', label:'通过', summary:'已核实边界'});
   assert.deepEqual(audited(undefined, [blocked, approved]), {status:'repaired', label:'自修后通过', summary:'已核实边界'});
   assert.deepEqual(audited(undefined, [approved, blocked]), {status:'needs_fix', label:'有阻断项', summary:'缺少空输入处理'});

@@ -26,7 +26,7 @@ test('review uses scoped Git data, validates the reviewer verdict and bounds the
   await fs.writeFile(path.join(workspace, 'other.ts'), 'OUT_OF_SCOPE\n');
   const approved = {verdict: 'approved', summary: '复核通过', blocking_issues: [], notes: []};
   const empty = await reviewDevelopmentDiff(options, () => assert.fail('empty scoped diff should not start Codex'));
-  assert.equal(empty.summary, '无代码差异需要复核。');
+  assert.deepEqual(empty, {verdict:'no_diff', summary:'批准范围内无代码差异，无需审查。', blocking_issues:[], notes:[]});
   await fs.writeFile(path.join(workspace, 'code.ts'), '新增逻辑。'.repeat(40000) + '\n');
   git('add', 'code.ts');
   Object.assign(options.task, {
@@ -51,7 +51,7 @@ test('review uses scoped Git data, validates the reviewer verdict and bounds the
     return JSON.stringify(approved);
   });
   assert.match(review.notes.join(' '), /32 KiB/);
-  for (const invalid of [{...approved, verdict: 'needs_fix'}, {...approved, extra: 1}, {summary: 'ok'}]) {
+  for (const invalid of [{...approved, verdict: 'needs_fix'}, {...approved, verdict: 'no_diff'}, {...approved, extra: 1}, {summary: 'ok'}]) {
     await assert.rejects(reviewDevelopmentDiff(options, async () => JSON.stringify(invalid)), /合同校验/);
   }
 

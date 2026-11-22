@@ -355,7 +355,7 @@ export class DevelopmentService {
           baselineRoot:path.join(this.store.directory,'snapshots',context.code_state.snapshot_id),verificationSummary:summary||'没有本机验证回执。'});
         checkRunning();
         const repaired=diffReview?.verdict==='needs_fix'&&verdict.verdict==='approved';
-        diffReview={verdict:verdict.verdict,summary:verdict.summary,...(repaired&&{repaired:true})};
+        diffReview={verdict:verdict.verdict,summary:verdict.summary,blocking_issues:verdict.blocking_issues,...(repaired&&{repaired:true})};
         decisions.push(`独立 Diff 审查（${verdict.verdict}）：${verdict.summary}`,...verdict.notes);
         return verdict.blocking_issues.map(i=>`${i.file}：${i.issue}；修复要求：${i.fix}`);
       };

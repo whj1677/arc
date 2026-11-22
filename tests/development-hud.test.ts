@@ -585,6 +585,7 @@ test('task HUD connects pre-change impact and saved walkthroughs to their own fr
   saveWalkthrough(service, scenario, before, 'historical', '2010-01-01');
   saveWalkthrough(service, scenario, before, 'old', before.captured_at);
   const first = await service.taskHud(task.task_id);
+  assert.equal(first.evolution?.mode, 'task_blueprint');
   assert.deepEqual(first.impact.scope_files, [header]);
   assert.equal(first.impact.scope_declared, true);
   assert.equal(first.impact.architecture_result_id, 'architecture');
@@ -643,6 +644,8 @@ test('task HUD connects pre-change impact and saved walkthroughs to their own fr
   saveWalkthrough(service, scenario, before, 'late-baseline', '2099-02-01');
   saveWalkthrough(service, scenario, after, 'unbound-end-snapshot', '2099-04-01');
   const completed = await service.taskHud(task.task_id);
+  assert.equal(completed.evolution?.mode, 'task_actual');
+  assert.equal(completed.evolution.features[completed.evolution.active_feature_index].mode, 'walkthrough_diff');
   assert.deepEqual(completed.structure_diff!.changed_files, [header]);
   assert.equal(completed.structure_diff!.scope_declared, true);
   const [changed] = completed.structure_diff!.signature_changed_symbols;
@@ -659,6 +662,7 @@ test('task HUD connects pre-change impact and saved walkthroughs to their own fr
   saveWalkthrough(service, graphless, after, 'graph-after', '2099-01-01');
   service.store.put('engineering_task', task.task_id, {...finished, changes_status: 'needs_review'});
   const review = await service.taskHud(task.task_id);
+  assert.equal(review.evolution?.drift?.attribution_pending, true);
   const featureWithoutGraph = review.impacted_features.find(f => f.scenario_id === graphless.scenario_id)!;
   assert.equal(featureWithoutGraph.previous_result_id, 'graphless-before');
   assert.equal(featureWithoutGraph.refreshed_result_id, 'graph-after');

@@ -2,13 +2,15 @@ import path from 'node:path';
 import { activeContextEntries, type EngineeringTask } from '../engineering';
 import {
   computeAstCallGraphDiff, computeStructureDiff, computeWalkthroughDiff, type HudImpactedFeature,
-  type TaskHudImpact, type TaskHudSnapshot,
+  type TaskHudImpact, type TaskHudSnapshot, type WalkthroughDiffNode,
 } from '../development-hud';
 import {
   hasFunctionGraphs, type AnalysisResult, type Explanation, type Feature,
   type Project, type Scenario, type Snapshot,
 } from '../shared';
 import { getCodeIndex, type CodeIndex } from './code-index';
+import { buildTaskEvolutionView, taskEvolutionMode, taskEvolutionScope } from './evolution-view';
+import type { EvolutionFlowIndexes } from './evolution-flows';
 import { readSource } from './snapshot';
 import type { Store } from './store';
 
@@ -140,13 +142,15 @@ function matchingFeatures(store: Store, project: Project, files: Set<string>, re
   return {matches, byId};
 }
 
-export function impactedFeaturesForFiles(store: Store, project: Project, files: Set<string>): HudImpactedFeature[] {
-  if (!files.size) return [];
-  return matchingFeatures(store, project, files).matches.map(({feature, scene, history}) => ({
+export function impactedFeaturesForFiles(store: Store, project: Project, files: Set<string>) {
+  if (!files.size) return {impacted_features: [], explanations: new Map<string, Explanation>()};
+  const {matches, byId: explanations} = matchingFeatures(store, project, files);
+  const impacted_features = matches.map(({feature, scene, history}) => ({
     feature_id: feature.feature_id, scenario_id: scene.scenario_id, label: feature.name,
     previous_result_id: history[0]?.result_id, has_call_graph: !!history[0] && hasFunctionGraphs(history[0].result),
     refreshing: false,
   }));
+  return {impacted_features, explanations};
 }
 
 export function relatedConstraints(store: Store, project: Project, files: Set<string>) {
@@ -196,10 +200,12 @@ export async function buildTaskHud(
 ): Promise<TaskHudSnapshot> {
   const task = store.get<EngineeringTask>('engineering_task', taskId);
   const project = store.get<Project>('project', task.project_id);
-  const changedFiles = task.changes.map(c => normalizePath(c.path));
-  const declaredScope = task.approval?.scope ?? (task.proposed_scope?.length ? task.proposed_scope : task.scope);
-  const scopeDeclared = declaredScope.length > 0;
-  const impactScope = new Set((scopeDeclared ? declaredScope : changedFiles).map(normalizePath));
+  const attributionPending = task.changes_status === 'needs_review';
+  const changedFiles = attributionPending ? [] : task.changes.map(c => normalizePath(c.path));
+  const declaredScope = taskEvolutionScope(task);
+  const scopeDeclared = !!task.approval || declaredScope.length > 0;
+  const impactScope = new Set(scopeDeclared ? declaredScope : changedFiles);
+  const architectureScope = taskEvolutionMode(task) === 'task_actual' ? new Set(changedFiles) : impactScope;
   const beforeId = (task.diff_baseline ?? task.baseline).snapshot_id;
   // Historical walkthroughs can bind different snapshots than either task endpoint.
   const snapshots = new Map<string, Snapshot>();
@@ -216,19 +222,24 @@ export async function buildTaskHud(
     return new Map(await Promise.all(files.map(async file => [file, (await readSource(directory, snap, file)).text] as const)));
   }
   const beforeIndex = await index(beforeId);
+  const taskIndexes: EvolutionFlowIndexes = {beforeIndex};
+  const changedSymbols: WalkthroughDiffNode[] = [];
+  const walkthroughIndexes = new Map<string, EvolutionFlowIndexes>();
+  const overview = store.latestOverview(project)?.result;
   const { impacted, byId } = impactedFeatures(store, project, task, new Set([...impactScope, ...changedFiles]), snapshot, featureRefreshState);
   const impact: TaskHudImpact = {
     scope_files: [...impactScope], scope_declared: scopeDeclared, ...indexImpact(beforeIndex, impactScope),
-    ...architectureImpact(store.latestOverview(project)?.result, impactScope),
-    related_constraints: relatedConstraints(store, project, impactScope),
+    ...architectureImpact(overview, architectureScope),
+    related_constraints: relatedConstraints(store, project, new Set([...impactScope, ...architectureScope])),
     impacted_features: impacted,
   };
   const hud: TaskHudSnapshot = {
     task_id: taskId, version: task.version, impact, walkthrough_diffs: [], impacted_features: impacted,
   };
-  if (task.end_state && task.changes_status !== 'needs_review') {
+  if (task.end_state && !attributionPending) {
     const afterId = task.end_state.snapshot_id;
     const afterIndex = await index(afterId);
+    taskIndexes.afterIndex = afterIndex;
     hud.structure_diff = computeStructureDiff(beforeIndex, afterIndex,
       scopeDeclared ? declaredScope : [], changedFiles);
     if (changedFiles.length) {
@@ -238,8 +249,9 @@ export async function buildTaskHud(
       const [beforeSources, afterSources] = await Promise.all([
         frozenSources(beforeSnap, sharedFiles), frozenSources(afterSnap, sharedFiles),
       ]);
+      Object.assign(taskIndexes, {beforeSources, afterSources});
       const astCallGraph = computeAstCallGraphDiff({
-        beforeIndex, afterIndex, beforeSnapshotId: beforeId, afterSnapshotId: afterId, changedFiles, beforeSources, afterSources,
+        beforeIndex, afterIndex, beforeSnapshotId: beforeId, afterSnapshotId: afterId, changedFiles, beforeSources, afterSources, changedSymbols,
       });
       if (astCallGraph) hud.ast_call_graph = astCallGraph;
     }
@@ -257,11 +269,14 @@ export async function buildTaskHud(
       afterHashes.has(file.path) && afterHashes.get(file.path) !== file.content_sha256);
     const files = changedSources.map(file => file.path);
     const [beforeSources, afterSources] = await Promise.all([frozenSources(beforeSnap, files), frozenSources(afterSnap, files)]);
+    const pair = {beforeIndex: await index(from), afterIndex: await index(to), beforeSources, afterSources};
+    walkthroughIndexes.set(feature.scenario_id, pair);
     hud.walkthrough_diffs.push(computeWalkthroughDiff({
       feature_id: feature.feature_id, scenario_id: feature.scenario_id, feature_label: feature.label, before, after,
-      beforeSnapshot: beforeSnap, afterSnapshot: afterSnap, beforeIndex: await index(from), afterIndex: await index(to),
-      beforeSources, afterSources,
+      beforeSnapshot: beforeSnap, afterSnapshot: afterSnap, ...pair,
     }));
   }
+  hud.evolution = buildTaskEvolutionView(task, hud,
+    {...taskIndexes, overview, explanations: byId, walkthroughIndexes, changedSymbols});
   return hud;
 }

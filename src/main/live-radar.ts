@@ -1,11 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { computeAstCallGraphDiff, computeStructureDiff, type TaskHudImpact } from '../development-hud';
+import { computeAstCallGraphDiff, computeStructureDiff, type TaskHudImpact, type WalkthroughDiffNode } from '../development-hud';
 import type { WorkspaceBinding } from '../engineering';
 import type { LiveFileDiff, LiveWorkspaceRadar, RadarMode } from '../live-radar';
 import type { Project, Snapshot, SourceEditor } from '../shared';
 import { ambiguousCHeader, assembleCodeIndex, hasCppSources, parseSourceUnit, supportsSourceFile, type SourceUnit } from './code-index';
 import { architectureImpact, impactedFeaturesForFiles, indexImpact, relatedConstraints } from './development-hud';
+import { buildRadarEvolutionView } from './evolution-view';
 import {
   allowedPath, blobPreview, blobs, commitChanges, git, gitOptional, previewLimit, treeFiles, validateRef,
   worktreeChangedMessage, worktreeChanges, worktreeDirectories, worktreePreview, worktreeStamp, type Change, type GitTree,
@@ -279,23 +280,26 @@ function emptyImpact(): TaskHudImpact {
     architecture_edges: [], impacted_features: [], untested_symbols: [], related_constraints: []};
 }
 function impactMetadata(store: Store, project: Project, files: Set<string>) {
-  return {...architectureImpact(store.latestOverview(project)?.result, files),
-    impacted_features: impactedFeaturesForFiles(store, project, files), related_constraints: relatedConstraints(store, project, files)};
+  const overview = store.latestOverview(project)?.result;
+  const {impacted_features, explanations} = impactedFeaturesForFiles(store, project, files);
+  return {overview, explanations, metadata: {...architectureImpact(overview, files), impacted_features,
+    related_constraints: files.size ? relatedConstraints(store, project, files) : []}};
 }
-function impact(store: Store, project: Project, index: ReturnType<typeof assembleCodeIndex> | undefined, files: Set<string>): TaskHudImpact {
-  if (!files.size) return emptyImpact();
-  return {...emptyImpact(), scope_files: [...files], ...(index && indexImpact(index, files)), ...impactMetadata(store, project, files)};
+function impact(index: ReturnType<typeof assembleCodeIndex> | undefined, files: Set<string>,
+    metadata: ReturnType<typeof impactMetadata>['metadata']): TaskHudImpact {
+  return {...emptyImpact(), scope_files: [...files], ...(index && indexImpact(index, files)), ...metadata};
 }
 
-function callGraph(indexes: Awaited<ReturnType<typeof liveIndexes>>, state: Comparison, focus?: string) {
+type RadarIndexes = Awaited<ReturnType<typeof liveIndexes>>;
+function callGraph(indexes: RadarIndexes, state: Comparison, focus?: string, changedSymbols?: WalkthroughDiffNode[]) {
   const {beforeIndex, afterIndex, beforeSources, afterSources, changedPaths} = indexes;
   return computeAstCallGraphDiff({beforeIndex, afterIndex, beforeSources, afterSources,
     beforeSnapshotId: state.base, afterSnapshotId: state.target, changedFiles: changedPaths,
-    focusFiles: focus ? [focus] : undefined});
+    focusFiles: focus ? [focus] : undefined, changedSymbols});
 }
 
 // Key results by store/project: the same checkout can have different saved architecture and features.
-type RadarCacheEntry = {radar: LiveWorkspaceRadar; state: Comparison};
+type RadarCacheEntry = {radar: LiveWorkspaceRadar; state: Comparison; indexes?: WeakRef<RadarIndexes>};
 const radarCache = new WeakMap<Store, Map<string, RadarCacheEntry>>();
 const radarKey = (projectId: string, mode: RadarMode) => JSON.stringify([projectId, mode]);
 export async function buildLiveWorkspaceRadar(store: Store, storage: string, projectId: string, options: RadarOptions = {}): Promise<LiveWorkspaceRadar> {
@@ -311,23 +315,34 @@ export async function buildLiveWorkspaceRadar(store: Store, storage: string, pro
   const key = radarKey(projectId, mode);
   const cache = radarCache.get(store) ?? new Map<string, RadarCacheEntry>();
   radarCache.set(store, cache);
-  const prior = cache.get(key)?.radar, subpath = prefix.slice(0, -1) || undefined;
-  const hit = prior?.workspace_path === root && prior.git_subpath === subpath && prior.is_git === !!repo &&
+  const cached = cache.get(key), prior = cached?.radar, subpath = prefix.slice(0, -1) || undefined;
+  // Reuse this exact pair on hot polls without extending the bounded revision cache's lifetime.
+  const cachedIndexes = cached?.indexes?.deref();
+  const hit = prior?.workspace_path === root && (!prior.structure_diff || cachedIndexes) && prior.git_subpath === subpath && prior.is_git === !!repo &&
     options.previousFingerprint === fingerprint && prior.fingerprint === fingerprint && prior.head_sha === head && prior.branch === branch;
   const files = new Set(changes.map(c => prefix + c.path));
+  const {overview, explanations, metadata} = impactMetadata(store, project, files);
+  const changedSymbols: WalkthroughDiffNode[] = [];
   const focus = options.focus_file;
   const focusOn = (comparable: readonly string[] | undefined) =>
     focus && (comparable ? comparable.includes(focus) : files.has(focus)) ? focus : undefined;
   if (hit) {
-    const currentImpact = files.size ? {...prior.impact, ...impactMetadata(store, project, files)} : prior.impact;
+    const currentImpact = {...prior.impact, ...metadata};
     const focus_file = focusOn(prior.structure_diff?.changed_files);
     const radar = {...prior, focus_file, impact: currentImpact, cache_hit: true};
-    if (focus_file !== prior.focus_file && prior.structure_diff) {
-      const indexes = await liveIndexes(repo?.root ?? root, state, prefix, storage, snapshot);
-      radar.ast_call_graph = callGraph(indexes, state, focus_file);
+    // Reading results and constraints can change while the source fingerprint stays the same.
+    const metadataChanged = metadata.architecture_result_id !== prior.impact.architecture_result_id ||
+      JSON.stringify(metadata.impacted_features) !== JSON.stringify(prior.impact.impacted_features) ||
+      JSON.stringify(metadata.related_constraints) !== JSON.stringify(prior.impact.related_constraints);
+    if (cachedIndexes && focus_file !== prior.focus_file) {
+      radar.ast_call_graph = callGraph(cachedIndexes, state, focus_file, metadataChanged ? changedSymbols : undefined);
+    }
+    if (metadataChanged) {
+      radar.evolution = buildRadarEvolutionView(radar, {...cachedIndexes, overview, explanations,
+        changedSymbols: focus_file !== prior.focus_file ? changedSymbols : undefined});
     }
     radar.computed_ms = elapsed();
-    cache.set(key, {radar, state});
+    cache.set(key, {radar, state, indexes: cached?.indexes});
     return radar;
   }
   const [indexes, recent_commits] = await Promise.all([
@@ -341,15 +356,16 @@ export async function buildLiveWorkspaceRadar(store: Store, storage: string, pro
     base_ref: base, target_ref: target, fingerprint, cache_hit: false, recent_commits,
     changed_files: changes.map(({stamp, size, ...file}) => ({...file, path: prefix + file.path,
       is_source: supportsSourceFile(file.path), ...(indexes?.binaryFiles.has(file.path) && {binary: true})})),
-    impact: impact(store, project, indexes?.afterIndex, files), computed_ms: 0,
+    impact: impact(indexes?.afterIndex, files, metadata), computed_ms: 0,
   };
   if (indexes) {
     const {beforeIndex, afterIndex, changedPaths} = indexes;
     radar.structure_diff = computeStructureDiff(beforeIndex, afterIndex, [], changedPaths);
-    radar.ast_call_graph = callGraph(indexes, state, focus_file);
+    radar.ast_call_graph = callGraph(indexes, state, focus_file, changedSymbols);
   }
+  radar.evolution = buildRadarEvolutionView(radar, {...indexes, overview, explanations, changedSymbols});
   radar.computed_ms = elapsed();
-  cache.set(key, {radar, state});
+  cache.set(key, {radar, state, indexes: indexes && new WeakRef(indexes)});
   return radar;
 }
 
@@ -363,7 +379,8 @@ export async function liveWorkspaceImpact(store: Store, storage: string, project
   if (!repo && !snapshot) return emptyImpact();
   const state = await comparison(repo, root, snapshot, {});
   const {afterIndex} = await liveIndexes(repo?.root ?? root, state, repo?.prefix ?? '', storage, snapshot);
-  return impact(store, project, afterIndex, new Set(files));
+  const selected = new Set(files);
+  return impact(afterIndex, selected, impactMetadata(store, project, selected).metadata);
 }
 
 export async function readLiveFileDiff(store: Store, storage: string, projectId: string, options: FileDiffOptions): Promise<LiveFileDiff> {

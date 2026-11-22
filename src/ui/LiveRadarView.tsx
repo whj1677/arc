@@ -14,6 +14,7 @@ import {
   type TaskArchitectureOverlay,
 } from './DevelopmentHud';
 import { TextDiffView } from './TextDiffView';
+import { EvolutionCockpit } from './EvolutionCockpit';
 import { collapseUnifiedContext, computeLineDiff } from './text-diff';
 import './live-radar.css';
 
@@ -318,7 +319,7 @@ export function LiveRadarView({
   const [radar, setRadar] = useState<LiveWorkspaceRadar | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState<'graph' | 'files'>('graph');
+  const [activeTab, setActiveTab] = useState<'evolution' | 'files' | 'graph'>('evolution');
   const [viewFilter, setViewFilter] = useState<'diff' | 'before' | 'after'>('diff');
   const [selectedTarget, setSelectedTarget] = useState<SelectedTarget | null>(null);
   const [openDrawer, setOpenDrawer] = useState<'struct' | 'features' | 'constraints' | null>(null);
@@ -339,6 +340,7 @@ export function LiveRadarView({
     setLoading(true);
     setError('');
     try {
+      const hadPrevious = Boolean(fingerprintRef.current);
       const value = await arc().invoke<LiveWorkspaceRadar>('workspace_live_radar', {
         project_id: project.project_id,
         mode: reqMode,
@@ -358,10 +360,9 @@ export function LiveRadarView({
       }
       if (changed) {
         setSelectedTarget(null);
-        if (value.ast_call_graph) {
-          setActiveTab('graph');
-        } else if (!reqFocus) {
-          setActiveTab('files');
+        // Only pick initial default tab on first load or explicit mode/commit switch; keep user's current tab on live refresh!
+        if (!hadPrevious && !reqFocus) {
+          setActiveTab(value.evolution ? 'evolution' : value.ast_call_graph ? 'graph' : 'files');
         }
         const preferred = value.changed_files.find(f => f.is_source) ?? value.changed_files[0];
         setSelectedFile(prev => (value.changed_files.some(f => f.path === prev) ? prev : preferred?.path ?? ''));
@@ -656,7 +657,8 @@ export function LiveRadarView({
         </section>
       ) : activeRadar ? (
         <div className="radar-content">
-          {/* Single-Line Cockpit Verdict Strip */}
+          {/* Show legacy HUD verdict strip only when in opt-in AST graph tab; Evolution Cockpit renders its own clean strip */}
+          {activeTab === 'graph' && (
           <div className="hud-verdict-card">
             <div className="hud-verdict-strip">
               <div className="hud-verdict-left">
@@ -778,26 +780,36 @@ export function LiveRadarView({
               </div>
             )}
           </div>
+          )}
 
           {/* Main Interactive Stage Card */}
           <div className="hud-walkthrough radar-stage-card">
             <div className="hud-walkthrough-toolbar">
               <div className="hud-toolbar-left">
                 <div className="hud-segmented" role="group" aria-label="视图切换">
-                  <button
-                    type="button"
-                    aria-pressed={activeTab === 'graph'}
-                    disabled={!astGraph && !focusFile}
-                    onClick={() => setActiveTab('graph')}
-                  >
-                    本地 AST 调用图
-                  </button>
+                  {activeRadar.evolution && (
+                    <button
+                      type="button"
+                      aria-pressed={activeTab === 'evolution'}
+                      onClick={() => setActiveTab('evolution')}
+                    >
+                      演化视图
+                    </button>
+                  )}
                   <button
                     type="button"
                     aria-pressed={activeTab === 'files'}
                     onClick={() => setActiveTab('files')}
                   >
                     改动文件 Diff ({activeRadar.changed_files.length})
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={activeTab === 'graph'}
+                    disabled={!astGraph && !focusFile}
+                    onClick={() => setActiveTab('graph')}
+                  >
+                    AST 关系图
                   </button>
                 </div>
               </div>
@@ -817,6 +829,53 @@ export function LiveRadarView({
                 </div>
               )}
             </div>
+
+            {activeTab === 'evolution' && activeRadar.evolution ? (
+              <EvolutionCockpit
+                evolution={activeRadar.evolution}
+                revisionKey={activeRadar.fingerprint}
+                modeLabel={
+                  activeRadar.mode === 'worktree'
+                    ? activeRadar.source === 'snapshot'
+                      ? '工作区 · 基准快照比对'
+                      : `工作区未提交 · ${activeRadar.branch || 'HEAD'}`
+                    : `提交 ${activeRadar.target_ref.slice(0, 8)}`
+                }
+                loadFileDiff={req =>
+                  arc().invoke<LiveFileDiff>('workspace_live_diff', {
+                    project_id: project.project_id,
+                    base_ref: activeRadar.base_ref,
+                    target_ref: activeRadar.target_ref,
+                    path: req.path,
+                    fingerprint: activeRadar.fingerprint,
+                  })
+                }
+                openInEditor={
+                  activeRadar.mode === 'worktree'
+                    ? (file, line) =>
+                        arc().invoke('workspace_open_file', {
+                          project_id: project.project_id,
+                          path: file,
+                          line: line ?? 1,
+                          editor: 'vscode',
+                        })
+                    : undefined
+                }
+                onOpenArchitectureOverlay={
+                  hasArchNodes
+                    ? resultId =>
+                        onOpenArchitectureOverlay({
+                          taskId: '__live_radar__',
+                          goal: activeRadar.mode === 'worktree'
+                            ? `本机工作区实时改动（${activeRadar.changed_files.length} 文件）`
+                            : `提交 ${activeRadar.target_ref.slice(0, 8)} 变更`,
+                          resultId: resultId ?? activeRadar.impact.architecture_result_id,
+                          nodes: new Map(activeRadar.impact.architecture_nodes.map(n => [n.node_id, n.relation])),
+                        })
+                    : undefined
+                }
+              />
+            ) : null}
 
             {activeTab === 'graph' && (astGraph || focusFile || loading) && sourceFiles.length >= 2 && (
               <div className="radar-focus-bar" role="group" aria-label="按改动文件聚焦调用图">
@@ -844,7 +903,7 @@ export function LiveRadarView({
               </div>
             )}
 
-            {activeTab === 'graph' && astGraph ? (
+            {activeTab === 'evolution' && activeRadar.evolution ? null : activeTab === 'graph' && astGraph ? (
               <div className={`hud-stage${selectedTarget ? ' has-inspector' : ''}`}>
                 <CallChainDiffGraph
                   pathDiff={astGraph.path}

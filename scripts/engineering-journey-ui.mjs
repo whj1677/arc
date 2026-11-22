@@ -21,6 +21,12 @@ const env={...process.env,ARC_DATA_DIR:dataDirectory};delete env.ELECTRON_RUN_AS
 let app,page;const errors=[];
 const read=()=>page.evaluate(()=>window.arc.invoke('data'));
 async function launch(){app=await electron.launch({args:[root],env,timeout:30000});page=await app.firstWindow();page.setDefaultTimeout(15000);page.on('pageerror',error=>errors.push(error.message));await page.locator('header').first().waitFor();}
+async function clickTaskRow(row){
+  const switchTask=page.getByRole('button',{name:/^切换任务/});
+  await row.or(switchTask).filter({visible:true}).first().waitFor();
+  if(!await row.isVisible()&&await switchTask.isVisible())await switchTask.click();
+  await row.click();
+}
 const navigation=()=>page.getByRole('complementary',{name:'ARC 工程工作台导航'});
 const navigate=name=>navigation().getByRole('button',{name,exact:true}).click();
 const selectProject=id=>navigation().getByLabel('当前工程',{exact:true}).selectOption(id);
@@ -58,7 +64,7 @@ try{
   const newDevelopment=!task;
   if(task?.status!=='completed'){
     const attemptsBefore=task?.attempt_ids.length??0;
-    if(task){await page.locator('.engineering-task-row').filter({hasText:goal}).click();await page.getByRole('button',{name:'继续此任务',exact:true}).click();}
+    if(task){await clickTaskRow(page.locator('.engineering-task-row').filter({hasText:goal}));await page.getByRole('button',{name:'继续此任务',exact:true}).click();}
     await page.getByLabel('开发任务',{exact:true}).fill(goal);await page.getByLabel('允许修改的文件',{exact:true}).fill('src/cart.mjs');await page.getByRole('button',{name:task?'继续开发':'开始开发',exact:true}).click();
     task=await waitFor(async()=>(await page.evaluate(id=>window.arc.invoke('engineering_tasks',{project_id:id}),project.project_id)).find(item=>item.goal===goal),value=>!!value&&value.attempt_ids.length>attemptsBefore,20000);
     console.log(`Started real development ${task.task_id}`);await page.screenshot({path:path.join(scratch,'development-progress.png')});
@@ -69,7 +75,7 @@ try{
   if(process.argv.includes('--expect-environment-blocked')){
     assert.equal(task.status,'blocked',JSON.stringify({summary:task.summary,unresolved:task.unresolved}));assert.match(task.summary,/尚未调用模型/);assert.equal(task.verification_status,'not_run');
     const {attempts}=await page.evaluate(id=>window.arc.invoke('development_events',{task_id:id}),task.task_id);const latest=attempts.at(-1);assert.ok(latest.log_path);const diagnostic=JSON.parse(await fs.readFile(path.join(dataDirectory,latest.log_path),'utf8'));assert.equal(diagnostic.model_called,false);assert.equal(diagnostic.stage,'sandbox_check');
-    await selectProject(project.project_id);await navigate('工程与开发');await selectTasks();await page.locator('.engineering-task-row').filter({hasText:goal}).click();const activity=page.locator('.engineering-task-detail details').filter({has:page.locator('summary').filter({hasText:'执行与活动'})});if(!await activity.evaluate(e=>e.open))await activity.locator('summary').click();await page.getByRole('button',{name:'查看执行诊断',exact:true}).last().click();await page.locator('.engineering-log pre').waitFor();await page.screenshot({path:path.join(scratch,'sandbox-blocked.png')});
+    await selectProject(project.project_id);await navigate('工程与开发');await selectTasks();await clickTaskRow(page.locator('.engineering-task-row').filter({hasText:goal}));const activity=page.locator('.engineering-task-detail details').filter({has:page.locator('summary').filter({hasText:'执行与活动'})});if(!await activity.evaluate(e=>e.open))await activity.locator('summary').click();await page.getByRole('button',{name:'查看执行诊断',exact:true}).last().click();await page.locator('.engineering-log pre').waitFor();await page.screenshot({path:path.join(scratch,'sandbox-blocked.png')});
     console.log(JSON.stringify({sandboxFailureUiPassed:true,realDevelopmentPassed:false,taskId:task.task_id,modelCalled:false,verificationStatus:task.verification_status,attempts:attempts.length},null,2));
   }else{
   assert.equal(task.status,'completed',JSON.stringify({summary:task.summary,unresolved:task.unresolved}));
@@ -100,7 +106,7 @@ try{
   assert.equal(task.verification_status,'passed');
   if(fresh)assert.equal(await fs.access(path.join(workspace,'docs','requirements')).then(()=>true,()=>false),false);
   const verified=await exec(process.execPath,['--test','tests/order.test.mjs'],{cwd:workspace,windowsHide:true});assert.match(verified.stdout,/# fail 0/);
-  await selectProject(project.project_id);await navigate('工程与开发');await selectTasks();await page.locator('.engineering-task-row').filter({hasText:goal}).click();
+  await selectProject(project.project_id);await navigate('工程与开发');await selectTasks();await clickTaskRow(page.locator('.engineering-task-row').filter({hasText:goal}));
   const summary=()=>page.locator('.engineering-task-detail').getByText(/验证：通过 · 已保存/);
   await summary().waitFor();
   await page.locator('.engineering-verification').filter({hasText:'git diff --check'}).getByRole('button',{name:'查看验证日志',exact:true}).click();

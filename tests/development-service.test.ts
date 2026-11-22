@@ -49,7 +49,7 @@ const requirementPlan={summary:'Approve the change to the existing value',propos
   }],evidence_ids:[],unresolved:[]}],
 };
 
-async function runQualityGate(t:TestContext,hostRuns:('pass'|'fail'|'skip'|'partial')[],reviews:('approved'|'needs_fix')[],
+async function runQualityGate(t:TestContext,hostRuns:('pass'|'fail'|'skip'|'partial')[],reviews:('approved'|'needs_fix'|'no_diff')[],
   {blockers=[],summary,sandboxCommand='npm test',fast=false,waitForHost=false,editAfterHost=false}:{blockers?:string[];summary?:string;sandboxCommand?:string;fast?:boolean;waitForHost?:boolean;editAfterHost?:boolean}={}) {
   const f=await fixture(),calls:string[]=[],feedback:string[]=[];
   const runner:typeof runDevelopmentCodex=async options=>{
@@ -57,7 +57,8 @@ async function runQualityGate(t:TestContext,hostRuns:('pass'|'fail'|'skip'|'part
     assert.deepEqual(options.writeScope,['main.ts']);
     if(options.repairFeedback)feedback.push(options.repairFeedback);
     const needsRepair=hostRuns[0]==='fail'||reviews[0]==='needs_fix';
-    await fs.writeFile(path.join(f.source,'main.ts'),`export const value=${needsRepair&&!feedback.length?0:2};\n`);
+    const finalValue=reviews.at(-1)==='no_diff'?1:2;
+    await fs.writeFile(path.join(f.source,'main.ts'),`export const value=${needsRepair&&!feedback.length?0:finalValue};\n`);
     const reply=completed(options.task.task_id);
     if(waitForHost){
       const waiting='等待 ARC 宿主在本机执行 npm test 并回填结果';
@@ -94,8 +95,9 @@ async function runQualityGate(t:TestContext,hostRuns:('pass'|'fail'|'skip'|'part
     assert.ok(verdict,'unexpected diff review');
     assert.deepEqual(options.writeScope,['main.ts']);
     assert.match(options.verificationSummary,hostRuns[hostCount-1]==='skip'?/缺少 CMake/:/npm (?:run )?test/);
-    return {verdict,summary:verdict==='approved'?'边界条件已覆盖':'缺少空值处理',notes:[],
-      blocking_issues:verdict==='approved'?[]:[{file:'main.ts',issue:'空值导致异常',fix:'空值应返回 0'}]};
+    const summary={approved:'边界条件已覆盖',needs_fix:'缺少空值处理',no_diff:'批准范围内无代码差异，无需审查。'}[verdict];
+    return {verdict,summary,notes:[],
+      blocking_issues:verdict==='needs_fix'?[{file:'main.ts',issue:'空值导致异常',fix:'空值应返回 0'}]:[]};
   };
   const plan=structuredClone(requirementPlan);
   if(waitForHost){
@@ -145,20 +147,26 @@ test('a repeated host failure stays failed and never reaches the independent rev
 });
 
 test('diff blockers trigger one bounded repair, another host check and a fresh independent verdict',async t=>{
-  for(const finalVerdict of ['approved','needs_fix'] as const){
+  for(const finalVerdict of ['approved','needs_fix','no_diff'] as const){
     const {saved,feedback,calls,stages}=await runQualityGate(t,['pass','pass'],['needs_fix',finalVerdict]);
     assert.deepEqual(calls,['edit','host','review','edit','host','review']);
     assert.equal(stages.filter(stage=>stage==='delivery_review_repair').length,1);
     assert.equal(feedback.length,1);
     for(const detail of ['main.ts','空值导致异常','空值应返回 0'])assert.ok(feedback[0].includes(detail));
     if(finalVerdict==='approved'){
-      assert.deepEqual(saved.diff_review,{verdict:'approved',summary:'边界条件已覆盖',repaired:true});
+      assert.deepEqual(saved.diff_review,{verdict:'approved',summary:'边界条件已覆盖',blocking_issues:[],repaired:true});
       assert.equal(saved.status,'completed');assert.equal(saved.verification_status,'passed');
       assert.match(saved.decisions.join('\n'),/边界条件已覆盖/);
-    }else{
-      assert.deepEqual(saved.diff_review,{verdict:'needs_fix',summary:'缺少空值处理'});
+    }else if(finalVerdict==='needs_fix'){
+      assert.deepEqual(saved.diff_review,{verdict:'needs_fix',summary:'缺少空值处理',
+        blocking_issues:[{file:'main.ts',issue:'空值导致异常',fix:'空值应返回 0'}]});
       assert.equal(saved.status,'blocked');
       assert.match(saved.unresolved.join('\n'),/空值导致异常/);
+    }else{
+      assert.deepEqual(saved.diff_review,{verdict:'no_diff',summary:'批准范围内无代码差异，无需审查。',blocking_issues:[]});
+      assert.deepEqual(saved.changes,[]);
+      assert.equal(saved.status,'completed');
+      assert.equal(auditDelivery(saved,[]).review.status,'no_diff');
     }
   }
 });
@@ -200,7 +208,7 @@ test('only a resolved sandbox verification blocker can be promoted by a passing 
 test('passing final host receipts resolve waiting steps and preserve unrelated outstanding work',async t=>{
   const {saved}=await runQualityGate(t,['fail','pass'],['approved'],{waitForHost:true});
   assert.equal(saved.status,'completed');
-  assert.deepEqual(saved.diff_review,{verdict:'approved',summary:'边界条件已覆盖'});
+  assert.deepEqual(saved.diff_review,{verdict:'approved',summary:'边界条件已覆盖',blocking_issues:[]});
   assert.deepEqual(saved.unresolved,['仍需人工验收','仍需现场验收']);
   const step=saved.steps![0],receipt=saved.verification.at(-1)!;
   assert.equal(step.status,'completed');

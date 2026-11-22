@@ -1,4 +1,5 @@
 import type { AstCallGraphDiff, TaskHudImpact, TaskHudStructureDiff } from './development-hud';
+import type { EvolutionView } from './evolution-view';
 
 export type RadarMode = 'worktree' | 'commit';
 
@@ -19,6 +20,7 @@ export interface RadarChangedFile {
 }
 
 export interface LiveWorkspaceRadar {
+  evolution?: EvolutionView;
   project_id: string;
   workspace_path: string;
   source: 'git' | 'snapshot';

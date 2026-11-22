@@ -3,11 +3,13 @@ import type {Project} from '../shared';
 import {projectLabel} from './project-label';
 
 type WorkbenchView='overview'|'walk'|'materials'|'radar'|'engineering';
-type IconName=WorkbenchView|'open'|'settings';
+type IconName=WorkbenchView|'open'|'settings'|'collapse'|'expand';
 type Props={
   projects:Project[];
   projectId:string;
   active:WorkbenchView;
+  collapsed?:boolean;
+  onToggleCollapse?:()=>void;
   onProject:(id:string)=>void;
   onOpen:()=>void;
   onSettings:()=>void;
@@ -27,10 +29,12 @@ function NavIcon({name}:{name:IconName}){
     {name==='engineering'&&<><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="m8 12 2.5 2.5L16.5 8"/></>}
     {name==='open'&&<><path d="M3.5 7.5h6l2 2h9v10h-17z"/><path d="M3.5 7.5v-3h6l2 3M12 13v5M9.5 15.5h5"/></>}
     {name==='settings'&&<><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6 18 18M18 6l-1.4 1.4M7.4 16.6 6 18"/></>}
+    {name==='collapse'&&<path d="m14.5 7-5 5 5 5M9.5 7l-5 5 5 5"/>}
+    {name==='expand'&&<path d="m9.5 7 5 5-5 5M14.5 7l5 5-5 5"/>}
   </svg>;
 }
 
-export function WorkbenchNavigation({projects,projectId,active,onProject,onOpen,onSettings,onNavigate}:Props){
+export function WorkbenchNavigation({projects,projectId,active,collapsed,onToggleCollapse,onProject,onOpen,onSettings,onNavigate}:Props){
   const current=projects.find(project=>project.project_id===projectId);
   return <aside className="workbench-navigation" aria-label="ARC 工程工作台导航">
     <div className="workbench-brand">
@@ -58,6 +62,9 @@ export function WorkbenchNavigation({projects,projectId,active,onProject,onOpen,
     <div className="workbench-side-actions">
       <button type="button" title="打开工程" aria-label="打开工程" onClick={onOpen}><NavIcon name="open"/><span className="workbench-nav-label">打开工程</span></button>
       <button type="button" title="连接 Agent" aria-label="连接 Agent" onClick={onSettings}><NavIcon name="settings"/><span className="workbench-nav-label">连接 Agent</span></button>
+      {onToggleCollapse&&<button type="button" title={collapsed?'展开侧边导航':'收起侧边导航（留出更多画布）'} aria-label={collapsed?'展开侧边导航':'收起侧边导航'} onClick={onToggleCollapse}>
+        <NavIcon name={collapsed?'expand':'collapse'}/><span className="workbench-nav-label">{collapsed?'展开导航':'收起导航'}</span>
+      </button>}
     </div>
     <div className="workbench-local-status"><i aria-hidden="true"/><span>数据保存在本机</span></div>
   </aside>;

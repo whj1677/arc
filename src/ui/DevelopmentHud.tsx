@@ -2983,8 +2983,8 @@ export function DeliveryHud({
                   <span>审查 · {audit.review.label}</span>
                 </button>
               ) : (
-                <span className="hud-pill tone-ok">
-                  <i className="hud-dot ok" />
+                <span className={`hud-pill${audit.review.status === 'no_diff' ? '' : ' tone-ok'}`}>
+                  <i className={`hud-dot${audit.review.status === 'no_diff' ? '' : ' ok'}`} />
                   <span>审查 · {audit.review.label}</span>
                 </span>
               )

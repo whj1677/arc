@@ -8,8 +8,9 @@ import {locate} from './executables';
 import {runCodexPromptRefinement} from './providers';
 import {safeFile} from './snapshot';
 
+type ReviewVerdict = NonNullable<EngineeringTask['diff_review']>['verdict'];
 type DiffReview = {
-  verdict: 'approved' | 'needs_fix';
+  verdict: ReviewVerdict;
   summary: string;
   blocking_issues: {file: string; issue: string; fix: string}[];
   notes: string[];
@@ -31,12 +32,14 @@ const schema = {
     notes: {type: 'array', items: text},
   },
 };
-const validate = new Ajv().compile<DiffReview>(schema);
+// Only the host can establish no_diff. A reviewer always receives a nonempty diff.
+const validate = new Ajv().compile<DiffReview & {verdict: Exclude<ReviewVerdict, 'no_diff'>}>(schema);
 const exec = promisify(execFile);
 const limit = 32 * 1024;
 const truncation = '\n…（差异超过 32 KiB，仅审查以上片段）';
 
 async function scopedDiff({workspace, writeScope, context, baselineRoot}: ReviewOptions) {
+  if (!writeScope.length) return '';
   const git = await locate('git');
   const {dirty, head} = context.code_state;
   let bytes = Buffer.alloc(0);
@@ -56,7 +59,7 @@ async function scopedDiff({workspace, writeScope, context, baselineRoot}: Review
   }
   // A nested workspace can inherit an ancestor's HEAD even when the whole
   // workspace is ignored. Its paths then appear in neither git diff nor dirty.
-  const indexed = head && baselineRoot && writeScope.length
+  const indexed = head && baselineRoot
     ? new Set((await exec(git, ['--literal-pathspecs', 'ls-files', '-z', '--', ...writeScope],
       {cwd: workspace, windowsHide: true, timeout: 10000})).stdout.split('\0'))
     : new Set<string>();
@@ -84,7 +87,7 @@ async function scopedDiff({workspace, writeScope, context, baselineRoot}: Review
 
 export async function reviewDevelopmentDiff(options: ReviewOptions, refine = runCodexPromptRefinement): Promise<DiffReview> {
   const diff = await scopedDiff(options);
-  if (!diff) return {verdict: 'approved', summary: '无代码差异需要复核。', blocking_issues: [], notes: []};
+  if (!diff) return {verdict: 'no_diff', summary: '批准范围内无代码差异，无需审查。', blocking_issues: [], notes: []};
   const {task, writeScope, verificationSummary, profile, preferences} = options;
   const requirement = task.approval && task.requirement_package
     ? {approved: approvedRequirement(task)}

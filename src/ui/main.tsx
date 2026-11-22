@@ -102,6 +102,7 @@ function App() {
   const [focusDevelopment, setFocusDevelopment] = useState(false);
   const [requestedTask, setRequestedTask] = useState('');
   const [archOverlay, setArchOverlay] = useState<TaskArchitectureOverlay | null>(null);
+  const [railPref, setRailPref] = useState<'auto' | 'expanded' | 'collapsed'>('auto');
   useEffect(() => { setArchOverlay(null); }, [projectId]);
   const [indexes, setIndexes] = useState<Record<string, any>>({});
   const [eventState, setEventState] = useState<{ runId: string; items: any[] }>({ runId: '', items: [] });
@@ -1798,12 +1799,18 @@ function App() {
     </details>
   );
 
+  const railCollapsed =
+    railPref === 'collapsed' ||
+    (railPref === 'auto' && (reading.view === 'radar' || reading.view === 'engineering') && width < 1540);
+
   return (
-    <div className="arc-workbench">
+    <div className={`arc-workbench${railCollapsed ? ' is-rail-collapsed' : ''}`}>
       <WorkbenchNavigation
         projects={data.projects}
         projectId={projectId}
         active={reading.view === 'materials' ? 'materials' : reading.view === 'radar' ? 'radar' : engineeringReading ? 'engineering' : reading.entrance === 'walk' ? 'walk' : 'overview'}
+        collapsed={railCollapsed}
+        onToggleCollapse={() => setRailPref(railCollapsed ? 'expanded' : 'collapsed')}
         onProject={id => {
           const p = data.projects.find(item => item.project_id === id);
           if (p) void chooseProject(p);

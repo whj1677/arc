@@ -25,7 +25,7 @@ export function DeliveryAuditBar({task, entries, onRefresh, busy = false}: {
       <span className="delivery-check" data-tone={scope.status === 'warning' ? 'warning' : task.changes.length ? 'ok' : 'neutral'}>范围合规 · {scopeLabel}</span>
       <span className="delivery-check" data-tone={verificationTone}>验证可信度 · {verification.label}</span>
       <span className="delivery-check" data-tone={redlines.hits.length ? 'warning' : 'neutral'}>红线核对 · {redlines.hits.length ? `${redlines.hits.length} 项命中` : '无命中'}</span>
-      {review.status !== 'none' && <span className="delivery-check" data-tone={review.status === 'needs_fix' ? 'warning' : 'ok'}>独立审查 · {review.label}</span>}
+      {review.status !== 'none' && <span className="delivery-check" data-tone={review.status === 'needs_fix' ? 'warning' : review.status === 'no_diff' ? 'neutral' : 'ok'}>独立审查 · {review.label}</span>}
     </div>
     {review.summary && (review.status === 'repaired' || review.status === 'needs_fix') && <details className="delivery-review">
       <summary>{review.summary.split(/\r?\n/)[0]}</summary>

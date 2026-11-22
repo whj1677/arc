@@ -143,7 +143,7 @@ export function verificationEvidenceLabel(e: VerificationEvidence) {
   return e.origin === 'self_reported' ? `自述${outcome}` : outcome;
 }
 
-function auditVerification(task: EngineeringTask, logs: Record<string, string>) {
+export function auditVerification(task: EngineeringTask, logs: Record<string, string> = {}) {
   if (task.verification_status === 'stale') return {status: 'stale', label: '代码已变，待重验'} as const;
   if (!task.verification.length) return {status: 'not_run', label: '未执行'} as const;
   const state = task.end_state ?? task.baseline;
@@ -171,13 +171,14 @@ function auditVerification(task: EngineeringTask, logs: Record<string, string>) 
   return {status: 'passed', passed, skipped, label: passed ? `通过 ${passed} 项${skipped ? ` · 跳过 ${skipped}` : ''}` : '命令成功'} as const;
 }
 
-function auditDiffReview(task: EngineeringTask): {status:'approved'|'repaired'|'needs_fix'|'none'; label:string; summary?:string} {
+function auditDiffReview(task: EngineeringTask): {status:'approved'|'repaired'|'needs_fix'|'no_diff'|'none'; label:string; summary?:string} {
   const saved = task.decisions.flatMap(line => {
-    const match = /^独立 Diff 审查（(approved|needs_fix)）[：:，\s]*([\s\S]*)$/.exec(line);
+    const match = /^独立 Diff 审查（(approved|needs_fix|no_diff)）[：:，\s]*([\s\S]*)$/.exec(line);
     return match ? [{verdict:match[1], summary:match[2].trim()}] : [];
   });
   const final = task.diff_review ?? saved.at(-1);
   if (!final) return {status:'none', label:''};
+  if (final.verdict === 'no_diff') return {status:'no_diff', label:'无可审差异', summary:final.summary};
   if (final.verdict === 'needs_fix') return {status:'needs_fix', label:'有阻断项', summary:final.summary};
   if (task.diff_review?.repaired || (saved.some(review => review.verdict === 'needs_fix') && saved.some(review => review.verdict === 'approved')))
     return {status:'repaired', label:'自修后通过', summary:final.summary};

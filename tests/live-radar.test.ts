@@ -147,6 +147,7 @@ test('successive polls skip parsing on a fingerprint hit and parse only the edit
   const parses = t.mock.method(Parser.prototype as Parser & { initialize(): void }, 'initialize');
   const hit = await radar({ previousFingerprint: warm.fingerprint });
   assert.equal(hit.cache_hit, true);
+  assert.ok(hit.evolution?.side_effects.some(effect => effect.category === 'constraint' && effect.title === 'Public API'));
   assert.equal(hit.fingerprint, warm.fingerprint);
   assert.equal(parses.mock.callCount(), 0);
   assert.deepEqual(hit.impact.related_constraints.map(rule => rule.entry_id), ['poll-rule']);
@@ -390,6 +391,7 @@ test('changing focus on the same fingerprint scopes the call graph and reuses bo
     assert.deepEqual(scan.changed_files, full.changed_files);
     assert.deepEqual(scan.structure_diff, full.structure_diff);
     assert.deepEqual(scan.ast_call_graph?.path.participants.filter(p => p.code_changed).map(p => p.file), [file]);
+    assert.deepEqual(scan.evolution, full.evolution);
   }
   assert.equal(initializes.mock.callCount(), 0);
   await assert.rejects(radar({ focus_file: '../outside.ts' }));

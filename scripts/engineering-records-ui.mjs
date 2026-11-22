@@ -11,6 +11,12 @@ if(!await fs.access(workspace).then(()=>true,()=>false))await fs.cp(path.join(ro
 const env={...process.env,CODEX_HOME:path.join(scratch,'isolated-codex')};delete env.ELECTRON_RUN_AS_NODE;await fs.mkdir(env.CODEX_HOME,{recursive:true});
 let app,page;const errors=[];
 async function launch(directory){app=await electron.launch({args:[root],env:{...env,ARC_DATA_DIR:directory},timeout:30000});page=await app.firstWindow();page.setDefaultTimeout(20000);page.on('pageerror',e=>errors.push(e.message));await page.locator('header').first().waitFor();}
+async function clickTaskRow(row){
+  const switchTask=page.getByRole('button',{name:/^切换任务/});
+  await row.or(switchTask).filter({visible:true}).first().waitFor();
+  if(!await row.isVisible()&&await switchTask.isVisible())await switchTask.click();
+  await row.click();
+}
 const navigation=()=>page.getByRole('complementary',{name:'ARC 工程工作台导航'});
 async function invoke(name,args){return page.evaluate(([name,args])=>window.arc.invoke(name,args),[name,args]);}
 async function menu(){const summary=page.getByText('接入与恢复',{exact:true});if(!await summary.evaluate(e=>e.parentElement.open))await summary.click();}
@@ -25,7 +31,7 @@ try{
   await page.locator('.engineering-workspace').waitFor();
   await page.getByRole('navigation',{name:'工程栏目'}).getByRole('button',{name:/^任务/}).click();
   const tasksBefore=await invoke('engineering_tasks',{project_id:project.project_id});
-  if(tasksBefore.length){await page.locator('.engineering-task-row').first().click();await page.getByRole('button',{name:'版本历史',exact:true}).click();await page.getByLabel('工程任务版本',{exact:true}).waitFor();assert.ok(await page.getByLabel('工程任务版本',{exact:true}).locator('option').count()>1);const diagnostic=page.getByRole('button',{name:'查看执行诊断',exact:true});if(await diagnostic.count()){await diagnostic.last().click();await page.locator('.engineering-log pre').waitFor();assert.ok((await page.locator('.engineering-log pre').textContent()).length);await page.getByRole('button',{name:'关闭日志',exact:true}).click();}}
+  if(tasksBefore.length){await clickTaskRow(page.locator('.engineering-task-row').first());await page.getByRole('button',{name:'版本历史',exact:true}).click();await page.getByLabel('工程任务版本',{exact:true}).waitFor();assert.ok(await page.getByLabel('工程任务版本',{exact:true}).locator('option').count()>1);const diagnostic=page.getByRole('button',{name:'查看执行诊断',exact:true});if(await diagnostic.count()){await diagnostic.last().click();await page.locator('.engineering-log pre').waitFor();assert.ok((await page.locator('.engineering-log pre').textContent()).length);await page.getByRole('button',{name:'关闭日志',exact:true}).click();}}
   await page.getByRole('button',{name:'工程上下文',exact:true}).click();
   await page.getByRole('button',{name:'来源与补充',exact:true}).first().click();
   await page.locator('.question-source pre').first().waitFor();
@@ -67,7 +73,7 @@ try{
   await page.getByRole('button',{name:'连接 Agent / 迁移旧规则',exact:true}).click();await page.getByText('Agent 接入已保存；请在该工作区开启新会话',{exact:true}).waitFor();
   const restoredContext=await tool(restoredData,'arc_engineering_context',{workspace_path:workspace});assert.ok(restoredContext.entries.some(e=>e.origin==='user'&&e.text===correction));
   for(const old of tasksBefore){const restored=await tool(restoredData,'arc_development_task',{task_id:old.task_id});assert.equal(restored.task_id,old.task_id);assert.equal(restored.goal,old.goal);assert.equal(restored.status,old.status);}
-  await closedMenu();await page.locator('.engineering-task-row').filter({hasText:imported.goal}).click();await page.getByText('AEC 历史任务 · 待复核。原文与来源已保存，旧验证声明不视为本次真实执行。',{exact:true}).waitFor();
+  await closedMenu();await clickTaskRow(page.locator('.engineering-task-row').filter({hasText:imported.goal}));await page.getByText('AEC 历史任务 · 待复核。原文与来源已保存，旧验证声明不视为本次真实执行。',{exact:true}).waitFor();
   await page.getByRole('button',{name:'工程上下文',exact:true}).click();await page.getByRole('button',{name:'来源与补充',exact:true}).first().click();await page.locator('.question-source pre').first().waitFor();
   await page.screenshot({path:path.join(scratch,'restored-records.png')});
   const restoredReading=await invoke('data');assert.equal(restoredReading.explanations.filter(e=>e.result.binding.project_id===project.project_id).length,data.explanations.filter(e=>e.result.binding.project_id===project.project_id).length);

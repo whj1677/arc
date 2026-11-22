@@ -132,7 +132,12 @@ export interface EngineeringTask {
   analysis_channel?:'codex'|'kimi'|'dsh';
   execution_mode?:ExecutionMode;
   fast_mode?:boolean;
-  diff_review?:{verdict:'approved'|'needs_fix';summary:string;repaired?:boolean};
+  diff_review?:{
+    verdict:'approved'|'needs_fix'|'no_diff';
+    summary:string;
+    repaired?:boolean;
+    blocking_issues?:{file:string;issue:string;fix:string}[];
+  };
   rolled_back_at?:string;
   status:'pending'|'running'|'blocked'|'completed'|'failed'|'cancelled'|'interrupted';
   baseline:CodeState; end_state?:CodeState; diff_baseline?:CodeState; context_version:number;

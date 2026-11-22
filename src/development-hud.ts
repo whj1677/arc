@@ -1,8 +1,10 @@
 import type { AnalysisResult, FunctionWalkthrough, SourceEvidence } from '../contracts/agent-adapter';
+import type { EvolutionView } from './evolution-view';
 import type { CodeIndex, CodeSymbol } from './main/code-index';
 import type { Snapshot } from './shared';
 
 export interface HudExternalCaller {
+  ambiguous?: boolean;
   caller_symbol: string;
   caller_file: string;
   caller_line: number;
@@ -222,6 +224,7 @@ export interface AstCallGraphDiff {
 }
 
 export interface TaskHudSnapshot {
+  evolution?: EvolutionView;
   task_id: string;
   version: number;
   impact: TaskHudImpact;
@@ -267,6 +270,7 @@ function callFacts(index: CodeIndex, changed: Set<string>) {
         if (sites.length < 15 && !sites.some(s => s.caller_symbol === caller.qualified_name &&
             s.caller_file === call.file && s.caller_line === call.line)) {
           sites.push({
+            ...(call.target_ids.length > 1 && {ambiguous: true}),
             caller_symbol: caller.qualified_name, caller_file: call.file, caller_line: call.line,
             target_symbol: target.qualified_name, target_file: target.file, target_line: target.start_line,
           });
@@ -494,6 +498,8 @@ export function computeAstCallGraphDiff(options: {
   focusFiles?: readonly string[];
   beforeSources?: ReadonlyMap<string, string>;
   afterSources?: ReadonlyMap<string, string>;
+  // Collect all changes before the HUD graph's focus and display limits are applied.
+  changedSymbols?: WalkthroughDiffNode[];
 }): AstCallGraphDiff | undefined {
   const changed = new Set(options.changedFiles.map(file => file.replaceAll('\\', '/')));
   if (!changed.size) return;
@@ -528,6 +534,9 @@ export function computeAstCallGraphDiff(options: {
   }
   const seedCandidates = [...prioritySeeds, ...bodySeeds];
   const seeds = seedCandidates.slice(0, 14);
+  if (options.changedSymbols) {
+    for (const [key, status] of statuses) if (status !== 'unchanged') options.changedSymbols.push(participant(key));
+  }
   if (!seeds.length) return;
   const selectedSeeds = new Set(seeds);
   const omittedSeeds = new Set(seedCandidates.slice(seeds.length));
@@ -552,7 +561,7 @@ export function computeAstCallGraphDiff(options: {
   const maxNeighbors = 8;
   const neighbors = [...external.keys()].sort((a, b) => external.get(a)! - external.get(b)!).slice(0, maxNeighbors);
   const included = new Set([...seeds, ...internal, ...neighbors]);
-  const participants = [...included].map((key): WalkthroughDiffNode => {
+  function participant(key: string): WalkthroughDiffNode {
     const symbol = symbols.get(key)!;
     const old = before.symbols.get(key), next = after.symbols.get(key);
     const status = statuses.get(key) ?? 'unchanged';
@@ -565,7 +574,8 @@ export function computeAstCallGraphDiff(options: {
       before_editor_line: old?.start_line, after_editor_line: next?.start_line,
       before_signature: old?.signature, after_signature: next?.signature, code_changed: status !== 'unchanged',
     };
-  });
+  }
+  const participants = [...included].map(participant);
 
   const edges: WalkthroughDiffEdge[] = [];
   const incoming = new Set<string>();
