@@ -6,6 +6,7 @@ import type {CodeState, EngineeringTask} from '../src/engineering';
 import type {LiveWorkspaceRadar} from '../src/live-radar';
 import {assembleCodeIndex, parseSourceUnit} from '../src/main/code-index';
 import {reviewDevelopmentDiff} from '../src/main/development-review';
+import {diffLines} from '../src/main/evolution-flows';
 import {buildRadarEvolutionView, buildTaskEvolutionView} from '../src/main/evolution-view';
 import type {AnalysisResult, Explanation} from '../src/shared';
 
@@ -47,6 +48,15 @@ function result(nodes: AnalysisResult['nodes']): AnalysisResult {
     ...example.evidence[0], evidence_id:n.node_id, path:n.source_scope!.path, role:'definition', line_start:1, line_end:1,
   }))};
 }
+
+test('moving the last unique line to the front preserves the other 1599 line matches', () => {
+  const lines = Array.from({length:1600}, (_, i) => 'line ' + (i + 1));
+  const diff = diffLines(lines.join('\n'), [lines[1599], ...lines.slice(0, -1)].join('\n'));
+  assert.deepEqual([...diff.changedBeforeLines], [1600]);
+  assert.deepEqual([...diff.insertions], [1]);
+  assert.deepEqual(lines.slice(0, -1).map((_, i) => diff.mapAfterToBefore(i + 2)),
+    lines.slice(0, -1).map((_, i) => i + 1));
+});
 
 test('AST symbol projection keeps both occurrences of one callee and removes the call at its old line', async () => {
   const files = {[source]:'function poll() {\n  sample(1);\n  const id = 2;\n  sample(id);\n}',
@@ -114,6 +124,58 @@ test('a removed edge cites its old call and a new same-layer call creates no cro
   assert.ok(!view.side_effects.some(effect => effect.category === 'new_cross_layer_edge'));
 });
 
+test('runtime evidence cannot claim a build file, while a dedicated document keeps its owner', () => {
+  const build = 'CMakeLists.txt', doc = 'DOCS/protocol', config = 'settings.ini';
+  const hal = {...node('node-hal', 'hal/port.cpp', 'stage'), evidence_ids:['node-hal', 'build']};
+  const base = result([hal, node('manual', doc, 'resource')]);
+  const overview = {...base, evidence:[...base.evidence, {...base.evidence[0], evidence_id:'build', path:build}],
+    architecture:{node_ids:['node-hal', 'manual'], edge_ids:[]}};
+  const current = task([build, doc, config, 'hal/port.cpp']);
+  current.changes[2].after_sha256 = null;
+  const view = buildTaskEvolutionView(current, hud(), {overview});
+  assert.deepEqual(view.changed_files.map(f => [f.path, f.role, f.module_id]),
+    [[build, 'build', undefined], [doc, 'doc', 'manual'], [config, 'config', undefined], ['hal/port.cpp', 'code', 'node-hal']]);
+  const runtime = view.architecture.modules.find(m => m.id === 'node-hal')!;
+  assert.deepEqual(runtime.changed_files, ['hal/port.cpp']);
+  assert.deepEqual(view.architecture.modules.find(m => m.id === 'manual')?.changed_files, []);
+  assert.deepEqual(view.architecture.non_code_changes, [
+    {path:build, role:'build', status:'modified'}, {path:doc, role:'doc', status:'modified'},
+    {path:config, role:'config', status:'removed'},
+  ]);
+});
+
+test('a static overview neighbor and a new call recipient have distinct relations', async () => {
+  const files = {[source]:'function poll() {}', [api]:'function sample() {}', [store]:'function write() {}'};
+  const context = await indexes(files, {...files, [source]:'function poll() { sample(); }'});
+  const nodes = [node('entry', source, 'execution_boundary'), node('api', api, 'stage'), node('store', store, 'resource')];
+  const link = {...example.edges[0], edge_id:'uses-store', source_node_id:'entry', target_node_id:'store'};
+  const overview = {...result(nodes), edges:[link], architecture:{node_ids:nodes.map(n => n.node_id), edge_ids:[link.edge_id]}};
+  const view = buildRadarEvolutionView(radar(context, [source]), {...context, overview});
+  assert.deepEqual(Object.fromEntries(view.architecture.modules.map(m => [m.id, m.relation])),
+    {entry:'direct', api:'edge_impacted', store:'neighbor'});
+});
+
+test('actual task summaries and progress use reviewed work, while a blueprint uses planned behaviors', () => {
+  const behavior = {id:'plan', behavior:'计划采样', design:'原设计', files:['core\\sample.ts'], step_ids:['impl'], verification:'运行检查'};
+  const step = {step_id:'impl', title:'完成采样', change:'实现采样', progress:'  已记录采样值  ', status:'completed' as const,
+    criteria:[], evidence_ids:[], unresolved:[], created_at:'now', updated_at:'now'};
+  const current = task([api], {summary:'  任务总结  ', diff_review:{verdict:'approved', summary:'  审查已确认采样行为  '},
+    requirement_package:{behaviors:[behavior, {...behavior, id:'also-plan', files:[api, store]}]},
+    steps:[step, {...step, step_id:'verify', title:'设备验证', progress:'  ', change:'等待设备', status:'blocked'},
+      {...step, step_id:'old', status:'superseded'}]});
+  const actual = buildTaskEvolutionView(current, hud(), {});
+  assert.equal(actual.verdict_summary, '审查已确认采样行为');
+  assert.deepEqual(actual.approach, [
+    {id:'impl', title:'完成采样', detail:'已记录采样值', files:[api, store], status:'done'},
+    {id:'verify', title:'设备验证', detail:'等待设备', files:[], status:'blocked'},
+  ]);
+  const blueprint = buildTaskEvolutionView({...current, end_state:undefined, diff_review:{verdict:'approved', summary:' '}}, hud(), {});
+  assert.equal(blueprint.verdict_summary, '任务总结');
+  assert.deepEqual(blueprint.approach.map(s => [s.id, s.detail, s.status]), [
+    ['plan','原设计','planned'], ['also-plan','原设计','planned'],
+  ]);
+});
+
 test('walkthrough wording, stale evidence, bound selection, and document-only edits remain distinct', async () => {
   const files = {[source]:'function poll() {\n  sample(1);\n}', [api]:'function sample(id: number) { return id; }'};
   const context = await indexes(files, files);
@@ -147,13 +209,84 @@ test('walkthrough wording, stale evidence, bound selection, and document-only ed
   assert.equal(prior.mode, 'walkthrough_stale');
   assert.equal(prior.before_snapshot_id, old.binding.source_snapshot_id);
   assert.equal(prior.stale_notice, '改后走读待刷新（当前基于改前走读投影）');
-  assert.equal(prior.steps[0].status, 'modified');
+  assert.equal(prior.steps[0].status, 'unchanged');
   const blueprint = buildTaskEvolutionView({...current, workflow:'ready', changes:[]}, {...snapshot, walkthrough_diffs:[]}, data);
   assert.equal(blueprint.mode, 'task_blueprint');
   assert.equal(blueprint.features[blueprint.active_feature_index].steps[0].status, 'planned');
   const docs = buildTaskEvolutionView(task(['docs/guide.md']), snapshot, data);
   assert.equal(docs.document_only, true);
   assert.deepEqual(docs.features.map(f => f.mode), ['document_only']);
+});
+
+test('a long stale walkthrough keeps untouched functions and inserts new calls at their original run positions', async () => {
+  const file = 'startup.cpp';
+  const stages = Array.from({length:16}, (_, i) => '  value += ' + (i + 1) + ';');
+  const run = 'int Startup::run() {', parseCall = '  int value = parse_arguments_();';
+  const before = ['struct Startup { static int run(); };', 'int parse_arguments_() { return 0; }', 'void record() {}', '',
+    run, parseCall, ...stages, '  return value;', '}', 'int main() { return Startup::run(); }'];
+  const helpers = [...Array.from({length:150}, (_, i) => '// header ' + i),
+    '/** @brief Record component version */', 'void log_version() { record(); }',
+    '// Record startup state', 'void log_state() { record(); }'];
+  const callback = '  register_callback(log_state);';
+  const after = before.flatMap(line => line === run ? [...helpers, line] :
+    line === stages[9] ? [line, '  log_version();'] :
+    line === stages[13] ? [line, callback, '  register_callback(record);', '  log_version();'] : [line]);
+  const context = await indexes({[file]:before.join('\n')}, {[file]:after.join('\n')});
+  const symbols = context.beforeIndex.symbols.filter(s => s.has_body && ['main', 'parse_arguments_', 'run'].includes(s.name));
+  const nodes = symbols.map(s => ({...node(s.name, file, 'function'), function_details:{symbol:s.name, signature:s.signature,
+    definition_evidence_id:s.name, parameter_io_ids:[], return_io_ids:[]}}));
+  const base = result(nodes);
+  const evidence: AnalysisResult['evidence'][number][] = symbols.map(s => ({...base.evidence[0], evidence_id:s.name,
+    path:file, line_start:s.start_line, line_end:s.end_line, role:'definition'}));
+  type Step = NonNullable<AnalysisResult['function_walkthroughs']>[number]['steps'][number];
+  function step(id: string, kind: Step['kind'], from: string|null, to: string, sourceLine: string): Step {
+    const line = before.indexOf(sourceLine) + 1;
+    evidence.push({...base.evidence[0], evidence_id:id, path:file, line_start:line, line_end:id === 'stage-10' ? line + 1 : line,
+      role:kind === 'call' ? 'callsite' : 'context'});
+    return {id, kind, from_node_id:from, to_node_id:to, text:id, input:'', output:'', condition:'',
+      evidence_ids:kind === 'call' ? [id, to] : [id]};
+  }
+  const steps = [step('enter', 'entry', null, 'main', before.at(-1)!),
+    step('start', 'call', 'main', 'run', before.at(-1)!),
+    step('parse', 'call', 'run', 'parse_arguments_', parseCall),
+    ...stages.map((line, i) => {
+      const stage = step('stage-' + (i + 1), 'work', 'run', 'run', line);
+      return i === 15 ? {...stage, evidence_ids:[...stage.evidence_ids, 'earlier-helper']} : stage;
+    })];
+  const helperLine = before.indexOf('void record() {}') + 1;
+  evidence.push({...base.evidence[0], evidence_id:'earlier-helper', path:file, line_start:helperLine, line_end:helperLine, role:'context'});
+  const reading: AnalysisResult = {...base, binding:{...base.binding, source_snapshot_id:'before'}, evidence,
+    function_walkthroughs:[{id:'startup', label:'Startup', trigger:'entry', boundary:'', entry_node_id:'main', evidence_ids:['main'], steps}]};
+  const snapshot = hud();
+  const feature = {feature_id:'startup', scenario_id:'startup', label:'Startup', previous_result_id:reading.result_id,
+    has_call_graph:true, refreshing:false};
+  snapshot.impacted_features = snapshot.impact.impacted_features = [feature];
+  snapshot.structure_diff = computeStructureDiff(context.beforeIndex, context.afterIndex, [file], [file]);
+  const explanation: Explanation = {result_id:reading.result_id, scenario_id:feature.scenario_id, created_at:'now',
+    source_status:'changed', result:reading};
+  const view = buildTaskEvolutionView(task([file]), snapshot, {...context, explanations:new Map([[reading.result_id, explanation]])});
+  const flow = view.features.find(f => f.mode === 'walkthrough_stale')!;
+  assert.deepEqual([flow.before_snapshot_id, flow.after_snapshot_id, flow.omitted_steps], ['before','after',0]);
+  const added = flow.steps.filter(s => s.inserted);
+  assert.ok(context.afterIndex.calls.some(c => c.callee_name === 'log_state' && c.syntax === 'reference'));
+  const names = ['log_version', 'log_state'];
+  assert.deepEqual(added.map(s => [s.status, s.symbol, s.parent_symbol, s.title, s.sub_calls]), [
+    ['added', names[0], 'Startup::run', 'Record component version', ['record']],
+    ['added', names[1], 'Startup::run', 'Record startup state', ['record']],
+  ]);
+  for (const [i, s] of added.entries()) {
+    const line = after.indexOf(i === 0 ? '  log_version();' : callback) + 1;
+    assert.deepEqual([s.id, s.file, s.line, s.after_line, s.subtitle],
+      ['ast-ins:' + file + ':' + line + ':' + names[i], file, line, line, '在 Startup::run 中新增调用']);
+    assert.deepEqual(s.call_sites?.map(c => [c.caller_symbol, c.target_symbol, c.line, c.status]), [['Startup::run', names[i], line, 'added']]);
+  }
+  assert.deepEqual(flow.steps.map(s => s.id), steps.flatMap(s =>
+    s.id === 'stage-10' ? [s.id, added[0].id] : s.id === 'stage-14' ? [s.id, added[1].id] : [s.id]));
+  assert.deepEqual(flow.steps.map(s => s.order), flow.steps.map((_, i) => i + 1));
+  for (const id of ['enter', 'start', 'parse', 'stage-3']) assert.equal(flow.steps.find(s => s.id === id)?.status, 'unchanged', id);
+  for (const id of ['stage-10', 'stage-14']) assert.equal(flow.steps.find(s => s.id === id)?.status, 'modified', id);
+  assert.deepEqual(view.architecture.modules.find(m => m.relation === 'direct')?.key_symbols?.map(s => [s.name, s.status, s.doc]),
+    [['log_version', 'added', 'Record component version'], ['log_state', 'added', 'Record startup state'], ['Startup::run', 'modified', undefined]]);
 });
 
 test('a changed second walkthrough path is selected by default and both frozen paths are preserved', async () => {
@@ -222,6 +355,7 @@ test('actual drift, verification and inferred blockers remain distinct from AST 
     [['ai_inferred',api,'拒绝空输入']]);
   assert.deepEqual(view.side_effects.filter(s => s.category === 'contract_break')
     .map(s => [s.evidence_kind,s.file,s.line,s.target_file,s.target_line]), [['ast_proved',source,2,api,1]]);
+  assert.equal(view.architecture.modules.find(m => m.files.includes(source))?.relation, 'edge_impacted');
   assert.equal(view.side_effects.find(s => s.category === 'constraint')?.evidence_kind, 'ai_inferred');
   assert.equal(view.verification_badge?.tone, 'warn');
   assert.equal(view.verification_badge?.label, '部分已验 · 含待执行项');

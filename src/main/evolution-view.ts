@@ -19,6 +19,22 @@ interface ProjectionContext extends EvolutionFlowIndexes {
   walkthroughIndexes?: ReadonlyMap<string, EvolutionFlowIndexes>;
 }
 
+const buildFiles = new Set([
+  'cmakelists.txt', 'makefile', 'gnumakefile', 'package.json', 'package-lock.json', 'pnpm-lock.yaml',
+  'cargo.toml', 'cargo.lock', 'pyproject.toml', 'go.mod', 'go.sum', 'pom.xml', 'build.gradle', 'build.gradle.kts', 'meson.build',
+]);
+
+type FileRole = NonNullable<EvolutionChangedFile['role']>;
+type ClassifiedFile = EvolutionChangedFile & {role: FileRole};
+
+function fileRole(filePath: string): FileRole {
+  const path = filePath.replaceAll('\\', '/').toLowerCase();
+  if (buildFiles.has(path.slice(path.lastIndexOf('/') + 1)) || path.endsWith('.cmake')) return 'build';
+  if (/(?:^|\/)docs?\/|\.(?:md|markdown|txt|rst|adoc)$/.test(path)) return 'doc';
+  if (/\.(?:json|ya?ml|toml|ini|conf|cfg|env|xml)$/.test(path)) return 'config';
+  return supportsSourceFile(path) ? 'code' : 'other';
+}
+
 export function taskEvolutionScope(task: EngineeringTask) {
   return (task.approval?.scope ?? (task.proposed_scope?.length ? task.proposed_scope : task.scope))
     .map(file => file.replaceAll('\\', '/'));
@@ -99,7 +115,7 @@ type ProjectionData = Pick<TaskHudSnapshot, 'structure_diff' | 'impact'> &
   Partial<Pick<TaskHudSnapshot, 'walkthrough_diffs'>>;
 
 function project(context: ProjectionContext, data: ProjectionData, mode: EvolutionView['mode'],
-    changed: EvolutionChangedFile[], files: string[], assumptions: EvolutionAssumption[], boundFeatureId?: string) {
+    changed: ClassifiedFile[], files: string[], assumptions: EvolutionAssumption[], boundFeatureId?: string) {
   const blueprint = mode === 'task_blueprint';
   const structure = blueprint ? undefined : data.structure_diff;
   const {beforeIndex, afterIndex, beforeSources, afterSources} = context;
@@ -111,11 +127,13 @@ function project(context: ProjectionContext, data: ProjectionData, mode: Evoluti
   const changedSymbols = blueprint ? [] : context.changedSymbols ?? collected;
   const {architecture, moduleByFile, newCrossLayerEdges} = projectEvolutionArchitecture({
     overview: context.overview, beforeIndex, afterIndex: blueprint ? undefined : afterIndex, files, structure, changedSymbols,
+    beforeSources, afterSources, changed, fileRole,
   });
   return {
     mode, architecture, assumptions,
     changed_files: changed.map(file => ({...file, module_id: moduleByFile.get(file.path)})),
-    ...buildEvolutionFlows({...context, mode, changedFiles: changed.map(file => file.path), projectedFiles: files,
+    ...buildEvolutionFlows({...context, mode, moduleByFile, projectedFiles: files,
+      documentOnly: changed.length > 0 && changed.every(file => file.role !== 'code'),
       boundFeatureId, impactedFeatures: data.impact.impacted_features, walkthroughDiffs: data.walkthrough_diffs,
       changedSymbols, structureDiff: structure}),
     side_effects: sideEffects(structure, newCrossLayerEdges, assumptions, data.impact.related_constraints),
@@ -126,21 +144,27 @@ export function buildTaskEvolutionView(task: EngineeringTask, hud: TaskHudSnapsh
   const mode = taskEvolutionMode(task);
   const attributionPending = task.changes_status === 'needs_review';
   const scope = new Set(taskEvolutionScope(task));
-  const changed: EvolutionChangedFile[] = mode === 'task_blueprint' ? [] : task.changes.map(change => ({
-    path: change.path.replaceAll('\\', '/'), ownership: change.ownership, is_source: supportsSourceFile(change.path),
+  const changed: ClassifiedFile[] = mode === 'task_blueprint' ? [] : task.changes.map(change => ({
+    path: change.path.replaceAll('\\', '/'), ownership: change.ownership, is_source: supportsSourceFile(change.path), role: fileRole(change.path),
     status: change.before_sha256 === null ? 'added' : change.after_sha256 === null ? 'removed' : 'modified',
   }));
   const actual = new Set(changed.map(file => file.path));
   const files = mode === 'task_blueprint' ? [...scope] : [...actual];
-  const behaviors = task.requirement_package?.behaviors;
+  const behaviors = task.requirement_package?.behaviors ?? [];
+  const steps = (task.steps ?? []).filter(step => step.status !== 'superseded');
   return {
     ...project(attributionPending ? {...context, afterIndex: undefined, afterSources: undefined} : context,
       attributionPending ? {impact: hud.impact} : hud, mode, changed, files, taskAssumptions(task), task.reading?.feature_id),
     base_label: '任务基线', target_label: mode === 'task_blueprint' ? '计划范围' : '任务结束快照',
     base_snapshot_id: (task.diff_baseline ?? task.baseline).snapshot_id,
     target_snapshot_id: attributionPending ? undefined : task.end_state?.snapshot_id,
-    approach: behaviors?.length ? behaviors.map(b => ({id: b.id, title: b.behavior, detail: b.design, files: b.files}))
-      : (task.steps ?? []).filter(s => s.status !== 'superseded').map(s => ({id: s.step_id, title: s.title, detail: s.change, files: []})),
+    verdict_summary: task.diff_review?.summary?.trim() || task.summary?.trim() || undefined,
+    approach: mode === 'task_actual' && steps.length ? steps.map(step => ({
+      id: step.step_id, title: step.title, detail: step.progress?.trim() || step.change,
+      files: [...new Set(behaviors.filter(b => b.step_ids?.includes(step.step_id)).flatMap(b => b.files)
+        .map(file => file.replaceAll('\\', '/')))],
+      status: step.status === 'completed' ? 'done' : step.status === 'blocked' ? 'blocked' : step.status === 'in_progress' ? 'partial' : 'planned',
+    })) : behaviors.map(b => ({id: b.id, title: b.behavior, detail: b.design, files: b.files, status: 'planned'})),
     ...((attributionPending || (mode === 'task_actual' && (scope.size > 0 || task.approval))) && {drift: {
       planned_count: scope.size, actual_count: actual.size, matched_files: [...actual].filter(file => scope.has(file)),
       untouched_planned_files: [...scope].filter(file => !actual.has(file)), out_of_scope_files: [...actual].filter(file => !scope.has(file)),
@@ -152,7 +176,7 @@ export function buildTaskEvolutionView(task: EngineeringTask, hud: TaskHudSnapsh
 }
 
 export function buildRadarEvolutionView(radar: LiveWorkspaceRadar, context: ProjectionContext): EvolutionView {
-  const changed = radar.changed_files.map(({path, status}) => ({path, status, is_source: supportsSourceFile(path)}));
+  const changed = radar.changed_files.map(({path, status}) => ({path, status, is_source: supportsSourceFile(path), role: fileRole(path)}));
   return {...project(context, radar, 'workspace_radar', changed, changed.map(file => file.path), []),
     base_label: radar.base_ref, target_label: radar.target_ref, approach: []};
 }

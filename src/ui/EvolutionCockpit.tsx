@@ -4,8 +4,10 @@ import type {
   EvolutionArchModule,
   EvolutionAssumption,
   EvolutionCallSite,
+  EvolutionChangedFile,
   EvolutionFeatureFlow,
   EvolutionFlowStep,
+  EvolutionNonCodeChange,
   EvolutionSideEffect,
   EvolutionView,
 } from '../evolution-view';
@@ -29,7 +31,7 @@ export interface EvolutionDiffRequest {
 }
 
 interface DrawerState {
-  kind: 'module' | 'edge' | 'step' | 'side_effects' | 'assumption';
+  kind: 'module' | 'edge' | 'step' | 'side_effects' | 'assumption' | 'file';
   id: string;
   kicker: string;
   title: string;
@@ -71,6 +73,48 @@ function shortRef(ref: string) {
   return /^[0-9a-f]{12,40}$/i.test(ref) ? ref.slice(0, 7) : ref;
 }
 
+function formatSymbolSummary(mod: EvolutionArchModule): string {
+  const parts: string[] = [];
+  if (mod.added_symbols > 0) parts.push(`新增 ${mod.added_symbols} 个符号`);
+  if (mod.modified_symbols > 0) parts.push(`修改 ${mod.modified_symbols} 处`);
+  if (mod.removed_symbols > 0) parts.push(`移除 ${mod.removed_symbols} 个`);
+  if (parts.length) return parts.join(' · ');
+  if (mod.changed_files.length) return `涉及 ${mod.changed_files.length} 个源码文件`;
+  return '模块源码未直接改动';
+}
+
+const ROLE_LABELS: Record<NonNullable<EvolutionChangedFile['role']>, string> = {
+  code: '源码',
+  build: '构建',
+  doc: '文档',
+  config: '配置',
+  other: '其他',
+};
+
+const STEP_STATUS_LABELS: Record<EvolutionFlowStep['status'], string> = {
+  added: '+ 新增',
+  removed: '− 移除',
+  modified: '~ 已改',
+  description_only: '说明调整',
+  planned: '拟改动',
+  unchanged: '未改',
+};
+
+const APPROACH_STATUS_LABELS: Record<'planned' | 'done' | 'partial' | 'blocked', string> = {
+  done: '已完成',
+  partial: '进行中',
+  blocked: '待补齐',
+  planned: '计划中',
+};
+
+const EDGE_KIND_LABELS: Record<EvolutionArchEdge['kind'], string> = {
+  new_cross_layer: '新增跨层调用',
+  new_same_layer: '新增模块调用',
+  strengthened: '调用增加',
+  removed: '移除调用',
+  existing: '已有调用',
+};
+
 type DiffDisplayRow = { type: 'same' | 'add' | 'del' | 'gap'; oldLine?: number; newLine?: number; text: string };
 
 function buildFocusedRows(
@@ -91,7 +135,6 @@ function buildFocusedRows(
   if (focusLine) {
     const targetIdx = full.findIndex(matchesLine);
     if (targetIdx >= 0) {
-      // Preserve an uncollapsed window around the target line BEFORE collapsing distant context
       const keepStart = Math.max(0, targetIdx - 12);
       const keepEnd = Math.min(full.length, targetIdx + 13);
       const out: DiffDisplayRow[] = [];
@@ -123,22 +166,9 @@ function buildFocusedRows(
   ).slice(0, 64);
 }
 
-const STEP_STATUS_LABELS: Record<EvolutionFlowStep['status'], string> = {
-  added: '+ 新增',
-  removed: '− 移除',
-  modified: '~ 改动',
-  description_only: '描述变化',
-  planned: '拟改动',
-  unchanged: '未变',
-};
-
-const EDGE_KIND_LABELS: Record<EvolutionArchEdge['kind'], string> = {
-  new_cross_layer: '+ 新增跨层依赖',
-  new_same_layer: '+ 新增同层依赖',
-  strengthened: '依赖增重',
-  removed: '− 移除依赖',
-  existing: '已有依赖',
-};
+type FlowDisplayItem =
+  | { kind: 'step'; step: EvolutionFlowStep }
+  | { kind: 'fold'; id: string; steps: EvolutionFlowStep[] };
 
 export function EvolutionCockpit({
   evolution,
@@ -160,8 +190,12 @@ export function EvolutionCockpit({
   const [phaseView, setPhaseView] = useState<'actual' | 'blueprint'>('actual');
   const [layoutPref, setLayoutPref] = useState<'dual' | 'arch' | 'flow'>('dual');
   const [flowFilter, setFlowFilter] = useState<'diff' | 'before' | 'after'>('diff');
+  const [compactFlow, setCompactFlow] = useState(true);
+  const [expandedFolds, setExpandedFolds] = useState<Set<string>>(() => new Set());
   const [featureIdx, setFeatureIdx] = useState<number>(evolution.active_feature_index || 0);
-  const [expandAllAssumptions, setExpandAllAssumptions] = useState(false);
+  const [showOtherNotes, setShowOtherNotes] = useState(false);
+  const [showAllBlockers, setShowAllBlockers] = useState(false);
+  const [showAllNonCode, setShowAllNonCode] = useState(false);
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const [drawerDiff, setDrawerDiff] = useState<EvolutionFileDiff | null>(null);
   const [drawerDiffLoading, setDrawerDiffLoading] = useState(false);
@@ -180,11 +214,19 @@ export function EvolutionCockpit({
   useEffect(() => {
     setFeatureIdx(activeEvo.active_feature_index || 0);
     setDrawer(null);
-    setExpandAllAssumptions(false);
+    setShowOtherNotes(false);
+    setShowAllBlockers(false);
+    setShowAllNonCode(false);
+    setExpandedFolds(new Set());
+    setCompactFlow(true);
     setDocSelectedFile(prev =>
       activeEvo.changed_files.some(f => f.path === prev) ? prev : (activeEvo.changed_files[0]?.path ?? ''),
     );
   }, [evoVersionKey, activeEvo.active_feature_index]);
+
+  useEffect(() => {
+    setExpandedFolds(new Set());
+  }, [featureIdx, flowFilter]);
 
   useEffect(() => {
     const el = stageRef.current;
@@ -194,7 +236,6 @@ export function EvolutionCockpit({
     return () => ro.disconnect();
   }, []);
 
-  // Load diff/source for drawer activeFile
   const drawerFile = drawer?.activeFile;
   const drawerSnap = drawer?.snapshotId;
   const drawerSide = drawer?.side;
@@ -216,7 +257,6 @@ export function EvolutionCockpit({
     return () => { alive = false; };
   }, [drawerFile, drawerSnap, drawerSide, drawerPreferFrozen, loadFileDiff, evoVersionKey]);
 
-  // Load diff for document-only mode
   useEffect(() => {
     if (!activeEvo.document_only || !docSelectedFile) {
       setDocDiff(null);
@@ -243,10 +283,12 @@ export function EvolutionCockpit({
     const pre = codeRef.current;
     if (!pre || !focusedRows?.length || !drawer?.focusLine) return;
     const target = pre.querySelector<HTMLElement>('.hud-diff-line.is-focus');
-    if (target) pre.scrollTop = Math.max(0, target.offsetTop - pre.clientHeight / 2 + target.clientHeight / 2);
+    if (target) {
+      const offset = target.getBoundingClientRect().top - pre.getBoundingClientRect().top + pre.scrollTop;
+      pre.scrollTop = Math.max(0, offset - pre.clientHeight / 2 + target.clientHeight / 2);
+    }
   }, [focusedRows, drawer?.focusLine]);
 
-  // Responsive layout math: each diagram needs >= 520px when dual; drawer never squeezes dual columns!
   const drawerOverlay = !!drawer && (activeEvo.document_only || stageWidth < 1080);
   const effectiveLayout: 'dual' | 'arch' | 'flow' = useMemo(() => {
     if (drawer && !drawerOverlay) return drawer.originPanel;
@@ -266,25 +308,68 @@ export function EvolutionCockpit({
     });
   }, [activeFeature, flowFilter]);
 
-  // Sort review blockers before general design assumptions so critical items appear at top of Band 1
-  const orderedAssumptions = useMemo(
-    () => [...activeEvo.assumptions].sort((a, b) => Number(b.source === 'review_blocker') - Number(a.source === 'review_blocker')),
+  const hasMixedFlowChanges = useMemo(
+    () => visibleSteps.length >= 6
+      && visibleSteps.some(s => s.status === 'unchanged')
+      && visibleSteps.some(s => s.status !== 'unchanged' && s.status !== 'description_only'),
+    [visibleSteps],
+  );
+
+  // Auto-collapse consecutive unchanged steps (>= 2) in compact mode so developers see the exact change context immediately
+  const displayFlowItems = useMemo<FlowDisplayItem[]>(() => {
+    if (!compactFlow || !hasMixedFlowChanges) {
+      return visibleSteps.map(step => ({ kind: 'step', step }));
+    }
+    const items: FlowDisplayItem[] = [];
+    let run: EvolutionFlowStep[] = [];
+    const flush = () => {
+      if (run.length === 0) return;
+      const foldId = `fold:${run[0].id}:${run[run.length - 1].id}`;
+      if (run.length >= 2 && !expandedFolds.has(foldId)) {
+        items.push({ kind: 'fold', id: foldId, steps: run });
+      } else {
+        for (const step of run) items.push({ kind: 'step', step });
+      }
+      run = [];
+    };
+    for (const step of visibleSteps) {
+      if (step.status === 'unchanged') {
+        run.push(step);
+      } else {
+        flush();
+        items.push({ kind: 'step', step });
+      }
+    }
+    flush();
+    return items;
+  }, [visibleSteps, compactFlow, hasMixedFlowChanges, expandedFolds]);
+
+  const reviewBlockers = useMemo(
+    () => activeEvo.assumptions.filter(a => a.source === 'review_blocker'),
+    [activeEvo.assumptions],
+  );
+  const otherNotes = useMemo(
+    () => activeEvo.assumptions.filter(a => a.source !== 'review_blocker'),
     [activeEvo.assumptions],
   );
 
-  // Group architecture modules by layer
-  const archLayers = useMemo(() => {
-    const groups = new Map<string, { layer: string; order: number; items: EvolutionArchModule[] }>();
-    for (const m of activeEvo.architecture.modules) {
-      const existing = groups.get(m.layer);
-      if (existing) existing.items.push(m);
-      else groups.set(m.layer, { layer: m.layer, order: m.layer_order, items: [m] });
-    }
-    return [...groups.values()].sort((a, b) => a.order - b.order);
-  }, [activeEvo.architecture.modules]);
+  // Architecture breakdown: separate directly changed modules, edge-impacted modules, and quiet unchanged modules
+  const directModules = useMemo(
+    () => activeEvo.architecture.modules.filter(m => m.relation === 'direct'),
+    [activeEvo.architecture.modules],
+  );
+  const impactedModules = useMemo(
+    () => activeEvo.architecture.modules.filter(m => m.relation === 'edge_impacted'),
+    [activeEvo.architecture.modules],
+  );
+  const changedEdges = useMemo(
+    () => activeEvo.architecture.edges.filter(e => e.kind !== 'existing'),
+    [activeEvo.architecture.edges],
+  );
+  const nonCodeChanges: EvolutionNonCodeChange[] = activeEvo.architecture.non_code_changes ?? [];
+  const quietModuleCount = Math.max(0, activeEvo.architecture.all_modules_count - directModules.length - impactedModules.length);
 
   const linkedFiles = useMemo(() => new Set(drawer?.files ?? []), [drawer]);
-
   const astSideEffects = useMemo(
     () => activeEvo.side_effects.filter(s => s.evidence_kind === 'ast_proved'),
     [activeEvo.side_effects],
@@ -296,22 +381,30 @@ export function EvolutionCockpit({
   const hasHighRisk = activeEvo.side_effects.some(s => s.severity === 'high');
   const sourceChangedCount = activeEvo.changed_files.filter(f => f.is_source).length;
 
-  function openModuleDrawer(mod: EvolutionArchModule) {
+  function openModuleDrawer(
+    mod: EvolutionArchModule,
+    focusFile?: string,
+    focusLine?: number,
+    focusSymName?: string,
+    focusStatus?: 'added' | 'modified' | 'removed',
+  ) {
     const files = mod.changed_files.length ? mod.changed_files : mod.files;
+    const targetFile = focusFile ?? files[0];
     const relatedSe = activeEvo.side_effects.filter(
       se => se.module_ids?.includes(mod.id) || (se.file && files.includes(se.file)),
     );
     setDrawerDiffMode('focused');
     setDrawer({
       kind: 'module',
-      id: mod.id,
+      id: focusSymName ? `${mod.id}:${focusSymName}` : mod.id,
       kicker: `架构模块 · ${mod.layer}`,
-      title: mod.label,
-      summary: mod.summary || (mod.changed_files.length
-        ? `本轮涉及 ${mod.changed_files.length} 个改动文件（符号 +${mod.added_symbols}/−${mod.removed_symbols}/~${mod.modified_symbols}）。`
-        : `关联 ${mod.files.length} 个源码文件（本轮未直接修改）。`),
+      title: focusSymName ? `${mod.label} · ${focusSymName}` : mod.label,
+      summary: mod.summary || formatSymbolSummary(mod),
       files,
-      activeFile: files[0],
+      activeFile: targetFile,
+      focusLine,
+      side: focusStatus === 'removed' ? 'before' : 'after',
+      preferFrozen: mod.changed_files.length === 0,
       sideEffects: relatedSe,
       originPanel: 'arch',
     });
@@ -326,24 +419,48 @@ export function EvolutionCockpit({
     setDrawer({
       kind: 'edge',
       id: edge.id,
-      kicker: `架构依赖 · ${EDGE_KIND_LABELS[edge.kind]}`,
+      kicker: `模块连线 · ${EDGE_KIND_LABELS[edge.kind]}`,
       title: `${edge.from_label} → ${edge.to_label}`,
-      summary: `跨模块调用次数由 ${edge.before_count} 变为 ${edge.after_count}${edge.sample_call ? `，示例调用点位于 ${edge.sample_call.caller_symbol} → ${edge.sample_call.callee_symbol}` : ''}。`,
+      summary: `跨模块调用由 ${edge.before_count} 处变为 ${edge.after_count} 处${edge.sample_call ? `，触发调用为 ${edge.sample_call.caller_symbol} → ${edge.sample_call.callee_symbol}` : ''}。`,
       files,
       activeFile: edge.sample_call?.file,
       focusLine: edge.sample_call?.line,
+      side: edge.kind === 'removed' ? 'before' : 'after',
       sideEffects: relatedSe,
       originPanel: 'arch',
     });
   }
 
+  function openFileDrawer(filePath: string, roleLabel: string, originPanel: 'arch' | 'flow' = 'arch') {
+    const relatedSe = activeEvo.side_effects.filter(se => se.file === filePath);
+    setDrawerDiffMode('focused');
+    setDrawer({
+      kind: 'file',
+      id: `file:${filePath}`,
+      kicker: `${roleLabel}变动`,
+      title: shortPath(filePath),
+      summary: filePath,
+      files: [filePath],
+      activeFile: filePath,
+      side: 'after',
+      preferFrozen: false,
+      sideEffects: relatedSe,
+      originPanel,
+    });
+  }
+
   function openStepDrawer(step: EvolutionFlowStep, focusCall?: EvolutionCallSite) {
-    const isBefore = flowFilter === 'before' || focusCall?.status === 'removed' || step.status === 'removed' || activeFeature?.mode === 'walkthrough_stale';
+    const isInserted = !!step.inserted || step.status === 'added';
+    const isStaleBeforeAnchor = activeFeature?.mode === 'walkthrough_stale' && !isInserted && !step.after_line;
+    const isBefore = !isInserted && (flowFilter === 'before' || focusCall?.status === 'removed' || step.status === 'removed' || isStaleBeforeAnchor);
     const side: 'before' | 'after' = isBefore ? 'before' : 'after';
     const file = focusCall?.file ?? step.file ?? undefined;
     const line = focusCall?.line ?? (isBefore ? (step.before_line ?? step.line) : (step.after_line ?? step.before_line ?? step.line));
-    const snapshotId = isBefore ? activeFeature?.before_snapshot_id : (activeFeature?.after_snapshot_id ?? activeFeature?.before_snapshot_id);
-    const preferFrozen = activeFeature?.mode === 'walkthrough_stale' && !!activeFeature.before_snapshot_id && activeFeature.before_snapshot_id !== activeEvo.base_snapshot_id;
+    const snapshotId = isBefore
+      ? (activeFeature?.before_snapshot_id ?? activeEvo.base_snapshot_id)
+      : (activeFeature?.after_snapshot_id ?? activeEvo.target_snapshot_id);
+    // Keep untouched stale steps on their frozen walkthrough snapshot; modified/inserted steps open diff when snapshot matches task window
+    const preferFrozen = activeFeature?.mode === 'walkthrough_stale' && step.status === 'unchanged';
     const stepCalls = (step.call_sites ?? []).filter(cs =>
       flowFilter === 'before' ? cs.status !== 'added' : flowFilter === 'after' ? cs.status !== 'removed' : true,
     );
@@ -353,9 +470,11 @@ export function EvolutionCockpit({
     setDrawer({
       kind: 'step',
       id: step.id,
-      kicker: `功能步骤 · ${STEP_STATUS_LABELS[step.status]}`,
-      title: isBefore ? (step.before_text ?? step.title) : step.title,
-      summary: (isBefore ? step.before_text : step.after_text) || step.before_text || step.subtitle || (step.symbol ? `聚焦符号：${step.symbol}` : undefined),
+      kicker: isInserted ? '新增调用步骤' : `流程步骤 · ${STEP_STATUS_LABELS[step.status]}`,
+      title: isInserted ? `+ ${step.title}` : (isBefore ? (step.before_text ?? step.title) : step.title),
+      summary: step.sub_calls?.length
+        ? `${step.subtitle || ''}${step.subtitle ? ' · ' : ''}内部继续调用：${step.sub_calls.join('、')}`
+        : ((isBefore ? step.before_text : step.after_text) || step.before_text || step.subtitle || (step.symbol ? `函数：${step.symbol}` : undefined)),
       files,
       activeFile: file,
       focusLine: line,
@@ -376,7 +495,7 @@ export function EvolutionCockpit({
           evidence_kind: 'ai_inferred',
           severity: 'high',
           category: 'review_blocker',
-          title: a.file ? `${shortPath(a.file)} 审查提示` : '审查提示',
+          title: a.file ? `${shortPath(a.file)} 审查阻断` : '审查阻断',
           detail: a.text,
           file: a.file,
           fix: a.fix,
@@ -386,11 +505,12 @@ export function EvolutionCockpit({
     setDrawer({
       kind: 'assumption',
       id: a.id,
-      kicker: a.source === 'review_blocker' ? '待处理事项（AI 推断）' : '关键假设与设计取舍',
-      title: a.file ? `${shortPath(a.file)} · ${a.text.slice(0, 46)}` : a.text.slice(0, 56),
+      kicker: a.source === 'review_blocker' ? '审查阻断项' : '前期约定与待确认',
+      title: a.file ? `${shortPath(a.file)} 待处理问题` : '待确认事项',
       summary: a.text,
       files,
       activeFile: a.file,
+      side: 'after',
       sideEffects: relatedSe,
       originPanel: 'flow',
     });
@@ -403,12 +523,13 @@ export function EvolutionCockpit({
     setDrawer({
       kind: 'side_effects',
       id: 'all-se',
-      kicker: '隐性波及与工程风险汇总',
-      title: `AST 实证 ${astSideEffects.length} 项 · AI 推断 ${aiSideEffects.length} 项`,
-      summary: '实线卡片为本地 AST 静态索引直接证实的源码事实；虚线卡片为基于需求/约束/独立审查的推理提示。',
+      kicker: '额外提醒与波及汇总',
+      title: `代码扫描确认 ${astSideEffects.length} 项 · 审查建议 ${aiSideEffects.length} 项`,
+      summary: '实线卡片为本地代码索引直接扫描出的源码事实；虚线卡片为独立审查或历史约束提示。',
       files: [...new Set(activeEvo.side_effects.map(s => s.file).filter((f): f is string => !!f))],
       activeFile: firstFile,
       focusLine: firstLine,
+      side: 'after',
       sideEffects: activeEvo.side_effects,
       originPanel: effectiveLayout === 'arch' ? 'arch' : 'flow',
     });
@@ -424,21 +545,171 @@ export function EvolutionCockpit({
     }
   }
 
+  function renderDrawerBody(d: DrawerState, maxCodeHeight: number) {
+    return (
+      <div className="evo-drawer-body">
+        {openErr && <small className="warning">{openErr}</small>}
+        {d.summary && <p className="evo-drawer-summary">{d.summary}</p>}
+
+        {d.sideEffects.length > 0 && (
+          <div className="evo-se-list">
+            {d.sideEffects.map(se => (
+              <div key={se.id} className={`evo-se-item kind-${se.evidence_kind} sev-${se.severity}`}>
+                <div className="evo-se-top">
+                  <strong>{se.title}</strong>
+                  <span className="evo-se-badge">
+                    {se.evidence_kind === 'ast_proved' ? '代码扫描确认' : '审查建议'}
+                  </span>
+                </div>
+                <div className="evo-se-detail">{se.detail}</div>
+                {se.fix && <div className="evo-se-fix"><strong>建议补齐：</strong>{se.fix}</div>}
+                {se.file && (
+                  <button
+                    type="button"
+                    className="hud-mini-btn"
+                    style={{ alignSelf: 'flex-start', marginTop: 2 }}
+                    onClick={() => setDrawer(prev => prev ? {
+                      ...prev,
+                      activeFile: se.file,
+                      focusLine: se.line,
+                      side: se.category === 'contract_break' ? 'before' : 'after',
+                      snapshotId: se.category === 'contract_break' ? activeEvo.base_snapshot_id : undefined,
+                      preferFrozen: false,
+                    } : prev)}
+                  >
+                    定位 {shortPath(se.file)}{se.line ? `:${se.line}` : ''}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {d.callSites && d.callSites.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <small className="muted">调用位置（点击定位代码行）</small>
+            <div className="evo-step-calls">
+              {d.callSites.map((cs, i) => (
+                <button
+                  key={`${cs.file}:${cs.line}:${i}`}
+                  type="button"
+                  className={`evo-callsite-chip status-${cs.status}`}
+                  onClick={() => setDrawer(prev => prev ? {
+                    ...prev,
+                    activeFile: cs.file,
+                    focusLine: cs.line,
+                    side: cs.status === 'removed' ? 'before' : 'after',
+                    preferFrozen: false,
+                  } : prev)}
+                >
+                  <span>{shortPath(cs.file)}:L{cs.line}</span>
+                  <span>→ {cs.target_symbol}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {d.files.length > 1 && (
+          <div className="evo-file-pills">
+            {d.files.slice(0, 12).map(file => (
+              <button
+                key={file}
+                type="button"
+                className={`evo-file-pill${d.activeFile === file ? ' is-active' : ''}`}
+                title={file}
+                onClick={() => setDrawer(prev => prev ? { ...prev, activeFile: file, focusLine: undefined, snapshotId: undefined, preferFrozen: false } : prev)}
+              >
+                {shortPath(file)}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {d.activeFile && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <code style={{ fontSize: 11.5, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {d.activeFile}{d.focusLine ? `:${d.focusLine}` : ''}
+              </code>
+              <div className="hud-segmented" role="group" aria-label="代码展示范围">
+                <button type="button" aria-pressed={drawerDiffMode === 'focused'} onClick={() => setDrawerDiffMode('focused')}>聚焦行</button>
+                <button type="button" aria-pressed={drawerDiffMode === 'full'} onClick={() => setDrawerDiffMode('full')}>整文件</button>
+              </div>
+            </div>
+
+            {drawerDiffLoading ? (
+              <small className="muted">读取源码对比…</small>
+            ) : drawerDiffError ? (
+              <small className="warning">{drawerDiffError}</small>
+            ) : drawerDiff?.binary ? (
+              <small className="muted">二进制文件，暂不支持文本 Diff。</small>
+            ) : drawerDiff && drawerDiffMode === 'full' ? (
+              <div className="evo-drawer-code">
+                <TextDiffView
+                  path={drawerDiff.path}
+                  before={drawerDiff.before}
+                  after={drawerDiff.after}
+                  truncated={drawerDiff.truncated}
+                  beforeLabel={shortRef(activeEvo.base_label)}
+                  afterLabel={shortRef(activeEvo.target_label)}
+                />
+              </div>
+            ) : focusedRows && focusedRows.length > 0 ? (
+              <pre ref={codeRef} className="hud-inspector-diff" style={{ maxHeight: maxCodeHeight, fontSize: 12.5 }}>
+                {focusedRows.map((row, idx) => {
+                  const focused = row.type !== 'gap' && !!d.focusLine &&
+                    (d.side === 'before' ? row.oldLine === d.focusLine
+                      : d.side === 'after' ? row.newLine === d.focusLine
+                        : (row.newLine === d.focusLine || row.oldLine === d.focusLine));
+                  return (
+                    <span key={idx} className={`hud-diff-line ${row.type}${focused ? ' is-focus' : ''}`}>
+                      <b>{row.type === 'gap' ? '…' : (d.side === 'before' ? (row.oldLine ?? row.newLine ?? '') : (row.newLine ?? row.oldLine ?? ''))}</b>
+                      <span>{row.type === 'add' ? '+ ' : row.type === 'del' ? '− ' : row.type === 'gap' ? '' : '  '}{row.text}</span>
+                    </span>
+                  );
+                })}
+              </pre>
+            ) : (
+              <small className="muted">该文件在此版本区间无文本差异。</small>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const footerAlertText = useMemo(() => {
+    const parts: string[] = [];
+    const newCross = activeEvo.side_effects.filter(s => s.category === 'new_cross_layer_edge').length;
+    const breaks = activeEvo.side_effects.filter(s => s.category === 'contract_break').length;
+    const cycles = activeEvo.side_effects.filter(s => s.category === 'new_cycle').length;
+    const blockers = activeEvo.side_effects.filter(s => s.category === 'review_blocker').length;
+    if (breaks) parts.push(`${breaks} 处外部调用未同步`);
+    if (cycles) parts.push(`${cycles} 个新增调用环`);
+    if (newCross) parts.push(`${newCross} 处新增跨层调用`);
+    if (blockers) parts.push(`${blockers} 项审查阻断`);
+    if (!parts.length && activeEvo.side_effects.length) {
+      parts.push(`${activeEvo.side_effects.length} 条工程提醒`);
+    }
+    return parts.length ? parts.join(' · ') : '无明显额外波及';
+  }, [activeEvo.side_effects]);
+
   return (
     <div className="evo-cockpit">
-      {/* Compact Cockpit Control Bar */}
+      {/* Compact Top Control Bar */}
       <div className="evo-topbar">
         <div className="evo-topbar-left">
           <span className={`evo-mode-chip${isBlueprint ? ' is-blueprint' : ''}`}>
-            {modeLabel || (isBlueprint ? '改前蓝图预演' : activeEvo.mode === 'workspace_radar' ? '工作区实时比对' : '改后实景对照')}
+            {modeLabel || (isBlueprint ? '改前预演' : activeEvo.mode === 'workspace_radar' ? '工作区改动' : '已落地改动')}
           </span>
           {blueprintEvolution && (
             <div className="hud-segmented" role="group" aria-label="阶段视角">
               <button type="button" aria-pressed={phaseView === 'blueprint'} onClick={() => setPhaseView('blueprint')}>
-                蓝图预演
+                改前方案
               </button>
               <button type="button" aria-pressed={phaseView === 'actual'} onClick={() => setPhaseView('actual')}>
-                实景对照
+                实际改动
               </button>
             </div>
           )}
@@ -450,14 +721,14 @@ export function EvolutionCockpit({
                   aria-pressed={effectiveLayout === 'dual'}
                   onClick={() => { setDrawer(null); setLayoutPref('dual'); }}
                 >
-                  双图同屏
+                  总览
                 </button>
               )}
               <button type="button" aria-pressed={effectiveLayout === 'arch'} onClick={() => setLayoutPref('arch')}>
                 架构变动
               </button>
               <button type="button" aria-pressed={effectiveLayout === 'flow'} onClick={() => setLayoutPref('flow')}>
-                功能变动
+                功能流程
               </button>
             </div>
           )}
@@ -481,102 +752,176 @@ export function EvolutionCockpit({
         </div>
       </div>
 
-      {/* Band 1: Compact Approach & Key Trade-offs (or quiet Workspace Observation in zero-task radar) */}
+      {/* Band 1: Plain-Language Conclusion + What Changed + What's Blocking (NEVER clipped to 1-line ellipsis) */}
       {activeEvo.mode === 'workspace_radar' ? (
         <div className="evo-radar-observe">
           <span>
-            <strong>工作区观察</strong> · 基准 <code>{shortRef(activeEvo.base_label)}</code> → <code>{shortRef(activeEvo.target_label)}</code>
+            <strong>工作区变更</strong> · 基准 <code>{shortRef(activeEvo.base_label)}</code> → <code>{shortRef(activeEvo.target_label)}</code>
           </span>
           <span className="evo-radar-observe-stats">
-            <span>{activeEvo.changed_files.length} 改动文件（{sourceChangedCount} 源码）</span>
+            <span>{activeEvo.changed_files.length} 个改动文件（{sourceChangedCount} 个源码）</span>
             {activeEvo.architecture.mode !== 'empty' && (
               <span>
-                {activeEvo.architecture.mode === 'overview' ? '架构命中' : '目录命中'}{' '}
-                {activeEvo.architecture.modules.filter(m => m.relation === 'direct').length}
+                直接改动 {directModules.length} 个{activeEvo.architecture.mode === 'overview' ? '架构模块' : '目录'}
+                {impactedModules.length > 0 ? ` · 联动 ${impactedModules.length} 个` : ''}
               </span>
             )}
           </span>
         </div>
-      ) : (activeEvo.approach.length > 0 || orderedAssumptions.length > 0) ? (
-        <section className={`evo-band1${!orderedAssumptions.length || !activeEvo.approach.length ? ' is-single' : ''}`}>
-          {activeEvo.approach.length > 0 && (
-            <div className="evo-strip-card">
-              <div className="evo-strip-head">
-                <strong>① 这次怎么改</strong>
-                <small>{activeEvo.changed_files.length ? `落地 ${activeEvo.changed_files.length} 文件` : `计划 ${activeEvo.approach.length} 步`}</small>
-              </div>
-              <div className="evo-approach-row">
-                {activeEvo.approach.slice(0, 4).map((step, i) => (
-                  <button
-                    key={step.id}
-                    type="button"
-                    className="evo-approach-chip"
-                    title={`${step.title}\n${step.detail}`}
-                    onClick={() => {
-                      const file = step.files[0];
-                      setDrawerDiffMode('focused');
-                      setDrawer({
-                        kind: 'step',
-                        id: step.id,
-                        kicker: `改动思路 · 第 ${i + 1} 步`,
-                        title: step.title,
-                        summary: step.detail,
-                        files: step.files,
-                        activeFile: file,
-                        sideEffects: activeEvo.side_effects.filter(se => se.file && step.files.includes(se.file)),
-                        originPanel: effectiveLayout === 'arch' ? 'arch' : 'flow',
-                      });
-                    }}
-                  >
-                    <strong>{i + 1}. {step.title}</strong>
-                    <span>{step.detail}</span>
-                  </button>
-                ))}
-              </div>
+      ) : (activeEvo.verdict_summary || activeEvo.approach.length > 0 || activeEvo.assumptions.length > 0) ? (
+        <div className="evo-summary-stack">
+          {activeEvo.verdict_summary && (
+            <div className={`evo-verdict-banner${reviewBlockers.length > 0 ? ' has-blocker' : ''}`}>
+              <span className="evo-verdict-label">{reviewBlockers.length > 0 ? '当前卡点' : '本次结论'}</span>
+              <p>{activeEvo.verdict_summary}</p>
             </div>
           )}
 
-          {orderedAssumptions.length > 0 && (
-            <div className="evo-strip-card is-warn">
-              <div className="evo-strip-head">
-                <strong>⚠ 关键取舍与待决 ({orderedAssumptions.length})</strong>
-                {orderedAssumptions.length > 2 && (
-                  <button type="button" className="hud-mini-btn" onClick={() => setExpandAllAssumptions(v => !v)}>
-                    {expandAllAssumptions ? '收起' : `展开全部`}
-                  </button>
-                )}
-              </div>
-              <div className="evo-assumption-list">
-                {(expandAllAssumptions ? orderedAssumptions : orderedAssumptions.slice(0, 2)).map(a => (
-                  <button
-                    key={a.id}
-                    type="button"
-                    className={`evo-assumption-row${a.source === 'review_blocker' ? ' is-blocker' : ''}`}
-                    title={a.text}
-                    onClick={() => openAssumptionDrawer(a)}
-                  >
-                    <span className="evo-assumption-text">
-                      {a.file ? `${shortPath(a.file)}：` : ''}{a.text}
-                    </span>
-                    <span className="evo-assumption-tag">
-                      {a.source === 'review_blocker' ? '待处理' : '取舍'}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
+          {(activeEvo.approach.length > 0 || reviewBlockers.length > 0 || otherNotes.length > 0) && (
+            <section className={`evo-band1${!(reviewBlockers.length > 0 || otherNotes.length > 0) || !activeEvo.approach.length ? ' is-single' : ''}`}>
+              {activeEvo.approach.length > 0 && (
+                <div className="evo-strip-card">
+                  <div className="evo-strip-head">
+                    <strong>① {isBlueprint ? '准备怎么改' : '这次实际改了什么'}</strong>
+                    <small>{activeEvo.changed_files.length ? `已改 ${activeEvo.changed_files.length} 个文件` : `共 ${activeEvo.approach.length} 步`}</small>
+                  </div>
+                  <div className="evo-approach-list">
+                    {activeEvo.approach.slice(0, 4).map((step, i) => (
+                      <button
+                        key={step.id}
+                        type="button"
+                        className="evo-approach-item"
+                        onClick={() => {
+                          const file = step.files[0] ?? activeEvo.changed_files[0]?.path;
+                          setDrawerDiffMode('focused');
+                          setDrawer({
+                            kind: 'step',
+                            id: step.id,
+                            kicker: `改动说明 · 第 ${i + 1} 步`,
+                            title: step.title,
+                            summary: step.detail,
+                            files: step.files.length ? step.files : activeEvo.changed_files.map(f => f.path),
+                            activeFile: file,
+                            side: 'after',
+                            sideEffects: activeEvo.side_effects.filter(se => se.file && step.files.includes(se.file)),
+                            originPanel: effectiveLayout === 'arch' ? 'arch' : 'flow',
+                          });
+                        }}
+                      >
+                        <div className="evo-approach-top">
+                          <strong>{i + 1}. {step.title}</strong>
+                          {step.status && (
+                            <span className={`evo-approach-status is-${step.status}`}>
+                              {APPROACH_STATUS_LABELS[step.status]}
+                            </span>
+                          )}
+                        </div>
+                        <p>{step.detail}</p>
+                      </button>
+                    ))}
+                  </div>
+                  {activeEvo.changed_files.length > 0 && (
+                    <div className="evo-changed-file-bar">
+                      {activeEvo.changed_files.slice(0, 8).map(f => (
+                        <button
+                          key={f.path}
+                          type="button"
+                          className={`evo-changed-file-chip role-${f.role ?? 'other'}`}
+                          title={f.path}
+                          onClick={() => openFileDrawer(f.path, ROLE_LABELS[f.role ?? 'other'])}
+                        >
+                          <span className="evo-role-tag">{ROLE_LABELS[f.role ?? 'other']}</span>
+                          <span>{shortPath(f.path)}</span>
+                        </button>
+                      ))}
+                      {activeEvo.changed_files.length > 8 && (
+                        <small className="muted">+{activeEvo.changed_files.length - 8} 个文件</small>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {(reviewBlockers.length > 0 || otherNotes.length > 0) && (
+                <div className={`evo-strip-card${reviewBlockers.length > 0 ? ' is-blocker-card' : ' is-warn'}`}>
+                  <div className="evo-strip-head">
+                    <strong>
+                      {reviewBlockers.length > 0
+                        ? `还差什么未闭环 · ${reviewBlockers.length} 项阻断`
+                        : `前期约定与待确认 (${otherNotes.length})`}
+                    </strong>
+                    {reviewBlockers.length > 3 && (
+                      <button type="button" className="hud-mini-btn" onClick={() => setShowAllBlockers(v => !v)}>
+                        {showAllBlockers ? '收起' : '展开全部'}
+                      </button>
+                    )}
+                  </div>
+
+                  {reviewBlockers.length > 0 ? (
+                    <>
+                      <div className="evo-blocker-list">
+                        {(showAllBlockers ? reviewBlockers : reviewBlockers.slice(0, 3)).map((b, idx) => (
+                          <button
+                            key={b.id}
+                            type="button"
+                            className="evo-blocker-item"
+                            onClick={() => openAssumptionDrawer(b)}
+                          >
+                            <div className="evo-blocker-head">
+                              <span className="evo-blocker-idx">{idx + 1}</span>
+                              {b.file && <code className="evo-blocker-file">{shortPath(b.file)}</code>}
+                              <span className="evo-blocker-action">看详情 →</span>
+                            </div>
+                            <p className="evo-blocker-text">{b.text}</p>
+                          </button>
+                        ))}
+                      </div>
+                      {otherNotes.length > 0 && (
+                        <div className="evo-notes-collapse">
+                          <button
+                            type="button"
+                            className="evo-notes-toggle"
+                            onClick={() => setShowOtherNotes(v => !v)}
+                          >
+                            {showOtherNotes ? '收起' : '查看'}前期约定与待确认事项 ({otherNotes.length}) {showOtherNotes ? '▴' : '▾'}
+                          </button>
+                          {showOtherNotes && (
+                            <div className="evo-notes-list">
+                              {otherNotes.map(n => (
+                                <div key={n.id} className="evo-note-row">• {n.text}</div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="evo-notes-list">
+                      {(showOtherNotes ? otherNotes : otherNotes.slice(0, 2)).map(n => (
+                        <div key={n.id} className="evo-note-row">• {n.text}</div>
+                      ))}
+                      {otherNotes.length > 2 && (
+                        <button type="button" className="evo-notes-toggle" onClick={() => setShowOtherNotes(v => !v)}>
+                          {showOtherNotes ? '收起' : `展开其余 ${otherNotes.length - 2} 项 ▾`}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
           )}
-        </section>
+        </div>
       ) : null}
 
-      {/* Document-Only Fast Path (e.g. 需求agent重构) */}
+      {/* Document-Only Fast Path */}
       {activeEvo.document_only ? (
         <section className="evo-doc-only">
           <aside className="evo-panel">
             <div className="evo-panel-head">
               <div>
                 <h3>文档 / 非源码改动 ({activeEvo.changed_files.length})</h3>
-                <p>本次不含可解析源码，已自动收起双图直给文件对比</p>
+                <p>本次只改了文档或配置文件，直接看文件前后对比</p>
               </div>
             </div>
             <div className="evo-flow-list">
@@ -589,7 +934,7 @@ export function EvolutionCockpit({
                 >
                   <div className="evo-step-top">
                     <span className="evo-step-title">{shortPath(f.path)}</span>
-                    <span className="evo-pill-mini">{f.status}</span>
+                    <span className="evo-pill-mini">{f.status === 'added' ? '新增' : f.status === 'removed' ? '删除' : '修改'}</span>
                   </div>
                   <span className="evo-step-sub">{f.path}</span>
                 </button>
@@ -618,10 +963,10 @@ export function EvolutionCockpit({
           </div>
         </section>
       ) : (
-        /* Band 2: Dual Visual Hero + Non-Squeezing Evidence Drawer */
+        /* Band 2: Dual Visual Hero (Directed Architecture Graph + Focused Flow Timeline) + Non-Squeezing Drawer */
         <div ref={stageRef} className="evo-stage-wrap">
           <div className={`evo-panels${effectiveLayout !== 'dual' ? ' is-single' : ''}`}>
-            {/* LEFT HERO: Architecture Diff */}
+            {/* LEFT HERO: Directed Architecture Diff */}
             {(effectiveLayout === 'dual' || effectiveLayout === 'arch') && (
               <section className="evo-panel" aria-label="系统架构变动">
                 <div className="evo-panel-head">
@@ -629,92 +974,150 @@ export function EvolutionCockpit({
                     <h3>② 系统架构变动</h3>
                     <p>
                       {activeEvo.architecture.mode === 'overview'
-                        ? '叠加在「工程全貌」模块图上 · 点击模块查看源码与波及'
+                        ? '只展示直接改动与新增调用连线的模块，未受影响的模块已自动静默'
                         : activeEvo.architecture.mode === 'directory_fallback'
-                          ? '尚未生成工程全貌，已降级展示源码目录依赖'
-                          : '暂无可映射的源码模块'}
+                          ? '尚未生成工程全貌，当前按源码目录展示直接改动与依赖变化'
+                          : '本次改动未命中运行时代码模块'}
                     </p>
                   </div>
                   <div className="evo-panel-controls">
-                    <div className="evo-legend">
-                      <span className="evo-pill-mini tone-mod">~ 改动</span>
-                      <span className="evo-pill-mini tone-add">⚡ 波及</span>
-                    </div>
                     {onOpenArchitectureOverlay && activeEvo.architecture.mode === 'overview' && (
                       <button
                         type="button"
                         className="hud-mini-btn"
                         onClick={() => onOpenArchitectureOverlay(activeEvo.architecture.architecture_result_id)}
                       >
-                        全貌大图 ↗
+                        工程全貌 ↗
                       </button>
                     )}
                   </div>
                 </div>
 
-                {archLayers.length > 0 ? (
-                  <div className="evo-arch-layers">
-                    {archLayers.map(group => (
-                      <div key={group.layer} className="evo-layer-box">
-                        <div className="evo-layer-title">{group.layer}</div>
-                        <div className="evo-layer-grid">
-                          {group.items.map(mod => {
-                            const addedOnly = mod.relation === 'direct' && mod.added_symbols > 0 && mod.modified_symbols === 0 && mod.removed_symbols === 0;
+                {directModules.length > 0 || impactedModules.length > 0 ? (
+                  <div className="evo-arch-flow">
+                    {/* Direct Modified Modules */}
+                    {directModules.length > 0 && (
+                      <div className="evo-arch-zone">
+                        <div className="evo-zone-label">直接改动的运行时模块 ({directModules.length})</div>
+                        <div className="evo-direct-grid">
+                          {directModules.map(mod => {
                             const isSelected = drawer?.kind === 'module' && drawer.id === mod.id;
                             const isLinked = !isSelected && mod.files.some(f => linkedFiles.has(f));
-                            const badgeText = mod.relation === 'direct'
-                              ? (isBlueprint ? '拟改动' : addedOnly ? '+ 新增' : '~ 核心改动')
-                              : mod.relation === 'neighbor'
-                                ? '⚡ 邻接波及'
-                                : mod.relation === 'gap'
-                                  ? '✕ 待接入'
-                                  : '未动';
-                            const deltaText = mod.added_symbols || mod.removed_symbols || mod.modified_symbols
-                              ? `+${mod.added_symbols}/−${mod.removed_symbols}/~${mod.modified_symbols}`
-                              : mod.changed_files.length
-                                ? `${mod.changed_files.length} 文件`
-                                : '';
+                            const keySyms = mod.key_symbols ?? [];
                             return (
-                              <button
+                              <div
                                 key={mod.id}
-                                type="button"
-                                className={`evo-mod-card is-${mod.relation}${addedOnly ? ' is-added-only' : ''}${isBlueprint && mod.relation !== 'unchanged' ? ' is-blueprint' : ''}${isSelected ? ' is-selected' : ''}${isLinked ? ' is-linked' : ''}`}
-                                onClick={() => openModuleDrawer(mod)}
+                                className={`evo-direct-card${isBlueprint ? ' is-blueprint' : ''}${isSelected ? ' is-selected' : ''}${isLinked ? ' is-linked' : ''}`}
                               >
-                                <div className="evo-mod-top">
-                                  <span>{badgeText}</span>
-                                  {deltaText && <span style={{ fontFamily: 'var(--font-mono)' }}>{deltaText}</span>}
-                                </div>
-                                <div className="evo-mod-name" title={mod.label}>{mod.label}</div>
-                                <div className="evo-mod-sub" title={mod.changed_files[0] || mod.files[0] || ''}>
-                                  {mod.changed_files[0] ? shortPath(mod.changed_files[0]) : mod.files[0] ? shortPath(mod.files[0]) : `${mod.files.length} 关联文件`}
-                                </div>
-                              </button>
+                                <button
+                                  type="button"
+                                  className="evo-direct-card-head"
+                                  onClick={() => openModuleDrawer(mod)}
+                                >
+                                  <div className="evo-mod-top">
+                                    <span className="evo-layer-pill">{mod.layer}</span>
+                                    <span className="evo-mod-badge is-direct">{isBlueprint ? '拟改动' : '核心改动'}</span>
+                                  </div>
+                                  <div className="evo-direct-title">{mod.label}</div>
+                                  <div className="evo-direct-meta">
+                                    <code>{mod.changed_files.map(shortPath).join('、') || shortPath(mod.files[0] ?? '')}</code>
+                                    <span>{formatSymbolSummary(mod)}</span>
+                                  </div>
+                                </button>
+                                {keySyms.length > 0 && (
+                                  <div className="evo-key-sym-row">
+                                    {keySyms.slice(0, 8).map((ks, ki) => (
+                                      <button
+                                        key={`${ks.file}:${ks.name}:${ki}`}
+                                        type="button"
+                                        className={`evo-key-sym-chip is-${ks.status}`}
+                                        title={`${ks.file}${ks.line ? `:${ks.line}` : ''}${ks.doc ? ` · ${ks.doc}` : ''}`}
+                                        onClick={() => openModuleDrawer(mod, ks.file, ks.line, ks.name, ks.status)}
+                                      >
+                                        <span>{ks.status === 'added' ? '+' : ks.status === 'removed' ? '−' : '~'} {ks.name}</span>
+                                        {ks.doc && <small>{ks.doc}</small>}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
                             );
                           })}
                         </div>
                       </div>
-                    ))}
-
-                    {activeEvo.architecture.omitted_modules > 0 && (
-                      <small className="muted">
-                        首屏优先聚焦直接命中与邻接模块，另有 {activeEvo.architecture.omitted_modules} 个其余模块（共 {activeEvo.architecture.all_modules_count} 个）
-                      </small>
                     )}
 
-                    {/* Explicit Dependency Deltas & Cycles */}
+                    {/* Visual Directed Arrows -> Edge-Impacted Modules */}
+                    {impactedModules.length > 0 && (
+                      <div className="evo-arch-connectors">
+                        <div className="evo-connector-rail" aria-hidden="true">
+                          <span className="evo-connector-stem" />
+                          <span className="evo-connector-caption">新增 / 变化调用关系</span>
+                          <span className="evo-connector-stem" />
+                        </div>
+                        <div className="evo-impacted-grid">
+                          {impactedModules.map(target => {
+                            const relEdges = changedEdges.filter(e => e.to_id === target.id || e.from_id === target.id);
+                            const primaryEdge = relEdges[0];
+                            const isSelected = drawer?.kind === 'module' && drawer.id === target.id;
+                            return (
+                              <div key={target.id} className="evo-impacted-branch">
+                                {primaryEdge && (
+                                  <button
+                                    type="button"
+                                    className={`evo-branch-edge kind-${primaryEdge.kind}`}
+                                    onClick={() => openEdgeDrawer(primaryEdge)}
+                                  >
+                                    <span className="evo-branch-arrow" aria-hidden="true">↓</span>
+                                    <div className="evo-branch-edge-body">
+                                      <div className="evo-branch-edge-top">
+                                        <strong>{EDGE_KIND_LABELS[primaryEdge.kind]}</strong>
+                                        <span>{primaryEdge.before_count} → {primaryEdge.after_count}</span>
+                                      </div>
+                                      {primaryEdge.sample_call && (
+                                        <code>
+                                          {primaryEdge.sample_call.caller_symbol} → {primaryEdge.sample_call.callee_symbol}
+                                          {' '}:{primaryEdge.sample_call.line}
+                                        </code>
+                                      )}
+                                    </div>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className={`evo-impacted-card${isSelected ? ' is-selected' : ''}`}
+                                  onClick={() => openModuleDrawer(target)}
+                                >
+                                  <div className="evo-mod-top">
+                                    <span className="evo-layer-pill">{target.layer}</span>
+                                    <span className="evo-mod-badge is-impacted">
+                                      {primaryEdge?.kind === 'new_cross_layer' || primaryEdge?.kind === 'new_same_layer' ? '被新调用' : '联动模块'}
+                                    </span>
+                                  </div>
+                                  <div className="evo-impacted-title">{target.label}</div>
+                                  <div className="evo-impacted-sub">模块源码未改动 · 点击核对源码</div>
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Direct-to-direct changed edges (if any not already shown under impacted branches) */}
                     {(() => {
-                      const deltaEdges = activeEvo.architecture.edges.filter(e => e.kind !== 'existing');
-                      if (!deltaEdges.length && !activeEvo.architecture.new_cycles.length) return null;
+                      const shownIds = new Set(impactedModules.map(m => m.id));
+                      const extraEdges = changedEdges.filter(e => !shownIds.has(e.to_id) && !shownIds.has(e.from_id));
+                      if (!extraEdges.length && !activeEvo.architecture.new_cycles.length) return null;
                       return (
                         <div className="evo-edge-deltas">
                           {activeEvo.architecture.new_cycles.map((cycle, idx) => (
                             <div key={`cyc-${idx}`} className="evo-edge-pill kind-cycle">
-                              <span className="evo-edge-badge">⚠ 新增环</span>
+                              <span className="evo-edge-badge">⚠ 新增循环依赖</span>
                               <span className="evo-edge-label">{cycle.join(' → ')}</span>
                             </div>
                           ))}
-                          {deltaEdges.slice(0, 6).map(edge => (
+                          {extraEdges.slice(0, 5).map(edge => (
                             <button
                               key={edge.id}
                               type="button"
@@ -724,53 +1127,108 @@ export function EvolutionCockpit({
                               <span className="evo-edge-badge">{EDGE_KIND_LABELS[edge.kind]}</span>
                               <span className="evo-edge-label">
                                 <strong>{edge.from_label}</strong> → <strong>{edge.to_label}</strong>
-                                {edge.kind === 'strengthened' ? `（${edge.before_count} → ${edge.after_count}）` : ''}
+                                {' '}（{edge.before_count} → {edge.after_count}）
                               </span>
-                              {edge.sample_call && (
-                                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>
-                                  :{edge.sample_call.line}
-                                </span>
-                              )}
                             </button>
                           ))}
                         </div>
                       );
                     })()}
+
+                    {/* Non-code build/doc/config changes separated cleanly from runtime architecture */}
+                    {nonCodeChanges.length > 0 && (
+                      <div className="evo-noncode-strip">
+                        <div className="evo-strip-head">
+                          <span className="evo-zone-label">构建 / 文档 / 配置改动（非运行时代码模块 · {nonCodeChanges.length}）</span>
+                          {nonCodeChanges.length > 6 && (
+                            <button type="button" className="hud-mini-btn" onClick={() => setShowAllNonCode(v => !v)}>
+                              {showAllNonCode ? '收起' : `展开其余 ${nonCodeChanges.length - 6} 个`}
+                            </button>
+                          )}
+                        </div>
+                        <div className="evo-noncode-pills">
+                          {(showAllNonCode ? nonCodeChanges : nonCodeChanges.slice(0, 6)).map(item => (
+                            <button
+                              key={item.path}
+                              type="button"
+                              className={`evo-changed-file-chip role-${item.role}`}
+                              title={item.path}
+                              onClick={() => openFileDrawer(item.path, ROLE_LABELS[item.role], 'arch')}
+                            >
+                              <span className="evo-role-tag">{ROLE_LABELS[item.role]}</span>
+                              <span>{shortPath(item.path)}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {quietModuleCount > 0 && (
+                      <div className="evo-arch-quiet-note">
+                        其余 <strong>{quietModuleCount}</strong> 个架构模块未受本次改动影响（共 {activeEvo.architecture.all_modules_count} 个）
+                      </div>
+                    )}
+                  </div>
+                ) : nonCodeChanges.length > 0 ? (
+                  <div className="evo-noncode-strip" style={{ marginTop: 8 }}>
+                    <div className="evo-zone-label">本次仅修改构建 / 文档 / 配置文件</div>
+                    <div className="evo-noncode-pills">
+                      {nonCodeChanges.map(item => (
+                        <button
+                          key={item.path}
+                          type="button"
+                          className={`evo-changed-file-chip role-${item.role}`}
+                          onClick={() => openFileDrawer(item.path, ROLE_LABELS[item.role], 'arch')}
+                        >
+                          <span className="evo-role-tag">{ROLE_LABELS[item.role]}</span>
+                          <span>{shortPath(item.path)}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 ) : (
-                  <p className="muted" style={{ margin: '12px 0' }}>本次变动未命中可投影的源码模块。</p>
+                  <p className="muted" style={{ margin: '12px 0' }}>本次改动未影响架构模块与依赖结构。</p>
                 )}
               </section>
             )}
 
-            {/* RIGHT HERO: Feature Flow Diff */}
+            {/* RIGHT HERO: Feature Flow Diff with Auto-Folded Unchanged Runs & Inserted New Call Steps */}
             {(effectiveLayout === 'dual' || effectiveLayout === 'flow') && (
-              <section className="evo-panel" aria-label="功能图变动">
+              <section className="evo-panel" aria-label="功能流程变动">
                 <div className="evo-panel-head">
                   <div>
-                    <h3>③ 功能图变动</h3>
+                    <h3>③ 功能流程变动</h3>
                     <p>
                       {activeFeature?.mode === 'walkthrough_diff'
-                        ? '基于改前/改后双版走读对齐 · 点击步骤核对精确源码'
+                        ? '已对齐改前与改后功能流程 · 点击步骤直接定位源码'
                         : activeFeature?.mode === 'walkthrough_stale'
-                          ? '基于已有功能走读投影 · 点击高亮步骤下钻代码'
-                          : '本地 AST 实时变动符号流（零 LLM 等待）· 保留精确调用行'}
+                          ? '已按函数与行号精确标出改动与新增调用位置 · 未改步骤自动折叠'
+                          : '按变动函数展示调用演化 · 点击行号直接看 Diff'}
                     </p>
                   </div>
                   <div className="evo-panel-controls">
                     {activeEvo.features.length > 1 && (
                       <select
                         className="evo-feature-select"
-                        aria-label="切换关联功能图"
+                        aria-label="切换关联功能流程"
                         value={featureIdx}
                         onChange={e => setFeatureIdx(Number(e.target.value))}
                       >
                         {activeEvo.features.map((f, i) => (
                           <option key={f.id} value={i}>
-                            {f.feature_label} ({f.mode === 'walkthrough_diff' ? '双版' : f.mode === 'walkthrough_stale' ? '旧走读' : 'AST'})
+                            {f.feature_label}
                           </option>
                         ))}
                       </select>
+                    )}
+                    {hasMixedFlowChanges && (
+                      <button
+                        type="button"
+                        className="hud-mini-btn"
+                        onClick={() => setCompactFlow(v => !v)}
+                      >
+                        {compactFlow ? `展开全部 (${visibleSteps.length})` : '只看变动'}
+                      </button>
                     )}
                     <div className="hud-segmented" role="group" aria-label="步骤对比过滤">
                       <button type="button" aria-pressed={flowFilter === 'diff'} onClick={() => setFlowFilter('diff')}>对比</button>
@@ -780,9 +1238,13 @@ export function EvolutionCockpit({
                   </div>
                 </div>
 
-                {activeFeature?.stale_notice && (
+                {activeFeature?.mode === 'walkthrough_stale' && (
                   <div className="evo-stale-bar">
-                    <span>{activeFeature.stale_notice}</span>
+                    <span>
+                      {activeFeature.steps.some(s => s.inserted)
+                        ? '已从源码变更中自动标出新增调用点；如需同步更新中文流程说明，可点击右侧刷新。'
+                        : '已按源码改动精确过滤未变步骤；如需重新生成文字流程说明，可点击右侧刷新。'}
+                    </span>
                     {onRefreshFeature && activeFeature.scenario_id && (
                       <button
                         type="button"
@@ -790,15 +1252,38 @@ export function EvolutionCockpit({
                         disabled={refreshingScenarioId === activeFeature.scenario_id}
                         onClick={() => onRefreshFeature(activeFeature.scenario_id!)}
                       >
-                        {refreshingScenarioId === activeFeature.scenario_id ? '刷新中…' : '刷新走读'}
+                        {refreshingScenarioId === activeFeature.scenario_id ? '刷新中…' : '刷新文字走读'}
                       </button>
                     )}
                   </div>
                 )}
 
-                {visibleSteps.length > 0 ? (
+                {displayFlowItems.length > 0 ? (
                   <div className="evo-flow-list">
-                    {visibleSteps.map((step, idx) => {
+                    {displayFlowItems.map((item, idx) => {
+                      if (item.kind === 'fold') {
+                        const first = item.steps[0];
+                        const last = item.steps[item.steps.length - 1];
+                        return (
+                          <React.Fragment key={item.id}>
+                            {idx > 0 && <div className="evo-flow-arrow" aria-hidden="true">↓</div>}
+                            <button
+                              type="button"
+                              className="evo-fold-pill"
+                              onClick={() => setExpandedFolds(prev => new Set([...prev, item.id]))}
+                            >
+                              <span>
+                                跳过 {item.steps.length} 个未改动步骤（{first.title}
+                                {last.title !== first.title ? ` → ${last.title}` : ''}）
+                              </span>
+                              <strong>展开 ▾</strong>
+                            </button>
+                          </React.Fragment>
+                        );
+                      }
+
+                      const step = item.step;
+                      const isInserted = !!step.inserted;
                       const isSelected = drawer?.kind === 'step' && drawer.id === step.id;
                       const isLinked = !isSelected && !!step.file && linkedFiles.has(step.file);
                       const pillTone = step.status === 'added'
@@ -810,40 +1295,56 @@ export function EvolutionCockpit({
                             : step.status === 'description_only' || step.status === 'planned'
                               ? 'tone-info'
                               : '';
-                      const stepTitle = flowFilter === 'before'
-                        ? (step.before_text ?? step.title)
-                        : flowFilter === 'after'
-                          ? (step.after_text ?? step.title)
-                          : step.title;
+                      const stepTitle = isInserted
+                        ? step.title
+                        : flowFilter === 'before'
+                          ? (step.before_text ?? step.title)
+                          : flowFilter === 'after'
+                            ? (step.after_text ?? step.title)
+                            : step.title;
                       const sideCalls = (step.call_sites ?? []).filter(cs =>
                         flowFilter === 'before' ? cs.status !== 'added' : flowFilter === 'after' ? cs.status !== 'removed' : true,
                       );
                       const changedCalls = sideCalls.filter(cs => cs.status !== 'unchanged');
                       const shownCalls = changedCalls.length > 0 ? changedCalls.slice(0, 4) : sideCalls.slice(0, 3);
+
                       return (
                         <React.Fragment key={step.id}>
-                          {idx > 0 && <div className="evo-flow-arrow" aria-hidden="true">↓</div>}
+                          {idx > 0 && <div className="evo-flow-arrow" aria-hidden="true">{isInserted ? '↳' : '↓'}</div>}
                           <div
                             role="button"
                             tabIndex={0}
-                            className={`evo-step-card status-${step.status}${isSelected ? ' is-selected' : ''}${isLinked ? ' is-linked' : ''}`}
+                            className={`evo-step-card status-${step.status}${isInserted ? ' is-inserted' : ''}${isSelected ? ' is-selected' : ''}${isLinked ? ' is-linked' : ''}`}
                             onClick={() => openStepDrawer(step)}
                             onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openStepDrawer(step); } }}
                           >
                             <div className="evo-step-top">
                               <span className="evo-step-title">
-                                {step.order}. {stepTitle}
+                                {isInserted ? `+ ${stepTitle}` : `${step.order}. ${stepTitle}`}
                               </span>
-                              <span className={`evo-pill-mini ${pillTone}`}>{STEP_STATUS_LABELS[step.status]}</span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                                {isInserted && step.line && <code className="evo-line-badge">L{step.line}</code>}
+                                <span className={`evo-pill-mini ${pillTone}`}>
+                                  {isInserted ? '+ 新增插入' : STEP_STATUS_LABELS[step.status]}
+                                </span>
+                              </div>
                             </div>
                             {step.subtitle && <div className="evo-step-sub">{step.subtitle}</div>}
+                            {step.sub_calls && step.sub_calls.length > 0 && (
+                              <div className="evo-subcalls">
+                                <span className="evo-subcalls-label">内部调用：</span>
+                                {step.sub_calls.map((sc, si) => (
+                                  <code key={`${sc}:${si}`} className="evo-subcall-chip">{sc}</code>
+                                ))}
+                              </div>
+                            )}
                             {step.before_signature && step.after_signature && step.before_signature !== step.after_signature && (
                               <div className="evo-step-sig">
                                 {flowFilter !== 'after' && <span style={{ textDecoration: flowFilter === 'diff' ? 'line-through' : 'none', color: flowFilter === 'diff' ? 'var(--danger)' : 'var(--ink)' }}>{step.before_signature}</span>}
                                 {flowFilter !== 'before' && <span style={{ color: 'var(--accent-hover)' }}>{step.after_signature}</span>}
                               </div>
                             )}
-                            {shownCalls.length > 0 && (
+                            {!isInserted && shownCalls.length > 0 && (
                               <div className="evo-step-calls">
                                 {shownCalls.map((cs, ci) => (
                                   <button
@@ -869,8 +1370,8 @@ export function EvolutionCockpit({
                     })}
                     {activeFeature && activeFeature.omitted_steps > 0 && (
                       <small className="muted" style={{ paddingTop: 4 }}>
-                        另有 {activeFeature.omitted_steps} 个低优先级变动符号未展开
-                        {onViewAllFiles ? '（可点右上角「全部 Diff」浏览）' : ''}
+                        另有 {activeFeature.omitted_steps} 个步骤未展开
+                        {onViewAllFiles ? '（可点右上角「全部 Diff」查看）' : ''}
                       </small>
                     )}
                   </div>
@@ -881,9 +1382,9 @@ export function EvolutionCockpit({
             )}
           </div>
 
-          {/* Inline desktop drawer (when NOT document_only and NOT overlay) */}
+          {/* Inline desktop drawer (never squeezes dual columns) */}
           {drawer && !drawerOverlay && (
-            <aside className="evo-drawer" aria-label="模块与源码下钻抽屉">
+            <aside className="evo-drawer" aria-label="源码与证据详情抽屉">
               <div className="evo-drawer-head">
                 <div style={{ minWidth: 0 }}>
                   <span className="evo-drawer-kicker">{drawer.kicker}</span>
@@ -909,145 +1410,17 @@ export function EvolutionCockpit({
                   </button>
                 </div>
               </div>
-
-              <div className="evo-drawer-body">
-                {openErr && <small className="warning">{openErr}</small>}
-                {drawer.summary && <p className="evo-drawer-summary">{drawer.summary}</p>}
-
-                {drawer.sideEffects.length > 0 && (
-                  <div className="evo-se-list">
-                    {drawer.sideEffects.map(se => (
-                      <div key={se.id} className={`evo-se-item kind-${se.evidence_kind} sev-${se.severity}`}>
-                        <div className="evo-se-top">
-                          <strong>{se.title}</strong>
-                          <span className="evo-se-badge">
-                            {se.evidence_kind === 'ast_proved' ? 'AST 实证' : 'AI 推断'}
-                          </span>
-                        </div>
-                        <div className="evo-se-detail">{se.detail}</div>
-                        {se.fix && <div className="evo-se-fix"><strong>建议：</strong>{se.fix}</div>}
-                        {se.file && (
-                          <button
-                            type="button"
-                            className="hud-mini-btn"
-                            style={{ alignSelf: 'flex-start', marginTop: 2 }}
-                            onClick={() => setDrawer(prev => prev ? {
-                              ...prev,
-                              activeFile: se.file,
-                              focusLine: se.line,
-                              side: se.category === 'contract_break' ? 'before' : 'after',
-                              snapshotId: se.category === 'contract_break' ? activeEvo.base_snapshot_id : undefined,
-                              preferFrozen: false,
-                            } : prev)}
-                          >
-                            定位 {shortPath(se.file)}{se.line ? `:${se.line}` : ''}
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {drawer.callSites && drawer.callSites.length > 0 && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                    <small className="muted">精确调用点（点击定位源码行）</small>
-                    <div className="evo-step-calls">
-                      {drawer.callSites.map((cs, i) => (
-                        <button
-                          key={`${cs.file}:${cs.line}:${i}`}
-                          type="button"
-                          className={`evo-callsite-chip status-${cs.status}`}
-                          onClick={() => setDrawer(prev => prev ? {
-                            ...prev,
-                            activeFile: cs.file,
-                            focusLine: cs.line,
-                            side: cs.status === 'removed' ? 'before' : 'after',
-                          } : prev)}
-                        >
-                          <span>{shortPath(cs.file)}:L{cs.line}</span>
-                          <span>→ {cs.target_symbol}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {drawer.files.length > 1 && (
-                  <div className="evo-file-pills">
-                    {drawer.files.slice(0, 12).map(file => (
-                      <button
-                        key={file}
-                        type="button"
-                        className={`evo-file-pill${drawer.activeFile === file ? ' is-active' : ''}`}
-                        title={file}
-                        onClick={() => setDrawer(prev => prev ? { ...prev, activeFile: file, focusLine: undefined, snapshotId: undefined, preferFrozen: false } : prev)}
-                      >
-                        {shortPath(file)}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {drawer.activeFile && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                      <code style={{ fontSize: 11.5, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {drawer.activeFile}{drawer.focusLine ? `:${drawer.focusLine}` : ''}
-                      </code>
-                      <div className="hud-segmented" role="group" aria-label="代码展示范围">
-                        <button type="button" aria-pressed={drawerDiffMode === 'focused'} onClick={() => setDrawerDiffMode('focused')}>聚焦行</button>
-                        <button type="button" aria-pressed={drawerDiffMode === 'full'} onClick={() => setDrawerDiffMode('full')}>整文件</button>
-                      </div>
-                    </div>
-
-                    {drawerDiffLoading ? (
-                      <small className="muted">读取源码对比…</small>
-                    ) : drawerDiffError ? (
-                      <small className="warning">{drawerDiffError}</small>
-                    ) : drawerDiff?.binary ? (
-                      <small className="muted">二进制文件，暂不支持文本 Diff。</small>
-                    ) : drawerDiff && drawerDiffMode === 'full' ? (
-                      <div className="evo-drawer-code">
-                        <TextDiffView
-                          path={drawerDiff.path}
-                          before={drawerDiff.before}
-                          after={drawerDiff.after}
-                          truncated={drawerDiff.truncated}
-                          beforeLabel={shortRef(activeEvo.base_label)}
-                          afterLabel={shortRef(activeEvo.target_label)}
-                        />
-                      </div>
-                    ) : focusedRows && focusedRows.length > 0 ? (
-                      <pre ref={codeRef} className="hud-inspector-diff" style={{ maxHeight: 360, fontSize: 12.5 }}>
-                        {focusedRows.map((row, idx) => {
-                          const focused = row.type !== 'gap' && !!drawer.focusLine &&
-                            (drawer.side === 'before' ? row.oldLine === drawer.focusLine
-                              : drawer.side === 'after' ? row.newLine === drawer.focusLine
-                                : (row.newLine === drawer.focusLine || row.oldLine === drawer.focusLine));
-                          return (
-                            <span key={idx} className={`hud-diff-line ${row.type}${focused ? ' is-focus' : ''}`}>
-                              <b>{row.type === 'gap' ? '…' : (drawer.side === 'before' ? (row.oldLine ?? row.newLine ?? '') : (row.newLine ?? row.oldLine ?? ''))}</b>
-                              <span>{row.type === 'add' ? '+ ' : row.type === 'del' ? '− ' : row.type === 'gap' ? '' : '  '}{row.text}</span>
-                            </span>
-                          );
-                        })}
-                      </pre>
-                    ) : (
-                      <small className="muted">该文件在此版本区间无文本差异。</small>
-                    )}
-                  </div>
-                )}
-              </div>
+              {renderDrawerBody(drawer, 360)}
             </aside>
           )}
         </div>
       )}
 
-      {/* Shared slide-over overlay drawer (works in BOTH narrow viewports AND document_only mode!) */}
+      {/* Slide-over overlay drawer (narrow screens & document-only mode) */}
       {drawer && drawerOverlay && (
         <>
           <div className="evo-drawer-backdrop" onClick={() => setDrawer(null)} />
-          <aside className="evo-drawer is-overlay" aria-label="模块与源码下钻抽屉">
+          <aside className="evo-drawer is-overlay" aria-label="源码与证据详情抽屉">
             <div className="evo-drawer-head">
               <div style={{ minWidth: 0 }}>
                 <span className="evo-drawer-kicker">{drawer.kicker}</span>
@@ -1062,70 +1435,7 @@ export function EvolutionCockpit({
                 <button type="button" className="hud-drawer-close" aria-label="关闭源码抽屉" onClick={() => setDrawer(null)}>✕</button>
               </div>
             </div>
-            <div className="evo-drawer-body">
-              {openErr && <small className="warning">{openErr}</small>}
-              {drawer.summary && <p className="evo-drawer-summary">{drawer.summary}</p>}
-              {drawer.sideEffects.length > 0 && (
-                <div className="evo-se-list">
-                  {drawer.sideEffects.map(se => (
-                    <div key={se.id} className={`evo-se-item kind-${se.evidence_kind} sev-${se.severity}`}>
-                      <div className="evo-se-top">
-                        <strong>{se.title}</strong>
-                        <span className="evo-se-badge">{se.evidence_kind === 'ast_proved' ? 'AST 实证' : 'AI 推断'}</span>
-                      </div>
-                      <div className="evo-se-detail">{se.detail}</div>
-                      {se.fix && <div className="evo-se-fix"><strong>建议：</strong>{se.fix}</div>}
-                      {se.file && (
-                        <button
-                          type="button"
-                          className="hud-mini-btn"
-                          style={{ alignSelf: 'flex-start', marginTop: 2 }}
-                          onClick={() => setDrawer(prev => prev ? {
-                            ...prev,
-                            activeFile: se.file,
-                            focusLine: se.line,
-                            side: se.category === 'contract_break' ? 'before' : 'after',
-                            snapshotId: se.category === 'contract_break' ? activeEvo.base_snapshot_id : undefined,
-                            preferFrozen: false,
-                          } : prev)}
-                        >
-                          定位 {shortPath(se.file)}{se.line ? `:${se.line}` : ''}
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {drawer.activeFile && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <code style={{ fontSize: 11.5, color: 'var(--muted)' }}>{drawer.activeFile}{drawer.focusLine ? `:${drawer.focusLine}` : ''}</code>
-                  {drawerDiffLoading ? (
-                    <small className="muted">读取源码对比…</small>
-                  ) : drawerDiffError ? (
-                    <small className="warning">{drawerDiffError}</small>
-                  ) : drawerDiff?.binary ? (
-                    <small className="muted">二进制文件，暂不支持文本 Diff。</small>
-                  ) : focusedRows && focusedRows.length > 0 ? (
-                    <pre ref={codeRef} className="hud-inspector-diff" style={{ maxHeight: 380, fontSize: 12.5 }}>
-                      {focusedRows.map((row, idx) => {
-                        const focused = row.type !== 'gap' && !!drawer.focusLine &&
-                          (drawer.side === 'before' ? row.oldLine === drawer.focusLine
-                            : drawer.side === 'after' ? row.newLine === drawer.focusLine
-                              : (row.newLine === drawer.focusLine || row.oldLine === drawer.focusLine));
-                        return (
-                          <span key={idx} className={`hud-diff-line ${row.type}${focused ? ' is-focus' : ''}`}>
-                            <b>{row.type === 'gap' ? '…' : (drawer.side === 'before' ? (row.oldLine ?? row.newLine ?? '') : (row.newLine ?? row.oldLine ?? ''))}</b>
-                            <span>{row.type === 'add' ? '+ ' : row.type === 'del' ? '− ' : row.type === 'gap' ? '' : '  '}{row.text}</span>
-                          </span>
-                        );
-                      })}
-                    </pre>
-                  ) : (
-                    <small className="muted">该文件在此版本区间无文本差异。</small>
-                  )}
-                </div>
-              )}
-            </div>
+            {renderDrawerBody(drawer, 380)}
           </aside>
         </>
       )}
@@ -1138,19 +1448,15 @@ export function EvolutionCockpit({
             className={`evo-se-trigger${hasHighRisk ? ' has-high' : activeEvo.side_effects.length ? ' has-warn' : ''}`}
             onClick={openAllSideEffectsDrawer}
           >
-            <span>⚡ 隐性波及</span>
-            <span>
-              {activeEvo.side_effects.length === 0
-                ? '未检出明显副作用'
-                : `${astSideEffects.length} AST实证${aiSideEffects.length ? ` · ${aiSideEffects.length} AI推断` : ''}`}
-            </span>
+            <span>⚡ 额外提醒</span>
+            <span>{footerAlertText}</span>
           </button>
 
           {activeEvo.drift && (
-            <span className="evo-drift-pill" title="蓝图批准范围与实际变更文件的精确对账">
+            <span className="evo-drift-pill" title="批准范围与实际改动文件的对账">
               {activeEvo.drift.attribution_pending
-                ? '归属待核（存在混改或未归属差异）'
-                : `范围对账：命中 ${activeEvo.drift.matched_files.length} · 未触及 ${activeEvo.drift.untouched_planned_files.length}${activeEvo.drift.out_of_scope_files.length ? ` · 超范围 ${activeEvo.drift.out_of_scope_files.length}` : ''}${activeEvo.drift.overlap_files.length ? ` · 重叠 ${activeEvo.drift.overlap_files.length}` : ''}`}
+                ? '归属待核（工作区存在未归属差异）'
+                : `范围对账：命中 ${activeEvo.drift.matched_files.length} 个 · 未改计划 ${activeEvo.drift.untouched_planned_files.length} 个${activeEvo.drift.out_of_scope_files.length ? ` · 额外改动 ${activeEvo.drift.out_of_scope_files.length} 个` : ''}`}
             </span>
           )}
         </div>

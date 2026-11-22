@@ -31,13 +31,20 @@ export interface EvolutionArchModule {
   label: string;
   layer: string;
   layer_order: number;
-  relation: 'direct' | 'neighbor' | 'gap' | 'unchanged';
+  relation: 'direct' | 'edge_impacted' | 'neighbor' | 'gap' | 'unchanged';
   source_kind: 'overview_node' | 'directory_fallback';
   files: string[];
   changed_files: string[];
   added_symbols: number;
   removed_symbols: number;
   modified_symbols: number;
+  key_symbols?: Array<{
+    name: string;
+    status: 'added' | 'modified' | 'removed';
+    file: string;
+    line?: number;
+    doc?: string;
+  }>;
   summary?: string;
 }
 
@@ -60,6 +67,12 @@ export interface EvolutionArchEdge {
   };
 }
 
+export interface EvolutionNonCodeChange {
+  path: string;
+  role: 'build' | 'doc' | 'config' | 'other';
+  status: 'added' | 'modified' | 'removed';
+}
+
 export interface EvolutionArchSummary {
   mode: 'overview' | 'directory_fallback' | 'empty';
   architecture_result_id?: string;
@@ -68,6 +81,7 @@ export interface EvolutionArchSummary {
   omitted_modules: number;
   edges: EvolutionArchEdge[];
   new_cycles: string[][];
+  non_code_changes?: EvolutionNonCodeChange[];
 }
 
 export interface EvolutionCallSite {
@@ -97,6 +111,9 @@ export interface EvolutionFlowStep {
   after_signature?: string;
   call_sites?: EvolutionCallSite[];
   side_effect_note?: string;
+  inserted?: boolean;
+  parent_symbol?: string;
+  sub_calls?: string[];
 }
 
 export interface EvolutionFeatureFlow {
@@ -133,6 +150,7 @@ export interface EvolutionChangedFile {
   path: string;
   status: 'added' | 'modified' | 'removed';
   is_source: boolean;
+  role?: 'code' | 'build' | 'doc' | 'config' | 'other';
   module_id?: string;
   ownership?: string;
 }
@@ -145,6 +163,7 @@ export interface EvolutionVerificationBadge {
 
 export interface EvolutionView {
   mode: EvolutionSourceMode;
+  verdict_summary?: string;
   base_label: string;
   target_label: string;
   base_snapshot_id?: string;

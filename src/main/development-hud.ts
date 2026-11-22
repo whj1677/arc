@@ -244,10 +244,10 @@ export async function buildTaskHud(
       scopeDeclared ? declaredScope : [], changedFiles);
     if (changedFiles.length) {
       const beforeSnap = snapshot(beforeId), afterSnap = snapshot(afterId);
-      const sharedFiles = changedFiles.filter(file => beforeSnap.files.some(f => f.path === file) &&
-        afterSnap.files.some(f => f.path === file));
+      const changed = new Set(changedFiles);
+      const changedPaths = (snap: Snapshot) => snap.files.map(file => file.path).filter(path => changed.has(path));
       const [beforeSources, afterSources] = await Promise.all([
-        frozenSources(beforeSnap, sharedFiles), frozenSources(afterSnap, sharedFiles),
+        frozenSources(beforeSnap, changedPaths(beforeSnap)), frozenSources(afterSnap, changedPaths(afterSnap)),
       ]);
       Object.assign(taskIndexes, {beforeSources, afterSources});
       const astCallGraph = computeAstCallGraphDiff({

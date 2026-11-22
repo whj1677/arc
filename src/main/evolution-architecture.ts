@@ -1,11 +1,13 @@
 import path from 'node:path';
 import type { TaskHudStructureDiff, WalkthroughDiffNode } from '../development-hud';
-import type { EvolutionArchEdge, EvolutionArchModule, EvolutionArchSummary } from '../evolution-view';
+import type { EvolutionArchEdge, EvolutionArchModule, EvolutionArchSummary, EvolutionChangedFile } from '../evolution-view';
 import type { AnalysisResult } from '../shared';
 import type { CodeIndex } from './code-index';
+import { symbolDoc } from './evolution-flows';
 
 type Node = AnalysisResult['nodes'][number];
 type Link = { from: string; to: string };
+type FileRole = (file: string) => NonNullable<EvolutionChangedFile['role']>;
 const layerNames = ['入口与交互层', '核心业务与控制层', '存储、队列与底层支撑'];
 
 // The overview map assigns children their root's layer and classifies legacy entry stages by topology.
@@ -49,14 +51,15 @@ function moduleCard(id: string, label: string, layer: string, layer_order: numbe
     added_symbols: 0, removed_symbols: 0, modified_symbols: 0 };
 }
 
-function moduleCatalog(overview: AnalysisResult | undefined, indexedFiles: Set<string>, touched: Set<string>) {
+function moduleCatalog(overview: AnalysisResult | undefined, indexedFiles: Set<string>, touched: Set<string>, fileRole: FileRole) {
   const modules = new Map<string, EvolutionArchModule>(), moduleByFile = new Map<string, string>();
   const links: Link[] = [];
-  function attach(card: EvolutionArchModule, file: string) {
+  function attach(card: EvolutionArchModule, file: string, isCode: boolean) {
     card.files.push(file);
-    if (touched.has(file)) {
+    if (isCode && touched.has(file)) {
       card.changed_files.push(file);
       card.relation = 'direct';
+      card.key_symbols ??= [];
     }
   }
   if (overview?.architecture) {
@@ -69,6 +72,7 @@ function moduleCatalog(overview: AnalysisResult | undefined, indexedFiles: Set<s
     }
     const layers = overviewLayers(nodes, links);
     const paths = new Map(overview.evidence.map(e => [e.evidence_id, e.path]));
+    for (const file of paths.values()) indexedFiles.add(file);
     const exact = new Map<string, Set<string>>(), folders = new Map<string, Set<string>>();
     for (const node of nodes.values()) {
       const id = node.node_id, layer = layers.get(id)!;
@@ -86,28 +90,41 @@ function moduleCatalog(overview: AnalysisResult | undefined, indexedFiles: Set<s
         exact.get(file)!.add(id);
       }
     }
-    for (const file of indexedFiles) {
+    // Resolve code first, including folder scopes, to distinguish runtime nodes from non-code nodes.
+    const runtimeNodes = new Set<string>();
+    for (const isCode of [true, false]) for (const file of indexedFiles) {
+      if ((fileRole(file) === 'code') !== isCode) continue;
+      function eligible(ids?: Set<string>) {
+        return [...ids ?? []].filter(id => {
+          const scope = nodes.get(id)!.source_scope;
+          return isCode || !runtimeNodes.has(id) || (scope?.kind === 'file' && scope.path === file);
+        });
+      }
       // Keep all explicitly impacted modules, but only attribute a call to a unique owner.
       // A precise file reference takes precedence over the enclosing folder.
-      const covered = new Set(exact.get(file));
-      let owners = exact.get(file);
+      let owners = eligible(exact.get(file));
+      const covered = new Set(owners);
       let dir = path.posix.dirname(file);
       for (;;) {
-        const scope = folders.get(dir);
-        if (!owners && scope) owners = scope;
-        if (scope) for (const id of scope) covered.add(id);
+        const scope = eligible(folders.get(dir));
+        if (!owners.length) owners = scope;
+        for (const id of scope) covered.add(id);
         if (dir === '.') break;
         dir = path.posix.dirname(dir);
       }
-      for (const id of covered) attach(modules.get(id)!, file);
-      if (owners?.size === 1) moduleByFile.set(file, [...owners][0]);
+      for (const id of covered) {
+        attach(modules.get(id)!, file, isCode);
+        if (isCode) runtimeNodes.add(id);
+      }
+      if (owners.length === 1) moduleByFile.set(file, owners[0]);
     }
   } else {
     for (const file of indexedFiles) {
+      if (fileRole(file) !== 'code') continue;
       const id = path.posix.dirname(file);
       if (!modules.has(id)) modules.set(id, moduleCard(id, id, '目录', 0, 'directory_fallback'));
       moduleByFile.set(file, id);
-      attach(modules.get(id)!, file);
+      attach(modules.get(id)!, file, true);
     }
   }
   return { modules, moduleByFile, links };
@@ -139,7 +156,7 @@ function edgeCounts(index: CodeIndex | undefined, moduleByFile: Map<string, stri
       callee_symbol: targets.every(s => s.qualified_name === name) ? name : call.callee_name,
     });
   }
-  if (directoryMode && index.module_edges.length) {
+  if (directoryMode && index.module_edges.length && index.files.every(file => moduleByFile.has(file))) {
     // These are already counted in directory space, including multi-target calls.
     return new Map(index.module_edges.map(({ from, to, count }) => {
       const id = from + '\0' + to;
@@ -166,30 +183,44 @@ function edgeCounts(index: CodeIndex | undefined, moduleByFile: Map<string, stri
 
 export function projectEvolutionArchitecture(input: {
   overview?: AnalysisResult; beforeIndex?: CodeIndex; afterIndex?: CodeIndex; files: readonly string[];
+  changed: readonly (EvolutionChangedFile & {role: ReturnType<FileRole>})[]; fileRole: FileRole;
+  beforeSources?: ReadonlyMap<string, string>; afterSources?: ReadonlyMap<string, string>;
   structure?: TaskHudStructureDiff; changedSymbols?: readonly WalkthroughDiffNode[];
 }) {
-  const { overview, beforeIndex, afterIndex, structure, changedSymbols } = input;
+  const { overview, beforeIndex, afterIndex, structure, changedSymbols, fileRole } = input;
   const files = new Set([...beforeIndex?.files ?? [], ...afterIndex?.files ?? [], ...input.files]);
-  const { modules, moduleByFile, links } = moduleCatalog(overview, files, new Set(input.files));
-  function increment(file: string, field: 'added_symbols' | 'removed_symbols' | 'modified_symbols') {
-    const owner = moduleByFile.get(file);
-    if (owner !== undefined) modules.get(owner)![field]++;
+  const { modules, moduleByFile, links } = moduleCatalog(overview, files, new Set(input.files), fileRole);
+  const touchedModules = new Map<string, EvolutionArchModule[]>();
+  for (const module of modules.values()) for (const file of module.changed_files) {
+    if (!touchedModules.has(file)) touchedModules.set(file, []);
+    touchedModules.get(file)!.push(module);
   }
-  for (const s of structure?.added_symbols ?? []) increment(s.file, 'added_symbols');
-  for (const s of structure?.removed_symbols ?? []) increment(s.file, 'removed_symbols');
+  function record(file: string, name: string, line: number | undefined, status: 'added' | 'modified' | 'removed') {
+    for (const module of touchedModules.get(file) ?? []) {
+      module[`${status}_symbols`]++;
+      const keys = module.key_symbols!;
+      if (keys.length >= 8 || keys.some(s => s.file === file && s.name === name)) continue;
+      const sources = status === 'removed' ? input.beforeSources : input.afterSources;
+      const doc = symbolDoc(sources?.get(file), line);
+      keys.push({name, status, file, line, ...(doc && {doc})});
+    }
+  }
+  for (const s of structure?.added_symbols ?? []) record(s.file, s.symbol, s.line, 'added');
   const modified = new Set<string>();
   for (const s of structure?.signature_changed_symbols ?? []) {
-    increment(s.file, 'modified_symbols');
+    record(s.file, s.symbol, s.line, 'modified');
     modified.add([s.file, s.symbol, s.line].join('\0'));
   }
+  for (const s of structure?.removed_symbols ?? []) record(s.file, s.symbol, s.line, 'removed');
   for (const s of changedSymbols ?? []) {
     if (s.status === 'modified' && s.file && !modified.has([s.file, s.symbol, s.after_line].join('\0')))
-      increment(s.file, 'modified_symbols');
+      record(s.file, s.symbol, s.after_line, 'modified');
   }
 
   const directoryMode = !overview?.architecture;
-  const before = edgeCounts(beforeIndex ?? afterIndex, moduleByFile, directoryMode);
-  const after = beforeIndex && afterIndex ? edgeCounts(afterIndex, moduleByFile, directoryMode) : before;
+  const runtimeOwners = new Map([...moduleByFile].filter(([file]) => fileRole(file) === 'code'));
+  const before = edgeCounts(beforeIndex ?? afterIndex, runtimeOwners, directoryMode);
+  const after = beforeIndex && afterIndex ? edgeCounts(afterIndex, runtimeOwners, directoryMode) : before;
   const edges: EvolutionArchEdge[] = [];
   const changedEnds = new Set<string>();
   for (const id of new Set([...before.keys(), ...after.keys()])) {
@@ -204,30 +235,34 @@ export function projectEvolutionArchitecture(input: {
     if (before_count !== after_count) { changedEnds.add(from); changedEnds.add(to); }
     links.push({ from, to });
   }
+  for (const s of [...structure?.signature_changed_symbols ?? [], ...structure?.removed_symbols ?? []]) {
+    for (const site of s.unupdated_external_callers ?? []) {
+      const owner = runtimeOwners.get(site.caller_file);
+      if (!site.ambiguous && owner !== undefined) changedEnds.add(owner);
+    }
+  }
   const all = [...modules.values()];
-  const priority = [...all.filter(m => m.relation === 'direct'), ...all.filter(m => m.relation !== 'direct' && changedEnds.has(m.id))];
-  const focus = all.length <= 8 ? priority : priority.slice(0, 6);
-  const focusIds = new Set(focus.map(m => m.id));
-  const neighbors = new Set<string>();
+  for (const m of all) if (m.relation !== 'direct' && changedEnds.has(m.id)) m.relation = 'edge_impacted';
+  const direct = all.filter(m => m.relation === 'direct');
+  const impacted = all.filter(m => m.relation === 'edge_impacted');
+  const focusIds = new Set([...direct, ...impacted].map(m => m.id));
   for (const { from, to } of links) {
-    if (focusIds.has(from)) neighbors.add(to);
-    if (focusIds.has(to)) neighbors.add(from);
+    if (focusIds.has(from) && !focusIds.has(to)) modules.get(to)!.relation = 'neighbor';
+    if (focusIds.has(to) && !focusIds.has(from)) modules.get(from)!.relation = 'neighbor';
   }
-  for (const m of all) if (m.relation !== 'direct' && (neighbors.has(m.id) || changedEnds.has(m.id))) m.relation = 'neighbor';
-  const otherNeighbors = all.filter(m => m.relation === 'neighbor' && !focusIds.has(m.id) && neighbors.has(m.id))
-    .sort((a, b) => Number(changedEnds.has(b.id)) - Number(changedEnds.has(a.id)));
-  const visible = all.length <= 8 ? all : [...focus, ...otherNeighbors.slice(0, 2)];
-  if (directoryMode && all.length > 8 && visible.length < 8) {
-    const chosen = new Set(visible);
-    visible.push(...all.filter(m => !chosen.has(m)).slice(0, 8 - visible.length));
-  }
+  const neighbors = all.filter(m => m.relation === 'neighbor');
+  const others = all.length <= 8 || directoryMode ? all.filter(m => m.relation === 'unchanged') : [];
+  const visible = [...direct, ...impacted, ...neighbors, ...others].slice(0, 8);
   const visibleIds = new Set(visible.map(m => m.id));
+  const visibleChangedFiles = new Set(visible.flatMap(m => m.changed_files));
   const architecture: EvolutionArchSummary = {
     mode: overview?.architecture ? 'overview' : all.length ? 'directory_fallback' : 'empty',
     architecture_result_id: overview?.architecture ? overview.result_id : undefined,
-    modules: visible.sort((a, b) => a.layer_order - b.layer_order), all_modules_count: all.length,
+    modules: visible, all_modules_count: all.length,
     omitted_modules: all.length - visible.length, edges: edges.filter(e => visibleIds.has(e.from_id) && visibleIds.has(e.to_id)),
     new_cycles: structure?.new_cycles ?? [],
+    non_code_changes: input.changed.flatMap(({path, role, status}) =>
+      role === 'code' || visibleChangedFiles.has(path) ? [] : [{path, role, status}]),
   };
   return { architecture, moduleByFile, newCrossLayerEdges: edges.filter(e => e.kind === 'new_cross_layer') };
 }

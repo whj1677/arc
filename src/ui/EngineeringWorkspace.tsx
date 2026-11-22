@@ -293,6 +293,11 @@ export function EngineeringManagement({project,onRestored}:{project:Project;onRe
 const taskLists=new Map<string,EngineeringTask[]>();
 const selectedTasks=new Map<string,string>();
 
+function cleanGoalHeadline(raw:string){
+  const stripped=raw.trim().replace(/^对\s+\S+\s+进行\s*ARC\s*只读需求分析[，,:：\s]*/i,'').trim();
+  return stripped||raw.trim();
+}
+
 function VerificationList({task,onLog}:{task:EngineeringTask;onLog:(path:string)=>void}){
   const latest=new Map<string,VerificationEvidence>();
   for(const item of task.verification){
@@ -473,8 +478,10 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
         onSubmit={start} onCancel={tasks.length?()=>selectTask((current??visible[0]??tasks[0]).task_id):undefined}/>:<>
         <header className="engineering-requirement-header">
           <div className="task-goal-heading">
-            <h2 className={!goalExpanded&&task.goal.length>90?'is-clamped':undefined} title={task.goal}>{task.goal}</h2>
-            {task.goal.length>90&&<button type="button" className="task-goal-toggle" onClick={()=>setGoalExpanded(v=>!v)}>{goalExpanded?'收起':'展开原话'}</button>}
+            <h2 className={!goalExpanded&&task.goal.length>72?'is-clamped':undefined} title={task.goal}>
+              {goalExpanded?task.goal:cleanGoalHeadline(task.goal)}
+            </h2>
+            {(task.goal.length>72||cleanGoalHeadline(task.goal)!==task.goal.trim())&&<button type="button" className="task-goal-toggle" onClick={()=>setGoalExpanded(v=>!v)}>{goalExpanded?'收起':'展开原话'}</button>}
           </div>
           <div className="task-header-meta">
             <div className="task-status-line">
@@ -517,7 +524,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
           <EvolutionCockpit
             evolution={hud!.evolution!}
             revisionKey={`${task.task_id}:${task.version}`}
-            modeLabel={`实景对照 · v${task.version}`}
+            modeLabel={task.changes_status==='needs_review'?`归属待核 · v${task.version}`:task.status==='blocked'?`待收尾 · v${task.version}`:`已落地 · v${task.version}`}
             loadFileDiff={async req => {
               const beforeSnap = hud!.evolution!.base_snapshot_id ?? (task.diff_baseline ?? task.baseline).snapshot_id;
               const afterSnap = hud!.evolution!.target_snapshot_id ?? task.end_state?.snapshot_id;
@@ -527,7 +534,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
                 return api.invoke<EvolutionFileDiff>('engineering_diff', { task_id: task.task_id, path: req.path });
               }
               const snapId = req.snapshotId ?? (req.side === 'before' ? beforeSnap : afterSnap ?? beforeSnap);
-              const src = await api.invoke<{ text: string }>('source', { snapshot_id: snapId, path: req.path });
+              const src = await api.invoke<{ text: string }>('source', { source_snapshot_id: snapId, path: req.path });
               return { path: req.path, before: src.text, after: src.text, truncated: false };
             }}
             openInEditor={(file,line)=>api.invoke('workspace_open_file',{project_id:project.project_id,path:file,line:line??1,editor:'vscode'})}
