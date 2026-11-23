@@ -580,7 +580,9 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
             if(logPath)openVerificationLog(logPath);
           }}
           onAppend={historical||stage==='approval'&&!task.requirement_package?undefined:appendRequirement}
-          visualSlot={useEvolutionCockpit&&(
+          visualSlot={stage==='approval'&&!historical
+          ? <PlanDecision key={task.task_id} task={task} hud={hud} hudLoading={hudLoading} hudError={hudError} busy={busy} error={error} onTaskSaved={taskSaved} onOpenArchitectureOverlay={onArchitectureOverlay} onDecision={(snapshot,revision,notes)=>decide(snapshot,revision,notes)}/>
+          : useEvolutionCockpit&&(
           <section id={`${task.task_id}-evolution`} className="behavior-record-target" tabIndex={-1} aria-label="架构与代码演化">
           <EvolutionCockpit
             evolution={hud!.evolution!}
@@ -627,7 +629,6 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
           />
           </section>
           )}/>
-        {stage==='approval'&&!historical&&<PlanDecision key={task.task_id} task={task} hud={hud} hudLoading={hudLoading} hudError={hudError} busy={busy} error={error} onTaskSaved={taskSaved} onOpenArchitectureOverlay={onArchitectureOverlay} onDecision={(snapshot,revision,notes)=>decide(snapshot,revision,notes)}/>}
         {stage==='delivery'&&<>
         {!useEvolutionCockpit&&(!historical ? (
           <>

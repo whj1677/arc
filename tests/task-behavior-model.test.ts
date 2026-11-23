@@ -1,12 +1,19 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { test } from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import type { CodeState, DevelopmentStep, EngineeringTask, VerificationEvidence } from '../src/engineering';
 import { buildTaskHud } from '../src/main/development-hud';
 import { capture } from '../src/main/snapshot';
 import { Store } from '../src/main/store';
 import { projectTaskBehavior } from '../src/ui/task-behavior-model';
+
+const require = createRequire(import.meta.url);
+require.extensions['.css'] = () => {};
+const { TaskBehaviorCockpit } = require('../src/ui/TaskBehaviorCockpit.tsx') as typeof import('../src/ui/TaskBehaviorCockpit');
 
 const time = '2026-11-23T00:00:00Z';
 const state: CodeState = {
@@ -69,6 +76,20 @@ test('the requirement package groups only linked active steps and preserves actu
   assert.equal(model.attention.decisions.length, 3);
   assert.equal(model.attention.ownership.length, 2);
   assert.equal(model.tone, 'warning');
+});
+
+test('plan renders one collapsed acceptance checklist with unique criteria from shared steps', () => {
+  const html = renderToStaticMarkup(createElement(TaskBehaviorCockpit, {
+    task: task({
+      workflow: 'ready', status: 'pending', end_state: undefined, steps: [{...step, status: 'pending'}],
+      requirement_package: {behaviors: [behavior, {...behavior, id: 'clear', behavior: '清除筛选', files: ['filters.ts']}]},
+    }),
+    onViewChanges() {}, onViewVerification() {},
+  }));
+  assert.match(html, /验收 <strong>0\/2<\/strong> 已通过/);
+  assert.match(html, /<details class="behavior-plan-acceptance"><summary>预设验收清单 · 2 条/);
+  assert.deepEqual([...html.matchAll(/data-criterion-id="([^"]+)"/g)].map(match => match[1]), ['match', 'empty']);
+  assert.doesNotMatch(html, /实现：方案中|验证：未验证/);
 });
 
 test('implementation, build receipts, observed results and Agent claims stay independent', () => {

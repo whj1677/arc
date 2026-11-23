@@ -165,7 +165,8 @@
 .behavior-attention-bar > button:not(.behavior-link):hover,
 .behavior-attention-row .behavior-row-actions > button:not(.behavior-link):hover { background: var(--amber-bg); }
 .behavior-attention-list,
-.behavior-check-list { margin: 0; padding: 0; list-style: none; }
+.behavior-check-list,
+.behavior-fallback-list { margin: 0; padding: 0; list-style: none; }
 .behavior-attention-row,
 .behavior-check {
   display: grid;
@@ -189,6 +190,8 @@
 }
 
 .behavior-acceptance { padding: .65rem .75rem; }
+.behavior-plan-acceptance > summary { cursor: pointer; }
+.behavior-plan-acceptance > .behavior-acceptance-header { justify-content: flex-end; }
 .task-behavior-cockpit .behavior-acceptance-header h3 {
   margin: 0;
   color: var(--ink);
@@ -211,7 +214,9 @@
 }
 .behavior-filters button[aria-pressed="true"] { border-color: var(--border-strong); background: var(--soft); color: var(--accent-hover); }
 .behavior-empty { margin: .15rem 0 .4rem; font-size: .8125rem; }
-.behavior-check-list { border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.behavior-check-list,
+.behavior-fallback-list { border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.behavior-check-list + .behavior-fallback-list { margin-top: .4rem; }
 .behavior-check:first-child { border-top: 0; }
 .behavior-check:focus-within,
 .behavior-check:hover { background: var(--surface-tint); }
@@ -236,6 +241,7 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
+.behavior-check .behavior-disclosure:not([open]) .behavior-excerpt { -webkit-line-clamp: 1; }
 .behavior-disclosure[open] .behavior-excerpt,
 .behavior-check-detail p,
 .behavior-notes li { white-space: pre-wrap; overflow-wrap: anywhere; }
