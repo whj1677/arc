@@ -190,7 +190,7 @@ function ContextFacts({context,reload,onMore,onRefreshSource,checking,createTrig
   const [searchText,setSearchText]=useState(''),[filterCategory,setFilterCategory]=useState('');
   const [remoteResult,setRemoteResult]=useState<{entries:ContextEntry[];total:number}|null>(null);
   const [searching,setSearching]=useState(false);
-  const sourcePanel=useRef<HTMLElement|null>(null),request=useRef(0);
+  const request=useRef(0);
   useEffect(()=>()=>{request.current++;},[]);
   useEffect(()=>{
     if(!createTrigger)return;
@@ -271,33 +271,35 @@ function ContextFacts({context,reload,onMore,onRefreshSource,checking,createTrig
           </div>
           {searching&&<small className="muted">正在筛选资料…</small>}
         </div>
-        {([
-          ['项目规则与约束',['rule','decision','issue']],
-          ['接口与运行方式',['interface','build','technology']],
-          ['工程概述与模块',['purpose','module']],
-          ['历史方案与验证',['plan','architecture','design','verification_plan']],
-        ] as [string,ContextEntry['category'][]][]).map(([group,categories])=>{
-          const entries=categories.flatMap(kind=>listedEntries.filter(e=>e.category===kind&&!e.task_id&&e.status!=='superseded').map(entry=>({entry,label:categoryNames[kind]})));
-          return entries.length>0&&<section key={group}><h3>{group}</h3>{entries.map(({entry,label})=>{
-            const info=materialHeadline(entry,label);
-            const rawName=contextEntryTitle(entry,label);
-            return <button key={entry.entry_id} disabled={busy} aria-pressed={selected?.entry_id===entry.entry_id} onClick={()=>{if(editing&&!window.confirm('离开编辑将丢弃未保存的正文，是否继续？'))return;void open(entry);}}>
-              <span className="engineering-material-kind">{label}</span>
-              <strong title={rawName}>{info.title}</strong>
-              {info.sourceIndex&&<code className="eng-mat-source-index">{info.sourceIndex}</code>}
-              <small>{originNames[entry.origin]} · v{entry.version}{entry.status==='needs_review'?' · 待复核':''}{entry.update_suggestion?' · 有更新建议':''}</small>
-            </button>;
-          })}</section>;
-        })}
-        {!listedEntries.length&&<p className="muted" style={{fontSize:'0.82rem',padding:'8px 0'}}>{searching?'正在筛选资料…':'没有匹配的工程资料。'}</p>}
-        {!remoteResult&&context.next_offset!=null&&onMore&&<button type="button" className="engineering-material-more" onClick={()=>void onMore()}>加载更多（剩余 {Math.max(0,context.total_entries-context.entries.length)} 条）</button>}
+        <div className="eng-mat-dir-items">
+          {([
+            ['项目规则与约束',['rule','decision','issue']],
+            ['接口与运行方式',['interface','build','technology']],
+            ['工程概述与模块',['purpose','module']],
+            ['历史方案与验证',['plan','architecture','design','verification_plan']],
+          ] as [string,ContextEntry['category'][]][]).map(([group,categories])=>{
+            const entries=categories.flatMap(kind=>listedEntries.filter(e=>e.category===kind&&!e.task_id&&e.status!=='superseded').map(entry=>({entry,label:categoryNames[kind]})));
+            return entries.length>0&&<section key={group}><h3>{group}</h3>{entries.map(({entry,label})=>{
+              const info=materialHeadline(entry,label);
+              const rawName=contextEntryTitle(entry,label);
+              return <button key={entry.entry_id} disabled={busy} aria-pressed={selected?.entry_id===entry.entry_id} onClick={()=>{if(editing&&!window.confirm('离开编辑将丢弃未保存的正文，是否继续？'))return;void open(entry);}}>
+                <span className="engineering-material-kind">{label}</span>
+                <strong title={rawName}>{info.title}</strong>
+                {info.sourceIndex&&<code className="eng-mat-source-index">{info.sourceIndex}</code>}
+                <small>{originNames[entry.origin]} · v{entry.version}{entry.status==='needs_review'?' · 待复核':''}{entry.update_suggestion?' · 有更新建议':''}</small>
+              </button>;
+            })}</section>;
+          })}
+          {!listedEntries.length&&<p className="muted" style={{fontSize:'0.82rem',padding:'8px 0'}}>{searching?'正在筛选资料…':'没有匹配的工程资料。'}</p>}
+          {!remoteResult&&context.next_offset!=null&&onMore&&<button type="button" className="engineering-material-more" onClick={()=>void onMore()}>加载更多（剩余 {Math.max(0,context.total_entries-context.entries.length)} 条）</button>}
+        </div>
       </nav>
       <div className="engineering-material-article">
         {!selected&&!editing&&<div className="engineering-empty">
           <h3>{context.entries.length?'选择左侧资料开始阅读':'尚未形成项目特有资料'}</h3>
           <p>{context.entries.length?'已将项目规则、接口约定与运行方式置于前方；点击条目即可阅读全文或直接补充。':'点击上方「待补充项目特有知识」即可快速补齐业务约束、接口约定或构建命令。'}</p>
         </div>}
-        {(selected||editing)&&<section ref={sourcePanel} className="engineering-source eng-mat-reader" aria-label="工程资料全文编辑">
+        {(selected||editing)&&<section className="engineering-source eng-mat-reader" aria-label="工程资料全文编辑">
           <div className="eng-mat-article-head">
             <div>
               {selected&&<span className="eng-mat-article-cat">{categoryNames[selected.category]}</span>}
@@ -310,32 +312,34 @@ function ContextFacts({context,reload,onMore,onRefreshSource,checking,createTrig
               {!editing&&<button disabled={busy} onClick={()=>{clearSelection();setEditing(false);}}>关闭</button>}
             </div>
           </div>
-          {selected&&!editing&&selected.origin!=='user'&&placeholderRulePattern.test(selected.text)&&(
-            <div className="eng-mat-placeholder-callout">
-              <span>这条内容目前是通用初始化占位说明，尚未包含本项目特有的真实规则。</span>
-              <button type="button" className="primary" disabled={busy||readingFull} onClick={()=>void open(selected,true)}>补充本项目规则</button>
-            </div>
-          )}
-          {readingFull&&<p role="status">正在读取完整正文…</p>}
-          {editing?<form onSubmit={save}>
-            <div className="eng-mat-form-row">
-              <label>资料类别<select aria-label="工程资料类别" disabled={busy||!!selected} value={category} onChange={e=>setCategory(e.target.value as ContextEntry['category'])}>{Object.entries(categoryNames).filter(([key])=>!['plan','design','verification_plan'].includes(key)).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
-              <label>资料标题<input aria-label="工程资料标题" value={title} maxLength={300} disabled={busy} placeholder="一句话说明这份内容解释什么" onChange={e=>setTitle(e.target.value)} required/></label>
-            </div>
-            <div className="row"><button type="button" aria-pressed={!preview} onClick={()=>setPreview(false)}>编辑 Markdown</button><button type="button" aria-pressed={preview} onClick={()=>setPreview(true)}>预览 Markdown</button></div>
-            {preview?<ContextText text={body}/>:<label>Markdown 正文<textarea aria-label="工程资料正文" value={body} maxLength={60000} rows={16} disabled={busy} onChange={e=>setBody(e.target.value)} required/></label>}
-            <p className="muted" style={{margin:0,fontSize:'12.5px'}}>正文保存在 ARC 并自动参与后续需求分析；保存不会修改源码或产生验证通过记录。</p>
-            <div><button className="primary" disabled={busy||!body.trim()||!title.trim()}>{busy?'保存中…':'保存当前资料'}</button></div>
-          </form>:selected&&<div className="eng-mat-body"><ContextText text={selected.text}/></div>}
-          {selected&&!editing&&<footer className="eng-mat-meta">
-            <div className="eng-mat-meta-row">
-              <small>{originNames[selected.origin]} · v{selected.version} · {when(selected.updated_at)}</small>
-              <button type="button" className="bw-inline-link" disabled={busy||loadingHistory} onClick={()=>void history(selected)}>{loadingHistory?'加载历史…':'查看原文与版本历史'}</button>
-            </div>
-            {selected.update_suggestion&&<details><summary>局部更新建议 · 原来源 v{selected.update_suggestion.source_version}</summary><p>仅比较这条资料对应的来源，不会自动替换当前正文。核对后可在全文编辑中选择需要的修改。</p><h4>修订时来源</h4><ContextText text={selected.update_suggestion.previous_text}/><h4>重新扫描来源</h4><ContextText text={selected.update_suggestion.proposed_text}/></details>}
-            <details><summary>冻结来源索引 · {selected.sources.length} 处引用</summary>{selected.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}{!selected.sources.length&&<p className="muted">尚无源码引用；属于{originNames[selected.origin]}或明确的待确认项。</p>}</details>
-            {versions.map(v=><details key={v.entry_id+':'+v.version}><summary>{v.entry_id===selected.entry_id?(v.version===selected.version?'当前正文':'正文旧版'):'原始来源'} · v{v.version} · {originNames[v.origin]} · {when(v.updated_at)}</summary><ContextText text={v.text}/>{v.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}</details>)}
-          </footer>}
+          <div key={`${selected?.entry_id ?? ""}:${editing}`} className="eng-mat-article-scroll">
+            {selected&&!editing&&selected.origin!=='user'&&placeholderRulePattern.test(selected.text)&&(
+              <div className="eng-mat-placeholder-callout">
+                <span>这条内容目前是通用初始化占位说明，尚未包含本项目特有的真实规则。</span>
+                <button type="button" className="primary" disabled={busy||readingFull} onClick={()=>void open(selected,true)}>补充本项目规则</button>
+              </div>
+            )}
+            {readingFull&&<p role="status">正在读取完整正文…</p>}
+            {editing?<form onSubmit={save}>
+              <div className="eng-mat-form-row">
+                <label>资料类别<select aria-label="工程资料类别" disabled={busy||!!selected} value={category} onChange={e=>setCategory(e.target.value as ContextEntry['category'])}>{Object.entries(categoryNames).filter(([key])=>!['plan','design','verification_plan'].includes(key)).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
+                <label>资料标题<input aria-label="工程资料标题" value={title} maxLength={300} disabled={busy} placeholder="一句话说明这份内容解释什么" onChange={e=>setTitle(e.target.value)} required/></label>
+              </div>
+              <div className="row"><button type="button" aria-pressed={!preview} onClick={()=>setPreview(false)}>编辑 Markdown</button><button type="button" aria-pressed={preview} onClick={()=>setPreview(true)}>预览 Markdown</button></div>
+              {preview?<ContextText text={body}/>:<label>Markdown 正文<textarea aria-label="工程资料正文" value={body} maxLength={60000} rows={16} disabled={busy} onChange={e=>setBody(e.target.value)} required/></label>}
+              <p className="muted" style={{margin:0,fontSize:'12.5px'}}>正文保存在 ARC 并自动参与后续需求分析；保存不会修改源码或产生验证通过记录。</p>
+              <div><button className="primary" disabled={busy||!body.trim()||!title.trim()}>{busy?'保存中…':'保存当前资料'}</button></div>
+            </form>:selected&&<div className="eng-mat-body"><ContextText text={selected.text}/></div>}
+            {selected&&!editing&&<footer className="eng-mat-meta">
+              <div className="eng-mat-meta-row">
+                <small>{originNames[selected.origin]} · v{selected.version} · {when(selected.updated_at)}</small>
+                <button type="button" className="bw-inline-link" disabled={busy||loadingHistory} onClick={()=>void history(selected)}>{loadingHistory?'加载历史…':'查看原文与版本历史'}</button>
+              </div>
+              {selected.update_suggestion&&<details><summary>局部更新建议 · 原来源 v{selected.update_suggestion.source_version}</summary><p>仅比较这条资料对应的来源，不会自动替换当前正文。核对后可在全文编辑中选择需要的修改。</p><h4>修订时来源</h4><ContextText text={selected.update_suggestion.previous_text}/><h4>重新扫描来源</h4><ContextText text={selected.update_suggestion.proposed_text}/></details>}
+              <details><summary>冻结来源索引 · {selected.sources.length} 处引用</summary>{selected.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}{!selected.sources.length&&<p className="muted">尚无源码引用；属于{originNames[selected.origin]}或明确的待确认项。</p>}</details>
+              {versions.map(v=><details key={v.entry_id+':'+v.version}><summary>{v.entry_id===selected.entry_id?(v.version===selected.version?'当前正文':'正文旧版'):'原始来源'} · v{v.version} · {originNames[v.origin]} · {when(v.updated_at)}</summary><ContextText text={v.text}/>{v.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}</details>)}
+            </footer>}
+          </div>
         </section>}
       </div>
     </div>
