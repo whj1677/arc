@@ -28,9 +28,8 @@ import {
 import { timelineModel } from './timeline-model';
 import { savedBusinessPath } from './home-reading';
 import { EngineeringOverviewSections, EngineeringWorkspace } from './EngineeringWorkspace';
-import { LiveRadarView } from './LiveRadarView';
 import type { TaskArchitectureOverlay } from './DevelopmentHud';
-import { WorkbenchNavigation } from './WorkbenchNavigation';
+import { WorkbenchNavigation, type WorkbenchView } from './WorkbenchNavigation';
 import { edgeSelection, readingQuestionTarget } from './reading-target';
 import { compactTitle, isLegacyOverview, modernReading } from './presentation';
 import { RunActivity } from './RunActivity';
@@ -173,7 +172,7 @@ function App() {
   const overviewReviewGaps = overviewRun?.overview_format && !result?.fictional ? result?.gaps.filter(gap => gap.gap_id.startsWith('overview-review-') && gap.related_node_ids.length) || [] : [];
 
   const catalogReading = reading.view === 'capabilities' || (reading.entrance === 'walk' && !scenarioId);
-  const engineeringReading = ['engineering', 'materials', 'radar'].includes(reading.view);
+  const engineeringReading = ['engineering', 'materials'].includes(reading.view);
   const overview = reading.entrance === 'overview';
   const overviewSectionsVisible = overview && reading.view === 'system' && !project?.fictional;
   const walkNavigation = reading.entrance === 'walk' && !engineeringReading;
@@ -212,7 +211,7 @@ function App() {
   const architectureReading = overview && reading.view === 'system';
   const hasDetailSelection = reading.view === 'functions' ? !!(selectedNode?.kind === 'function' || selectedCall || functionStep) : !!reading.selected;
   const detailVisible = (!featureReading && !architectureReading && reading.view !== 'functions') || hasDetailSelection || reading.detail_tab !== 'details' || showDetail;
-  const readingKey = `${projectId}/${scenarioId || reading.entrance}/${windowMode}`;
+  const readingKey = `${projectId}/${scenarioId || emptyEntrance.current}/${windowMode}`;
   const activeReadingKey = useRef(readingKey);
   activeReadingKey.current = readingKey;
 
@@ -455,9 +454,9 @@ function App() {
       const last = await api.invoke('reading_get', { key: 'last-session' });
       const initialProject = d.projects.find(p => p.project_id === last?.project_id) ?? d.projects[0];
       const savedScene = d.scenarios.some(s => s.scenario_id === last?.scenario_id) ? last.scenario_id : '';
-      setProjectId(initialProject?.project_id || '');
-      setScenarioId(savedScene || (last?.entrance === 'walk' ? '' : initialProject?.overview_scenario_id || ''));
       emptyEntrance.current = last?.entrance === 'walk' ? 'walk' : 'overview';
+      setProjectId(initialProject?.project_id || '');
+      setScenarioId(savedScene || (emptyEntrance.current === 'walk' ? '' : initialProject?.overview_scenario_id || ''));
     })();
     const off = api.onEvent(e => {
       if (e.type === 'changed') void reload();
@@ -514,9 +513,14 @@ function App() {
       .invoke('reading_get', { key: readingKey })
       .then(r => {
         const featureScenario = !!scenarioId && scenarioId !== project?.overview_scenario_id;
-        if (r) r = featureReadingPosition(modernReading(r));
-        if (r && featureScenario && ['home', 'engineering', 'materials', 'radar'].includes(r.view)) {
-          r = { ...r, entrance: 'walk', view: 'timeline' };
+        if (r) {
+          const savedView = r.view;
+          r = featureReadingPosition(modernReading(r));
+          if (savedView === 'radar') {
+            r = { ...r, view: 'engineering' };
+          } else if (featureScenario && ['home', 'engineering', 'materials'].includes(r.view)) {
+            r = { ...r, entrance: 'walk', view: 'timeline' };
+          }
         }
         if (current) {
           const scope = projectId + '/' + scenarioId;
@@ -1292,7 +1296,7 @@ function App() {
     }
   }
 
-  function openWorkbench(view: 'overview' | 'walk' | 'materials' | 'radar' | 'engineering') {
+  function openWorkbench(view: WorkbenchView) {
     if (!project) {
       openModal('open');
       return;
@@ -1301,9 +1305,7 @@ function App() {
       setEntrance(view);
       return;
     }
-    if (view === 'engineering' || view === 'materials' || view === 'radar') {
-      switchView(view, { mode: 'normal', catalog_hidden: true });
-    }
+    switchView(view, { mode: 'normal', catalog_hidden: true });
   }
 
   async function openCapability(nodeId: string, catalog = catalogExplanation) {
@@ -1741,12 +1743,8 @@ function App() {
               onReturnTask: () => {
                 const taskId = archOverlay.taskId;
                 setArchOverlay(null);
-                if (taskId === '__live_radar__') {
-                  switchView('radar', { mode: 'normal', catalog_hidden: true });
-                } else {
-                  setRequestedTask(taskId);
-                  switchView('engineering', { mode: 'normal', catalog_hidden: true });
-                }
+                setRequestedTask(taskId);
+                switchView('engineering', { mode: 'normal', catalog_hidden: true });
               },
             }
           : null
@@ -1808,7 +1806,7 @@ function App() {
       <WorkbenchNavigation
         projects={data.projects}
         projectId={projectId}
-        active={reading.view === 'materials' ? 'materials' : reading.view === 'radar' ? 'radar' : engineeringReading ? 'engineering' : reading.entrance === 'walk' ? 'walk' : 'overview'}
+        active={reading.view === 'materials' ? 'materials' : engineeringReading ? 'engineering' : reading.entrance === 'walk' ? 'walk' : 'overview'}
         collapsed={railCollapsed}
         onToggleCollapse={() => setRailCollapsed(v => !v)}
         onProject={id => {
@@ -2114,20 +2112,7 @@ function App() {
                   <Separator side="left_width" value={reading.left_width} change={changeWidth} reset={() => patch({ left_width: 220 })} />
                 </>
               )}
-              {reading.view === 'radar' ? (
-                <LiveRadarView
-                  key={project.project_id}
-                  project={project}
-                  onOpenArchitectureOverlay={overlay => {
-                    chooseScenario(project.overview_scenario_id || '', {
-                      ...overviewLanding,
-                      ...(overlay.resultId ? { result_id: overlay.resultId } : {}),
-                      source_snapshot_id: project.snapshot_id,
-                    });
-                    setArchOverlay(overlay);
-                  }}
-                />
-              ) : engineeringReading ? (
+              {engineeringReading ? (
                 <EngineeringWorkspace
                   key={project.project_id}
                   project={project}

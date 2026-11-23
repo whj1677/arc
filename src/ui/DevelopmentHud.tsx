@@ -88,11 +88,11 @@ export function useTaskHud(taskId: string | undefined, taskVersion: number | und
   return { hud: hud?.task_id === taskId ? hud : null, loading, error, reload };
 }
 
-export function shortFile(file: string | null | undefined) {
+function shortFile(file: string | null | undefined) {
   return file ? file.split('/').at(-1) || file : '未定位文件';
 }
 
-export function shortSymbol(symbol: string) {
+function shortSymbol(symbol: string) {
   return symbol.split(/[.:]/).filter(Boolean).at(-1) || symbol;
 }
 
@@ -105,7 +105,7 @@ const stepKindLabels: Record<WalkthroughDiffStep['kind'], string> = {
   work: '处理',
 };
 
-export const statusLabels: Record<'added' | 'removed' | 'modified' | 'unchanged' | 'noise', string> = {
+const statusLabels: Record<'added' | 'removed' | 'modified' | 'unchanged' | 'noise', string> = {
   added: '新增',
   removed: '已移除',
   modified: '已改动',
@@ -1003,7 +1003,7 @@ export function FlightHudBar({
 /* ==========================================================================
    3. Post-Dev Diagram-First HUD (Full-Width Call Graph + Lifeline Sequence Diff)
    ========================================================================== */
-export type SelectedTarget =
+type SelectedTarget =
   | { kind: 'node'; node: WalkthroughDiffNode }
   | { kind: 'edge'; edge: WalkthroughDiffEdge }
   | { kind: 'step'; step: WalkthroughDiffStep };
@@ -1059,9 +1059,9 @@ function useDiagramViewport(svgWidth: number, svgHeight: number, selectedId: str
   return { frameRef, zoomMode, setZoomMode, renderW, renderH, hasMoreY };
 }
 
-export const isRiskLabel = (label?: string) => Boolean(label && label.includes('未同步'));
+const isRiskLabel = (label?: string) => Boolean(label && label.includes('未同步'));
 
-export function CallChainDiffGraph({
+function CallChainDiffGraph({
   pathDiff,
   viewFilter,
   hideNoise,
@@ -2282,7 +2282,7 @@ function TimelineSequenceDiff({
 /* ==========================================================================
    3C. On-Demand Right-Hand Source Diff & Inline Ask Inspector
    ========================================================================== */
-export function sliceAroundLine<T extends { type: 'add' | 'del' | 'same' | 'gap'; oldLine?: number; newLine?: number }>(
+function sliceAroundLine<T extends { type: 'add' | 'del' | 'same' | 'gap'; oldLine?: number; newLine?: number }>(
   rows: T[],
   focusLine: number,
   maxRows = 60,
@@ -2634,7 +2634,7 @@ function WalkthroughInspector({
   );
 }
 
-export function StructureDiffDrawer({ diff, onClose }: { diff: TaskHudStructureDiff; onClose: () => void }) {
+function StructureDiffDrawer({ diff, onClose }: { diff: TaskHudStructureDiff; onClose: () => void }) {
   const brokenCallers = [
     ...diff.signature_changed_symbols,
     ...diff.removed_symbols,
