@@ -253,7 +253,18 @@
 
 ## 10. 实施状态
 
-当前状态：交接说明与设计示意已准备，功能改动尚未由本次交接实施。
+当前状态：**Phase 1 与 Phase 2 已完成并完成本地验证；Phase 3（结构化决定联动与局部证据重验、真实执行链路 A12 验收）待后续实施。**
+
+- **Phase 1（功能走读右栏重排）** — 提交 `2eb81c0`
+  - 已完成：移走右栏顶部开发表单；走读页头收口「分析进度」「历史」辅助入口并强化固定态；按真实数据投影步骤/模块/交接/文件详情（条件、读写、去向、缺口与主/次源码依据，含编辑器行号跳转），稀疏数据不伪造字段；底部固定「问这里」「修改这里」「纠正说明」并保留 `ReadingTarget` 线索绑定。
+  - 已验证：`npm run typecheck`、`npm run build`、`tests/feature-reading.test.ts`、`tests/reading-diagrams.test.ts`、`tests/reading-question.test.ts`、`tests/feature-development.test.ts`、`tests/source-editor.test.ts` 全部通过，且已通过 Electron + Playwright 实机截屏核验布局与零页面报错。
+- **Phase 2（协作开发行为主视图、双列验收表与 `blueprintEvolution` 接线）** — 本轮提交
+  - 已完成：新增 `src/ui/task-behavior-model.ts`、`src/ui/TaskBehaviorCockpit.tsx` 与 `src/ui/task-behavior-cockpit.css`；在 `EngineeringWorkspace.tsx` 接入三阶段进度条、行为清单、改前/目标对照、实现与验证双列主视图表以及空态自动收敛的右栏待处理区；在 `development-hud.ts` / `evolution-view.ts` / `EvolutionCockpit.tsx` 中补齐并接通冻结基线 `blueprintEvolution`（改前方案 / 实际改动切换）。
+  - 已验证：`npm run typecheck`、`npm run build`、`tests/task-behavior-model.test.ts`、`tests/evolution-view.test.ts`、`tests/delivery-audit.test.ts`、`tests/development-hud.test.ts`（共 47 项）全部通过，且已通过 Electron + Playwright 实机截屏核验三栏行为视图与 `EvolutionCockpit` 蓝图切换，零页面报错。
+- **未完成 / 留待 Phase 3**：
+  - 关键决定结构化建模与执行中版本联动重算（第 5.4 节、A6/A7）；
+  - 按证据依赖精准判定单条验收条件局部过期（第 5.5 节、A8 局部失效）；
+  - 使用真实 Codex / 外部 Agent 跑通端到端真实工程改动验收（A12）。
 
 后续只维护这一份交接说明。必要时在此更新实际实现提交、已完成项、验证结果和未解决项。两张 PNG 是本说明的引用资产，不另行生成多份“最终版”文档或打包文件。
 

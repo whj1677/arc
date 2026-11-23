@@ -1,0 +1,106 @@
+.task-behavior-cockpit {
+  container-type: inline-size;
+  margin-block: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.behavior-phases {
+  display: flex;
+  gap: .4rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.behavior-phases li {
+  flex: 1;
+  padding: .4rem .65rem;
+  border-bottom: .15rem solid var(--border);
+  color: var(--muted);
+  font-size: .875rem;
+}
+
+.behavior-phases li[aria-current] {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 580;
+}
+
+.behavior-progress {
+  padding: .55rem .75rem;
+  margin: .65rem 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-tint);
+}
+
+.behavior-progress[data-tone="warning"] { color: var(--amber); background: var(--amber-bg); border-color: var(--amber-border); }
+.behavior-progress[data-tone="danger"] { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-border); }
+.behavior-progress[data-tone="success"] { color: var(--accent); background: var(--soft); }
+
+.behavior-layout, .behavior-comparison {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: .75rem;
+}
+
+.behavior-comparison > article { height: 100%; }
+.behavior-main, .behavior-panel { min-width: 0; }
+.behavior-main { display: grid; gap: .75rem; }
+
+.behavior-panel {
+  padding: .8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.task-behavior-cockpit .behavior-panel h3 { margin: 0 0 .45rem; color: var(--ink); font-size: .95rem; font-weight: 580; }
+.behavior-panel h4 { margin: .7rem 0 .3rem; font-size: .875rem; font-weight: 560; }
+.behavior-panel p { margin: .35rem 0; white-space: pre-wrap; }
+.behavior-panel ul { padding-inline-start: 1.1rem; margin: .35rem 0; }
+.behavior-panel .behavior-list, .behavior-panel .behavior-file-list { list-style: none; padding: 0; }
+.behavior-list li + li, .behavior-attention li + li { margin-top: .35rem; }
+.behavior-file-list li { font-size: .8125rem; margin-bottom: .25rem; }
+
+.behavior-list button {
+  width: 100%;
+  text-align: start;
+  white-space: normal;
+  padding: .45rem .55rem;
+  background: var(--surface-tint);
+}
+
+.behavior-list button[aria-pressed="true"] { background: var(--soft); border-color: var(--border-strong); }
+.behavior-list strong { font-weight: 560; }
+.behavior-panel small { display: block; color: var(--muted); margin-top: .1rem; }
+.behavior-acceptance table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+.behavior-acceptance th, .behavior-acceptance td { padding: .5rem .35rem; text-align: start; vertical-align: top; border-bottom: 1px solid var(--border); }
+.behavior-acceptance th { font-weight: 550; }
+.behavior-acceptance th[scope="col"] { color: var(--ink-secondary); background: var(--surface-tint); }
+.behavior-acceptance td { width: 24%; }
+.behavior-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .75rem; }
+.behavior-actions button { white-space: normal; }
+.behavior-state[data-state="verified"] { color: var(--accent); }
+.behavior-state[data-state="failed"], .behavior-state[data-state="blocked"] { color: var(--danger); }
+.behavior-state[data-state="partial"], .behavior-state[data-state="stale"], .behavior-state[data-state="agent_claimed"] { color: var(--amber); }
+.behavior-panel .behavior-link { display: block; padding: .1rem 0; text-align: start; white-space: normal; color: var(--blue); background: none; border: 0; min-height: 0; }
+.behavior-panel .behavior-link:hover { text-decoration: underline; }
+.behavior-attention h3:not(:first-child) { margin-top: .75rem; }
+.behavior-attention > button { margin-top: .55rem; }
+.behavior-record-target { scroll-margin-block: 1rem; }
+
+@container (min-width: 31rem) {
+  .behavior-comparison { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@container (min-width: 42rem) {
+  .behavior-layout { grid-template-columns: minmax(10rem, .8fr) minmax(0, 2.5fr); }
+  .behavior-attention { grid-column: 1 / -1; }
+}
+
+@container (min-width: 59rem) {
+  .behavior-layout[data-attention="true"] { grid-template-columns: minmax(10rem, .8fr) minmax(0, 2.5fr) minmax(11rem, 1fr); }
+  .behavior-attention { grid-column: auto; }
+}

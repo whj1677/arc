@@ -225,6 +225,7 @@ export interface AstCallGraphDiff {
 
 export interface TaskHudSnapshot {
   evolution?: EvolutionView;
+  blueprintEvolution?: EvolutionView;
   task_id: string;
   version: number;
   impact: TaskHudImpact;

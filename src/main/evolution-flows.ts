@@ -380,7 +380,8 @@ function staleFlow(feature: HudImpactedFeature, result: AnalysisResult, input: F
   const steps = rows.flatMap(r => [r.step, ...(added.get(r) ?? [])]);
   steps.forEach((s, i) => { s.order = i + 1; });
   return {id: 'stale:' + feature.scenario_id, mode: 'walkthrough_stale', feature_id: feature.feature_id, scenario_id: feature.scenario_id,
-    feature_label: feature.label, before_result_id: result.result_id, stale_notice: '改后走读待刷新（当前基于改前走读投影）',
+    feature_label: feature.label, before_result_id: result.result_id,
+    stale_notice: blueprint ? '基于已保存的改前走读' : '改后走读待刷新（当前基于改前走读投影）',
     before_snapshot_id: result.binding.source_snapshot_id, after_snapshot_id: blueprint ? undefined : input.afterIndex?.snapshot_id,
     steps, omitted_steps: total - rows.length};
 }

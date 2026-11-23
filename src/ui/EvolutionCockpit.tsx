@@ -209,7 +209,9 @@ export function EvolutionCockpit({
 
   const activeEvo = phaseView === 'blueprint' && blueprintEvolution ? blueprintEvolution : evolution;
   const isBlueprint = activeEvo.mode === 'task_blueprint';
-  const evoVersionKey = revisionKey ?? `${activeEvo.base_label}:${activeEvo.target_label}:${activeEvo.mode}:${activeEvo.changed_files.map(f => f.path).join('|')}`;
+  const showingPlan = isBlueprint && !!blueprintEvolution;
+  const evoVersionKey = `${activeEvo.mode}:${revisionKey ?? `${activeEvo.base_label}:${activeEvo.target_label}:${activeEvo.changed_files.map(f => f.path).join('|')}`}`;
+  const blueprintSnapshot = isBlueprint ? activeEvo.base_snapshot_id : undefined;
 
   useEffect(() => {
     setFeatureIdx(activeEvo.active_feature_index || 0);
@@ -250,12 +252,15 @@ export function EvolutionCockpit({
     let alive = true;
     setDrawerDiffLoading(true);
     setDrawerDiffError('');
-    loadFileDiff({ path: drawerFile, snapshotId: drawerSnap, side: drawerSide, preferFrozen: drawerPreferFrozen })
+    loadFileDiff({
+      path: drawerFile, snapshotId: drawerSnap ?? blueprintSnapshot,
+      side: isBlueprint ? 'before' : drawerSide, preferFrozen: isBlueprint || drawerPreferFrozen,
+    })
       .then(res => { if (alive) setDrawerDiff(res); })
       .catch((e: Error) => { if (alive) { setDrawerDiff(null); setDrawerDiffError(e.message); } })
       .finally(() => { if (alive) setDrawerDiffLoading(false); });
     return () => { alive = false; };
-  }, [drawerFile, drawerSnap, drawerSide, drawerPreferFrozen, loadFileDiff, evoVersionKey]);
+  }, [drawerFile, drawerSnap, drawerSide, drawerPreferFrozen, loadFileDiff, evoVersionKey, isBlueprint, blueprintSnapshot]);
 
   useEffect(() => {
     if (!activeEvo.document_only || !docSelectedFile) {
@@ -266,12 +271,12 @@ export function EvolutionCockpit({
     let alive = true;
     setDocDiffLoading(true);
     setDocDiffError('');
-    loadFileDiff({ path: docSelectedFile })
+    loadFileDiff({ path: docSelectedFile, snapshotId: blueprintSnapshot, preferFrozen: isBlueprint })
       .then(res => { if (alive) setDocDiff(res); })
       .catch((e: Error) => { if (alive) { setDocDiff(null); setDocDiffError(e.message); } })
       .finally(() => { if (alive) setDocDiffLoading(false); });
     return () => { alive = false; };
-  }, [activeEvo.document_only, docSelectedFile, loadFileDiff, evoVersionKey]);
+  }, [activeEvo.document_only, docSelectedFile, loadFileDiff, evoVersionKey, isBlueprint, blueprintSnapshot]);
 
   const focusedRows = useMemo(() => {
     if (!drawerDiff || drawerDiff.binary) return null;
@@ -452,7 +457,7 @@ export function EvolutionCockpit({
   function openStepDrawer(step: EvolutionFlowStep, focusCall?: EvolutionCallSite) {
     const isInserted = !!step.inserted || step.status === 'added';
     const isStaleBeforeAnchor = activeFeature?.mode === 'walkthrough_stale' && !isInserted && !step.after_line;
-    const isBefore = !isInserted && (flowFilter === 'before' || focusCall?.status === 'removed' || step.status === 'removed' || isStaleBeforeAnchor);
+    const isBefore = isBlueprint || !isInserted && (flowFilter === 'before' || focusCall?.status === 'removed' || step.status === 'removed' || isStaleBeforeAnchor);
     const side: 'before' | 'after' = isBefore ? 'before' : 'after';
     const file = focusCall?.file ?? step.file ?? undefined;
     const line = focusCall?.line ?? (isBefore ? (step.before_line ?? step.line) : (step.after_line ?? step.before_line ?? step.line));
@@ -701,14 +706,14 @@ export function EvolutionCockpit({
       <div className="evo-topbar">
         <div className="evo-topbar-left">
           <span className={`evo-mode-chip${isBlueprint ? ' is-blueprint' : ''}`}>
-            {modeLabel || (isBlueprint ? '改前预演' : activeEvo.mode === 'workspace_radar' ? '工作区改动' : '已落地改动')}
+            {showingPlan ? '改前预演' : modeLabel || (isBlueprint ? '改前预演' : activeEvo.mode === 'workspace_radar' ? '工作区改动' : '已落地改动')}
           </span>
           {blueprintEvolution && (
             <div className="hud-segmented" role="group" aria-label="阶段视角">
-              <button type="button" aria-pressed={phaseView === 'blueprint'} onClick={() => setPhaseView('blueprint')}>
+              <button type="button" aria-pressed={phaseView === 'blueprint'} onClick={() => { setDrawer(null); setFlowFilter('diff'); setPhaseView('blueprint'); }}>
                 改前方案
               </button>
-              <button type="button" aria-pressed={phaseView === 'actual'} onClick={() => setPhaseView('actual')}>
+              <button type="button" aria-pressed={phaseView === 'actual'} onClick={() => { setDrawer(null); setPhaseView('actual'); }}>
                 实际改动
               </button>
             </div>
@@ -981,7 +986,7 @@ export function EvolutionCockpit({
                     </p>
                   </div>
                   <div className="evo-panel-controls">
-                    {onOpenArchitectureOverlay && activeEvo.architecture.mode === 'overview' && (
+                    {onOpenArchitectureOverlay && !showingPlan && activeEvo.architecture.mode === 'overview' && (
                       <button
                         type="button"
                         className="hud-mini-btn"
@@ -1230,22 +1235,22 @@ export function EvolutionCockpit({
                         {compactFlow ? `展开全部 (${visibleSteps.length})` : '只看变动'}
                       </button>
                     )}
-                    <div className="hud-segmented" role="group" aria-label="步骤对比过滤">
+                    {!showingPlan && <div className="hud-segmented" role="group" aria-label="步骤对比过滤">
                       <button type="button" aria-pressed={flowFilter === 'diff'} onClick={() => setFlowFilter('diff')}>对比</button>
                       <button type="button" aria-pressed={flowFilter === 'before'} onClick={() => setFlowFilter('before')}>改前</button>
                       <button type="button" aria-pressed={flowFilter === 'after'} onClick={() => setFlowFilter('after')}>改后</button>
-                    </div>
+                    </div>}
                   </div>
                 </div>
 
                 {activeFeature?.mode === 'walkthrough_stale' && (
                   <div className="evo-stale-bar">
                     <span>
-                      {activeFeature.steps.some(s => s.inserted)
+                      {showingPlan ? activeFeature.stale_notice : activeFeature.steps.some(s => s.inserted)
                         ? '已从源码变更中自动标出新增调用点；如需同步更新中文流程说明，可点击右侧刷新。'
                         : '已按源码改动精确过滤未变步骤；如需重新生成文字流程说明，可点击右侧刷新。'}
                     </span>
-                    {onRefreshFeature && activeFeature.scenario_id && (
+                    {onRefreshFeature && !showingPlan && activeFeature.scenario_id && (
                       <button
                         type="button"
                         className="hud-mini-btn"

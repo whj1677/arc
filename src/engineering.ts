@@ -119,6 +119,7 @@ export interface WalkthroughUpdate {
 }
 export interface RequirementPackage {
   assumptions?:string[]; open_questions?:string[]; non_goals?:string[]; revoked?:string[];
+  risks?:string[];
   behaviors:{id:string;behavior:string;design:string;files:string[];step_ids:string[];verification:string}[];
 }
 export interface EngineeringTask {

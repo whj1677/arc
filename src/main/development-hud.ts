@@ -9,7 +9,7 @@ import {
   type Project, type Scenario, type Snapshot,
 } from '../shared';
 import { getCodeIndex, type CodeIndex } from './code-index';
-import { buildTaskEvolutionView, taskEvolutionMode, taskEvolutionScope } from './evolution-view';
+import { buildTaskBlueprintEvolutionView, buildTaskEvolutionView, taskEvolutionMode, taskEvolutionScope } from './evolution-view';
 import type { EvolutionFlowIndexes } from './evolution-flows';
 import { readSource } from './snapshot';
 import type { Store } from './store';
@@ -278,5 +278,9 @@ export async function buildTaskHud(
   }
   hud.evolution = buildTaskEvolutionView(task, hud,
     {...taskIndexes, overview, explanations: byId, walkthroughIndexes, changedSymbols});
+  if (hud.evolution.mode === 'task_actual' && (declaredScope.length || task.requirement_package?.behaviors.length)) {
+    hud.blueprintEvolution = buildTaskBlueprintEvolutionView(task, hud,
+      {beforeIndex: await index(task.baseline.snapshot_id), overview, explanations: byId});
+  }
   return hud;
 }

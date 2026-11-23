@@ -14,6 +14,7 @@ import type {CodexModelSelection} from './CodexModelSelect';
 import {commandBody,sameVerificationState,verificationEvidenceLabel} from '../delivery-audit';
 import {DeliveryAuditBar} from './DeliveryAuditBar';
 import {TaskBoundaries} from './TaskBoundaries';
+import {TaskBehaviorCockpit} from './TaskBehaviorCockpit';
 import type {Dispatch} from '../main/external-dispatch';
 import './engineering.css';
 
@@ -298,6 +299,14 @@ function cleanGoalHeadline(raw:string){
   return stripped||raw.trim();
 }
 
+function revealTaskRecord(id:string){
+  const target=document.getElementById(id);
+  if(!target)return;
+  for(let details=target.closest('details');details;details=details.parentElement?.closest('details')??null)details.open=true;
+  target.focus({preventScroll:true});
+  target.scrollIntoView({block:'start'});
+}
+
 function VerificationList({task,onLog}:{task:EngineeringTask;onLog:(path:string)=>void}){
   const latest=new Map<string,VerificationEvidence>();
   for(const item of task.verification){
@@ -310,7 +319,7 @@ function VerificationList({task,onLog}:{task:EngineeringTask;onLog:(path:string)
   const primary=latest.size?[...latest.values()]:task.verification;
   const selected=new Set(primary);
   const secondary=task.verification.filter(item=>!selected.has(item));
-  const card=(item:VerificationEvidence)=><article className="engineering-verification" key={item.evidence_id}>
+  const card=(item:VerificationEvidence)=><article className="engineering-verification behavior-record-target" key={item.evidence_id} id={`${task.task_id}-receipt-${item.evidence_id}`} tabIndex={-1}>
     <strong>{verificationEvidenceLabel(item)} · {item.command.split('\n')[0]}</strong>
     <small>{item.origin==='observed'?'已观测命令执行':'Agent 上报，未独立执行核验'} · exit {item.exit_code??'未取得'} · {when(item.created_at)}</small>
     {item.step_id&&<small>步骤：{task.steps?.find(step=>step.step_id===item.step_id)?.title||item.step_id}{item.criterion_id?` · 条件 ${item.criterion_id}`:''}</small>}
@@ -416,9 +425,29 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
   }
   async function showHistory(){await action(async()=>{const result=await api.invoke<any[]>('engineering_history',{kind:'task',id:selectedId});setHistory(result.map(value=>value.value??value));});}
   const visible=tasks.filter(t=>(!filter||t.status===filter)&&(!query||[t.goal,t.summary,...t.changes.map(c=>c.path),...t.decisions,...t.unresolved].join('\n').toLowerCase().includes(query.toLowerCase())));
-  const acceptance=task?.steps?.filter(step=>step.status!=='superseded').flatMap(step=>step.criteria.map(criterion=>({...criterion,step:step.title})))??[];
   const ended=!!task&&task.status!=='pending'&&task.status!=='running';
-  const useEvolutionCockpit=!historical&&stage==='delivery'&&!!hud?.evolution&&hud.task_id===task?.task_id&&!showLegacyGraph;
+  const versionHud=!historical&&hud?.task_id===task?.task_id&&hud?.version===task?.version?hud:null;
+  const hasEvolution=stage==='delivery'&&!!versionHud?.evolution;
+  const useEvolutionCockpit=hasEvolution&&!showLegacyGraph;
+  const reading=task?.reading;
+  const readingAnchor=reading?.evidence;
+  const blueprint=versionHud?.blueprintEvolution??(versionHud?.evolution?.mode==='task_blueprint'?versionHud.evolution:undefined);
+  const beforeReading=reading&&readingAnchor&&['step','call_step'].includes(reading.target.kind)?blueprint?.features.find(feature=>
+    feature.before_result_id===reading.result_id&&feature.before_snapshot_id===reading.source_snapshot_id,
+  )?.steps.find(step=>step.id===reading.target.id&&step.file===readingAnchor.path&&step.before_line===readingAnchor.line_start)?.before_text:undefined;
+  const appendRequirement=(text='')=>{
+    if(stage==='approval'){
+      const revision=document.querySelector<HTMLDetailsElement>('.engineering-task-detail .hud-revise-details');
+      if(revision){
+        revision.open=true;
+        revision.querySelector('textarea')?.focus();
+      }
+      return;
+    }
+    setContinuation(true);
+    if(text)setGoal(text);
+    requestAnimationFrame(()=>goalInput.current?.focus());
+  };
   async function refreshImpactedFeature(scenarioId:string){
     if(!task)return;
     setRefreshingScenarioId(scenarioId);
@@ -505,11 +534,11 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
           {waitingMcp&&!historical&&<p role="status">等待外部 Agent 领取。在已接入 ARC MCP 的对话中领取任务 <code>{task.task_id}</code>。 <button onClick={onSettings}>连接 Agent</button></p>}
           {task.reading?.evidence&&<p aria-label="关联源码位置">关联源码 · <code>{task.reading.evidence.path}:{task.reading.evidence.line_start}–{task.reading.evidence.line_end}</code></p>}
         </header>
-        {stage==='approval'&&!historical&&<PlanDecision key={task.task_id} task={task} hud={hud} hudLoading={hudLoading} hudError={hudError} busy={busy} error={error} onTaskSaved={taskSaved} onOpenArchitectureOverlay={onArchitectureOverlay} onDecision={(snapshot,revision,notes)=>decide(snapshot,revision,notes)}/>}
         {!historical&&stage!=='approval'&&(inProgress||stage==='analysis')&&(stage==='analysis'||latestDispatch||panelAttempt)&&<DevelopmentActivity key={`${stage}:${ended}:${latestDispatch?.dispatch_id||panelAttempt?.attempt_id||task.task_id}`} dispatch={latestDispatch} attempt={panelAttempt} task={task} events={events} onSettings={onSettings}/>}
         {section!=='tasks'?<EngineeringSections taskId={selectedId} projectId={project.project_id} section={section} onSection={selectSection} tasks={tasks} onTask={id=>selectTask(id,true)} onArchitecture={onArchitecture} onDevelop={newRequirement}/>:<>
-        {continuation&&!historical&&!inProgress&&stage!=='approval'&&<form className="development-form continuation-card" onSubmit={e=>{e.preventDefault();void start();}}>
+        {continuation&&!historical&&stage!=='approval'&&<form className="development-form continuation-card" onSubmit={e=>{e.preventDefault();void start();}}>
           <div className="row between"><h3>继续当前任务</h3><small>{analysisModes[requestEngine].name} · 只读分析</small></div>
+          {inProgress&&<p className="muted">当前执行仍使用已读取的要求。执行结束后可提交此处草稿。</p>}
           <label htmlFor="development-goal">补充要求或修复目标</label>
           <textarea ref={goalInput} id="development-goal" aria-label="开发任务" value={goal} onChange={e=>setGoal(e.target.value)} required
             placeholder="结合下方记录，写下这次要解决的问题和验收条件。" onKeyDown={e=>{if(e.ctrlKey&&e.key==='Enter'&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
@@ -519,10 +548,25 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
         </form>}
         {history.length>0&&<label className="engineering-version-picker">查看记录版本<select aria-label="工程任务版本" value={historical?.version??''} onChange={e=>setHistorical(history.find(item=>item.version===Number(e.target.value))||null)}><option value="">当前版本</option>{history.map(item=><option key={item.version} value={item.version}>v{item.version} · {stateNames[item.status]} · {when(item.updated_at)}</option>)}</select></label>}
         {task.origin==='legacy_import'&&<p className="warning">AEC 历史任务 · 待复核。原文与来源已保存，旧验证声明不视为本次真实执行。</p>}
+        <TaskBehaviorCockpit key={task.task_id} task={task} beforeReading={beforeReading}
+          onViewChanges={file=>{
+            if(file){
+              revealTaskRecord(`${task.task_id}-changes`);
+              if(!historical)void action(async()=>setDiff(await api.invoke('engineering_diff',{task_id:task.task_id,path:file})));
+            }else if(hasEvolution){
+              setShowLegacyGraph(false);
+              requestAnimationFrame(()=>revealTaskRecord(`${task.task_id}-evolution`));
+            }else revealTaskRecord(`${task.task_id}-changes`);
+          }}
+          onViewVerification={evidenceId=>revealTaskRecord(evidenceId?`${task.task_id}-receipt-${evidenceId}`:`${task.task_id}-verification`)}
+          onAppend={historical||stage==='approval'&&!task.requirement_package?undefined:appendRequirement}/>
+        {stage==='approval'&&!historical&&<PlanDecision key={task.task_id} task={task} hud={hud} hudLoading={hudLoading} hudError={hudError} busy={busy} error={error} onTaskSaved={taskSaved} onOpenArchitectureOverlay={onArchitectureOverlay} onDecision={(snapshot,revision,notes)=>decide(snapshot,revision,notes)}/>}
         {stage==='delivery'&&<>
         {useEvolutionCockpit ? (
+          <section id={`${task.task_id}-evolution`} className="behavior-record-target" tabIndex={-1} aria-label="架构与代码演化">
           <EvolutionCockpit
             evolution={hud!.evolution!}
+            blueprintEvolution={hud!.blueprintEvolution}
             revisionKey={`${task.task_id}:${task.version}`}
             modeLabel={task.changes_status==='needs_review'?`归属待核 · v${task.version}`:task.status==='blocked'?`待收尾 · v${task.version}`:`已落地 · v${task.version}`}
             loadFileDiff={async req => {
@@ -562,6 +606,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
               <button type="button" className="hud-mini-btn" onClick={()=>setShowLegacyGraph(true)}>旧版调用图</button>
             </>}
           />
+          </section>
         ) : !historical ? (
           <>
             {hud?.evolution&&<div className="row" style={{marginBottom:8}}><button type="button" className="hud-mini-btn" onClick={()=>setShowLegacyGraph(false)}>← 返回演化驾驶舱</button></div>}
@@ -572,7 +617,8 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
         )}
         {task.verification_status==='stale'&&<p className="task-review-notice">上次验证对应较早的代码版本，需重新验证。</p>}
         {!useEvolutionCockpit&&ended&&task.summary&&<section className="task-outcome" aria-label="本次交付结果"><h3>本次交付结果</h3><ContextText text={task.summary}/></section>}
-        <details id={`${task.task_id}-changes`} className="task-additional-records" open={!useEvolutionCockpit || undefined}>
+        </>}
+        <details id={`${task.task_id}-changes`} className="task-additional-records behavior-record-target" tabIndex={-1} open={stage==='delivery'&&!useEvolutionCockpit || undefined}>
           <summary>实际变更与执行日志 · {task.changes.length} 个文件{attempts.length?` · ${attempts.length} 次执行`:''}</summary>
           <div style={{marginTop:10}}>
             <div className="row between" style={{marginBottom:8}}>
@@ -586,7 +632,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
             {attempts.length>0&&<details style={{marginTop:10}}><summary>执行与活动 · {attempts.length} 次</summary>{attempts.map(item=><p key={item.attempt_id}>{item.provider_id} · {item.model} · {stateNames[item.status]}{item.error&&<span className="warning"> · {item.error}</span>}{item.log_path&&<button onClick={()=>void action(async()=>setLog((await api.invoke<{text:string}>('engineering_log',{task_id:task.task_id,path:item.log_path})).text))}>查看执行诊断</button>}</p>)}<ol className="engineering-events">{events.filter(event=>publicActivity(event)).slice(-30).map((event,i)=><li key={i}><small>{when(event.received_at)}</small><p>{publicActivity(event)}</p></li>)}</ol></details>}
           </div>
         </details>
-        <details id={`${task.task_id}-verification`} className="task-additional-records" open={!useEvolutionCockpit || undefined}>
+        <details id={`${task.task_id}-verification`} className="task-additional-records behavior-record-target" tabIndex={-1} open={stage==='delivery'&&!useEvolutionCockpit || undefined}>
           <summary>验证与遗留详情 · {verificationLabels[task.verification_status]}{task.unresolved.length?` · ${task.unresolved.length} 项待处理`:''}</summary>
           <div style={{marginTop:10}}>
             {!task.verification.length?<p className="muted">尚未保存验证记录，不能视为通过。</p>:<VerificationList task={task} onLog={path=>void action(async()=>setLog((await api.invoke<{text:string}>('engineering_log',{task_id:task.task_id,path})).text))}/>}
@@ -594,11 +640,10 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
             {log&&<section className="engineering-log"><div className="row between"><h3>验证日志</h3><button onClick={()=>setLog('')}>关闭日志</button></div><pre>{log}</pre></section>}
           </div>
         </details>
-        </>}
         {(stage!=='approval'||historical)&&task.requirement_package&&<SavedRequirementPackage key={`pkg:${task.task_id}`} task={task} readOnly={!!historical} onSaved={taskSaved}/>}
         {(() => {
           const detailSections = <>
-            <details id={`${task.task_id}-goal`} className="task-model-section task-model-goal"><summary>目标与验收</summary><TaskBoundaries key={`boundaries:${task.task_id}`} task={task} readOnly={!!historical} onSaved={taskSaved}/><details><summary>原始要求与接续记录 · {task.fast_mode?'ARC 快速直改':task.workflow?'从 ARC 发起':'沿用 Agent / 原有任务入口'}</summary>{task.requests?.map(item=><p key={item.submission_key}>{item.text}</p>)}<small>任务 {task.task_id}</small></details><h4>验收条件</h4>{acceptance.length?<ul className="task-acceptance-list">{acceptance.map((item,index)=><li key={`${index}:${item.criterion_id}`} data-criterion-id={item.criterion_id}><strong>{item.text}</strong><small>{item.step} · {item.evidence_ids.length?`${item.evidence_ids.length} 条关联证据`:'尚无关联证据'}</small></li>)}</ul>:<p className="muted">尚未形成明确的验收条件；实施步骤补充后会汇集到这里。</p>}</details>
+            <details id={`${task.task_id}-goal`} className="task-model-section task-model-goal"><summary>任务边界与原始要求</summary><TaskBoundaries key={`boundaries:${task.task_id}`} task={task} readOnly={!!historical} onSaved={taskSaved}/><details><summary>原始要求与接续记录 · {task.fast_mode?'ARC 快速直改':task.workflow?'从 ARC 发起':'沿用 Agent / 原有任务入口'}</summary>{task.requests?.map(item=><p key={item.submission_key}>{item.text}</p>)}<small>任务 {task.task_id}</small></details></details>
             <details id={`${task.task_id}-context`} className="task-model-section"><summary>现状与依据</summary>{task.summary&&!ended?<div className="engineering-summary"><ContextText text={task.summary}/></div>:null}<details className="task-technical-details"><summary>工作区、代码基线与关联走读</summary><dl className="engineering-metadata"><dt>工作区</dt><dd>{task.workspace_path}</dd><dt>开始基线</dt><dd>{task.baseline.head||'非 Git 工程'}{task.baseline.branch?` · ${task.baseline.branch}`:''}<br/><small>{task.baseline.fingerprint}</small></dd><dt>开始前已有改动</dt><dd>{task.baseline.dirty.length?task.baseline.dirty.join('、'):'无已识别的未提交改动'}</dd><dt>上下文版本</dt><dd>{task.context_version}</dd>{task.reading&&<><dt>功能走读</dt><dd>原说明 {task.reading.result_id}<br/><small>原快照 {task.reading.source_snapshot_id} · 选中 {task.reading.target.kind}:{task.reading.target.id}</small><br/>{task.walkthrough?`走读更新：${({pending:'等待更新',running:'正在更新',completed:'新版已保存',failed:'更新失败'} as const)[task.walkthrough.status]}`:'尚未触发走读更新'}{task.walkthrough?.error&&<p className="warning">{task.walkthrough.error}</p>}</dd></>}<dt>差异覆盖</dt><dd>{task.changes_status==='needs_review'?'差异归属待核查':task.baseline.workspace_fingerprint?'工作区文件内容。二进制和超限文件记录哈希，忽略目录与凭据排除。':'历史基线仅覆盖阅读快照的文本文件。'}</dd></dl></details></details>
             <details id={`${task.task_id}-plan`} className="task-model-section"><summary>影响与方案</summary><div className="task-impact-facts"><span>范围 {(latestWriteScope??task.proposed_scope??task.scope).length} 个文件</span><span>已有改动重叠 {task.changes.filter(change=>change.ownership==='preexisting_overlap').length} 项</span><span>风险与遗留 {task.unresolved.length} 项</span></div>{!!task.steps?.length?<div className="development-steps" aria-label="修改方案与步骤">{task.steps.map(step=><article className={`development-step ${step.status==='superseded'?'superseded':''}`} data-step-id={step.step_id} key={step.step_id}><div className="row between"><strong>{step.title}</strong><span className="tag">{stepStateNames[step.status]}</span></div><p>{step.change}</p><p className="development-step-progress">{step.progress}</p><small>检查：{stateNames[step.verification_status??'not_run']}</small><ul>{step.criteria.map(criterion=><li data-criterion-id={criterion.criterion_id} key={criterion.criterion_id}>{criterion.text}<small>{criterion.evidence_ids.length?` · ${criterion.evidence_ids.length} 条关联证据`:' · 尚无证据'}</small></li>)}</ul>{step.unresolved.length>0&&<ul className="warning">{step.unresolved.map((item,index)=><li key={index}>{item}</li>)}</ul>}</article>)}</div>:<p className="muted">尚未保存实施步骤。</p>}{!!latestWriteScope?.length&&<details><summary>本次允许修改 · {latestWriteScope.length} 个文件</summary><ul>{latestWriteScope.map(file=><li key={file}><code>{file}</code></li>)}</ul></details>}{task.decisions.length>0&&<details><summary>修改依据与关键决定 · {task.decisions.length}</summary><ul>{task.decisions.map((item,i)=><li key={i}>{item}</li>)}</ul></details>}</details>
             <details className="task-additional-records"><summary>补充资料与独立文档</summary><p>简单任务无需单独文档。确有需要时，再补充实施方案、架构变更、详细设计或验证计划。</p><div className="row">{([['plan','实施方案'],['architecture','架构变更'],['design','详细设计'],['verification_plan','验证计划']] as [EngineeringSection,string][]).map(([id,label])=><button key={id} onClick={()=>selectSection(id)}>{label}</button>)}</div></details>

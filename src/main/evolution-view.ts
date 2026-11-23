@@ -1,6 +1,6 @@
 import { auditVerification, sameVerificationState } from '../delivery-audit';
 import { computeAstCallGraphDiff, type HudConstraintRef, type TaskHudSnapshot,
-  type TaskHudStructureDiff, type WalkthroughDiffNode } from '../development-hud';
+  type TaskHudImpact, type TaskHudStructureDiff, type WalkthroughDiffNode } from '../development-hud';
 import type { EngineeringTask } from '../engineering';
 import type {
   EvolutionArchEdge, EvolutionAssumption, EvolutionChangedFile, EvolutionSideEffect,
@@ -111,8 +111,9 @@ function sideEffects(structure: TaskHudStructureDiff | undefined, newEdges: Evol
   return effects;
 }
 
-type ProjectionData = Pick<TaskHudSnapshot, 'structure_diff' | 'impact'> &
-  Partial<Pick<TaskHudSnapshot, 'walkthrough_diffs'>>;
+type ProjectionData = Partial<Pick<TaskHudSnapshot, 'structure_diff' | 'walkthrough_diffs'>> & {
+  impact: Pick<TaskHudImpact, 'impacted_features' | 'related_constraints'>;
+};
 
 function project(context: ProjectionContext, data: ProjectionData, mode: EvolutionView['mode'],
     changed: ClassifiedFile[], files: string[], assumptions: EvolutionAssumption[], boundFeatureId?: string) {
@@ -140,6 +141,37 @@ function project(context: ProjectionContext, data: ProjectionData, mode: Evoluti
   };
 }
 
+function plannedApproach(task: EngineeringTask): EvolutionView['approach'] {
+  return (task.requirement_package?.behaviors ?? []).map(behavior => ({
+    id: behavior.id, title: behavior.behavior, detail: behavior.design, files: behavior.files, status: 'planned',
+  }));
+}
+
+export function buildTaskBlueprintEvolutionView(task: EngineeringTask, hud: TaskHudSnapshot, context: ProjectionContext): EvolutionView {
+  const baseId = task.baseline.snapshot_id;
+  const files = taskEvolutionScope(task);
+  const scope = new Set(files);
+  const frozen = [...context.explanations?.values() ?? []]
+    .filter(explanation => explanation.result.binding.source_snapshot_id === baseId);
+  const overview = context.overview?.binding.source_snapshot_id === baseId && !context.overview.fictional ? context.overview
+    : frozen.find(explanation => explanation.scenario_id === context.overview?.binding.scenario_id)?.result;
+  const impacted_features = hud.impact.impacted_features.flatMap(feature => {
+    const bound = task.reading?.scenario_id === feature.scenario_id ? context.explanations?.get(task.reading.result_id) : undefined;
+    const prior = bound ?? frozen.find(explanation => explanation.scenario_id === feature.scenario_id &&
+      explanation.result.evidence.some(ref => scope.has(ref.path)));
+    return prior ? [{...feature, previous_result_id: prior.result_id}] : [];
+  });
+  const assumptions = (task.requirement_package?.assumptions ?? []).map((text, index): EvolutionAssumption => ({
+    id: `assumption-${index}`, source: 'requirement_package', text,
+  }));
+  // Changes, reviews and current project notes can postdate this baseline.
+  return {
+    ...project({beforeIndex: context.beforeIndex, overview, explanations: context.explanations},
+      {impact: {impacted_features, related_constraints: []}}, 'task_blueprint', [], files, assumptions, task.reading?.feature_id),
+    base_label: '任务基线', target_label: '计划范围', base_snapshot_id: baseId, approach: plannedApproach(task),
+  };
+}
+
 export function buildTaskEvolutionView(task: EngineeringTask, hud: TaskHudSnapshot, context: ProjectionContext): EvolutionView {
   const mode = taskEvolutionMode(task);
   const attributionPending = task.changes_status === 'needs_review';
@@ -164,7 +196,7 @@ export function buildTaskEvolutionView(task: EngineeringTask, hud: TaskHudSnapsh
       files: [...new Set(behaviors.filter(b => b.step_ids?.includes(step.step_id)).flatMap(b => b.files)
         .map(file => file.replaceAll('\\', '/')))],
       status: step.status === 'completed' ? 'done' : step.status === 'blocked' ? 'blocked' : step.status === 'in_progress' ? 'partial' : 'planned',
-    })) : behaviors.map(b => ({id: b.id, title: b.behavior, detail: b.design, files: b.files, status: 'planned'})),
+    })) : plannedApproach(task),
     ...((attributionPending || (mode === 'task_actual' && (scope.size > 0 || task.approval))) && {drift: {
       planned_count: scope.size, actual_count: actual.size, matched_files: [...actual].filter(file => scope.has(file)),
       untouched_planned_files: [...scope].filter(file => !actual.has(file)), out_of_scope_files: [...actual].filter(file => !scope.has(file)),
