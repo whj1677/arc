@@ -26,9 +26,13 @@ export function effectiveTaskBoundaries(task:EngineeringTask) {
 
 /** Only pass the requirement and acceptance criteria the user reviewed. */
 export function approvedRequirement(task:EngineeringTask) {
+  const pkg=task.requirement_package!;
   return {
-    behaviors:task.requirement_package!.behaviors,
-    scope:task.approval!.scope,
+    ...(pkg.short_title?{short_title:pkg.short_title}:{}),
+    ...(pkg.rule_decisions?{rule_decisions:pkg.rule_decisions}:{}),
+    behaviors:pkg.behaviors,
+    ...(task.active_behavior_focus?{active_behavior_focus:task.active_behavior_focus}:{}),
+    scope:task.approval?.scope??task.scope,
     steps:(task.steps??[]).filter(step=>step.status!=='superseded').map(({step_id,title,change,criteria})=>({
       step_id,title,change,criteria:criteria.map(({criterion_id,text})=>({criterion_id,text})),
     })),

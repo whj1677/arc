@@ -67,6 +67,7 @@ app.whenReady().then(async()=>{
         case 'engineering_context':await service.engineering.connect(args.project_id);if(args.refresh)await service.refresh(args.project_id);value=await service.engineering.context(args,args.task_id===''&&!args.entry_id&&!args.result_id);break;
         case 'engineering_tasks':value=await service.engineering.currentTasks(args,args.cached===true);break;
         case 'engineering_task_boundaries':value=service.engineering.updateBoundaries(args);break;
+        case 'engineering_task_behavior_update':value=service.engineering.updateBehaviorContract(args);break;
         case 'project_environment':value=await service.engineering.projectEnvironment(args.project_id,args.refresh);break;
         case 'project_environment_save':value=await service.engineering.saveEnvironmentCommands(args.project_id,args.effective_commands);break;
         case 'engineering_task':value=await service.engineering.currentTask(args.task_id);break;
@@ -101,6 +102,14 @@ app.whenReady().then(async()=>{
           value=await service.engineering.rollbackTask(args.task_id);break;
         }
         case 'development_refine_goal':value=await service.refineDevelopmentGoal(args.project_id,args.goal,args.non_goals??[],selectedEngine(args.engine)==='dsh'?'dsh':'codex');break;
+        case 'development_run_checks':value=await service.development.runHostChecks(args.task_id,args.kinds);break;
+        case 'development_revise_behavior':{
+          const task=service.engineering.task(args.task_id);
+          const mode=selectedEngine(args.mode??task.execution_mode??(task.analysis_channel==='dsh'?'dsh':'codex_desktop'));
+          value=mode==='codex'||mode==='dsh'?await service.development.reviseBehavior(args,mode)
+            :await bridge.queueDevelopment(args,mode,'revise_behavior');
+          break;
+        }
         case 'development_start':{
           const task=args.task_id?service.engineering.task(args.task_id):undefined;
           const previousMode=task?.execution_mode??(task?.analysis_channel==='dsh'?'dsh':undefined);

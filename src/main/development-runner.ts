@@ -6,7 +6,7 @@ import http from 'node:http';
 import {promisify} from 'node:util';
 import {StringDecoder} from 'node:string_decoder';
 import Ajv from 'ajv';
-import type {EngineeringTask,EngineeringContext,DevelopmentStep} from '../engineering';
+import type {EngineeringTask,EngineeringContext,DevelopmentStep,VerificationEvidence} from '../engineering';
 import {engineeringSectionCategories,type SaveEngineeringEntry} from '../engineering';
 import {approvedRequirement,effectiveTaskBoundaries} from '../task-boundaries';
 import type {CodexPreferences,ProviderProfile} from '../shared';
@@ -23,10 +23,11 @@ const ajv=new Ajv({allErrors:true});
 export interface DevelopmentResult {
   task_id:string; status:'completed'|'failed'|'blocked'; summary:string; decisions:string[]; unresolved:string[];
   verification:{command:string;outcome:'passed'|'failed'|'blocked'|'not_run';note:string;step_id?:string;criterion_id?:string}[];
+  scenario_results?:{behavior_id:string;scenario_id:string;actual:string;status:'passed'|'failed'|'unverified';command?:string}[];
   steps?:DevelopmentStep[];
   context_entries?:Pick<SaveEngineeringEntry,'entry_id'|'expected_version'|'category'|'key'|'text'>[];
 }
-export interface DevelopmentCommand {id:string;command:string;cwd:string;cwd_source:'task_workspace';exit_code:number|null;output:string;started_at?:string;completed_at:string}
+export interface DevelopmentCommand {id:string;command:string;cwd:string;cwd_source:'task_workspace';exit_code:number|null;output:string;started_at?:string;completed_at:string;verification_kind?:VerificationEvidence['verification_kind']}
 const strings={type:'array',items:{type:'string'}};
 const stepResult={type:'object',additionalProperties:false,required:['step_id','title','change','status','progress','criteria','evidence_ids','unresolved'],properties:{
   step_id:{type:'string'},title:{type:'string'},change:{type:'string'},status:{type:'string',enum:['pending','in_progress','completed','blocked','failed','superseded']},
@@ -38,12 +39,19 @@ export const developmentResultSchema={type:'object',additionalProperties:false,r
   status:{type:'string',enum:['completed','failed','blocked']},summary:{type:'string'},
   decisions:{type:'array',items:{type:'string'}},unresolved:{type:'array',items:{type:'string'}},
   verification:{type:'array',items:{type:'object',additionalProperties:false,required:['command','outcome','note'],properties:{command:{type:'string'},outcome:{type:'string',enum:['passed','failed','blocked','not_run']},note:{type:'string'},step_id:{type:'string'},criterion_id:{type:'string'}}}},
+  scenario_results:{type:'array',items:{type:'object',additionalProperties:false,required:['behavior_id','scenario_id','actual','status'],properties:{
+    behavior_id:{type:'string',minLength:1},scenario_id:{type:'string',minLength:1},actual:{type:'string'},status:{type:'string',enum:['passed','failed','unverified']},command:{type:'string'},
+  }}},
   steps:{type:'array',maxItems:40,items:stepResult},
   context_entries:{type:'array',maxItems:12,items:{type:'object',additionalProperties:false,required:['entry_id','expected_version','category','key','text'],properties:{entry_id:{type:'string'},expected_version:{type:'integer',minimum:0},category:{type:'string',enum:engineeringSectionCategories},key:{type:'string',minLength:1,maxLength:300},text:{type:'string',minLength:1,maxLength:60000}}}},
 }};
 function parseDevelopmentReply(raw:string){
   const value=JSON.parse(raw);
   if(value?.steps===null)delete value.steps;
+  if(value?.scenario_results===null)delete value.scenario_results;
+  if(Array.isArray(value?.scenario_results))for(const row of value.scenario_results){
+    if(row?.command===null)delete row.command;
+  }
   if(Array.isArray(value?.verification))for(const item of value.verification){
     if(item?.step_id===null)delete item.step_id;
     if(item?.criterion_id===null)delete item.criterion_id;
@@ -199,6 +207,8 @@ export function developmentSandboxError(error:{message?:string;stdout?:string;st
 }
 export function developmentPrompt(task:EngineeringTask,context:EngineeringContext,writeScope:string[],repairFeedback?:string){
   const {environment_brief,knowledge_brief,...sourceContext}=context;
+  const focus=task.active_behavior_focus;
+  const behavior=focus&&task.requirement_package?.behaviors.find(item=>item.id===focus.behavior_id);
   const instructions=task.approval&&task.requirement_package
     ?`当前已批准需求：${JSON.stringify(approvedRequirement(task))}。保持原步骤与验收条件的 ID，实施后更新执行状态和证据。`
     :`用户目标：${task.goal}\n接续要求与进展：${JSON.stringify({requests:task.requests,reading:task.reading,summary:task.summary,unresolved:task.unresolved,steps:task.steps})}\n共享工程上下文（来源材料）：${JSON.stringify(sourceContext)}`;
@@ -208,12 +218,14 @@ export function developmentPrompt(task:EngineeringTask,context:EngineeringContex
 修改前使用 arc_save_development_steps 保存根据实际复杂度形成的方案：小改动可以只有一个步骤和多个验收条件。每步包含稳定 step_id、title、change、status、progress、criteria（criterion_id/text/evidence_ids）、evidence_ids、unresolved；在有意义的改动点更新同一步骤，不要只在结束时补写。验证记录用 step_id/criterion_id 关联对应步骤与验收条件，失败、未运行和受阻不得隐藏。
 修改前只读查证相关入口、调用者和测试，主动识别本任务影响的关键源码，如业务规则、权限、数据写入、公共接口和关键控制路径。用工程相对路径和函数名定位。修改前用一条公开进度说明准备修改的关键位置和原因；完成后在 decisions 保存实际采用的关键改法、源码位置和可核对的依据。无关文件不列入范围；发现必须扩大范围时在 unresolved 记录具体路径和原因。
 ${instructions}
+${focus?'本轮只修订指定行为，保持其他行为与步骤原状。目标与指令：'+JSON.stringify(focus)+'。当前规则与待验证场景：'+JSON.stringify({rule_summary:behavior?.rule_summary,scenarios:behavior?.scenarios,step_ids:behavior?.step_ids})+'。只更新这些原步骤的进展和证据，运行能验证这些具体输入与预期的测试。':''}
 ${knowledge_brief?'冻结源码走读线索（请对照当前文件核实）\n'+knowledge_brief:''}
 当前边界与红线：${JSON.stringify(effectiveTaskBoundaries(task))}
 本机环境与有效命令
 ${environment_brief??'尚无探测记录。'}
 验证铁律
 禁止空跑或跳过测试冒充通过。
+如有业务场景，使用 scenario_results 回填 behavior_id、scenario_id、actual 和 status；actual 写测试实际观察到的具体输出，command 精确复制对应的测试命令并在 verification 中关联批准的步骤和验收条件。未实际验证的场景使用 unverified。
 禁止将未定义行为、竞态或平台偶发状态包装成稳定单测。
 严守授权文件范围，勿为本次交付添加过程文档或临时验证脚本。
 仅在本任务确需保存方案、架构、设计或验证计划时，在最终 JSON 的 context_entries 回填相应文字；否则填写空数组（不要求生成条目）。category 为 plan/architecture/design/verification_plan；新条目 entry_id 为空字符串、expected_version=0；更新使用已读取条目的 entry_id/version，key 是标题。未提供的内容保持缺失，不强制小改动填写五栏。条目由 ARC 保存为 Agent 待复核说明，不计作已观察验证；不得覆盖未读取或截断的长文。

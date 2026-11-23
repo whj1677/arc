@@ -1,6 +1,7 @@
 import {effectiveTaskBoundaries,approvedRequirement} from '../task-boundaries';
 import {formatEnvironmentBrief} from './env-probe';
 import {resolveDevelopmentScope} from './development-scope';
+import {behaviorPlanningInstructions,requirementPlanSchema} from './dsh-development';
 import {externalAnalysisMinutes,ExternalDispatch} from './external-dispatch';
 import {functionAnalysisInstructions} from './function-analysis';
 import {architectureAnalysisInstructions,catalogReadingInstructions,isCatalogOverview} from './architecture-analysis';
@@ -21,7 +22,7 @@ import {ownedArcRegistration,writeConnection,adoptConnection} from './mcp-regist
 import {listFrozenFiles} from './prompt-context';
 import {readingAnswerSchema,readingInstructions,preloadReadingSource,validateReadingAnswer} from './reading-question';
 import {flushDevelopmentWrites,pendingDevelopmentWrites,rememberDevelopmentWorkspace} from './development-outbox';
-import {engineeringCategories,type CompletionBinding,type EngineeringTask} from '../engineering';
+import {engineeringCategories,type CodeState,type CompletionBinding,type EngineeringTask} from '../engineering';
 const exec=promisify(execFile);
 const property={type:'string'};
 const strings={type:'array',items:property};
@@ -30,8 +31,7 @@ const featureRefreshRequest = (run: Run) => ({
 });
 const stepSchema={type:'object',additionalProperties:false,required:['step_id','title','change','status','progress','criteria','evidence_ids','unresolved'],properties:{step_id:property,title:property,change:property,status:{type:'string',enum:['pending','in_progress','completed','blocked','failed','superseded']},progress:property,criteria:{type:'array',minItems:1,maxItems:20,items:{type:'object',additionalProperties:false,required:['criterion_id','text','evidence_ids'],properties:{criterion_id:property,text:property,evidence_ids:strings}}},evidence_ids:strings,unresolved:strings}};
 const tool=(name:string,description:string,properties:any={},required:string[]=[],read=true)=>({name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},annotations:{readOnlyHint:read,destructiveHint:false,idempotentHint:read,openWorldHint:false}});
-const packageList={type:'array',items:{type:'string',minLength:1,maxLength:6000},maxItems:40};
-const requirementPackageSchema={type:'object',additionalProperties:false,required:['behaviors'],properties:{assumptions:packageList,open_questions:packageList,non_goals:packageList,revoked:packageList,behaviors:{type:'array',minItems:1,maxItems:100,items:{type:'object',additionalProperties:false,required:['id','behavior','design','files','step_ids','verification'],properties:{id:property,behavior:property,design:property,files:strings,step_ids:strings,verification:property}}}}};
+const requirementPackageSchema=requirementPlanSchema.properties.requirement_package;
 const requirementAnalysisInstructions='本次仅做只读需求分析，不修改工程或运行构建测试。按 next_offset 读取有关工程与任务上下文，truncated 条目使用 entry_id 取得全文，再核对当前绑定工作区的有关源码。明确原始需求及补充，核对工程依据，在原任务保存 summary、proposed_scope、steps（含验收 criteria）和 requirement_package.behaviors。每项须含唯一 id、可观察 behavior、实现 design、对应的 files、step_ids 和可实际执行的 verification。步骤和建议文件均须对应行为。assumptions 记录推断，open_questions 记录阻塞实施的疑问，non_goals 记录本轮不改范围，revoked 记录用户撤回或禁止再实现的行为。decisions 记录取舍，unresolved 记录未确定项。完成分析后回填 status=completed 并停止，等待用户在 ARC 审阅固定版本、确认本次写入范围。';
 const developmentFields={requirement_package:requirementPackageSchema,proposed_scope:strings,task_id:property,expected_version:{type:'integer',minimum:0},submission_key:property,summary:property,decisions:{type:'array',items:property},unresolved:{type:'array',items:property},verification:{type:'array',items:{type:'object'}},steps:{type:'array',maxItems:40,items:stepSchema},attempt_id:property};
 export const bridgeTools=[
@@ -147,26 +147,36 @@ export class ArcMcpBridge {
       workspace_matches:!!binding&&this.matchesExecutorWorkspace(projectId,binding.workspace_path),
       queue:this.dispatch.items(projectId)};
   }
-  async queueDevelopment(args:any,mode:'codex_desktop'|'mcp'='codex_desktop'){
-    const workspace=await this.service.engineering.connect(args.project_id);
+  async queueDevelopment(args:any,mode:'codex_desktop'|'mcp'='codex_desktop',operation:'start'|'revise_behavior'='start'){
+    const engineering=this.service.engineering;
+    const revision=operation==='revise_behavior'?engineering.task(args.task_id):undefined;
+    const workspace=revision?await engineering.resolve({project_id:args.project_id,workspace_path:revision.workspace_path})
+      :await engineering.connect(args.project_id);
+    if(revision&&(workspace.workspace_id!==revision.workspace_id||args.project_id!==revision.project_id))throw Error('任务属于另一个工作区');
     if(mode==='codex_desktop')this.reconcileLegacyDispatches(workspace.project_id);
-    const phase=args.phase??'analysis';
+    const phase=revision?'execution':args.phase??'analysis';
     if(phase!=='analysis'&&phase!=='execution')throw Error('开发阶段无效');
     if(phase==='execution'&&!args.task_id)throw Error('请先提交并审阅需求包');
-    const files=phase==='analysis'?[]:await resolveDevelopmentScope(workspace.root_path,args.scope);
+    const requestedScope=revision?(revision.approval?.scope??revision.proposed_scope):args.scope;
+    const files=phase==='analysis'?[]:await resolveDevelopmentScope(workspace.root_path,requestedScope);
     const scope=files.map(file=>path.relative(workspace.root_path,file).split(path.sep).join('/'));
-    const saved=await this.service.engineering.createTask({...args,scope},{
-      phase,expected_version:args.expected_version,channel:'codex',executionMode:mode,
-      checkAvailable:()=>{
-        this.service.engineering.checkWorkspaceAvailable(workspace);
-        if(this.dispatch.items(args.project_id).some(item=>['queued','sending','awaiting_claim','running','unknown'].includes(item.state)))throw Error('已有派发未结束，请先核对原任务状态');
-      },
-      onSaved:task=>{
-        if(mode==='mcp')return;
-        const target={task_id:task.task_id,submission_key:args.submission_key,request:args.goal,scope,phase,task_version:task.version,reviewed_version:task.approval?.reviewed_version};
-        this.dispatch.enqueue(task.project_id,target);
-      },
-    });
+    const checkAvailable=()=>{
+      engineering.checkWorkspaceAvailable(workspace);
+      if(this.dispatch.items(args.project_id).some(item=>['queued','sending','awaiting_claim','running','unknown'].includes(item.state)))throw Error('已有派发未结束，请先核对原任务状态');
+    };
+    const onSaved=(task:EngineeringTask)=>{
+      if(mode==='mcp')return;
+      this.dispatch.enqueue(task.project_id,{task_id:task.task_id,submission_key:args.submission_key,request:revision?args.instruction:args.goal,
+        scope,phase,task_version:task.version,reviewed_version:task.approval?.reviewed_version});
+    };
+    let baseline:CodeState|undefined;
+    if(revision&&!revision.requests?.some(request=>request.submission_key===args.submission_key)){
+      checkAvailable();
+      baseline=await engineering.captureState(workspace.project_id,workspace.root_path);
+      await engineering.retainRollbackAssets(workspace,baseline,scope);
+    }
+    const saved=revision?await engineering.prepareBehaviorRevision(args,mode,task=>{checkAvailable();onSaved(task);},baseline)
+      :await engineering.createTask({...args,scope},{phase,expected_version:args.expected_version,channel:'codex',executionMode:mode,checkAvailable,onSaved});
     await this.enable(args.project_id,false);
     if(mode==='codex_desktop')void this.dispatch.pump();
     return saved;
@@ -186,7 +196,7 @@ export class ArcMcpBridge {
     const boundaries=effectiveTaskBoundaries(task);
     if(task.workflow==='analysis'){
       const context=await engineering.context({project_id:task.project_id,task_id:task.task_id,view:'execution'});
-      return {phase:'analysis',request,allowed_files:[],task,context,boundaries,environment_brief,instructions:requirementAnalysisInstructions};
+      return {phase:'analysis',request,allowed_files:[],task,context,boundaries,environment_brief,instructions:requirementAnalysisInstructions+' '+behaviorPlanningInstructions};
     }
     return {phase:'execution',allowed_files:task.scope,environment_brief,
       task:{task_id:task.task_id,project_id:task.project_id,workspace_path:task.workspace_path,version:task.version,attempt_ids:task.attempt_ids,workflow:task.workflow,

@@ -101,6 +101,7 @@ export interface DevelopmentStep {
   verification_status?:'not_run'|'passed'|'failed'|'partial'|'stale';
 }
 export interface VerificationEvidence {
+  verification_kind?: 'typecheck' | 'test' | 'build';
   metrics?:{total?:number;passed?:number;failed?:number;skipped?:number;suspicious_empty?:boolean};
   evidence_id:string; command:string; cwd:string; outcome:'passed'|'failed'|'blocked'|'not_run';
   exit_code:number|null; origin:'observed'|'self_reported'; code_state:CodeState;
@@ -117,10 +118,40 @@ export interface WalkthroughUpdate {
   previous_result_id:string; source_snapshot_id?:string; run_id?:string; result_id?:string;
   update_id?:string; error?:string; updated_at:string;
 }
+export interface BehaviorScenario {
+  id: string;
+  input: string;
+  expected: string;
+  actual?: string;
+  criterion_id?: string;
+  evidence_id?: string;
+  status?: 'unverified' | 'passed' | 'failed' | 'stale';
+}
+export interface RuleDecisionOption {
+  id: string;
+  label: string;
+  example_outcome?: string;
+  impact?: string;
+}
+export interface RuleDecision {
+  id: string;
+  behavior_id?: string;
+  title: string;
+  question: string;
+  example_label?: string;
+  options: RuleDecisionOption[];
+  chosen_option_id?: string;
+  custom_rule?: string;
+}
 export interface RequirementPackage {
+  short_title?: string;
+  rule_decisions?: RuleDecision[];
   assumptions?:string[]; open_questions?:string[]; non_goals?:string[]; revoked?:string[];
   risks?:string[];
-  behaviors:{id:string;behavior:string;design:string;files:string[];step_ids:string[];verification:string}[];
+  behaviors:{
+    id:string;behavior:string;design:string;files:string[];step_ids:string[];verification:string;
+    short_title?:string;before_behavior?:string;rule_summary?:string;scenarios?:BehaviorScenario[];
+  }[];
 }
 export interface EngineeringTask {
   task_id:string; project_id:string; workspace_id:string; workspace_path:string;
@@ -128,6 +159,12 @@ export interface EngineeringTask {
   version:number; submission_key:string; title?:string; goal:string; scope:string[];
   workflow?:'analysis'|'ready'|'execution'; proposed_scope?:string[];
   requirement_package?:RequirementPackage;
+  active_behavior_focus?: {
+    behavior_id: string;
+    action: 'adjust_rule' | 'fix_implementation' | 'add_verification';
+    instruction: string;
+    updated_at: string;
+  };
   boundaries?:{non_goals:string[];revoked:string[]};
   approval?:{reviewed_version:number;scope:string[];notes?:string[]};
   analysis_channel?:'codex'|'kimi'|'dsh';
@@ -181,6 +218,22 @@ export interface UpdateEngineeringTask {
   proposed_scope?:string[]; requirement_package?:RequirementPackage;
   decisions?:string[]; unresolved?:string[]; verification?:VerificationEvidence[]; steps?:DevelopmentStep[];
   status?:EngineeringTask['status']; attempt_id?:string;
+}
+export interface UpdateBehaviorContractInput {
+  task_id: string;
+  expected_version: number;
+  submission_key: string;
+  behavior_id: string;
+  rule_summary?: string;
+  decision_id?: string;
+  chosen_option_id?: string;
+  custom_rule?: string;
+  scenarios?: BehaviorScenario[];
+}
+export interface PrepareBehaviorRevisionInput extends UpdateBehaviorContractInput {
+  project_id?: string;
+  action: NonNullable<EngineeringTask['active_behavior_focus']>['action'];
+  instruction: string;
 }
 export interface FinishEngineeringTask extends UpdateEngineeringTask {
   status:'completed'|'failed'|'blocked'|'cancelled';

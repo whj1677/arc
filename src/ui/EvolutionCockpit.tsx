@@ -701,8 +701,10 @@ export function EvolutionCockpit({
     if (!parts.length && activeEvo.side_effects.length) {
       parts.push(`${activeEvo.side_effects.length} 条工程提醒`);
     }
-    return parts.length ? parts.join(' · ') : '无明显额外波及';
-  }, [activeEvo.side_effects]);
+    if (parts.length) return parts.join(' · ');
+    const hasCoverage = activeEvo.architecture.mode === 'overview' && activeEvo.features.some(f => f.steps.length > 0);
+    return hasCoverage ? '已分析范围内无明显额外波及' : '波及范围尚未完整确认（缺少工程全貌或功能调用走读）';
+  }, [activeEvo.side_effects, activeEvo.architecture.mode, activeEvo.features]);
 
   const SummaryContainer = foldSummary ? 'details' : 'div';
 
@@ -980,10 +982,10 @@ export function EvolutionCockpit({
           <div className={`evo-panels${effectiveLayout !== 'dual' ? ' is-single' : ''}`}>
             {/* LEFT HERO: Directed Architecture Diff */}
             {(effectiveLayout === 'dual' || effectiveLayout === 'arch') && (
-              <section className="evo-panel" aria-label="系统架构变动">
+              <section className="evo-panel" aria-label={activeEvo.architecture.mode === 'overview' ? '系统架构变动' : '修改位置'}>
                 <div className="evo-panel-head">
                   <div>
-                    <h3>② 系统架构变动</h3>
+                    <h3>{activeEvo.architecture.mode === 'overview' ? '② 系统架构变动' : '② 修改位置'}</h3>
                     <p>
                       {activeEvo.architecture.mode === 'overview'
                         ? '只展示直接改动与新增调用连线的模块，未受影响的模块已自动静默'
@@ -1206,10 +1208,10 @@ export function EvolutionCockpit({
 
             {/* RIGHT HERO: Feature Flow Diff with Auto-Folded Unchanged Runs & Inserted New Call Steps */}
             {(effectiveLayout === 'dual' || effectiveLayout === 'flow') && (
-              <section className="evo-panel" aria-label="功能流程变动">
+              <section className="evo-panel" aria-label={activeFeature?.mode === 'walkthrough_diff' || activeFeature?.mode === 'walkthrough_stale' ? '功能流程变动' : '相关调用与代码差异'}>
                 <div className="evo-panel-head">
                   <div>
-                    <h3>③ 功能流程变动</h3>
+                    <h3>{activeFeature?.mode === 'walkthrough_diff' || activeFeature?.mode === 'walkthrough_stale' ? '③ 功能流程变动' : '③ 相关调用与代码差异'}</h3>
                     <p>
                       {activeFeature?.mode === 'walkthrough_diff'
                         ? '已对齐改前与改后功能流程 · 点击步骤直接定位源码'

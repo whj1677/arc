@@ -15,6 +15,9 @@ import {ProjectEnvironmentService,formatEnvironmentBrief} from './env-probe';
 import {buildDevelopmentKnowledgeBrief} from './development-knowledge';
 import {commandBody,evidenceFailed,evidenceSupportsPass,sameVerificationState} from '../delivery-audit';
 import type {Dispatch} from './external-dispatch';
+import type {BehaviorScenario,PrepareBehaviorRevisionInput,UpdateBehaviorContractInput} from '../engineering';
+import type {DevelopmentResult} from './development-runner';
+export type {PrepareBehaviorRevisionInput,UpdateBehaviorContractInput} from '../engineering';
 import {effectiveTaskBoundaries,taskBoundaryKey,uniqueTaskBoundaries} from '../task-boundaries';
 export {sameVerificationState} from '../delivery-audit';
 
@@ -80,11 +83,61 @@ interface RequirementSubmission {
   phase:'analysis'|'execution'; expected_version?:number; channel:'codex'|'dsh'; executionMode?:ExecutionMode;
   checkAvailable:()=>void; onSaved:(task:EngineeringTask)=>void;
 }
+
+function validateScenarios(scenarios:BehaviorScenario[]) {
+  if(!Array.isArray(scenarios)||scenarios.length>100)throw Error('每项行为最多可保存 100 个场景');
+  const ids=new Set<string>();
+  for(const row of scenarios){
+    const id=requireText(row.id,160);
+    if(ids.has(id))throw Error('同一行为的场景 ID 重复');
+    ids.add(id);
+    requireText(row.input,6000);requireText(row.expected,6000);
+    if(row.actual!==undefined)requireText(row.actual,6000);
+    if(row.criterion_id!==undefined)requireText(row.criterion_id,160);
+    if(row.evidence_id!==undefined)requireText(row.evidence_id,300);
+    if(row.status!==undefined&&!['unverified','passed','failed','stale'].includes(row.status))throw Error('场景验证状态无效');
+  }
+}
+
+// Host checks carry their configured kind. For executor-observed commands without
+// that metadata, recognize test runners, never arbitrary successful shell commands.
+function scenarioTest(e:VerificationEvidence) {
+  const cmd=commandBody(e.command);
+  if(/^(?:(?:npm|pnpm|yarn|bun)(?:\.cmd)?\s+(?:run\s+)?(?:build|typecheck|lint)\b|(?:npx\s+)?tsc\b|cmake\s+(?:--build|-S\s)|(?:go|cargo|dotnet)\s+(?:build|check)\b)/i.test(cmd))return false;
+  if(e.verification_kind)return e.verification_kind==='test';
+  if(/^(?:node|tsx|python3?)\s+["']?(?:\S*[\\/])?(?:tests?[\\/]|test_|[^\s/\\]*\.(?:test|spec)\.)/i.test(cmd))return true;
+  return /^(?:(?:npm|pnpm|yarn|bun)(?:\.cmd)?\s+(?:run\s+)?test\b|(?:node|tsx)\s+--test\b|(?:npx\s+)?(?:vitest|jest|mocha|tsx\s+--test)\b|(?:python3?\s+-m\s+)?(?:pytest|unittest)\b|(?:go|cargo|dotnet)\s+test\b|ctest\b|(?:\.\/)?(?:gradlew?|mvnw?)(?:\.bat|\.cmd)?\s+test\b)/i.test(cmd);
+}
+
+export function applyScenarioResults(task:EngineeringTask,scenarioResults:DevelopmentResult['scenario_results'],receipts:VerificationEvidence[],endState:CodeState) {
+  const tests=receipts.filter(e=>e.origin==='observed'&&sameVerificationState(e.code_state,endState)&&scenarioTest(e))
+    .sort((a,b)=>a.created_at.localeCompare(b.created_at));
+  for(const result of scenarioResults??[]){
+    if(task.active_behavior_focus&&task.active_behavior_focus.behavior_id!==result.behavior_id)continue;
+    const behavior=task.requirement_package?.behaviors.find(b=>b.id===result.behavior_id);
+    const row=behavior?.scenarios?.find(s=>s.id===result.scenario_id);
+    if(!behavior||!row)continue;
+    row.actual=result.actual;
+    delete row.evidence_id;
+    if(result.status!=='passed'){row.status=result.status;continue;}
+    const command=result.command&&commandBody(result.command);
+    const matching=command&&tests.findLast(e=>{
+      if(commandBody(e.command)!==command||e.step_id&&!behavior.step_ids.includes(e.step_id))return false;
+      if(!row.criterion_id)return true;
+      return e.criterion_id?e.criterion_id===row.criterion_id:!!e.step_id;
+    });
+    if(matching&&evidenceSupportsPass(matching)){
+      row.status='passed';row.evidence_id=matching.evidence_id;
+    }else row.status='unverified';
+  }
+}
+
 export class EngineeringService {
   private readonly capturing=new Map<string,Promise<CodeState>>();
   private readonly scanning=new Map<string,Promise<void>>();
   private readonly initializing=new Map<string,Promise<void>>();
   private readonly rollingBack=new Set<string>();
+  private readonly hostChecking=new Set<string>();
   onTaskFinished:(task:EngineeringTask)=>void=()=>{};
   readonly environment:ProjectEnvironmentService;
   constructor(readonly store:Store,readonly changed:(event?:'engineering_changed')=>void=()=>{}) {
@@ -447,7 +500,10 @@ export class EngineeringService {
   }
   history(kind:'task'|'context',objectId:string){return this.store.versions(kind==='task'?taskKind:contextKind,objectId);}
   private receiptKey(operation:string,objectId:string,key:string){return sha(`${operation}\0${objectId}\0${requireText(key,300)}`);}
-  private saveTask(task:EngineeringTask){task.version++;task.updated_at=now();task.saved='saved';this.store.putVersion(taskKind,task.task_id,task.version,task);}
+  private saveTask(task:EngineeringTask){
+    if(task.status!=='pending'&&task.status!=='running')delete task.active_behavior_focus;
+    task.version++;task.updated_at=now();task.saved='saved';this.store.putVersion(taskKind,task.task_id,task.version,task);
+  }
   updateBoundaries(input:{task_id:string;non_goals:string[];revoked:string[];expected_version?:number}):EngineeringTask {
     const boundaries=normalizeTaskBoundaries(input);
     const saved=this.store.transaction(()=>{
@@ -472,6 +528,7 @@ export class EngineeringService {
   private mergeSteps(task:EngineeringTask,input:DevelopmentStep[]) {
     if(!Array.isArray(input)||input.length>40)throw Error('开发步骤数量无效');
     const steps=[...(task.steps??[])],seen=new Set<string>();
+    const focus=task.active_behavior_focus&&task.requirement_package?.behaviors.find(b=>b.id===task.active_behavior_focus!.behavior_id);
     for(const provided of input){
       const {verification_status:_computed,...value}=provided,stepId=requireText(value.step_id,160);if(seen.has(stepId))throw Error('同次更新的步骤 ID 重复');seen.add(stepId);
       if(!['pending','in_progress','completed','blocked','failed','superseded'].includes(value.status))throw Error('步骤状态无效');
@@ -483,19 +540,40 @@ export class EngineeringService {
       if(task.approval&&(!previous||previous.title!==step.title||previous.change!==step.change||step.status==='superseded'||JSON.stringify(previous.criteria.map(c=>[c.criterion_id,c.text]))!==JSON.stringify(criteria.map(c=>[c.criterion_id,c.text])))){
         throw Error('执行进展不能替换已批准的步骤或验收条件，需要在原任务修订');
       }
+      if(focus&&!focus.step_ids.includes(stepId))continue;
+      if(previous?.verification_status==='stale')step.verification_status='stale';
+      if(focus&&previous){
+        step.evidence_ids=[...new Set([...previous.evidence_ids,...step.evidence_ids])];
+        for(const criterion of step.criteria){
+          const earlier=previous.criteria.find(c=>c.criterion_id===criterion.criterion_id)!;
+          criterion.evidence_ids=[...new Set([...earlier.evidence_ids,...criterion.evidence_ids])];
+        }
+      }
       if(previous)steps[steps.indexOf(previous)]=step;else steps.push(step);
     }
     task.steps=steps;
   }
-  private checkStepEvidence(task:EngineeringTask) {
-    const known=new Set(task.verification.map(item=>item.evidence_id));
+  private checkStepEvidence(task:EngineeringTask,fresh:VerificationEvidence[],state:CodeState) {
     for(const step of task.steps??[]){
       const links=[...step.evidence_ids,...step.criteria.flatMap(criterion=>criterion.evidence_ids)];
       for(const evidenceId of links){const evidence=task.verification.find(item=>item.evidence_id===evidenceId);if(!evidence)throw Error('步骤引用了不存在的验证证据');if(evidence.step_id&&evidence.step_id!==step.step_id)throw Error('验证证据与步骤归属不一致');}
       for(const criterion of step.criteria)for(const evidenceId of criterion.evidence_ids){const evidence=task.verification.find(item=>item.evidence_id===evidenceId)!;if(evidence.criterion_id&&evidence.criterion_id!==criterion.criterion_id)throw Error('验证证据与验收条件归属不一致');}
+      if(step.verification_status==='stale'&&fresh.some(e=>sameVerificationState(e.code_state,state)&&
+        (e.step_id===step.step_id||links.includes(e.evidence_id))&&e.origin==='observed'&&
+        e.code_state_verified!==false&&(evidenceSupportsPass(e)||evidenceFailed(e))))delete step.verification_status;
     }
   }
+  private appendVerification(task:EngineeringTask,receipts:VerificationEvidence[],hostReceipt=false) {
+    const fresh:VerificationEvidence[]=[];
+    for(const receipt of receipts){
+      this.checkEvidence(task,receipt,hostReceipt);
+      if(task.verification.some(e=>e.evidence_id===receipt.evidence_id))continue;
+      task.verification.push(receipt);fresh.push(receipt);
+    }
+    return fresh;
+  }
   private currentStepStatus(task:EngineeringTask,step:DevelopmentStep,state?:CodeState|null):DevelopmentStep['verification_status'] {
+    if(step.verification_status==='stale')return 'stale';
     const ids=new Set([...step.evidence_ids,...step.criteria.flatMap(criterion=>criterion.evidence_ids)]),linked=task.verification.filter(item=>item.step_id===step.step_id||ids.has(item.evidence_id));
     if(!linked.length)return 'not_run';if(state===null)return 'stale';if(!state)return 'partial';const current=linked.filter(item=>sameVerificationState(item.code_state,state));if(!current.length)return 'stale';
     const latest=new Map<string,VerificationEvidence>();for(const item of current)latest.set(commandBody(item.command),item);const checks=[...latest.values()];
@@ -523,6 +601,7 @@ export class EngineeringService {
   }
   private validatePackage(task:EngineeringTask) {
     const behaviors=task.requirement_package?.behaviors;
+    if(task.requirement_package?.short_title!==undefined)requireText(task.requirement_package.short_title,24);
     for(const key of ['assumptions','open_questions','non_goals','revoked'] as const){
       const list=task.requirement_package?.[key];if(list!==undefined)boundaryList(list);
     }
@@ -533,14 +612,45 @@ export class EngineeringService {
       const id=requireText(item.id,160);
       if(ids.has(id))throw Error('需求包行为 ID 重复');ids.add(id);
       for(const field of [item.behavior,item.design,item.verification])requireText(field,6000);
+      if(item.short_title!==undefined)requireText(item.short_title,14);
+      for(const field of [item.before_behavior,item.rule_summary])if(field!==undefined)requireText(field,6000);
+      if(item.scenarios!==undefined)validateScenarios(item.scenarios);
       const files=this.idList(item.files),links=this.idList(item.step_ids);
       if(!files.length||!links.length)throw Error('每项行为需要关联建议文件和含验收条件的实施步骤');
       for(const file of files){if(!scope.has(relativePath(file)))throw Error('行为引用的文件不在建议范围：'+file);coveredFiles.add(file);}
       for(const step of links){if(!steps.has(step))throw Error('行为引用的实施步骤无效：'+step);coveredSteps.add(step);}
     }
     if(coveredFiles.size!==scope.size||coveredSteps.size!==steps.size)throw Error('建议范围中的文件及实施步骤均需对应需求行为');
+    const decisions=task.requirement_package?.rule_decisions;
+    if(decisions!==undefined){
+      if(!Array.isArray(decisions)||decisions.length>100)throw Error('规则决策列表无效');
+      const decisionIds=new Set<string>();
+      for(const decision of decisions){
+        const id=requireText(decision.id,160);
+        if(decisionIds.has(id))throw Error('规则决策 ID 重复');
+        decisionIds.add(id);
+        if(decision.behavior_id!==undefined&&!ids.has(decision.behavior_id))throw Error('规则决策关联的行为不存在');
+        requireText(decision.title,300);requireText(decision.question,6000);
+        for(const field of [decision.example_label,decision.custom_rule])if(field!==undefined)requireText(field,6000);
+        if(!Array.isArray(decision.options)||decision.options.length<2||decision.options.length>4)throw Error('每项规则决策需要 2–4 个选项');
+        const optionIds=new Set<string>();
+        for(const option of decision.options){
+          const optionId=requireText(option.id,160);
+          if(optionIds.has(optionId))throw Error('同一决策的选项 ID 重复');
+          optionIds.add(optionId);
+          requireText(option.label,300);
+          for(const field of [option.example_outcome,option.impact])if(field!==undefined)requireText(field,6000);
+        }
+        if(decision.chosen_option_id!==undefined&&!optionIds.has(decision.chosen_option_id))throw Error('所选规则选项不存在');
+      }
+    }
   }
   private setRequirementPackage(task:EngineeringTask,pkg:NonNullable<EngineeringTask['requirement_package']>){
+    for(const behavior of pkg.behaviors??[])for(const row of behavior.scenarios??[]){
+      if(row.actual!==undefined||row.evidence_id!==undefined||row.status!==undefined&&row.status!=='unverified'){
+        throw Error('需求规划不能填写场景的执行结果或验证证据');
+      }
+    }
     // Keep edits made while planning and include newly proposed redlines in the review.
     if(task.boundaries){
       for(const key of ['non_goals','revoked'] as const){
@@ -550,6 +660,111 @@ export class EngineeringService {
       }
     }
     task.requirement_package=pkg;
+    if(pkg.short_title)task.title=requireText(pkg.short_title,24);
+  }
+
+  private editBehavior(task:EngineeringTask,input:UpdateBehaviorContractInput) {
+    if(task.version!==input.expected_version)throw Error('VERSION_CONFLICT：任务已有新版本，请重新读取');
+    if(task.status==='running')throw Error('开发运行中，请等待结束后再修订行为');
+    const pkg=task.requirement_package;
+    const behavior=pkg?.behaviors.find(item=>item.id===input.behavior_id);
+    if(!pkg||!behavior)throw Error('任务需求包中没有指定的行为');
+
+    const changes:string[]=[];
+    if(input.rule_summary!==undefined){
+      const summary=requireText(input.rule_summary,6000);
+      if(behavior.rule_summary!==summary){behavior.rule_summary=summary;changes.push(summary);}
+    }
+    if(input.decision_id!==undefined){
+      const decision=pkg.rule_decisions?.find(d=>d.id===input.decision_id&&(!d.behavior_id||d.behavior_id===behavior.id));
+      if(!decision)throw Error('规则决策不属于目标行为');
+      const chosen=input.chosen_option_id===undefined?decision.chosen_option_id:input.chosen_option_id===''?undefined:requireText(input.chosen_option_id,160);
+      const custom=input.custom_rule===undefined?decision.custom_rule:input.custom_rule===''?undefined:requireText(input.custom_rule,6000);
+      if(chosen!==decision.chosen_option_id||custom!==decision.custom_rule){
+        decision.chosen_option_id=chosen;decision.custom_rule=custom;
+        const label=decision.options.find(option=>option.id===chosen)?.label;
+        changes.push(decision.title+'：'+([label,custom].filter(Boolean).join('，')||'清除选择'));
+      }
+    }else if(input.chosen_option_id!==undefined||input.custom_rule!==undefined)throw Error('请指定要修改的规则决策');
+
+    const executed=!!task.end_state||task.changes.length>0;
+    let stale=false;
+    if(input.scenarios!==undefined){
+      validateScenarios(input.scenarios);
+      const rows=behavior.scenarios??=[];
+      for(const patch of input.scenarios){
+        const row=rows.find(s=>s.id===patch.id);
+        if(!row){
+          rows.push({id:patch.id,input:patch.input,expected:patch.expected,...(patch.criterion_id&&{criterion_id:patch.criterion_id}),status:'unverified'});
+          if(executed&&task.verification_status==='passed')stale=true;
+          continue;
+        }
+        if(executed&&(row.input!==patch.input||row.expected!==patch.expected)){row.status='stale';stale=true;}
+        row.input=patch.input;row.expected=patch.expected;
+        if(patch.criterion_id!==undefined)row.criterion_id=patch.criterion_id;
+      }
+    }
+    if(changes.length){
+      const line=behavior.short_title??behavior.behavior;
+      const decisionLine=line.slice(0,100)+'：'+changes.map(change=>change.slice(0,300)).join('；');
+      if(!task.decisions.includes(decisionLine))task.decisions.push(decisionLine);
+      if(executed){
+        stale=true;
+        for(const row of behavior.scenarios??[])if(row.status==='passed')row.status='stale';
+        for(const step of task.steps??[])if(behavior.step_ids.includes(step.step_id))step.verification_status='stale';
+      }
+    }
+    if(stale)task.verification_status='stale';
+    this.validatePackage(task);
+    return behavior;
+  }
+
+  updateBehaviorContract(input:UpdateBehaviorContractInput):EngineeringTask {
+    return this.store.transaction(()=>{
+      const key=this.receiptKey('behavior-update',input.task_id,input.submission_key);
+      const prior=this.store.maybe<EngineeringTask>('engineering_receipt',key);
+      if(prior)return prior;
+      const task=this.task(input.task_id);
+      this.editBehavior(task,input);
+      this.saveTask(task);
+      this.store.put('engineering_receipt',key,task);
+      this.changed('engineering_changed');
+      return task;
+    });
+  }
+
+  async prepareBehaviorRevision(input:PrepareBehaviorRevisionInput,mode?:ExecutionMode,onSaved?:(task:EngineeringTask)=>void,baseline?:CodeState):Promise<EngineeringTask> {
+    const key=this.receiptKey('behavior-revise',input.task_id,input.submission_key);
+    const prior=this.task(input.task_id);
+    if(input.project_id!==undefined&&input.project_id!==prior.project_id)throw Error('任务不属于当前工程');
+    if(this.store.maybe('engineering_receipt',key))return prior;
+    const state=prior.rolled_back_at?(baseline??await this.captureState(prior.project_id,prior.workspace_path)):undefined;
+    return this.store.transaction(()=>{
+      const task=this.task(input.task_id);
+      if(this.store.maybe('engineering_receipt',key))return task;
+      if(!['adjust_rule','fix_implementation','add_verification'].includes(input.action))throw Error('行为修订操作无效');
+      const instruction=requireText(input.instruction),behavior=this.editBehavior(task,input);
+      const scope=task.approval?.scope??task.proposed_scope??[];
+      if(!scope.length||scope.some(file=>!task.proposed_scope?.includes(file)))throw Error('执行范围必须在需求包的建议范围内');
+      task.approval??={reviewed_version:task.version,scope:[...scope]};
+      task.scope=[...scope];
+      if(state){
+        task.diff_baseline=state;task.changes=[];delete task.end_state;delete task.rolled_back_at;delete task.diff_review;
+      }
+      const updated_at=now();
+      for(const step of task.steps??[])if(behavior.step_ids.includes(step.step_id)){
+        step.status='pending';step.unresolved=[];step.updated_at=updated_at;
+      }
+      (task.requests??=[]).push({text:instruction,submission_key:input.submission_key,created_at:updated_at});
+      task.active_behavior_focus={behavior_id:behavior.id,action:input.action,instruction,updated_at};
+      task.workflow='execution';task.status='pending';
+      if(mode)task.execution_mode=mode;
+      this.saveTask(task);
+      this.store.put('engineering_receipt',key,task);
+      onSaved?.(task);
+      this.changed('engineering_changed');
+      return task;
+    });
   }
   private prepareRequirement(task:EngineeringTask,input:CreateEngineeringTask,submission:RequirementSubmission) {
     submission.checkAvailable();
@@ -570,7 +785,7 @@ export class EngineeringService {
     }else{
       task.analysis_channel=submission.channel;
       if(task.requirement_package)task.boundaries=effectiveTaskBoundaries(task);
-      delete task.approval;delete task.requirement_package;
+      delete task.approval;delete task.requirement_package;delete task.active_behavior_focus;
       delete task.fast_mode;delete task.diff_review;
       task.scope=[];task.proposed_scope=[];task.steps=[];task.summary='';task.decisions=[];task.unresolved=[];
       task.verification=[];task.verification_status='not_run';
@@ -580,7 +795,7 @@ export class EngineeringService {
   }
   // Reading snapshots exclude binary and oversized files. Keep the exact bytes
   // of individually scoped assets locally so an edit to one can be undone.
-  private async retainRollbackAssets(workspace:WorkspaceBinding,state:CodeState,scope:string[] = []) {
+  async retainRollbackAssets(workspace:WorkspaceBinding,state:CodeState,scope:string[] = []) {
     const allowed=new Set(scope);
     const assets=state.assets?.filter(asset=>allowed.has(asset.path));
     if(!assets?.length)return;
@@ -636,15 +851,16 @@ export class EngineeringService {
     const key=this.receiptKey('update',input.task_id,input.submission_key),prior=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(prior)return prior;
     return this.store.transaction(()=>{const task=this.task(input.task_id);this.checkUpdate(task,input);
       if(input.summary!==undefined)task.summary=requireText(input.summary);
-      if(input.decisions)task.decisions=[...new Set([...(task.approval?.notes??[]),...input.decisions.map(s=>requireText(s))])];
+      if(input.decisions)task.decisions=[...new Set([...(task.active_behavior_focus?task.decisions:task.approval?.notes??[]),...input.decisions.map(s=>requireText(s))])];
       if(input.unresolved)task.unresolved=input.unresolved.map(s=>requireText(s));
       if(input.requirement_package!==undefined)this.setRequirementPackage(task,input.requirement_package);
       if(input.proposed_scope)task.proposed_scope=input.proposed_scope.map(relativePath);
       if(input.steps)this.mergeSteps(task,input.steps);
       if(input.requirement_package!==undefined)this.validatePackage(task);
-      if(input.verification)for(const evidence of input.verification){this.checkEvidence(task,evidence,hostReceipt);if(!task.verification.some(e=>e.evidence_id===evidence.evidence_id))task.verification.push(evidence);}
-      this.checkStepEvidence(task);
-      if(input.status)task.status=input.status;task.verification_status=this.verificationStatus(task,task.end_state??task.baseline);
+      const fresh=this.appendVerification(task,input.verification??[],hostReceipt);
+      this.checkStepEvidence(task,fresh,task.end_state??task.baseline);
+      if(input.status)task.status=input.status;
+      task.verification_status=this.verificationStatus(task,task.end_state??task.baseline);
       this.saveTask(task);this.store.put('engineering_receipt',key,task);this.changed();return task;});
   }
   private checkUpdate(task:EngineeringTask,input:UpdateEngineeringTask) {
@@ -666,6 +882,8 @@ export class EngineeringService {
   }
   private checkLogPath(task:EngineeringTask,filePath:string){relativePath(filePath);if(!filePath.startsWith(`development/${task.task_id}/`)&&!filePath.startsWith(`logs/${task.task_id}/`))throw Error('日志路径不属于此任务的证据目录');}
   private verificationStatus(task:EngineeringTask,state:CodeState):EngineeringTask['verification_status'] {
+    const scenarios=task.requirement_package?.behaviors.flatMap(b=>b.scenarios??[])??[];
+    if(task.steps?.some(step=>step.verification_status==='stale')||scenarios.some(s=>s.status==='stale')||task.verification_status==='stale'&&scenarios.some(s=>!s.status||s.status==='unverified'))return 'stale';
     if(!task.verification.length)return 'not_run';
     if(task.changes_status==='needs_review')return 'stale';
     const current=task.verification.filter(e=>sameVerificationState(e.code_state,state));
@@ -676,7 +894,21 @@ export class EngineeringService {
     if(attemptId&&this.store.maybe<DevelopmentAttempt>(attemptKind,attemptId)?.skipped_verification?.length)return 'partial';
     return checks.every(evidenceSupportsPass)?'passed':'partial';
   }
-  async finishTask(input:FinishEngineeringTask,maySave:()=>boolean=()=>true,diffReview?:EngineeringTask['diff_review']):Promise<EngineeringTask> {
+  recordHostChecks(taskId:string,receipts:VerificationEvidence[],endState:CodeState):EngineeringTask {
+    return this.store.transaction(()=>{
+      const task=this.task(taskId);
+      for(const receipt of receipts){
+        if(receipt.origin!=='observed')throw Error('宿主检查需要实际观察到的命令回执');
+        const evidence={...receipt,code_state:endState};
+        this.checkEvidence(task,evidence,true);
+        if(!task.verification.some(e=>e.evidence_id===evidence.evidence_id))task.verification.push(evidence);
+      }
+      task.verification_status=this.verificationStatus(task,endState);
+      this.saveTask(task);
+      return task;
+    });
+  }
+  async finishTask(input:FinishEngineeringTask,maySave:()=>boolean=()=>true,diffReview?:EngineeringTask['diff_review'],scenarioReport?:{results:DevelopmentResult['scenario_results'];receipts:VerificationEvidence[]}):Promise<EngineeringTask> {
     const key=this.receiptKey('finish',input.task_id,input.submission_key),prior=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(prior)return prior;
     const task=this.task(input.task_id);this.checkUpdate(task,input);const workspace=await this.resolve({project_id:task.project_id});if(workspace.workspace_id!==task.workspace_id||!samePath(workspace.root_path,task.workspace_path))throw Error('任务绑定工作区已改变，拒绝写回');
     const binding=input.completion_binding;
@@ -700,7 +932,7 @@ export class EngineeringService {
       .filter(p=>!attemptFiles||previousChanges.has(p)||attemptFiles.get(p)!==afterFiles.get(p))
       .map(p=>({path:p,before_sha256:beforeFiles.get(p)??null,after_sha256:afterFiles.get(p)??null,ownership:comparison.dirty.includes(p)||task.rebind_preexisting_files?.some(f=>f.path===p)?'preexisting_overlap' as const:'task_change' as const,...(assets.has(p)?{text_diff_unavailable:true}:{})}));
     const saved=this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return retry;if(!maySave())throw Error('执行已停止，拒绝迟到开发结果');const current=this.task(task.task_id);this.checkUpdate(current,input);if(ownershipUnknown){delete current.diff_baseline;current.changes_status='needs_review';}else if(end){current.end_state=end;current.changes=changes;delete current.changes_status;}current.status=input.status;if(input.summary!==undefined)current.summary=requireText(input.summary);
-      if(input.decisions)current.decisions=[...new Set([...(current.approval?.notes??[]),...input.decisions.map(s=>requireText(s))])];
+      if(input.decisions)current.decisions=[...new Set([...(current.active_behavior_focus?current.decisions:current.approval?.notes??[]),...input.decisions.map(s=>requireText(s))])];
       if(input.unresolved)current.unresolved=input.unresolved.map(s=>requireText(s));
       if(ownershipUnknown)current.unresolved=[...new Set([...current.unresolved,'无法确认提交完成时与采集时的代码状态一致。报告已保存，差异归属待核查。'])];
       if(diffReview)current.diff_review=diffReview;
@@ -712,9 +944,11 @@ export class EngineeringService {
         if(changed||!current.summary.trim()||!current.steps?.length){current.status='blocked';current.unresolved.push(changed?'只读分析期间代码状态发生变化，需核对后重新分析；未批准执行。':'分析缺少可审阅的摘要或实施步骤。');}
         else {this.validatePackage(current);current.workflow='ready';current.status='pending';}
       }
-      for(const evidence of input.verification??[]){this.checkEvidence(current,evidence);if(!current.verification.some(e=>e.evidence_id===evidence.evidence_id))current.verification.push(evidence);}
+      const fresh=this.appendVerification(current,input.verification??[]);
       current.verification.sort((a,b)=>a.created_at.localeCompare(b.created_at));
-      this.checkStepEvidence(current);
+      this.checkStepEvidence(current,ownershipUnknown?[]:fresh,end??current.baseline);
+      if(scenarioReport)applyScenarioResults(current,scenarioReport.results,ownershipUnknown?[]:scenarioReport.receipts,end??current.baseline);
+      delete current.active_behavior_focus;
       if(!analyzing&&current.reading&&(input.status==='completed'||current.changes.length>0)){
         const previous=current.walkthrough,result=previous?.result_id?this.store.maybe<Explanation>('explanation',previous.result_id):null,unchanged=attemptFiles?[...new Set([...attemptFiles.keys(),...afterFiles.keys()])].every(file=>attemptFiles.get(file)===afterFiles.get(file)):current.changes.length===0;
         const reusable=unchanged&&current.end_state&&result&&this.store.get<Snapshot>('snapshot',result.result.binding.source_snapshot_id).fingerprint===current.end_state.fingerprint;
@@ -731,9 +965,15 @@ export class EngineeringService {
     if(changed){const state=this.store.get<any>('engineering_context_state',projectId);state.version++;this.store.put('engineering_context_state',projectId,state);}
   }
   checkWorkspaceAvailable(workspace:Pick<WorkspaceBinding,'root_path'>) {
+    if(this.hostChecking.has(workspace.root_path))throw Error('此工作区正在执行宿主检查，请等待完成。');
     if(this.rollingBack.has(workspace.root_path))throw Error('此工作区正在撤销改动，请等待完成。');
     if(this.store.all<DevelopmentAttempt>(attemptKind).some(attempt=>samePath(attempt.workspace_path,workspace.root_path)&&['starting','running'].includes(attempt.status))||
       this.tasks().some(task=>task.status==='running'&&samePath(task.workspace_path,workspace.root_path)))throw Error('此工作区已有开发任务，请等待结束或停止后再继续。');
+  }
+  async withHostCheckLock<T>(workspace:WorkspaceBinding,run:()=>Promise<T>):Promise<T> {
+    this.checkWorkspaceAvailable(workspace);
+    this.hostChecking.add(workspace.root_path);
+    try{return await run();}finally{this.hostChecking.delete(workspace.root_path);}
   }
   async rollbackTask(taskId:string):Promise<EngineeringTask> {
     const task=this.task(taskId);

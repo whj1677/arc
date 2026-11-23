@@ -78,18 +78,158 @@ test('the requirement package groups only linked active steps and preserves actu
   assert.equal(model.tone, 'warning');
 });
 
-test('plan renders one collapsed acceptance checklist with unique criteria from shared steps', () => {
+test('plan renders unified verdict, short behavior rail, explicit rule decision card and scenario table without implementation status', () => {
   const html = renderToStaticMarkup(createElement(TaskBehaviorCockpit, {
     task: task({
       workflow: 'ready', status: 'pending', end_state: undefined, steps: [{...step, status: 'pending'}],
-      requirement_package: {behaviors: [behavior, {...behavior, id: 'clear', behavior: '清除筛选', files: ['filters.ts']}]},
+      requirement_package: {
+        short_title: '订单满减与优惠券校验',
+        rule_decisions: [{
+          id: 'tier-rule',
+          behavior_id: 'filter',
+          title: '阶梯满减是否累计',
+          question: '订单满 1000 元时应减 50 还是减 100？',
+          example_label: '订单小计 1000 元时',
+          options: [
+            { id: 'once', label: '满 500 减 50，每单只减一次', example_outcome: '总额 950 元' },
+            { id: 'cumulative', label: '每满 500 减 50，可以累计', example_outcome: '总额 900 元' },
+          ],
+        }],
+        behaviors: [
+          {
+            ...behavior,
+            short_title: '满减规则',
+            before_behavior: '原订单无满减计算',
+            rule_summary: '满 500 减 50，每单只减一次',
+            scenarios: [
+              { id: 's499', input: '订单小计 499.99 元', expected: '总额 499.99 元', status: 'unverified' },
+              { id: 's1000', input: '订单小计 1000 元', expected: '总额 950 元', status: 'unverified' },
+            ],
+          },
+          { ...behavior, id: 'clear', short_title: '非法券不扣库存', behavior: '清除筛选', files: ['filters.ts'] },
+        ],
+      },
     }),
     onViewChanges() {}, onViewVerification() {},
   }));
-  assert.match(html, /验收 <strong>0\/2<\/strong> 已通过/);
-  assert.match(html, /<details class="behavior-plan-acceptance"><summary>预设验收清单 · 2 条/);
-  assert.deepEqual([...html.matchAll(/data-criterion-id="([^"]+)"/g)].map(match => match[1]), ['match', 'empty']);
-  assert.doesNotMatch(html, /实现：方案中|验证：未验证/);
+  assert.match(html, /订单满减与优惠券校验/);
+  assert.match(html, /确认待决定的规则/);
+  assert.match(html, /阶梯满减是否累计/);
+  assert.match(html, /总额 950 元/);
+  assert.match(html, /总额 900 元/);
+  assert.match(html, /订单小计 499\.99 元/);
+  assert.match(html, /工程检查/);
+  assert.doesNotMatch(html, /实现：方案中|实现：开发中/);
+});
+
+test('engineering checks stay separated from business behaviors and produce single factual verdict when pending', () => {
+  const model = projectTaskBehavior(task({
+    changes: [change],
+    steps: [step],
+    requirement_package: {
+      short_title: '订单满减与优惠券校验',
+      behaviors: [
+        {
+          ...behavior,
+          id: 'discount',
+          short_title: '满减规则',
+          scenarios: [{ id: 's1', input: '1000 元', expected: '总额 950 元', actual: '总额 950 元', status: 'passed', evidence_id: 'ev1' }],
+        },
+        { ...behavior, id: 'vip', short_title: 'VIP10 叠加折扣', scenarios: [{ id: 's2', input: 'VIP10', expected: '九折', status: 'unverified' }] },
+        { ...behavior, id: 'invalid', short_title: '非法券不扣库存', scenarios: [{ id: 's3', input: '非法券', expected: '库存不变', status: 'unverified' }] },
+      ],
+    },
+    verification: [receipt('ev1', { command: 'node --test tests/pricing.test.ts', criterion_id: 'match' })],
+  }), {
+    environment: {
+      project_id: 'project',
+      probed_at: time,
+      tools: [],
+      candidate_commands: { test: 'npm test', typecheck: 'npm run typecheck' },
+      effective_commands: { test: 'npm test', typecheck: 'npm run typecheck' },
+    },
+  });
+  assert.equal(model.verdict.headline, '代码已修改，验收未完成。');
+  assert.match(model.verdict.detail, /3 项业务变更中，1 项有验证记录/);
+  assert.match(model.verdict.detail, /测试与类型检查待执行/);
+  assert.equal(model.verdict.primaryAction.kind, 'run_checks');
+  assert.equal(model.verdict.primaryAction.label, '运行测试与类型检查');
+  assert.deepEqual(model.engineeringChecks.map(c => [c.label, c.status]), [
+    ['测试', 'not_run'],
+    ['类型检查', 'not_run'],
+  ]);
+});
+
+test('scenario pass requires observed fresh receipt and isolated rule edits keep untouched behaviors verified', () => {
+  const stepDiscount: DevelopmentStep = { ...step, step_id: 'step-discount', verification_status: 'stale' };
+  const stepInvalid: DevelopmentStep = { ...step, step_id: 'step-invalid', verification_status: 'passed' };
+  const newerState: CodeState = { ...state, workspace_fingerprint: 'workspace-v2' };
+
+  const isolated = projectTaskBehavior(task({
+    changes: [change],
+    steps: [stepDiscount, stepInvalid],
+    verification_status: 'stale',
+    requirement_package: {
+      behaviors: [
+        {
+          ...behavior,
+          id: 'discount',
+          step_ids: ['step-discount'],
+          scenarios: [
+            { id: 'unbacked', input: '1000 元', expected: '900 元', actual: '900 元', status: 'passed' },
+            { id: 'stale-rule', input: '500 元', expected: '450 元', actual: '450 元', status: 'passed', evidence_id: 'ev-ok' },
+          ],
+        },
+        {
+          ...behavior,
+          id: 'invalid',
+          step_ids: ['step-invalid'],
+          scenarios: [
+            { id: 'untouched', input: '非法券', expected: '库存不变', actual: '库存不变', status: 'passed', evidence_id: 'ev-ok' },
+          ],
+        },
+      ],
+    },
+    verification: [receipt('ev-ok', { command: 'node --test tests/order.test.ts', step_id: 'step-invalid' })],
+  }), { liveCodeState: state });
+
+  assert.equal(isolated.behaviors[0].scenarios[0].status, 'unverified');
+  assert.equal(isolated.behaviors[0].scenarios[1].status, 'stale');
+  assert.equal(isolated.behaviors[1].scenarios[0].status, 'passed');
+  assert.equal(isolated.verdict.primaryAction.kind, 'fix_behavior');
+
+  const drifted = projectTaskBehavior(task({
+    changes: [change],
+    steps: [stepInvalid],
+    requirement_package: {
+      behaviors: [
+        {
+          ...behavior,
+          id: 'invalid',
+          step_ids: ['step-invalid'],
+          scenarios: [
+            { id: 'untouched', input: '非法券', expected: '库存不变', actual: '库存不变', status: 'passed', evidence_id: 'ev-ok' },
+          ],
+        },
+      ],
+    },
+    verification: [
+      receipt('ev-ok', { command: 'node --test tests/order.test.ts', step_id: 'step-invalid', code_state: state }),
+      receipt('ev-host', { command: 'npm test', verification_kind: 'test', step_id: undefined, code_state: newerState }),
+    ],
+  }), {
+    liveCodeState: newerState,
+    environment: {
+      project_id: 'project',
+      probed_at: time,
+      tools: [],
+      candidate_commands: { test: 'npm test' },
+      effective_commands: { test: 'npm test' },
+    },
+  });
+
+  assert.equal(drifted.behaviors[0].scenarios[0].status, 'stale');
+  assert.equal(drifted.engineeringChecks[0].status, 'passed');
 });
 
 test('implementation, build receipts, observed results and Agent claims stay independent', () => {

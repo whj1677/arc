@@ -1,7 +1,7 @@
 import React,{useCallback,useEffect,useRef,useState,useSyncExternalStore} from 'react';
 import {analysisModes,type AnalysisMode} from './discovery-state';
 import type {Project,SourceEvidence,SourceFile,AnalysisResult} from '../shared';
-import type {ContextEntry,ContextSource,EngineeringContext,EngineeringTask,DevelopmentAttempt,VerificationEvidence} from '../engineering';
+import type {ContextEntry,ContextSource,EngineeringContext,EngineeringTask,DevelopmentAttempt,VerificationEvidence,UpdateBehaviorContractInput,PrepareBehaviorRevisionInput} from '../engineering';
 import {SourceExcerpt} from './SourceExcerpt';
 import {TextDiffView} from './TextDiffView';
 import {EngineeringSections,ContextBody,ContextText,ExternalExecutor,type EngineeringSection} from './EngineeringSections';
@@ -9,6 +9,7 @@ import {DevelopmentActivity,PlanDecision,SavedRequirementPackage,publicActivity,
 import {DeliveryHud,useTaskHud,type TaskArchitectureOverlay} from './DevelopmentHud';
 import {EvolutionCockpit,type EvolutionFileDiff} from './EvolutionCockpit';
 import {ProjectEnvironmentCard} from './ProjectEnvironmentCard';
+import {useProjectEnvironment} from './project-environment-store';
 import {RequirementComposer,type RequirementSubmission} from './RequirementComposer';
 import type {CodexModelSelection} from './CodexModelSelect';
 import {commandBody,sameVerificationState,verificationEvidenceLabel} from '../delivery-audit';
@@ -346,21 +347,22 @@ function RollbackAction({task,readOnly,busy,onRollback}:{task:EngineeringTask;re
 
 export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,onTaskOpened,onSettings,defaultEngine,codexModel,onEngineChange,enginePending,focusGoal,onGoalFocused,back,onArchitecture,onArchitectureOverlay,onRestored,onReading}:{project:Project;snapshotFiles?:SourceFile[];page:'materials'|'records';requestedTask:string;onTaskOpened:()=>void;onSettings:()=>void;defaultEngine:AnalysisMode;codexModel:CodexModelSelection;onEngineChange:(mode:AnalysisMode)=>void;enginePending:boolean;focusGoal:boolean;onGoalFocused:()=>void;back:()=>void;onArchitecture:(resultId?:string)=>void;onArchitectureOverlay?:(overlay:TaskArchitectureOverlay)=>void;onRestored:(projectId:string)=>void;onReading:(task:EngineeringTask)=>void}){
   const {context,error:contextError,reload:reloadContext,more,checking}=useContext(project.project_id);
+  const {environment}=useProjectEnvironment(context?.workspace);
   const [tasks,setTasks]=useState<EngineeringTask[]>(()=>taskLists.get(project.project_id)??[]),[selectedId,setSelectedId]=useState(()=>requestedTask||selectedTasks.get(project.project_id)||''),[query,setQuery]=useState(''),[filter,setFilter]=useState('');
   const [tasksLoaded,setTasksLoaded]=useState(()=>taskLists.has(project.project_id));
   const goalInput=useRef<HTMLTextAreaElement>(null);
   const [section,setSection]=useState<EngineeringSection>('tasks');
   const [recordMode,setMode]=useState<'new'|'records'>(focusGoal?'new':'records');
-  const [goal,setGoal]=useState(''),[continuation,setContinuation]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
+  const [goal,setGoal]=useState(''),[continuation,setContinuation]=useState(false),[busy,setBusy]=useState(false),[runningChecks,setRunningChecks]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
   const [dispatches,setDispatches]=useState<Dispatch[]>([]);
   const [taskAttempts,setAttempts]=useState<DevelopmentAttempt[]>([]),[taskEvents,setEvents]=useState<ActivityEvent[]>([]),[history,setHistory]=useState<EngineeringTask[]>([]),[historical,setHistorical]=useState<EngineeringTask|null>(null);
   const [log,setLog]=useState<{taskId:string;text:string}|null>(null),[showContext,setShowContext]=useState(false);
-  const [goalExpanded,setGoalExpanded]=useState(false);
   const [taskDrawerOpen,setTaskDrawerOpen]=useState(false);
+  const [showEvolution,setShowEvolution]=useState(false);
   const [showLegacyGraph,setShowLegacyGraph]=useState(false);
   const [refreshingScenarioId,setRefreshingScenarioId]=useState<string|null>(null);
   const [diff,setDiff]=useState<{path:string;before:string;after:string;truncated:boolean}|null>(null);
-  useEffect(()=>{selectedTasks.set(project.project_id,selectedId);setGoalExpanded(false);setShowLegacyGraph(false);},[project.project_id,selectedId]);
+  useEffect(()=>{selectedTasks.set(project.project_id,selectedId);setShowEvolution(false);setShowLegacyGraph(false);},[project.project_id,selectedId]);
   const current=tasks.find(t=>t.task_id===selectedId),task=historical||current;
   const logText=log?.taskId===task?.task_id?log?.text:undefined;
   const stage=task&&taskDetailStage(task);
@@ -463,6 +465,41 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
     }catch(e){setError((e as Error).message);}
     finally{setRefreshingScenarioId(null);}
   }
+  async function runHostChecks(kinds?:('typecheck'|'test'|'build')[]){
+    if(!current||runningChecks||busy)return;
+    setRunningChecks(true);setError('');setNotice('');
+    try{
+      const res=await api.invoke<{task:EngineeringTask;receipts:VerificationEvidence[];skipped:string[];failed:{command:string}[]}>('development_run_checks',{
+        task_id:current.task_id,...(kinds?.length?{kinds}:{}),
+      });
+      if(alive.current){
+        await reload();await reloadHud();await reloadContext();
+        const note=res.failed.length
+          ? `工程检查完成：${res.failed.length} 项失败，请查看检查日志。`
+          : res.receipts.length
+            ? `已执行 ${res.receipts.length} 项工程检查并更新记录（不自动标通过业务场景）。`
+            : res.skipped[0]??'未发现可执行的工程检查命令。';
+        setNotice(note);
+      }
+    }catch(e){if(alive.current)setError((e as Error).message);}
+    finally{if(alive.current)setRunningChecks(false);}
+  }
+  async function updateBehaviorContract(input:Omit<UpdateBehaviorContractInput,'task_id'|'expected_version'|'submission_key'>):Promise<boolean>{
+    if(!current||busy)return false;
+    const saved=await action(()=>api.invoke<EngineeringTask>('engineering_task_behavior_update',{
+      ...input,task_id:current.task_id,expected_version:current.version,submission_key:crypto.randomUUID(),
+    }),'已更新当前行为的约定与场景');
+    if(saved&&alive.current)await reloadHud();
+    return saved!==undefined;
+  }
+  async function reviseBehavior(input:Omit<PrepareBehaviorRevisionInput,'task_id'|'expected_version'|'submission_key'>):Promise<boolean>{
+    if(!current||busy)return false;
+    const saved=await action(()=>api.invoke<EngineeringTask>('development_revise_behavior',{
+      ...input,project_id:project.project_id,task_id:current.task_id,expected_version:current.version,submission_key:crypto.randomUUID(),
+    }),current.execution_mode==='mcp'?'已保存行为修订，等待外部 Agent 领取处理':'已提交给执行器定向处理此项行为，完成后新结果将回到同一张场景表');
+    if(saved&&alive.current)await reloadHud();
+    return saved!==undefined;
+  }
   function openVerificationLog(path:string){
     if(!task)return;
     const taskId=task.task_id;
@@ -520,36 +557,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
         defaultEngine={defaultEngine} codexModel={codexModel} onEngineChange={onEngineChange} enginePending={enginePending}
         onSettings={onSettings} goal={goal} onGoalChange={setGoal} goalInput={goalInput} busy={busy} disabled={cannotStart}
         onSubmit={start} onCancel={tasks.length?()=>selectTask((current??visible[0]??tasks[0]).task_id):undefined}/>:<>
-        <header className="engineering-requirement-header">
-          <div className="task-goal-heading">
-            <h2 className={!goalExpanded&&task.goal.length>72?'is-clamped':undefined} title={task.goal.replaceAll('`','')}>
-              <InlineCodeText text={goalExpanded?task.goal:cleanGoalHeadline(task.goal)}/>
-            </h2>
-            {(task.goal.length>72||cleanGoalHeadline(task.goal)!==task.goal.trim())&&<button type="button" className="task-goal-toggle" onClick={()=>setGoalExpanded(v=>!v)}>{goalExpanded?'收起':'展开原话'}</button>}
-          </div>
-          <div className="task-header-meta">
-            <div className="task-status-line">
-              <span className="tag">{workflowLabel(task)}</span>
-              {task.execution_mode&&<span className="tag">{analysisModes[task.execution_mode].name}</span>}
-              {!task.execution_mode&&task.analysis_channel==='dsh'&&<span className="tag">DeepSeek Harness</span>}
-              <small>已保存 v{task.version}{historical?' · 历史版本':''}</small>
-            </div>
-            <div className="task-header-actions">
-              {task.reading&&!historical&&(section!=='tasks'||!readingAnchor)&&<button onClick={()=>onReading(task)}>返回关联功能走读</button>}
-              <button disabled={busy} onClick={()=>{selectSection('tasks');void showHistory();}}>版本历史</button>
-              {!historical&&stage!=='approval'&&(inProgress&&!waitingMcp&&panelAttempt?.origin==='agent'&&latestDispatch?.state!=='queued'?
-                <small>{current?.execution_mode==='mcp'?'请在原 Agent 中停止并回填取消结果。':'请在原 Agent 中停止执行；确认结束后在「连接 Agent」的派发记录中核对回执。'}</small>:
-                inProgress?<button disabled={busy} onClick={()=>void action(()=>api.invoke('development_cancel',{task_id:current!.task_id}),'停止请求已发送，实际终态见记录')}>停止开发</button>:
-                <button className="primary" disabled={busy} onClick={()=>{
-                  selectSection('tasks');setContinuation(true);setGoal(['failed','blocked','interrupted'].includes(task.status)?'处理本任务的阻碍后继续完成目标，并重新验证。':'');
-                  requestAnimationFrame(()=>goalInput.current?.focus());
-                }}>继续此任务</button>)}
-            </div>
-          </div>
-          {waitingMcp&&!historical&&<p role="status">等待外部 Agent 领取。在已接入 ARC MCP 的对话中领取任务 <code>{task.task_id}</code>。 <button onClick={onSettings}>连接 Agent</button></p>}
-          {section!=='tasks'&&readingAnchor&&<p aria-label="关联源码位置">关联源码 · <code>{readingAnchor.path}:{readingAnchor.line_start}–{readingAnchor.line_end}</code></p>}
-        </header>
-        {!historical&&stage!=='approval'&&(inProgress||stage==='analysis')&&(stage==='analysis'||latestDispatch||panelAttempt)&&<DevelopmentActivity key={`${stage}:${ended}:${latestDispatch?.dispatch_id||panelAttempt?.attempt_id||task.task_id}`} dispatch={latestDispatch} attempt={panelAttempt} task={task} events={events} onSettings={onSettings}/>}
+        {waitingMcp&&!historical&&<p className="engineering-message" role="status">等待外部 Agent 领取。在已接入 ARC MCP 的对话中领取任务 <code>{task.task_id}</code>。 <button onClick={onSettings}>连接 Agent</button></p>}
         {section!=='tasks'?<EngineeringSections taskId={selectedId} projectId={project.project_id} section={section} onSection={selectSection} tasks={tasks} onTask={id=>selectTask(id,true)} onArchitecture={onArchitecture} onDevelop={newRequirement}/>:<>
         {continuation&&!historical&&stage!=='approval'&&<form className="development-form continuation-card" onSubmit={e=>{e.preventDefault();void start();}}>
           <div className="row between"><h3>继续当前任务</h3><small>{analysisModes[requestEngine].name} · 只读分析</small></div>
@@ -563,33 +571,59 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
         </form>}
         {history.length>0&&<label className="engineering-version-picker">查看记录版本<select aria-label="工程任务版本" value={historical?.version??''} onChange={e=>setHistorical(history.find(item=>item.version===Number(e.target.value))||null)}><option value="">当前版本</option>{history.map(item=><option key={item.version} value={item.version}>v{item.version} · {stateNames[item.status]} · {when(item.updated_at)}</option>)}</select></label>}
         {task.origin==='legacy_import'&&<p className="warning">AEC 历史任务 · 待复核。原文与来源已保存，旧验证声明不视为本次真实执行。</p>}
-        <TaskBehaviorCockpit key={task.task_id} task={task} beforeReading={beforeReading}
+        <TaskBehaviorCockpit
+          key={task.task_id}
+          task={task}
+          environment={environment}
+          hud={versionHud}
+          liveCodeState={!historical?context?.code_state:undefined}
+          beforeReading={beforeReading}
+          historical={!!historical}
+          busy={busy}
+          runningChecks={runningChecks}
+          attemptsCount={attempts.length}
+          liveActivitySlot={!historical&&stage!=='approval'&&(inProgress||stage==='analysis')&&(stage==='analysis'||latestDispatch||panelAttempt)
+            ? <DevelopmentActivity key={`${stage}:${ended}:${latestDispatch?.dispatch_id||panelAttempt?.attempt_id||task.task_id}`} dispatch={latestDispatch} attempt={panelAttempt} task={task} events={events} onSettings={onSettings}/>
+            : undefined}
+          planSlot={stage==='approval'&&!historical
+            ? <PlanDecision key={task.task_id} task={task} hud={hud} hudLoading={hudLoading} hudError={hudError} busy={busy} error={error} onTaskSaved={taskSaved} onOpenArchitectureOverlay={onArchitectureOverlay} onDecision={(snapshot,revision,notes)=>decide(snapshot,revision,notes)}/>
+            : undefined}
           onOpenReading={readingAnchor&&!historical?()=>onReading(task):undefined}
           onViewChanges={file=>{
-            if(file){
-              revealTaskRecord(`${task.task_id}-changes`);
-              if(!historical)void action(async()=>setDiff(await api.invoke('engineering_diff',{task_id:task.task_id,path:file})));
-            }else if(hasEvolution){
-              setShowLegacyGraph(false);
-              requestAnimationFrame(()=>revealTaskRecord(`${task.task_id}-evolution`));
-            }else revealTaskRecord(`${task.task_id}-changes`);
+            revealTaskRecord(`${task.task_id}-changes`);
+            if(file&&!historical)void action(async()=>setDiff(await api.invoke('engineering_diff',{task_id:task.task_id,path:file})));
           }}
           onViewVerification={evidenceId=>{
             revealTaskRecord(evidenceId?`${task.task_id}-receipt-${evidenceId}`:`${task.task_id}-verification`);
             const logPath=task.verification.find(item=>item.evidence_id===evidenceId)?.log_path;
             if(logPath)openVerificationLog(logPath);
           }}
+          onOpenEvolution={hasEvolution?()=>{
+            setShowEvolution(true);setShowLegacyGraph(false);
+            requestAnimationFrame(()=>revealTaskRecord(`${task.task_id}-evolution`));
+          }:undefined}
+          onOpenLogs={()=>revealTaskRecord(`${task.task_id}-verification`)}
+          onOpenHistory={()=>{selectSection('tasks');void showHistory();}}
+          onOpenPackage={()=>revealTaskRecord(`${task.task_id}-package`)}
+          onApprovePlan={stage==='approval'&&current?()=>void decide(current):undefined}
+          onCancelTask={inProgress&&current?()=>void action(()=>api.invoke('development_cancel',{task_id:current.task_id}),'停止请求已发送，实际终态见记录'):undefined}
+          onRunHostChecks={!historical&&current?kinds=>runHostChecks(kinds):undefined}
+          onUpdateBehaviorContract={!historical&&current?updateBehaviorContract:undefined}
+          onReviseBehavior={!historical&&current?reviseBehavior:undefined}
           onAppend={historical||stage==='approval'&&!task.requirement_package?undefined:appendRequirement}
-          visualSlot={stage==='approval'&&!historical
-          ? <PlanDecision key={task.task_id} task={task} hud={hud} hudLoading={hudLoading} hudError={hudError} busy={busy} error={error} onTaskSaved={taskSaved} onOpenArchitectureOverlay={onArchitectureOverlay} onDecision={(snapshot,revision,notes)=>decide(snapshot,revision,notes)}/>
-          : useEvolutionCockpit&&(
-          <section id={`${task.task_id}-evolution`} className="behavior-record-target" tabIndex={-1} aria-label="架构与代码演化">
+        />
+        {stage==='delivery'&&showEvolution&&useEvolutionCockpit&&(
+          <section id={`${task.task_id}-evolution`} className="behavior-record-target task-additional-records" tabIndex={-1} aria-label="修改位置、调用与架构演化">
+          <div className="row between" style={{marginBottom:8}}>
+            <strong>修改位置与调用演化</strong>
+            <button type="button" className="hud-mini-btn" onClick={()=>setShowEvolution(false)}>收起视图</button>
+          </div>
           <EvolutionCockpit
             evolution={hud!.evolution!}
             blueprintEvolution={hud!.blueprintEvolution}
             revisionKey={`${task.task_id}:${task.version}`}
             foldSummary
-            modeLabel={task.changes_status==='needs_review'?`归属待核 · v${task.version}`:task.status==='blocked'?`待收尾 · v${task.version}`:`已落地 · v${task.version}`}
+            modeLabel={`v${task.version}`}
             loadFileDiff={async req => {
               const beforeSnap = hud!.evolution!.base_snapshot_id ?? (task.diff_baseline ?? task.baseline).snapshot_id;
               const afterSnap = hud!.evolution!.target_snapshot_id ?? task.end_state?.snapshot_id;
@@ -628,21 +662,20 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
             </>}
           />
           </section>
-          )}/>
-        {stage==='delivery'&&<>
-        {!useEvolutionCockpit&&(!historical ? (
-          <>
-            {hud?.evolution&&<div className="row" style={{marginBottom:8}}><button type="button" className="hud-mini-btn" onClick={()=>setShowLegacyGraph(false)}>← 返回演化驾驶舱</button></div>}
+        )}
+        {stage==='delivery'&&showEvolution&&!useEvolutionCockpit&&(!historical ? (
+          <section id={`${task.task_id}-evolution`} className="behavior-record-target task-additional-records" tabIndex={-1}>
+            <div className="row between" style={{marginBottom:8}}>
+              {hud?.evolution&&<button type="button" className="hud-mini-btn" onClick={()=>setShowLegacyGraph(false)}>← 返回演化视图</button>}
+              <button type="button" className="hud-mini-btn" onClick={()=>setShowEvolution(false)}>收起视图</button>
+            </div>
             <DeliveryHud task={task} hud={hud} entries={context?.material_sources??context?.entries??[]} onRefreshMaterials={()=>reloadContext(true)} busy={busy} onReloadHud={reloadHud} onOpenArchitectureOverlay={onArchitectureOverlay} onTargetedContinue={prefill=>{selectSection('tasks');setContinuation(true);setGoal(prefill);requestAnimationFrame(()=>goalInput.current?.focus());}}/>
-          </>
+          </section>
         ) : (
           <DeliveryAuditBar key={`audit:${task.task_id}`} task={task} entries={context?.material_sources??context?.entries??[]} onRefresh={()=>reloadContext(true)} busy={true}/>
         ))}
-        {task.verification_status==='stale'&&<p className="task-review-notice">上次验证对应较早的代码版本，需重新验证。</p>}
-        {!useEvolutionCockpit&&ended&&task.summary&&<section className="task-outcome" aria-label="本次交付结果"><h3>本次交付结果</h3><ContextText text={task.summary}/></section>}
-        </>}
-        <details id={`${task.task_id}-changes`} className="task-additional-records behavior-record-target" tabIndex={-1} open={stage==='delivery'&&!useEvolutionCockpit || undefined}>
-          <summary>实际变更与执行日志 · {task.changes.length} 个文件{attempts.length?` · ${attempts.length} 次执行`:''}</summary>
+        <details id={`${task.task_id}-changes`} className="task-additional-records behavior-record-target" tabIndex={-1}>
+          <summary>修改文件与 Diff · {task.changes.length} 个文件{attempts.length?` · ${attempts.length} 次执行`:''}</summary>
           <div style={{marginTop:10}}>
             <div className="row between" style={{marginBottom:8}}>
               <span className="tag">{task.changes.length} 个文件</span>
@@ -655,25 +688,23 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
             {attempts.length>0&&<details style={{marginTop:10}}><summary>执行与活动 · {attempts.length} 次</summary>{attempts.map(item=><p key={item.attempt_id}>{item.provider_id} · {item.model} · {stateNames[item.status]}{item.error&&<span className="warning"> · {item.error}</span>}{item.log_path&&<button onClick={()=>openVerificationLog(item.log_path!)}>查看执行诊断</button>}</p>)}<ol className="engineering-events">{events.filter(event=>publicActivity(event)).slice(-30).map((event,i)=><li key={i}><small>{when(event.received_at)}</small><p>{publicActivity(event)}</p></li>)}</ol></details>}
           </div>
         </details>
-        <details id={`${task.task_id}-verification`} className="task-additional-records behavior-record-target" tabIndex={-1} open={stage==='delivery'&&!useEvolutionCockpit || undefined}>
-          <summary>验证与遗留详情 · {verificationLabels[task.verification_status]}{task.unresolved.length?` · ${task.unresolved.length} 项待处理`:''}</summary>
+        <details id={`${task.task_id}-verification`} className="task-additional-records behavior-record-target" tabIndex={-1}>
+          <summary>验证日志与历史轮次 · {task.verification.length} 条记录{task.unresolved.length?` · ${task.unresolved.length} 项待处理`:''}</summary>
           <div style={{marginTop:10}}>
             {!task.verification.length?<p className="muted">尚未保存验证记录，不能视为通过。</p>:<VerificationList task={task} onLog={openVerificationLog}/>}
             {task.unresolved.length>0?<div className="task-unresolved"><h4>待处理事项 · {task.unresolved.length}</h4><ul>{task.unresolved.map((item,i)=><li key={i}>{item}</li>)}</ul></div>:<p className="task-no-unresolved">没有单独记录的遗留事项；仍以实际验证覆盖范围为准。</p>}
             {logText&&<section id={`${task.task_id}-verification-log`} className="engineering-log behavior-record-target" tabIndex={-1}><div className="row between"><h3>验证日志</h3><button onClick={()=>setLog(null)}>关闭日志</button></div><pre>{logText}</pre></section>}
           </div>
         </details>
-        {(stage!=='approval'||historical)&&task.requirement_package&&<SavedRequirementPackage key={`pkg:${task.task_id}`} task={task} readOnly={!!historical} onSaved={taskSaved}/>}
+        {(stage!=='approval'||historical)&&task.requirement_package&&<div id={`${task.task_id}-package`} className="behavior-record-target" tabIndex={-1}><SavedRequirementPackage key={`pkg:${task.task_id}`} task={task} readOnly={!!historical} onSaved={taskSaved}/></div>}
         {(() => {
           const detailSections = <>
             <details id={`${task.task_id}-goal`} className="task-model-section task-model-goal"><summary>任务边界与原始要求</summary><TaskBoundaries key={`boundaries:${task.task_id}`} task={task} readOnly={!!historical} onSaved={taskSaved}/><details><summary>原始要求与接续记录 · {task.fast_mode?'ARC 快速直改':task.workflow?'从 ARC 发起':'沿用 Agent / 原有任务入口'}</summary>{task.requests?.map(item=><p key={item.submission_key}>{item.text}</p>)}<small>任务 {task.task_id}</small></details></details>
-            <details id={`${task.task_id}-context`} className="task-model-section"><summary>现状与依据</summary>{task.summary&&!ended?<div className="engineering-summary"><ContextText text={task.summary}/></div>:null}<details className="task-technical-details"><summary>工作区、代码基线与关联走读</summary><dl className="engineering-metadata"><dt>工作区</dt><dd>{task.workspace_path}</dd><dt>开始基线</dt><dd>{task.baseline.head||'非 Git 工程'}{task.baseline.branch?` · ${task.baseline.branch}`:''}<br/><small>{task.baseline.fingerprint}</small></dd><dt>开始前已有改动</dt><dd>{task.baseline.dirty.length?task.baseline.dirty.join('、'):'无已识别的未提交改动'}</dd><dt>上下文版本</dt><dd>{task.context_version}</dd>{task.reading&&<><dt>功能走读</dt><dd>原说明 {task.reading.result_id}<br/><small>原快照 {task.reading.source_snapshot_id} · 选中 {task.reading.target.kind}:{task.reading.target.id}</small><br/>{task.walkthrough?`走读更新：${({pending:'等待更新',running:'正在更新',completed:'新版已保存',failed:'更新失败'} as const)[task.walkthrough.status]}`:'尚未触发走读更新'}{task.walkthrough?.error&&<p className="warning">{task.walkthrough.error}</p>}</dd></>}<dt>差异覆盖</dt><dd>{task.changes_status==='needs_review'?'差异归属待核查':task.baseline.workspace_fingerprint?'工作区文件内容。二进制和超限文件记录哈希，忽略目录与凭据排除。':'历史基线仅覆盖阅读快照的文本文件。'}</dd></dl></details></details>
+            <details id={`${task.task_id}-context`} className="task-model-section"><summary>现状与依据</summary>{task.summary&&<div className="engineering-summary"><ContextText text={task.summary}/></div>}<details className="task-technical-details"><summary>工作区、代码基线与关联走读</summary><dl className="engineering-metadata"><dt>工作区</dt><dd>{task.workspace_path}</dd><dt>开始基线</dt><dd>{task.baseline.head||'非 Git 工程'}{task.baseline.branch?` · ${task.baseline.branch}`:''}<br/><small>{task.baseline.fingerprint}</small></dd><dt>开始前已有改动</dt><dd>{task.baseline.dirty.length?task.baseline.dirty.join('、'):'无已识别的未提交改动'}</dd><dt>上下文版本</dt><dd>{task.context_version}</dd>{task.reading&&<><dt>功能走读</dt><dd>原说明 {task.reading.result_id}<br/><small>原快照 {task.reading.source_snapshot_id} · 选中 {task.reading.target.kind}:{task.reading.target.id}</small><br/>{task.walkthrough?`走读更新：${({pending:'等待更新',running:'正在更新',completed:'新版已保存',failed:'更新失败'} as const)[task.walkthrough.status]}`:'尚未触发走读更新'}{task.walkthrough?.error&&<p className="warning">{task.walkthrough.error}</p>}</dd></>}<dt>差异覆盖</dt><dd>{task.changes_status==='needs_review'?'差异归属待核查':task.baseline.workspace_fingerprint?'工作区文件内容。二进制和超限文件记录哈希，忽略目录与凭据排除。':'历史基线仅覆盖阅读快照的文本文件。'}</dd></dl></details></details>
             <details id={`${task.task_id}-plan`} className="task-model-section"><summary>影响与方案</summary><div className="task-impact-facts"><span>范围 {(latestWriteScope??task.proposed_scope??task.scope).length} 个文件</span><span>已有改动重叠 {task.changes.filter(change=>change.ownership==='preexisting_overlap').length} 项</span><span>风险与遗留 {task.unresolved.length} 项</span></div>{!!task.steps?.length?<div className="development-steps" aria-label="修改方案与步骤">{task.steps.map(step=><article className={`development-step ${step.status==='superseded'?'superseded':''}`} data-step-id={step.step_id} key={step.step_id}><div className="row between"><strong>{step.title}</strong><span className="tag">{stepStateNames[step.status]}</span></div><p>{step.change}</p><p className="development-step-progress">{step.progress}</p><small>检查：{stateNames[step.verification_status??'not_run']}</small><ul>{step.criteria.map(criterion=><li data-criterion-id={criterion.criterion_id} key={criterion.criterion_id}>{criterion.text}<small>{criterion.evidence_ids.length?` · ${criterion.evidence_ids.length} 条关联证据`:' · 尚无证据'}</small></li>)}</ul>{step.unresolved.length>0&&<ul className="warning">{step.unresolved.map((item,index)=><li key={index}>{item}</li>)}</ul>}</article>)}</div>:<p className="muted">尚未保存实施步骤。</p>}{!!latestWriteScope?.length&&<details><summary>本次允许修改 · {latestWriteScope.length} 个文件</summary><ul>{latestWriteScope.map(file=><li key={file}><code>{file}</code></li>)}</ul></details>}{task.decisions.length>0&&<details><summary>修改依据与关键决定 · {task.decisions.length}</summary><ul>{task.decisions.map((item,i)=><li key={i}>{item}</li>)}</ul></details>}</details>
             <details className="task-additional-records"><summary>补充资料与独立文档</summary><p>简单任务无需单独文档。确有需要时，再补充实施方案、架构变更、详细设计或验证计划。</p><div className="row">{([['plan','实施方案'],['architecture','架构变更'],['design','详细设计'],['verification_plan','验证计划']] as [EngineeringSection,string][]).map(([id,label])=><button key={id} onClick={()=>selectSection(id)}>{label}</button>)}</div></details>
           </>;
-          return (stage==='approval'||useEvolutionCockpit)&&!historical
-            ?<details className="task-additional-records"><summary>更多原始记录、工作区基线与独立文档</summary>{detailSections}</details>
-            :detailSections;
+          return <details className="task-additional-records"><summary>更多技术记录、工作区基线与独立文档</summary>{detailSections}</details>;
         })()}
         </>}
       </>}

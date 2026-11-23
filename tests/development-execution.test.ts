@@ -55,7 +55,7 @@ test('plan contract accepts existing packages and validates optional structured 
   assert.deepEqual(readRequirementPlan(JSON.stringify({...plan,requirement_package:pkg})).requirement_package,pkg);
   assert.throws(()=>readRequirementPlan(JSON.stringify({...plan,requirement_package:{...pkg,revoked:Array(41).fill('x')}})),/结构检查/);
   assert.throws(()=>readRequirementPlan(JSON.stringify({...plan,requirement_package:{...pkg,assumptions:'A'}})),/结构检查/);
-  assert.deepEqual((codexRequirementPlanSchema.properties.requirement_package as {required:string[]}).required,Object.keys(pkg));
+  assert.deepEqual((codexRequirementPlanSchema.properties.requirement_package as {required:string[]}).required,[...Object.keys(pkg),'short_title','rule_decisions']);
 });
 test('file authorization refuses directories, metadata, wildcards, traversal and hard links',async()=>{
   const directory=await temporary();

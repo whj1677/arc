@@ -9,9 +9,9 @@ import type {ProjectEnvironment} from './env-probe';
 import {getDefaultExecutableOverride,windowsGitDirs} from './executables';
 import {redact,stopTree} from './providers';
 
-type Kind = 'typecheck' | 'test' | 'build';
+export type HostCheckKind = 'typecheck' | 'test' | 'build';
 type FailedCommand = Pick<DevelopmentCommand,'command'|'exit_code'|'output'> & {reason:string};
-const labels:Record<Kind,string> = {typecheck:'类型检查',test:'测试',build:'构建'};
+const labels:Record<HostCheckKind,string> = {typecheck:'类型检查',test:'测试',build:'构建'};
 const windows = process.platform === 'win32';
 const exec = promisify(execFile);
 
@@ -71,9 +71,10 @@ function targetedTest(base:string, scope:readonly string[]) {
   return base + (npm ? ' -- ' : ' ') + args.join(' ');
 }
 
-export function selectHostVerificationCommands(env:ProjectEnvironment,writeScope:readonly string[]) {
-  const commands:{kind:Kind;command:string}[] = [], skipped:string[] = [];
+export function selectHostVerificationCommands(env:ProjectEnvironment,writeScope:readonly string[],kinds?:HostCheckKind[]) {
+  const commands:{kind:HostCheckKind;command:string}[] = [], skipped:string[] = [];
   for (const kind of ['typecheck','test','build'] as const) {
+    if (kinds && !kinds.includes(kind)) continue;
     const base = env.effective_commands[kind]?.trim();
     if (!base) continue;
     const token = /^(?:&\s*)?(?:"([^"]+)"|'([^']+)'|([^\s]+))/.exec(base);
@@ -161,16 +162,17 @@ async function execute(shell:string,command:string,workspace:string,env:NodeJS.P
 }
 
 export async function runHostVerification(options:{
-  workspace:string;env:ProjectEnvironment;writeScope:readonly string[];isStopped:()=>boolean;
+  workspace:string;env:ProjectEnvironment;writeScope:readonly string[];isStopped:()=>boolean;kinds?:HostCheckKind[];
   onCommand?:(cmd:DevelopmentCommand)=>Promise<void>;
 }) {
-  const selected = selectHostVerificationCommands(options.env,options.writeScope);
+  const selected = selectHostVerificationCommands(options.env,options.writeScope,options.kinds);
   const commands:DevelopmentCommand[] = [], failed:FailedCommand[] = [];
   if (selected.commands.length && !options.isStopped()) {
     const shell = await locateVerificationShell(), env = hostEnvironment();
-    for (const {command} of selected.commands) {
+    for (const {kind,command} of selected.commands) {
       if (options.isStopped()) break;
       const {record,stopReason,stopError} = await execute(shell,command,options.workspace,env,options.isStopped);
+      record.verification_kind = kind;
       commands.push(record);
       await options.onCommand?.(record);
       if(stopError) throw Object.assign(Error(stopError),{remoteUnknown:true});

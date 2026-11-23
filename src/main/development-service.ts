@@ -1,11 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type {CreateEngineeringTask,EngineeringContext,EngineeringTask,DevelopmentAttempt,VerificationEvidence,CodeState} from '../engineering';
+import type {CreateEngineeringTask,EngineeringContext,EngineeringTask,DevelopmentAttempt,VerificationEvidence,CodeState,PrepareBehaviorRevisionInput,WorkspaceBinding} from '../engineering';
 import type {CodexPreferences,ProviderProfile,Run,Snapshot} from '../shared';
 import {commandBody,inspectVerificationOutput} from '../delivery-audit';
 import {EngineeringService,sameVerificationState} from './engineering-service';
 import {runDevelopmentCodex,type DevelopmentCommand,type DevelopmentResult} from './development-runner';
-import {runHostVerification} from './development-verify';
+import {runHostVerification,type HostCheckKind} from './development-verify';
 import {reviewDevelopmentDiff} from './development-review';
 import {readCodexConfiguration} from './codex-configuration';
 import {probeProviders,redact,runCodex,type ActiveProcess} from './providers';
@@ -24,6 +24,7 @@ function observedEvidence(record:CommandRecord,host:boolean):VerificationEvidenc
   const failed=command.exit_code!==0||!!metrics?.failed||(host&&metrics?.suspicious_empty);
   return {evidence_id:id('verification'),command:command.command,cwd:command.cwd,
     outcome:!host&&command.exit_code===null?'blocked':failed?'failed':'passed',exit_code:command.exit_code,origin:'observed',metrics,
+    ...(host&&command.verification_kind&&{verification_kind:command.verification_kind}),
     code_state:state,created_at:command.completed_at,log_path:log,code_state_verified:stateVerified,
     note:host?'ARC 宿主在绑定工作区执行并采集代码状态。':'代码状态采集于命令完成回执后。'+(stateVerified?'':'采集期间出现后续命令或修改，验证对应代码状态不确定。')};
 }
@@ -68,7 +69,10 @@ function reconcileHostSteps(result:DevelopmentResult,current:EngineeringTask,rec
   result.unresolved=result.unresolved.map(strip).filter(Boolean);
   const updates=new Map(result.steps?.map(step=>[step.step_id,step]));
   const savedSteps=(current.steps??[]).filter(step=>!updates.has(step.step_id));
+  const focus=current.active_behavior_focus;
+  const targetSteps=focus&&current.requirement_package?.behaviors.find(item=>item.id===focus.behavior_id)?.step_ids;
   for(const step of [...savedSteps,...updates.values()]){
+    if(targetSteps&&!targetSteps.includes(step.step_id))continue;
     if(step.status!=='in_progress'&&step.status!=='completed')continue;
     const progress=strip(step.progress),unresolved=step.unresolved.map(strip).filter(Boolean);
     if(progress===step.progress&&step.unresolved.every((line,index)=>line===unresolved[index]))continue;
@@ -92,6 +96,7 @@ export class DevelopmentService {
   readonly active=new Map<string,ActiveProcess>();
   readonly executing=new Map<string,Promise<void>>();
   private starting=new Set<string>();
+  private readonly hostChecks=new Set<Promise<unknown>>();
   private cancelled=new Set<string>();
   private closing=false;
   constructor(readonly engineering:EngineeringService,readonly store:Store,readonly resources:string,readonly emit:(event:any)=>void,
@@ -100,6 +105,69 @@ export class DevelopmentService {
     private readonly hostVerify:typeof runHostVerification|undefined=runner===runDevelopmentCodex?runHostVerification:undefined,
     private readonly diffReview:typeof reviewDevelopmentDiff|undefined=runner===runDevelopmentCodex?reviewDevelopmentDiff:undefined){}
   private event(attemptId:string,value:any){this.engineering.appendAttemptEvent(attemptId,JSON.parse(redact(JSON.stringify(value))));this.emit({type:'development_event',attempt_id:attemptId});}
+  private async logCommand(directory:string,command:DevelopmentCommand){
+    const log=`${directory}/${id('command')}.log`;
+    await fs.mkdir(path.dirname(path.join(this.store.directory,log)),{recursive:true});
+    await fs.writeFile(path.join(this.store.directory,log),`${command.command}\n${command.output}`);
+    const {label,skipped_flag,...metrics}=inspectVerificationOutput(command.command,command.exit_code,command.output);
+    return {command,log,label,metrics:Object.keys(metrics).length?metrics:undefined};
+  }
+  private checkLocalAvailability(workspace:WorkspaceBinding){
+    if(this.closing||this.starting.has(workspace.workspace_id)||
+      [...this.executing.keys()].some(key=>this.store.get<DevelopmentAttempt>('development_attempt',key).workspace_id===workspace.workspace_id)){
+      throw Error('此工作区已有开发任务，请等待结束或停止后再继续。');
+    }
+  }
+  async runHostChecks(taskId:string,kinds?:HostCheckKind[]){
+    if(kinds!==undefined&&(!Array.isArray(kinds)||kinds.some(kind=>!['typecheck','test','build'].includes(kind))))throw Error('未知的工程检查类型');
+    const task=this.engineering.task(taskId);
+    const workspace=await this.engineering.resolve({project_id:task.project_id,workspace_path:task.workspace_path});
+    this.checkLocalAvailability(workspace);
+    const pending=this.engineering.withHostCheckLock(workspace,async()=>{
+      const env=await this.engineering.projectEnvironment(task.project_id);
+      const before=await this.engineering.captureState(task.project_id,workspace.root_path);
+      const logs:Awaited<ReturnType<DevelopmentService['logCommand']>>[]=[];
+      const record=async(completed:boolean)=>{
+        const after=await this.engineering.captureState(task.project_id,workspace.root_path);
+        const stateVerified=completed&&sameVerificationState(before,after);
+        const receipts=logs.map(log=>observedEvidence({...log,state:after,stateVerified},true));
+        const saved=this.engineering.recordHostChecks(taskId,receipts,after);
+        this.emit({type:'engineering_changed'});
+        return {task:saved,receipts};
+      };
+      const checks=await runHostVerification({workspace:workspace.root_path,env,writeScope:task.scope,kinds,isStopped:()=>this.closing,
+        onCommand:async command=>{logs.push(await this.logCommand(`development/${taskId}/host-checks`,command));}}).catch(async error=>{
+        if(logs.length)await record(false);
+        throw error;
+      });
+      return {...await record(true),skipped:checks.skipped,failed:checks.failed.map(({command,exit_code,reason})=>({command,exit_code,reason}))};
+    });
+    this.hostChecks.add(pending);
+    try{return await pending;}finally{this.hostChecks.delete(pending);}
+  }
+  async reviseBehavior(input:PrepareBehaviorRevisionInput & {project_id:string},mode:LocalMode):Promise<EngineeringTask>{
+    if(input.action==='add_verification'&&mode==='dsh')throw Error('DSH 仅支持编辑源码，无法运行命令补齐场景验证，请改用 Codex 或直接运行工程检查。');
+    const prior=this.engineering.task(input.task_id);
+    const workspace=await this.engineering.resolve({project_id:input.project_id,workspace_path:prior.workspace_path});
+    if(prior.workspace_id!==workspace.workspace_id)throw Error('此需求属于另一个工作区');
+    if(prior.requests?.some(request=>request.submission_key===input.submission_key)&&
+      !(prior.status==='pending'&&prior.active_behavior_focus&&prior.requests.at(-1)?.submission_key===input.submission_key))return prior;
+    this.checkLocalAvailability(workspace);
+    this.engineering.checkWorkspaceAvailable(workspace);
+    this.starting.add(workspace.workspace_id);
+    try{
+      const scope=prior.approval?.scope??prior.proposed_scope??[];
+      await resolveDevelopmentScope(workspace.root_path,scope);
+      const state=await this.engineering.captureState(input.project_id,workspace.root_path);
+      await this.engineering.retainRollbackAssets(workspace,state,scope);
+      if(this.closing)throw Error('Arc 正在退出，未启动开发任务');
+      this.engineering.checkWorkspaceAvailable(workspace);
+      const task=await this.engineering.prepareBehaviorRevision(input,mode,undefined,state);
+      const attempt=this.engineering.startAttempt(task.task_id,{provider_id:mode,model:'等待本机引擎',origin:'arc',write_scope:task.scope});
+      this.launch(attempt);
+      return this.engineering.task(task.task_id);
+    }finally{this.starting.delete(workspace.workspace_id);}
+  }
   events(taskId:string){const task=this.engineering.task(taskId),attempts=task.attempt_ids.map(key=>this.store.get<DevelopmentAttempt>('development_attempt',key));return {attempts,events:attempts.flatMap(attempt=>this.engineering.attemptEvents(attempt.attempt_id).map((item:any)=>({...item.event,received_at:item.at,attempt_id:attempt.attempt_id})))};}
   async start(input:CreateEngineeringTask&{project_id:string;scope:string[]}):Promise<EngineeringTask>{
     const workspace=await this.engineering.resolve({project_id:input.project_id});
@@ -185,11 +253,9 @@ export class DevelopmentService {
       const atReceipt=possibleWrite;
       captureQueue=captureQueue.then(async()=>{
         const state=await this.engineering.captureState(task.project_id,task.workspace_path);
-        const log=`development/${taskId}/${attemptId}/${id('command')}.log`;
-        await fs.mkdir(path.dirname(path.join(this.store.directory,log)),{recursive:true});
-        await fs.writeFile(path.join(this.store.directory,log),`${command.command}\n${command.output}`);
-        const {label,skipped_flag,...metrics}=inspectVerificationOutput(command.command,command.exit_code,command.output);
-        const record={command,state,log,stateVerified:atReceipt===possibleWrite,metrics:Object.keys(metrics).length?metrics:undefined};
+        const logged=await this.logCommand(`development/${taskId}/${attemptId}`,command);
+        const {label,log}=logged;
+        const record={...logged,state,stateVerified:atReceipt===possibleWrite};
         if(host){
           const current=this.engineering.task(taskId);
           const criterion=current.steps?.find(step=>step.step_id===link?.step_id)?.criteria.find(c=>c.criterion_id===link?.criterion_id);
@@ -302,7 +368,7 @@ export class DevelopmentService {
     if(this.isStopped(attemptId))throw Error('执行已停止，拒绝迟到开发结果');
     const current=this.engineering.task(taskId);
     if(hostPassed)reconcileHostSteps(result,current,latestReceipts);
-    const saved=await this.engineering.finishTask({task_id:taskId,attempt_id:attemptId,expected_version:current.version,submission_key:`${attemptId}:finish`,status:result.status,completion_binding:end.workspace_fingerprint?{workspace_path:task.workspace_path,workspace_fingerprint:end.workspace_fingerprint,head:end.head,branch:end.branch,git_common_dir:end.git_common_dir}:null,summary:result.summary,decisions:[...new Set(decisions)],unresolved:[...result.unresolved,...entryFailures],steps:result.steps,verification},()=>!this.isStopped(attemptId),gates.diffReview);
+    const saved=await this.engineering.finishTask({task_id:taskId,attempt_id:attemptId,expected_version:current.version,submission_key:`${attemptId}:finish`,status:result.status,completion_binding:end.workspace_fingerprint?{workspace_path:task.workspace_path,workspace_fingerprint:end.workspace_fingerprint,head:end.head,branch:end.branch,git_common_dir:end.git_common_dir}:null,summary:result.summary,decisions:[...new Set(decisions)],unresolved:[...result.unresolved,...entryFailures],steps:result.steps,verification},()=>!this.isStopped(attemptId),gates.diffReview,{results:result.scenario_results,receipts:[...hostReceipts.values(),...verification]});
     this.engineering.updateAttempt(attemptId,{status:saved.status==='completed'?'completed':'failed'});
     this.event(attemptId,{type:'local.stage',message:`开发结果已自动保存到原任务，验证状态：${saved.verification_status}。${entryFailures.length?`另有 ${entryFailures.length} 项工程条目未保存，详见未解决事项。`:''}`});
   }
@@ -497,5 +563,5 @@ export class DevelopmentService {
     try{await process.cancel();}catch(error){this.cancelled.delete(attemptId);this.engineering.updateAttempt(attemptId,{status:'interrupted',error:'无法确认开发进程已停止：'+redact(String(error))});throw error;}
     return {task_id:taskId,status:'cancel_requested'};
   }
-  async shutdown(){this.closing=true;await Promise.allSettled([...this.executing.keys()].map(attemptId=>this.cancel(this.store.get<DevelopmentAttempt>('development_attempt',attemptId).task_id)));await Promise.allSettled([...this.executing.values()]);}
+  async shutdown(){this.closing=true;await Promise.allSettled([...this.executing.keys()].map(attemptId=>this.cancel(this.store.get<DevelopmentAttempt>('development_attempt',attemptId).task_id)));await Promise.allSettled([...this.executing.values(),...this.hostChecks]);}
 }
