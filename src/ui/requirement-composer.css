@@ -22,11 +22,152 @@
   gap: 6px;
 }
 .composer-heading, .composer-footer { justify-content: space-between; gap: 6px 14px; }
-.composer-heading { padding-block: 13px; border-bottom: 1px solid var(--border-subtle); }
-.requirement-composer .composer-heading h2 { margin: 0; font-size: 15px; font-weight: 580; }
-.composer-phases { margin: 0; padding: 0; list-style: none; font-size: 12px; color: var(--muted); gap: 2px 5px; }
-.composer-phases li { white-space: nowrap; }
-.composer-phases li[aria-current] { color: var(--ink-secondary); }
+.composer-heading { padding-block: 12px; border-bottom: 1px solid var(--border-subtle); }
+.requirement-composer .composer-heading h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.composer-subtitle { margin: 3px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+
+.composer-context-strip {
+  margin-bottom: 14px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-tint);
+  display: grid;
+  gap: 8px;
+}
+.composer-context-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+.composer-context-kicker {
+  font-size: 11.5px;
+  font-weight: 620;
+  color: var(--muted);
+  margin-right: 2px;
+}
+.composer-ctx-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.composer-ctx-pill.is-ok::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.composer-ctx-pill.is-warn {
+  border-color: var(--amber-border);
+  background: var(--amber-bg);
+  color: #8a5610;
+}
+.composer-ctx-pill.is-feature {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--soft);
+  color: var(--accent-hover);
+  font-weight: 550;
+}
+.composer-ctx-pill code {
+  font-size: 11px;
+  color: var(--muted);
+}
+.composer-ctx-pill.is-clickable {
+  cursor: pointer;
+  color: var(--accent-hover);
+}
+.composer-ctx-pill.is-clickable:hover {
+  border-color: var(--accent);
+  background: var(--soft);
+}
+.composer-ctx-clear {
+  min-height: 0;
+  padding: 0 3px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+}
+.composer-ctx-clear:hover { color: var(--ink); }
+.composer-feature-picker {
+  min-height: 26px;
+  padding: 2px 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-secondary);
+  font-size: 12px;
+  max-width: 24rem;
+}
+.composer-constraint-list {
+  margin: 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border-subtle);
+  list-style: none;
+  display: grid;
+  gap: 5px;
+}
+.composer-constraint-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink-secondary);
+}
+.composer-constraint-list li .composer-link { margin-left: auto; flex: none; }
+.composer-constraint-tag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--soft);
+  color: var(--accent-hover);
+  font-size: 11px;
+  font-weight: 600;
+}
+.composer-settings-drawer {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-tint);
+  overflow: hidden;
+}
+.composer-settings-drawer > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--muted);
+  list-style: none;
+}
+.composer-settings-drawer > summary::-webkit-details-marker { display: none; }
+.composer-settings-drawer > summary::after {
+  content: '▾';
+  margin-left: auto;
+  font-size: 11px;
+}
+.composer-settings-drawer[open] > summary::after { content: '▴'; }
+.composer-settings-title {
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+.composer-settings-drawer .composer-exec-strip {
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
+  min-height: 0;
+  background: var(--surface);
+}
 
 .composer-body { padding-block: 16px; }
 .composer-goal-label, .requirement-composer .composer-boundaries h3 {
@@ -47,7 +188,7 @@
   font-size: 14px;
   line-height: 1.65;
 }
-.composer-heading .composer-engines { margin-right: auto; }
+.composer-heading .composer-engines { flex: none; }
 .composer-targets { margin-top: 12px; }
 .composer-targets textarea { min-height: 3.5rem; max-height: 10rem; font-family: var(--font-mono); }
 .composer-targets .composer-scope-options { margin-top: 5px; }

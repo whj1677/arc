@@ -172,11 +172,13 @@ export function TaskBehaviorCockpit({
   // Inline scenario addition state
   const [newInput, setNewInput] = useState('');
   const [newExpected, setNewExpected] = useState('');
+  const [focusScenarioId, setFocusScenarioId] = useState<string | null>(null);
   const [panelError, setPanelError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   const decisionRef = useRef<HTMLElement>(null);
   const stageRef = useRef<HTMLElement>(null);
+  const adjustPanelRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (!model.behaviors.some(b => b.id === selectedId)) {
@@ -186,8 +188,23 @@ export function TaskBehaviorCockpit({
 
   useEffect(() => {
     setActivePanel(null);
+    setFocusScenarioId(null);
     setPanelError('');
   }, [selectedId, task.task_id, task.version]);
+
+  useEffect(() => {
+    if (!activePanel) return;
+    requestAnimationFrame(() => {
+      adjustPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      if (activePanel === 'adjust_rule' && focusScenarioId) {
+        const input = adjustPanelRef.current?.querySelector<HTMLInputElement>(`input[data-edit-scenario-id="${CSS.escape(focusScenarioId)}"]`);
+        if (input) {
+          input.focus();
+          input.select();
+        }
+      }
+    });
+  }, [activePanel, focusScenarioId]);
 
   const selected = model.behaviors.find(b => b.id === selectedId) ?? model.behaviors[0];
   const isPlan = model.phase === 'plan';
@@ -199,7 +216,7 @@ export function TaskBehaviorCockpit({
   const sourceLabel = anchor ? `${anchor.path}:L${anchor.line_start}–L${anchor.line_end}` : '';
   const hasBlockers = model.attention.decisions.length > 0 || model.attention.ownership.length > 0 || task.diff_review?.verdict === 'needs_fix';
 
-  function openAdjustRule(behavior: TaskBehavior, decision?: RuleDecisionView, preselectOptionId?: string) {
+  function openAdjustRule(behavior: TaskBehavior, decision?: RuleDecisionView, preselectOptionId?: string, targetScenarioId?: string) {
     const activeDec = decision ?? behavior.decisions[0];
     const currentOptId = preselectOptionId ?? activeDec?.chosen_option_id;
     const prevOpt = activeDec?.chosen_option_id ? activeDec.options.find(o => o.id === activeDec.chosen_option_id) : undefined;
@@ -218,6 +235,7 @@ export function TaskBehaviorCockpit({
     setDraftRule(nextOpt?.label ?? behavior.ruleSummary);
     setDraftScenarios(updatedScenarios);
     setDraftInstruction('');
+    setFocusScenarioId(targetScenarioId ?? null);
     setPanelError('');
     setActivePanel('adjust_rule');
   }
@@ -591,7 +609,17 @@ export function TaskBehaviorCockpit({
             <span>业务变更</span>
             <small>{model.behaviors.length} 项</small>
           </div>
-          <ol className="bw-behavior-list">
+          <ol
+            className="bw-behavior-list"
+            onKeyDown={e => {
+              if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+              const idx = model.behaviors.findIndex(b => b.id === selected?.id);
+              if (idx < 0) return;
+              const nextIdx = e.key === 'ArrowDown' ? (idx + 1) % model.behaviors.length : (idx - 1 + model.behaviors.length) % model.behaviors.length;
+              e.preventDefault();
+              setSelectedId(model.behaviors[nextIdx].id);
+            }}
+          >
             {model.behaviors.map((item, idx) => {
               const active = item.id === selected?.id;
               return (
@@ -636,14 +664,14 @@ export function TaskBehaviorCockpit({
                 {selected.files.length > 0 && (
                   <button
                     type="button"
-                    className="bw-inline-link"
-                    onClick={() => onViewChanges(selected.changes.length === 1 ? selected.changes[0].path : undefined)}
+                    className="bw-stage-chip"
+                    onClick={() => onViewChanges(selected.changes.length === 1 ? selected.changes[0].path : selected.files[0])}
                   >
                     修改位置 · {selected.files.length} 文件
                   </button>
                 )}
                 {model.evolutionSignal.available && onOpenEvolution && (
-                  <button type="button" className="bw-inline-link" onClick={onOpenEvolution}>
+                  <button type="button" className="bw-stage-chip" onClick={onOpenEvolution}>
                     {model.evolutionSignal.shouldHighlight ? '相关调用与架构变化' : '相关调用与代码差异'}
                   </button>
                 )}
@@ -826,6 +854,16 @@ export function TaskBehaviorCockpit({
                                 {row.logPath ? '记录' : '证据'}
                               </button>
                             )}
+                            {canMutateBehavior && row.editable && (
+                              <button
+                                type="button"
+                                className="bw-inline-link bw-row-edit-btn"
+                                onClick={() => openAdjustRule(selected, undefined, undefined, row.id)}
+                                title="直接调整该场景的期望或规则"
+                              >
+                                改期望
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -838,7 +876,15 @@ export function TaskBehaviorCockpit({
 
               {/* 行内追加验收场景 */}
               {activePanel === 'add_scenario' && canMutateBehavior && (
-                <div className="bw-closed-loop-panel" role="region" aria-label="追加验收场景">
+                <div
+                  ref={adjustPanelRef as React.RefObject<HTMLDivElement>}
+                  className="bw-closed-loop-panel"
+                  role="region"
+                  aria-label="追加验收场景"
+                  onKeyDown={e => {
+                    if (e.key === 'Escape' && !e.nativeEvent.isComposing) setActivePanel(null);
+                  }}
+                >
                   <div className="bw-panel-head">
                     <strong>为「{selected.shortTitle}」追加验收场景</strong>
                     <button type="button" className="bw-inline-link" onClick={() => setActivePanel(null)}>
@@ -932,7 +978,14 @@ export function TaskBehaviorCockpit({
 
             {/* 闭环面板 A：调整此项要求 + 场景期望影响预览 + 交由执行器处理 */}
             {activePanel === 'adjust_rule' && canMutateBehavior && (
-              <section className="bw-closed-loop-panel" aria-label="调整此项要求与影响预览">
+              <section
+                ref={adjustPanelRef}
+                className="bw-closed-loop-panel"
+                aria-label="调整此项要求与影响预览"
+                onKeyDown={e => {
+                  if (e.key === 'Escape' && !e.nativeEvent.isComposing) setActivePanel(null);
+                }}
+              >
                 <div className="bw-panel-head">
                   <strong>调整「{selected.shortTitle}」规则与场景期望</strong>
                   <button type="button" className="bw-inline-link" onClick={() => setActivePanel(null)}>
@@ -963,23 +1016,37 @@ export function TaskBehaviorCockpit({
                   </div>
                 ))}
 
-                <label className="bw-field">
-                  新的规则约定
-                  <textarea
-                    rows={2}
-                    value={draftRule}
-                    onChange={e => setDraftRule(e.target.value)}
-                    placeholder="明确写出改后的业务规则，例如：每满 500 减 50，可累计"
-                  />
-                </label>
+                <div className="bw-adjust-split">
+                  <label className="bw-field">
+                    新的规则约定
+                    <textarea
+                      rows={2}
+                      value={draftRule}
+                      onChange={e => setDraftRule(e.target.value)}
+                      placeholder="明确写出改后的业务规则，例如：每满 500 减 50，可累计"
+                    />
+                  </label>
+                  {!isPlan && (
+                    <label className="bw-field">
+                      给执行器的补充说明（可选）
+                      <textarea
+                        rows={2}
+                        value={draftInstruction}
+                        onChange={e => setDraftInstruction(e.target.value)}
+                        placeholder="自动携带当前行为约定、期望差异与关联文件"
+                      />
+                    </label>
+                  )}
+                </div>
 
                 {draftScenarios.length > 0 && (
                   <div className="bw-adjust-scenarios">
                     <span className="bw-kicker">同步核对受影响场景的期望结果</span>
                     {draftScenarios.map((row, idx) => (
-                      <div key={row.id} className="bw-adjust-scenario-row">
+                      <div key={row.id} className={`bw-adjust-scenario-row${focusScenarioId === row.id ? ' is-focused' : ''}`}>
                         <span className="bw-adjust-input">{row.input}</span>
                         <input
+                          data-edit-scenario-id={row.id}
                           aria-label={`场景 ${row.input} 的期望结果`}
                           value={row.expected}
                           onChange={e => {
@@ -1021,17 +1088,6 @@ export function TaskBehaviorCockpit({
                   </ul>
                 </div>
 
-                {!isPlan && (
-                  <label className="bw-field">
-                    给执行器的补充说明（可选）
-                    <input
-                      value={draftInstruction}
-                      onChange={e => setDraftInstruction(e.target.value)}
-                      placeholder="自动携带当前行为约定、场景期望差异与关联文件"
-                    />
-                  </label>
-                )}
-
                 {panelError && (
                   <p className="warning" role="alert">
                     {panelError}
@@ -1059,7 +1115,14 @@ export function TaskBehaviorCockpit({
 
             {/* 闭环面板 B：要求修正实现 / 补齐这项验证 */}
             {(activePanel === 'fix_implementation' || activePanel === 'add_verification') && canMutateBehavior && (
-              <section className="bw-closed-loop-panel" aria-label={activePanel === 'fix_implementation' ? '要求修正实现' : '补齐这项验证'}>
+              <section
+                ref={adjustPanelRef}
+                className="bw-closed-loop-panel"
+                aria-label={activePanel === 'fix_implementation' ? '要求修正实现' : '补齐这项验证'}
+                onKeyDown={e => {
+                  if (e.key === 'Escape' && !e.nativeEvent.isComposing) setActivePanel(null);
+                }}
+              >
                 <div className="bw-panel-head">
                   <strong>{activePanel === 'fix_implementation' ? `要求修正「${selected.shortTitle}」实现` : `补齐「${selected.shortTitle}」验证`}</strong>
                   <button type="button" className="bw-inline-link" onClick={() => setActivePanel(null)}>

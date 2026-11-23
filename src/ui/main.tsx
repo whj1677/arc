@@ -28,6 +28,7 @@ import {
 import { timelineModel } from './timeline-model';
 import { savedBusinessPath } from './home-reading';
 import { EngineeringOverviewSections, EngineeringWorkspace } from './EngineeringWorkspace';
+import type { FeatureContextOption, RequirementReadingDraft } from './RequirementComposer';
 import type { TaskArchitectureOverlay } from './DevelopmentHud';
 import { WorkbenchNavigation, type WorkbenchView } from './WorkbenchNavigation';
 import { edgeSelection, readingQuestionTarget } from './reading-target';
@@ -102,10 +103,11 @@ function App() {
   const [featureDrafts, setFeatureDrafts] = useState<Record<string, FeatureDevelopmentDraft>>({});
   const [bookmark, setBookmark] = useState<HomeBookmark | null>(null);
   const [focusDevelopment, setFocusDevelopment] = useState(false);
+  const [composerDraft, setComposerDraft] = useState<RequirementReadingDraft | null>(null);
   const [requestedTask, setRequestedTask] = useState('');
   const [archOverlay, setArchOverlay] = useState<TaskArchitectureOverlay | null>(null);
   const [railCollapsed, setRailCollapsed] = useState(false);
-  useEffect(() => { setArchOverlay(null); }, [projectId]);
+  useEffect(() => { setArchOverlay(null); setComposerDraft(null); }, [projectId]);
   const [indexes, setIndexes] = useState<Record<string, any>>({});
   const [showDetail, setShowDetail] = useState(false);
   const [showCatalog, setShowCatalog] = useState(false);
@@ -1511,6 +1513,11 @@ function App() {
         reload={reload}
         onViewResult={viewFeatureResult}
         onOpenTask={openFeatureTask}
+        onOpenComposer={draft => {
+          setComposerDraft(draft);
+          setFocusDevelopment(true);
+          switchView('engineering', { mode: 'normal', catalog_hidden: true });
+        }}
       />,
     } : undefined;
 
@@ -1626,6 +1633,31 @@ function App() {
     setFocusDevelopment(true);
     switchView('engineering', { mode: 'normal', catalog_hidden: true });
   }
+
+  const featureContextOptions: FeatureContextOption[] = project
+    ? data.scenarios
+        .filter(s => s.project_id === project.project_id && s.scenario_id !== project.overview_scenario_id)
+        .flatMap(s => {
+          const latest = data.explanations
+            .filter(e => e.scenario_id === s.scenario_id)
+            .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+            .at(-1);
+          if (!latest) return [];
+          const firstEvidence = latest.result.evidence[0];
+          return [{
+            scenarioId: s.scenario_id,
+            label: s.title,
+            reading: {
+              feature_id: s.feature_id,
+              scenario_id: s.scenario_id,
+              result_id: latest.result_id,
+              source_snapshot_id: latest.result.binding.source_snapshot_id,
+              target: { kind: 'feature', id: s.feature_id },
+              ...(firstEvidence ? { evidence: firstEvidence } : {}),
+            },
+          }];
+        })
+    : [];
 
   const overviewSections = overviewSectionsVisible && project && (
     <EngineeringOverviewSections
@@ -2097,6 +2129,9 @@ function App() {
                   enginePending={pending}
                   focusGoal={focusDevelopment}
                   onGoalFocused={() => setFocusDevelopment(false)}
+                  readingDraft={composerDraft}
+                  onClearReadingDraft={() => setComposerDraft(null)}
+                  featureOptions={featureContextOptions}
                   back={() => setEntrance('overview')}
                   onArchitectureOverlay={overlay => {
                     chooseScenario(project.overview_scenario_id || '', {

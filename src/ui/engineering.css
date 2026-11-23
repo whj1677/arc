@@ -166,3 +166,53 @@
 .feature-development.compact{min-width:0;gap:.4rem;margin:0;padding:.55rem .75rem 0;border:0;background:transparent}
 .feature-development.compact form label{margin:.25rem 0 0}
 .feature-development.compact .feature-task-status{font-size:13px}
+
+
+/* Compact unified toolbar + dismissible notice */
+.eng-toolbar-title-wrap{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px}
+.eng-toolbar-title-wrap p{margin:0;width:100%}
+.engineering-notice-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 16px;border-bottom:1px solid color-mix(in srgb,var(--accent) 24%,var(--border));background:color-mix(in srgb,var(--soft) 55%,var(--surface));color:var(--accent-hover);font-size:13px}
+
+/* Redesigned Project Materials: wide editorial reading pane, rules-first directory, missing-knowledge strip */
+.engineering-context-panel.engineering-materials-home{padding:14px 18px 18px;border-bottom:0}
+.eng-materials-shell{display:grid;gap:12px;min-height:0}
+.eng-mat-banner{margin:0}
+.eng-notice-inline{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 12px;border:1px solid color-mix(in srgb,var(--accent) 28%,var(--border));border-radius:var(--radius-sm);background:var(--soft);color:var(--accent-hover);font-size:12.5px}
+.eng-missing-strip{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px;padding:8px 12px;border:1px solid var(--amber-border);border-radius:var(--radius-md);background:#fffcf4}
+.eng-missing-label{font-size:12px;font-weight:620;color:#8a5610;white-space:nowrap}
+.eng-missing-chips{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.eng-missing-chip{min-height:26px;padding:2px 10px;border:1px solid var(--amber-border);border-radius:999px;background:var(--surface);color:#7c4d0f;font-size:12px;font-weight:540}
+.eng-missing-chip:hover:not(:disabled){border-color:var(--accent);background:var(--soft);color:var(--accent-hover)}
+.engineering-materials-home .engineering-material-layout{grid-template-columns:clamp(14.5rem,22%,18.5rem) minmax(0,1fr);gap:20px;align-items:start}
+.engineering-materials-home .engineering-material-directory{padding-right:14px;max-height:calc(100vh - 180px)}
+.eng-mat-dir-tools{display:grid;gap:6px;padding-bottom:10px;margin-bottom:8px;border-bottom:1px solid var(--border-subtle)}
+.eng-mat-dir-tools .engineering-material-search{width:100%;min-width:0;max-width:none;box-sizing:border-box}
+.eng-mat-dir-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.eng-mat-dir-row .engineering-material-filter{flex:1 1 auto;min-width:0}
+.eng-mat-source-index{display:inline-block;justify-self:start;padding:0 5px;border-radius:4px;background:var(--surface-tint);border:1px solid var(--border-subtle);color:var(--muted);font-family:var(--font-mono);font-size:11px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.engineering-materials-home .engineering-material-article{min-width:0;max-width:none;padding:20px 26px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);box-shadow:var(--shadow-xs)}
+.engineering-materials-home .engineering-material-article .eng-mat-reader{margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;max-width:none}
+.eng-mat-article-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-bottom:12px;margin-bottom:14px;border-bottom:1px solid var(--border-subtle)}
+.eng-mat-article-cat{display:inline-block;margin-bottom:4px;padding:1px 7px;border-radius:999px;background:var(--soft);color:var(--accent-hover);font-size:11.5px;font-weight:600}
+.eng-mat-article-head h3{margin:0;font-size:19px;font-weight:620;color:var(--ink);line-height:1.35}
+.eng-mat-article-src{display:block;margin-top:4px;font-size:12px;color:var(--muted)}
+.eng-mat-article-src code{font-family:var(--font-mono);font-size:11.5px;color:var(--ink-secondary)}
+.eng-mat-placeholder-callout{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:10px 14px;margin-bottom:14px;border:1px solid var(--amber-border);border-radius:var(--radius-sm);background:var(--amber-bg);color:#7c4d0f;font-size:13px}
+.eng-mat-form-row{display:grid;grid-template-columns:11rem minmax(0,1fr);gap:10px}
+.eng-mat-body{font-size:14.5px;line-height:1.85;max-width:92ch}
+.eng-mat-meta{margin-top:20px;padding-top:14px;border-top:1px solid var(--border-subtle);display:grid;gap:8px}
+.eng-mat-meta-row{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;color:var(--muted)}
+
+/* Slide-over Inspect Drawer for Diff & Logs (keeps scroll position intact) */
+.eng-inspect-backdrop{position:fixed;inset:0;z-index:60;background:rgba(15,24,22,.28);display:flex;justify-content:flex-end}
+.eng-inspect-drawer{width:min(760px,92vw);height:100%;background:var(--surface);border-left:1px solid var(--border);box-shadow:-12px 0 36px rgba(12,24,20,.16);display:grid;grid-template-rows:auto minmax(0,1fr);min-width:0}
+.eng-inspect-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 18px;border-bottom:1px solid var(--border);background:var(--surface-tint)}
+.eng-inspect-head h3{margin:0;font-size:15px;font-weight:620;color:var(--ink);overflow-wrap:anywhere}
+.eng-inspect-head small{display:block;margin-top:2px;font-size:12px;color:var(--muted)}
+.eng-inspect-body{padding:14px 18px;overflow:auto;min-width:0;display:grid;align-content:start;gap:12px}
+.eng-inspect-file-tabs{display:flex;flex-wrap:wrap;gap:6px}
+.eng-inspect-file-tab{display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:3px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-tint);color:var(--ink-secondary);font-size:12px}
+.eng-inspect-file-tab.is-active{border-color:var(--accent);background:var(--soft);color:var(--accent-hover);font-weight:600}
+.eng-inspect-file-tab code{font-family:var(--font-mono);font-size:12px}
+.eng-inspect-log{margin:0;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius-sm);background:#0f1716;color:#e6f0ec;font-family:var(--font-mono);font-size:12.5px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:850px){.engineering-materials-home .engineering-material-layout{grid-template-columns:1fr}.eng-mat-form-row{grid-template-columns:1fr}}

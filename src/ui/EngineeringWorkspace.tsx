@@ -1,7 +1,7 @@
 import React,{useCallback,useEffect,useRef,useState,useSyncExternalStore} from 'react';
 import {analysisModes,type AnalysisMode} from './discovery-state';
 import type {Project,SourceEvidence,SourceFile,AnalysisResult} from '../shared';
-import type {ContextEntry,ContextSource,EngineeringContext,EngineeringTask,DevelopmentAttempt,VerificationEvidence,UpdateBehaviorContractInput,PrepareBehaviorRevisionInput} from '../engineering';
+import type {ContextEntry,ContextSource,EngineeringContext,EngineeringTask,DevelopmentAttempt,TaskReadingBinding,VerificationEvidence,UpdateBehaviorContractInput,PrepareBehaviorRevisionInput} from '../engineering';
 import {SourceExcerpt} from './SourceExcerpt';
 import {TextDiffView} from './TextDiffView';
 import {EngineeringSections,ContextBody,ContextText,ExternalExecutor,type EngineeringSection} from './EngineeringSections';
@@ -10,7 +10,7 @@ import {DeliveryHud,useTaskHud,type TaskArchitectureOverlay} from './Development
 import {EvolutionCockpit,type EvolutionFileDiff} from './EvolutionCockpit';
 import {ProjectEnvironmentCard} from './ProjectEnvironmentCard';
 import {useProjectEnvironment} from './project-environment-store';
-import {RequirementComposer,type RequirementSubmission} from './RequirementComposer';
+import {RequirementComposer,type FeatureContextOption,type RequirementReadingDraft,type RequirementSubmission} from './RequirementComposer';
 import type {CodexModelSelection} from './CodexModelSelect';
 import {commandBody,sameVerificationState,verificationEvidenceLabel} from '../delivery-audit';
 import {DeliveryAuditBar} from './DeliveryAuditBar';
@@ -117,9 +117,74 @@ function shortMaterialTitle(name: string): string {
   return parts.length <= 2 ? name : `…/${parts.slice(-2).join('/')}`;
 }
 
-function ContextFacts({context,reload,onMore}:{context:EngineeringContext;reload:()=>Promise<unknown>;onMore?:()=>Promise<void>}){
+const barePathPattern = /^[a-zA-Z0-9._-]+(?:[\\/][a-zA-Z0-9._-]+)*$/;
+const placeholderRulePattern = /尚待工程负责人确认|暂无具体约束|待工程负责人|通用说明/;
+
+function materialHeadline(entry: ContextEntry, categoryLabel: string): { title: string; sourceIndex?: string } {
+  const rawName = contextEntryTitle(entry, categoryLabel).trim();
+  const looksLikeBarePath = barePathPattern.test(rawName) && (rawName.includes('/') || rawName.includes('\\') || /^(?:src|tests?|lib|app|pkg|cmd|internal|config|scripts?|docs?|web|ui|api|server|client|core)$/i.test(rawName) || /\.[a-z0-9]{1,5}$/i.test(rawName));
+  if (!looksLikeBarePath) {
+    const primarySource = entry.sources[0]?.path;
+    return { title: shortMaterialTitle(rawName), sourceIndex: primarySource && primarySource !== rawName ? shortMaterialTitle(primarySource) : undefined };
+  }
+  const firstLine = entry.text
+    .split(/\r?\n/)
+    .map(line => line.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '').trim())
+    .find(line => line.length >= 4 && !barePathPattern.test(line) && !/^来源[:：]/.test(line));
+  const summary = firstLine ? firstLine.split(/[。！？；;]/)[0].trim().slice(0, 28) : '';
+  const fallbackByName = /^tests?$/i.test(rawName) ? '测试套件与校验说明' : /^src$/i.test(rawName) ? '核心源码目录说明' : `${categoryLabel}说明`;
+  return {
+    title: summary && summary !== rawName ? summary : fallbackByName,
+    sourceIndex: shortMaterialTitle(rawName),
+  };
+}
+
+const recommendedKnowledgeSlots: {
+  category: ContextEntry['category'];
+  label: string;
+  defaultTitle: string;
+  template: string;
+  needsSupplement: (entries: ContextEntry[]) => boolean;
+}[] = [
+  {
+    category: 'rule',
+    label: '业务约束与红线',
+    defaultTitle: '核心业务约束与不可破坏规则',
+    template: '## 必须遵守的业务规则\n- 规则 1：\n- 规则 2：\n\n## 边界与禁止事项\n- 不可修改或必须兼容的行为：\n',
+    needsSupplement: list => {
+      const rules = list.filter(e => e.category === 'rule' && !e.task_id && e.status !== 'superseded');
+      return !rules.length || rules.every(e => e.origin !== 'user' && placeholderRulePattern.test(e.text));
+    },
+  },
+  {
+    category: 'interface',
+    label: '接口与数据约定',
+    defaultTitle: '对外接口与数据契约说明',
+    template: '## 关键接口 / 数据结构\n- 入口与参数约定：\n- 返回值与错误码要求：\n\n## 兼容约束\n- 外部调用方依赖：\n',
+    needsSupplement: list => !list.some(e => e.category === 'interface' && !e.task_id && e.status !== 'superseded'),
+  },
+  {
+    category: 'build',
+    label: '构建与运行方式',
+    defaultTitle: '本地运行、构建与测试说明',
+    template: '## 启动与构建\n- 安装依赖：\n- 构建命令：\n\n## 验证方式\n- 单元测试：\n- 类型/静态检查：\n',
+    needsSupplement: list => !list.some(e => e.category === 'build' && !e.task_id && e.status !== 'superseded'),
+  },
+  {
+    category: 'decision',
+    label: '关键工程决定',
+    defaultTitle: '已确认的技术与业务取舍',
+    template: '## 决策背景\n- 面临的问题：\n\n## 选定方案与理由\n- 采用方案：\n- 放弃的备选及原因：\n',
+    needsSupplement: list => {
+      const items = list.filter(e => e.category === 'decision' && !e.task_id && e.status !== 'superseded');
+      return !items.length || items.every(e => e.key.startsWith('initial:') && e.origin !== 'user');
+    },
+  },
+];
+
+function ContextFacts({context,reload,onMore,onRefreshSource,checking,createTrigger}:{context:EngineeringContext;reload:()=>Promise<unknown>;onMore?:()=>Promise<void>;onRefreshSource?:()=>void;checking?:boolean;createTrigger?:number}){
   const [selected,setSelected]=useState<ContextEntry|null>(null),[editing,setEditing]=useState(false),[preview,setPreview]=useState(false);
-  const [category,setCategory]=useState<ContextEntry['category']>('issue'),[title,setTitle]=useState(''),[body,setBody]=useState('');
+  const [category,setCategory]=useState<ContextEntry['category']>('rule'),[title,setTitle]=useState(''),[body,setBody]=useState('');
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[readingFull,setReadingFull]=useState(false),[notice,setNotice]=useState(''),[versions,setVersions]=useState<ContextEntry[]>([]);
   const [loadingHistory,setLoadingHistory]=useState(false);
   const [searchText,setSearchText]=useState(''),[filterCategory,setFilterCategory]=useState('');
@@ -127,6 +192,10 @@ function ContextFacts({context,reload,onMore}:{context:EngineeringContext;reload
   const [searching,setSearching]=useState(false);
   const sourcePanel=useRef<HTMLElement|null>(null),request=useRef(0);
   useEffect(()=>()=>{request.current++;},[]);
+  useEffect(()=>{
+    if(!createTrigger)return;
+    startCreate('rule','','');
+  },[createTrigger]);
   useEffect(()=>{
     const q=searchText.trim();
     if(!q&&!filterCategory){setRemoteResult(null);setSearching(false);return;}
@@ -144,8 +213,12 @@ function ContextFacts({context,reload,onMore}:{context:EngineeringContext;reload
   },[context.project_id,context.version,searchText,filterCategory]);
   const listedEntries=remoteResult?remoteResult.entries:context.entries;
   const listedTotal=remoteResult?remoteResult.total:context.total_entries;
+  const missingSlots=recommendedKnowledgeSlots.filter(slot=>slot.needsSupplement(context.entries));
   const initialized=useRef(false);
-  useEffect(()=>{if(initialized.current||!context.entries.length)return;initialized.current=true;const mine=request.current;void api.invoke('reading_get',{key:'engineering-material/'+context.project_id}).then(value=>{if(mine!==request.current)return;const entry=context.entries.find(e=>e.entry_id===value?.entry_id)??context.entries[0];void open(entry);}).catch(e=>{if(mine===request.current)setError(e.message);});},[context.entries]);
+  useEffect(()=>{if(initialized.current||!context.entries.length)return;initialized.current=true;const mine=request.current;void api.invoke('reading_get',{key:'engineering-material/'+context.project_id}).then(value=>{if(mine!==request.current)return;const preferredOrder:ContextEntry['category'][]=['rule','decision','interface','build','issue','purpose','module'];const preferred=preferredOrder.map(cat=>context.entries.find(e=>e.category===cat&&!e.task_id&&e.status!=='superseded')).find(Boolean);const entry=context.entries.find(e=>e.entry_id===value?.entry_id)??preferred??context.entries[0];void open(entry);}).catch(e=>{if(mine===request.current)setError(e.message);});},[context.entries]);
+  function startCreate(nextCategory:ContextEntry['category'],defaultTitle='',defaultBody=''){
+    clearSelection();setCategory(nextCategory);setTitle(defaultTitle);setBody(defaultBody);setEditing(true);setPreview(false);setError('');
+  }
   function select(entry:ContextEntry,edit:boolean){
     setSelected(entry);setCategory(entry.category);setTitle(contextEntryTitle(entry,categoryNames[entry.category]));setBody(entry.text);setEditing(edit);setPreview(false);
   }
@@ -169,44 +242,104 @@ function ContextFacts({context,reload,onMore}:{context:EngineeringContext;reload
   async function save(e:React.FormEvent){e.preventDefault();if(busy||!body.trim()||!title.trim())return;setBusy(true);setError('');try{
     const saved=await api.invoke<ContextEntry>('engineering_save_entry',{project_id:context.project_id,entry_id:selected?.entry_id,expected_version:selected?.version??0,submission_key:crypto.randomUUID(),category,key:title,text:body});setSelected(saved);setEditing(false);setVersions([]);setNotice('已保存当前有效资料；原始来源与旧版本保留。正文编辑未修改源码，也未执行验证。');await reload();
   }catch(e){setError((e as Error).message);}finally{setBusy(false);}}
-  return <>
-    <div className="row between" style={{flexWrap:'wrap',gap:'8px'}}>
-      <div className="row" style={{flexWrap:'wrap',gap:'8px'}}>
-        <button disabled={busy} onClick={()=>{clearSelection();setCategory('issue');setTitle('');setBody('');setEditing(true);setPreview(false);setError('');}}>新增工程资料</button>
-        <input className="engineering-material-search" type="search" aria-label="搜索工程资料" placeholder="搜索标题、路径或正文…" value={searchText} onChange={e=>setSearchText(e.target.value)}/>
-        <select className="engineering-material-filter" aria-label="按分类筛选工程资料" value={filterCategory} onChange={e=>setFilterCategory(e.target.value)}>
-          <option value="">全部分类</option>
-          {Object.entries(categoryNames).map(([key,label])=><option key={key} value={key}>{label}</option>)}
-        </select>
-        {(searchText||filterCategory)&&<button type="button" onClick={()=>{setSearchText('');setFilterCategory('');}}>清除筛选</button>}
+  const selectedHeadline=selected?materialHeadline(selected,categoryNames[selected.category]):null;
+  return <div className="eng-materials-shell">
+    {error&&<p role="alert" className="warning eng-mat-banner">{error}</p>}
+    {notice&&<div role="status" className="eng-notice-inline"><span>{notice}</span><button type="button" className="bw-inline-link" onClick={()=>setNotice('')}>关闭</button></div>}
+    {missingSlots.length>0&&!editing&&(
+      <div className="eng-missing-strip" aria-label="可补充的项目知识">
+        <span className="eng-missing-label">待补充项目特有知识</span>
+        <div className="eng-missing-chips">
+          {missingSlots.map(slot=>(
+            <button key={slot.category} type="button" className="eng-missing-chip" disabled={busy} onClick={()=>startCreate(slot.category,slot.defaultTitle,slot.template)}>
+              + 补充{slot.label}
+            </button>
+          ))}
+        </div>
       </div>
-      <small className="muted">
-        {searching?'搜索中…':remoteResult?`命中 ${listedTotal} 条（展示前 ${listedEntries.length} 条）`:`已加载 ${listedEntries.length} / 共 ${listedTotal} 条`}
-      </small>
+    )}
+    <div className="engineering-material-layout">
+      <nav className="engineering-material-directory" aria-label="工程资料目录">
+        <div className="eng-mat-dir-tools">
+          <input className="engineering-material-search" type="search" aria-label="搜索工程资料" placeholder="搜索规则、接口、目录…" value={searchText} onChange={e=>setSearchText(e.target.value)}/>
+          <div className="eng-mat-dir-row">
+            <select className="engineering-material-filter" aria-label="按分类筛选工程资料" value={filterCategory} onChange={e=>setFilterCategory(e.target.value)}>
+              <option value="">全部分类 ({listedTotal})</option>
+              {Object.entries(categoryNames).map(([key,label])=><option key={key} value={key}>{label}</option>)}
+            </select>
+            {(searchText||filterCategory)&&<button type="button" className="bw-inline-link" onClick={()=>{setSearchText('');setFilterCategory('');}}>清除</button>}
+          </div>
+          {searching&&<small className="muted">正在筛选资料…</small>}
+        </div>
+        {([
+          ['项目规则与约束',['rule','decision','issue']],
+          ['接口与运行方式',['interface','build','technology']],
+          ['工程概述与模块',['purpose','module']],
+          ['历史方案与验证',['plan','architecture','design','verification_plan']],
+        ] as [string,ContextEntry['category'][]][]).map(([group,categories])=>{
+          const entries=categories.flatMap(kind=>listedEntries.filter(e=>e.category===kind&&!e.task_id&&e.status!=='superseded').map(entry=>({entry,label:categoryNames[kind]})));
+          return entries.length>0&&<section key={group}><h3>{group}</h3>{entries.map(({entry,label})=>{
+            const info=materialHeadline(entry,label);
+            const rawName=contextEntryTitle(entry,label);
+            return <button key={entry.entry_id} disabled={busy} aria-pressed={selected?.entry_id===entry.entry_id} onClick={()=>{if(editing&&!window.confirm('离开编辑将丢弃未保存的正文，是否继续？'))return;void open(entry);}}>
+              <span className="engineering-material-kind">{label}</span>
+              <strong title={rawName}>{info.title}</strong>
+              {info.sourceIndex&&<code className="eng-mat-source-index">{info.sourceIndex}</code>}
+              <small>{originNames[entry.origin]} · v{entry.version}{entry.status==='needs_review'?' · 待复核':''}{entry.update_suggestion?' · 有更新建议':''}</small>
+            </button>;
+          })}</section>;
+        })}
+        {!listedEntries.length&&<p className="muted" style={{fontSize:'0.82rem',padding:'8px 0'}}>{searching?'正在筛选资料…':'没有匹配的工程资料。'}</p>}
+        {!remoteResult&&context.next_offset!=null&&onMore&&<button type="button" className="engineering-material-more" onClick={()=>void onMore()}>加载更多（剩余 {Math.max(0,context.total_entries-context.entries.length)} 条）</button>}
+      </nav>
+      <div className="engineering-material-article">
+        {!selected&&!editing&&<div className="engineering-empty">
+          <h3>{context.entries.length?'选择左侧资料开始阅读':'尚未形成项目特有资料'}</h3>
+          <p>{context.entries.length?'已将项目规则、接口约定与运行方式置于前方；点击条目即可阅读全文或直接补充。':'点击上方「待补充项目特有知识」即可快速补齐业务约束、接口约定或构建命令。'}</p>
+        </div>}
+        {(selected||editing)&&<section ref={sourcePanel} className="engineering-source eng-mat-reader" aria-label="工程资料全文编辑">
+          <div className="eng-mat-article-head">
+            <div>
+              {selected&&<span className="eng-mat-article-cat">{categoryNames[selected.category]}</span>}
+              <h3>{selectedHeadline?selectedHeadline.title:'新增项目特有资料'}</h3>
+              {selectedHeadline?.sourceIndex&&<span className="eng-mat-article-src">来源索引：<code>{selectedHeadline.sourceIndex}</code></span>}
+            </div>
+            <div className="row">
+              {selected&&!editing&&<button disabled={busy||readingFull} onClick={()=>void open(selected,true)}>编辑全文</button>}
+              {editing&&<button disabled={busy} onClick={()=>{setEditing(false);if(!selected)clearSelection();}}>取消编辑</button>}
+              {!editing&&<button disabled={busy} onClick={()=>{clearSelection();setEditing(false);}}>关闭</button>}
+            </div>
+          </div>
+          {selected&&!editing&&selected.origin!=='user'&&placeholderRulePattern.test(selected.text)&&(
+            <div className="eng-mat-placeholder-callout">
+              <span>这条内容目前是通用初始化占位说明，尚未包含本项目特有的真实规则。</span>
+              <button type="button" className="primary" disabled={busy||readingFull} onClick={()=>void open(selected,true)}>补充本项目规则</button>
+            </div>
+          )}
+          {readingFull&&<p role="status">正在读取完整正文…</p>}
+          {editing?<form onSubmit={save}>
+            <div className="eng-mat-form-row">
+              <label>资料类别<select aria-label="工程资料类别" disabled={busy||!!selected} value={category} onChange={e=>setCategory(e.target.value as ContextEntry['category'])}>{Object.entries(categoryNames).filter(([key])=>!['plan','design','verification_plan'].includes(key)).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
+              <label>资料标题<input aria-label="工程资料标题" value={title} maxLength={300} disabled={busy} placeholder="一句话说明这份内容解释什么" onChange={e=>setTitle(e.target.value)} required/></label>
+            </div>
+            <div className="row"><button type="button" aria-pressed={!preview} onClick={()=>setPreview(false)}>编辑 Markdown</button><button type="button" aria-pressed={preview} onClick={()=>setPreview(true)}>预览 Markdown</button></div>
+            {preview?<ContextText text={body}/>:<label>Markdown 正文<textarea aria-label="工程资料正文" value={body} maxLength={60000} rows={16} disabled={busy} onChange={e=>setBody(e.target.value)} required/></label>}
+            <p className="muted" style={{margin:0,fontSize:'12.5px'}}>正文保存在 ARC 并自动参与后续需求分析；保存不会修改源码或产生验证通过记录。</p>
+            <div><button className="primary" disabled={busy||!body.trim()||!title.trim()}>{busy?'保存中…':'保存当前资料'}</button></div>
+          </form>:selected&&<div className="eng-mat-body"><ContextText text={selected.text}/></div>}
+          {selected&&!editing&&<footer className="eng-mat-meta">
+            <div className="eng-mat-meta-row">
+              <small>{originNames[selected.origin]} · v{selected.version} · {when(selected.updated_at)}</small>
+              <button type="button" className="bw-inline-link" disabled={busy||loadingHistory} onClick={()=>void history(selected)}>{loadingHistory?'加载历史…':'查看原文与版本历史'}</button>
+            </div>
+            {selected.update_suggestion&&<details><summary>局部更新建议 · 原来源 v{selected.update_suggestion.source_version}</summary><p>仅比较这条资料对应的来源，不会自动替换当前正文。核对后可在全文编辑中选择需要的修改。</p><h4>修订时来源</h4><ContextText text={selected.update_suggestion.previous_text}/><h4>重新扫描来源</h4><ContextText text={selected.update_suggestion.proposed_text}/></details>}
+            <details><summary>冻结来源索引 · {selected.sources.length} 处引用</summary>{selected.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}{!selected.sources.length&&<p className="muted">尚无源码引用；属于{originNames[selected.origin]}或明确的待确认项。</p>}</details>
+            {versions.map(v=><details key={v.entry_id+':'+v.version}><summary>{v.entry_id===selected.entry_id?(v.version===selected.version?'当前正文':'正文旧版'):'原始来源'} · v{v.version} · {originNames[v.origin]} · {when(v.updated_at)}</summary><ContextText text={v.text}/>{v.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}</details>)}
+          </footer>}
+        </section>}
+      </div>
     </div>
-    {error&&<p role="alert" className="warning">{error}</p>}{notice&&<p role="status">{notice}</p>}
-    <div className="engineering-material-layout"><nav className="engineering-material-directory" aria-label="工程资料目录">{([
-      ['认识工程',['purpose','technology','build']],
-      ['定位实现',['module','interface']],
-      ['约束与演变',['rule','issue','decision']],
-      ['历史方案与验证',['plan','architecture','design','verification_plan']]
-    ] as [string,ContextEntry['category'][]][]).map(([group,categories])=>{
-      const entries=categories.flatMap(kind=>listedEntries.filter(e=>e.category===kind&&!e.task_id&&e.status!=='superseded').map(entry=>({entry,label:categoryNames[kind]})));
-      return entries.length>0&&<section key={group}><h3>{group}</h3>{entries.map(({entry,label})=>{
-        const name=contextEntryTitle(entry,label);
-        const display=shortMaterialTitle(name);
-        return <button key={entry.entry_id} disabled={busy} aria-pressed={selected?.entry_id===entry.entry_id} onClick={()=>{if(editing&&!window.confirm('离开编辑将丢弃未保存的正文，是否继续？'))return;void open(entry);}}><span className="engineering-material-kind">{label}</span><strong title={name}>{display}</strong><small>{originNames[entry.origin]} · v{entry.version}{entry.status==='needs_review'?' · 待复核':''}{entry.update_suggestion?' · 有更新建议':''}</small></button>;
-      })}</section>;
-    })}{!listedEntries.length&&<p className="muted" style={{fontSize:'0.82rem',padding:'8px 0'}}>{searching?'正在筛选资料…':'没有匹配的工程资料。'}</p>}{!remoteResult&&context.next_offset!=null&&onMore&&<button type="button" className="engineering-material-more" onClick={()=>void onMore()}>加载更多（剩余 {Math.max(0,context.total_entries-context.entries.length)} 条）</button>}</nav><div className="engineering-material-article">
-    {!selected&&!editing&&<div className="engineering-empty"><h3>{context.entries.length?'选择一份资料开始阅读':'尚未形成工程资料'}</h3><p>{context.entries.length?'从左侧按用途、实现、约束或历史决定选择内容；正文、来源和版本会在这里展示。':'可以先检查来源变化，或新增一条明确的用户补充。空资料不会冒充已经完成工程分析。'}</p></div>}
-    {(selected||editing)&&<section ref={sourcePanel} className="engineering-source" aria-label="工程资料全文编辑"><div className="row between engineering-source-header"><h3>{selected?contextEntryTitle(selected,categoryNames[selected.category]):'新增工程级资料'}</h3><div className="row">{selected&&!editing&&<button disabled={busy||readingFull} onClick={()=>void open(selected,true)}>编辑全文</button>}<button disabled={busy} onClick={()=>{clearSelection();setEditing(false);}}>关闭资料</button></div></div>
-      {selected&&<p className="engineering-material-question">{categoryQuestions[selected.category]}</p>}
-      {readingFull&&<p role="status">正在读取完整正文…</p>}
-      {editing?<form onSubmit={save}><label>资料类别<select aria-label="工程资料类别" disabled={busy||!!selected} value={category} onChange={e=>setCategory(e.target.value as ContextEntry['category'])}>{Object.entries(categoryNames).filter(([key])=>!['plan','design','verification_plan'].includes(key)).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label><label>资料标题<input aria-label="工程资料标题" value={title} maxLength={300} disabled={busy} onChange={e=>setTitle(e.target.value)} required/></label><div className="row"><button type="button" aria-pressed={!preview} onClick={()=>setPreview(false)}>编辑 Markdown</button><button type="button" aria-pressed={preview} onClick={()=>setPreview(true)}>预览 Markdown</button></div>{preview?<ContextText text={body}/>:<label>Markdown 正文<textarea aria-label="工程资料正文" value={body} maxLength={60000} rows={16} disabled={busy} onChange={e=>setBody(e.target.value)} required/></label>}<p>正文保存在 ARC。用户约束与资料说明不等于源码事实；保存不会改工程文件或产生验证通过记录。</p><button className="primary" disabled={busy||!body.trim()||!title.trim()}>{busy?'保存中…':'保存当前资料'}</button></form>:selected&&<ContextText text={selected.text}/>}
-      {selected&&<><p>{originNames[selected.origin]} · 正文版本 v{selected.version} · {when(selected.updated_at)}</p>{selected.update_suggestion&&<details><summary>局部更新建议 · 原来源 v{selected.update_suggestion.source_version}</summary><p>仅比较这条资料对应的来源，不会自动替换当前正文。核对后可在全文编辑中选择需要的修改。</p><h4>修订时来源</h4><ContextText text={selected.update_suggestion.previous_text}/><h4>重新扫描来源</h4><ContextText text={selected.update_suggestion.proposed_text}/></details>}
-      <details><summary>冻结来源 · {selected.sources.length} 处引用</summary>{selected.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}{!selected.sources.length&&<p>尚无源码引用；属于{originNames[selected.origin]}或明确的待确认项。</p>}</details><button disabled={busy||loadingHistory} onClick={()=>void history(selected)}>查看原文与版本历史</button>{versions.map(v=><details key={v.entry_id+':'+v.version}><summary>{v.entry_id===selected.entry_id?(v.version===selected.version?'当前正文':'正文旧版'):'原始来源'} · v{v.version} · {originNames[v.origin]} · {when(v.updated_at)}</summary><ContextText text={v.text}/>{v.sources.map((source,i)=><SourceExcerpt key={i} evidence={toEvidence(source)}/>)}</details>)}</>}
-    </section>}
-  </div></div></>;
+  </div>;
 }
 
 interface EngineeringOverviewSectionsProps {
@@ -345,7 +478,12 @@ function RollbackAction({task,readOnly,busy,onRollback}:{task:EngineeringTask;re
   </span>;
 }
 
-export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,onTaskOpened,onSettings,defaultEngine,codexModel,onEngineChange,enginePending,focusGoal,onGoalFocused,back,onArchitecture,onArchitectureOverlay,onRestored,onReading}:{project:Project;snapshotFiles?:SourceFile[];page:'materials'|'records';requestedTask:string;onTaskOpened:()=>void;onSettings:()=>void;defaultEngine:AnalysisMode;codexModel:CodexModelSelection;onEngineChange:(mode:AnalysisMode)=>void;enginePending:boolean;focusGoal:boolean;onGoalFocused:()=>void;back:()=>void;onArchitecture:(resultId?:string)=>void;onArchitectureOverlay?:(overlay:TaskArchitectureOverlay)=>void;onRestored:(projectId:string)=>void;onReading:(task:EngineeringTask)=>void}){
+type InspectDrawerState =
+  | null
+  | { kind: 'changes'; activePath?: string }
+  | { kind: 'log'; title: string; subtitle?: string; text: string; loading?: boolean };
+
+export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,onTaskOpened,onSettings,defaultEngine,codexModel,onEngineChange,enginePending,focusGoal,onGoalFocused,readingDraft,onClearReadingDraft,featureOptions,back,onArchitecture,onArchitectureOverlay,onRestored,onReading}:{project:Project;snapshotFiles?:SourceFile[];page:'materials'|'records';requestedTask:string;onTaskOpened:()=>void;onSettings:()=>void;defaultEngine:AnalysisMode;codexModel:CodexModelSelection;onEngineChange:(mode:AnalysisMode)=>void;enginePending:boolean;focusGoal:boolean;onGoalFocused:()=>void;readingDraft?:RequirementReadingDraft|null;onClearReadingDraft?:()=>void;featureOptions?:FeatureContextOption[];back:()=>void;onArchitecture:(resultId?:string)=>void;onArchitectureOverlay?:(overlay:TaskArchitectureOverlay)=>void;onRestored:(projectId:string)=>void;onReading:(task:EngineeringTask)=>void}){
   const {context,error:contextError,reload:reloadContext,more,checking}=useContext(project.project_id);
   const {environment}=useProjectEnvironment(context?.workspace);
   const [tasks,setTasks]=useState<EngineeringTask[]>(()=>taskLists.get(project.project_id)??[]),[selectedId,setSelectedId]=useState(()=>requestedTask||selectedTasks.get(project.project_id)||''),[query,setQuery]=useState(''),[filter,setFilter]=useState('');
@@ -358,11 +496,19 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
   const [taskAttempts,setAttempts]=useState<DevelopmentAttempt[]>([]),[taskEvents,setEvents]=useState<ActivityEvent[]>([]),[history,setHistory]=useState<EngineeringTask[]>([]),[historical,setHistorical]=useState<EngineeringTask|null>(null);
   const [log,setLog]=useState<{taskId:string;text:string}|null>(null),[showContext,setShowContext]=useState(false);
   const [taskDrawerOpen,setTaskDrawerOpen]=useState(false);
+  const [inspectDrawer,setInspectDrawer]=useState<InspectDrawerState>(null);
+  const [materialCreateTick,setMaterialCreateTick]=useState(0);
   const [showEvolution,setShowEvolution]=useState(false);
   const [showLegacyGraph,setShowLegacyGraph]=useState(false);
   const [refreshingScenarioId,setRefreshingScenarioId]=useState<string|null>(null);
   const [diff,setDiff]=useState<{path:string;before:string;after:string;truncated:boolean}|null>(null);
-  useEffect(()=>{selectedTasks.set(project.project_id,selectedId);setShowEvolution(false);setShowLegacyGraph(false);},[project.project_id,selectedId]);
+  useEffect(()=>{selectedTasks.set(project.project_id,selectedId);setShowEvolution(false);setShowLegacyGraph(false);setInspectDrawer(null);},[project.project_id,selectedId]);
+  useEffect(()=>{
+    if(!inspectDrawer)return;
+    const onKey=(e:KeyboardEvent)=>{if(e.key==='Escape')setInspectDrawer(null);};
+    window.addEventListener('keydown',onKey);
+    return ()=>window.removeEventListener('keydown',onKey);
+  },[inspectDrawer]);
   const current=tasks.find(t=>t.task_id===selectedId),task=historical||current;
   const logText=log?.taskId===task?.task_id?log?.text:undefined;
   const stage=task&&taskDetailStage(task);
@@ -395,7 +541,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
   };
   const selectSection=(value:EngineeringSection)=>{setSection(value);void api.invoke('reading_save',{key:'engineering-selection/'+project.project_id,value:{task_id:selectedId,section:value}}).catch(e=>setError(e.message));};
   useEffect(()=>{setMode('records');},[page]);
-  useEffect(()=>{if(focusGoal){newRequirement();onGoalFocused();}},[focusGoal]);
+  useEffect(()=>{if(focusGoal){newRequirement(readingDraft?.initialGoal??'');onGoalFocused();}},[focusGoal,readingDraft]);
   useEffect(()=>{if(requestedTask&&tasksLoaded){selectTask(requestedTask);onTaskOpened();}},[requestedTask,tasksLoaded]);
   useEffect(()=>{let valid=true;void api.invoke('reading_get',{key:'engineering-selection/'+project.project_id}).then(value=>{if(valid&&!requestedTask&&!focusGoal&&value?.task_id){setSelectedId(value.task_id);setSection(['plan','architecture','design','tasks','verification_plan'].includes(value.section)?value.section:'tasks');}}).catch(e=>setError(e.message));return()=>{valid=false;};},[project.project_id]);
   async function decide(snapshot:EngineeringTask,revision?:string,notes?:string[]):Promise<boolean>{
@@ -422,9 +568,11 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
     const result=await action(()=>api.invoke<EngineeringTask>('development_start',{
       project_id:project.project_id,task_id:originalTask,expected_version:originalTask?current?.version:undefined,goal,
       boundaries:submission&&{non_goals:submission.non_goals,revoked:submission.revoked},
-      scope:submission?.scope??[],...(fast?{fast_mode:true}:{phase:'analysis'}),submission_key:crypto.randomUUID(),
-    }),fast?'已提交快速直改，执行范围已限定':requestEngine==='mcp'?'需求已保存，等待外部 Agent 领取':'需求已提交只读分析，完成后审阅需求包');
-    if(result&&alive.current){selectTask((result as EngineeringTask).task_id);setGoal('');}
+      scope:submission?.scope??[],
+      ...(submission?.reading&&!originalTask?{reading:submission.reading}:{}),
+      ...(fast?{fast_mode:true}:{phase:'analysis'}),submission_key:crypto.randomUUID(),
+    }),fast?'已提交快速直改，执行范围已限定':requestEngine==='mcp'?'需求已保存，等待外部 Agent 领取':'已开始分析影响与待决问题');
+    if(result&&alive.current){onClearReadingDraft?.();selectTask((result as EngineeringTask).task_id);setGoal('');}
   }
   async function showHistory(){await action(async()=>{const result=await api.invoke<any[]>('engineering_history',{kind:'task',id:selectedId});setHistory(result.map(value=>value.value??value));});}
   const visible=tasks.filter(t=>(!filter||t.status===filter)&&(!query||[t.goal,t.summary,...t.changes.map(c=>c.path),...t.decisions,...t.unresolved].join('\n').toLowerCase().includes(query.toLowerCase())));
@@ -500,29 +648,56 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
     if(saved&&alive.current)await reloadHud();
     return saved!==undefined;
   }
-  function openVerificationLog(path:string){
+  async function loadDiffInDrawer(targetPath:string){
+    if(!task||historical)return;
+    setInspectDrawer({kind:'changes',activePath:targetPath});
+    try{
+      const nextDiff=await api.invoke<{path:string;before:string;after:string;truncated:boolean}>('engineering_diff',{task_id:task.task_id,path:targetPath});
+      if(alive.current)setDiff(nextDiff);
+    }catch(e){if(alive.current)setError((e as Error).message);}
+  }
+  function openChangesDrawer(file?:string){
+    if(!task)return;
+    const diffable=task.changes_status!=='needs_review'?task.changes.filter(c=>!c.text_diff_unavailable):[];
+    const chosen=(file&&diffable.some(c=>c.path===file)?file:undefined)??diffable[0]?.path;
+    setInspectDrawer({kind:'changes',activePath:chosen});
+    if(chosen&&!historical)void loadDiffInDrawer(chosen);
+  }
+  function openVerificationLog(path:string,title='验证日志',subtitle?:string){
     if(!task)return;
     const taskId=task.task_id;
-    void action(async()=>{
-      const result=await api.invoke<{text:string}>('engineering_log',{task_id:taskId,path});
+    setInspectDrawer({kind:'log',title,subtitle,text:'',loading:true});
+    void api.invoke<{text:string}>('engineering_log',{task_id:taskId,path}).then(result=>{
+      if(!alive.current)return;
       setLog({taskId,text:result.text});
-      requestAnimationFrame(()=>revealTaskRecord(`${taskId}-verification-log`));
+      setInspectDrawer({kind:'log',title,subtitle,text:result.text,loading:false});
+    }).catch(e=>{
+      if(!alive.current)return;
+      setError((e as Error).message);
+      setInspectDrawer(null);
     });
   }
   return <main className="engineering-workspace" aria-label="开发与工程记录">
-    <div className={`engineering-toolbar${mode==='records'&&task?' is-compact':''}`}>
-      <div>{mode==='materials'&&<span className="eyebrow">工程认知</span>}<h2>{mode==='materials'?'工程资料':'需求与开发'}</h2>
-        <p>{mode==='materials'?'按认识工程、定位实现、约束与演变组织资料；来源和版本按需核对。':'从提出需求，到看清架构与功能变动、拍板推进。'}</p></div>
-      {mode!=='materials'&&<div className="row engineering-toolbar-actions">
+    <div className={`engineering-toolbar${(mode==='records'&&task)||mode==='materials'?' is-compact':''}`}>
+      <div className="eng-toolbar-title-wrap">
+        <h2>{mode==='materials'?'工程资料':'需求与开发'}</h2>
+        {mode==='materials'&&context&&<span className="bw-version-tag">v{context.version} · {context.total_entries} 条</span>}
+        {mode!=='materials'&&!task&&<p>从提出需求，到看清业务变更与证据、拍板推进。</p>}
+      </div>
+      {mode==='materials'?<div className="row engineering-toolbar-actions">
+        <button type="button" disabled={busy||checking||!context} onClick={()=>void reloadContext(true)}>{checking?'正在检查…':'检查来源变化'}</button>
+        <button type="button" className="primary" disabled={busy||!context} onClick={()=>setMaterialCreateTick(v=>v+1)}><span aria-hidden="true">＋ </span>新增项目资料</button>
+      </div>:<div className="row engineering-toolbar-actions">
         {tasks.length>0&&<button type="button" onClick={()=>setTaskDrawerOpen(true)}>切换任务 ({tasks.length}) ▾</button>}
         <button className="primary" onClick={()=>mode==='new'?goalInput.current?.focus():newRequirement()}><span aria-hidden="true">＋ </span>提出新需求</button>
       </div>}
     </div>
 
-    {(error||contextError)&&<p className="warning engineering-message" role="alert">{error||contextError}</p>}{notice&&<p className="engineering-message" role="status">{notice}</p>}
+    {(error||contextError)&&<p className="warning engineering-message" role="alert">{error||contextError}</p>}
+    {notice&&<div className="engineering-notice-bar" role="status"><span>{notice}</span><button type="button" className="bw-inline-link" aria-label="关闭提示" onClick={()=>setNotice('')}>✕</button></div>}
     {context?.workspace.status==='unbound'&&<p className="warning engineering-message">历史记录已恢复，但源码工作区尚未绑定。请到「连接 Agent → 工程管理与本地数据 → 接入与恢复」选择实际目录；恢复记录不等于恢复工程代码。</p>}
     {(mode==='materials'||showContext)&&!context&&!contextError&&<section className="engineering-context-panel engineering-materials-home"><div className="arc-skeleton-box" role="status"><span className="arc-skeleton-line wide" aria-hidden="true"/><span className="arc-skeleton-line medium" aria-hidden="true"/><span className="arc-skeleton-line short" aria-hidden="true"/><small>正在读取工程资料与当前工作区；大工程可能需要一些时间。</small></div></section>}
-    {(mode==='materials'||showContext)&&context&&<section className={`engineering-context-panel ${mode==='materials'?'engineering-materials-home':''}`}><div className="row between"><h3>工程资料 · 版本 {context.version}</h3><button disabled={busy||checking} onClick={()=>void reloadContext(true)}>{checking?'正在检查…':'检查来源变化'}</button></div><ContextFacts context={context} reload={reloadContext} onMore={more}/></section>}
+    {(mode==='materials'||showContext)&&context&&<section className={`engineering-context-panel ${mode==='materials'?'engineering-materials-home':''}`}><ContextFacts context={context} reload={reloadContext} onMore={more} onRefreshSource={()=>void reloadContext(true)} checking={checking} createTrigger={materialCreateTick}/></section>}
 
     {mode!=='materials'&&taskDrawerOpen&&<div className="eng-task-drawer-backdrop" onClick={()=>setTaskDrawerOpen(false)}>
       <aside className="eng-task-drawer" aria-label="切换开发记录" onClick={e=>e.stopPropagation()}>
@@ -554,6 +729,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
     {mode!=='materials'&&<div className="engineering-columns is-full-width"><section className="engineering-task-detail" key={mode==='new'?'new':selectedId} aria-label="工程任务详情"
       onFocusCapture={mode==='new'?()=>setMode('new'):undefined}>
       {mode==='new'||!task?<RequirementComposer projectId={project.project_id} disabledProject={project.fictional} context={context} snapshotFiles={snapshotFiles}
+        readingDraft={readingDraft} onClearReadingDraft={onClearReadingDraft} featureOptions={featureOptions}
         defaultEngine={defaultEngine} codexModel={codexModel} onEngineChange={onEngineChange} enginePending={enginePending}
         onSettings={onSettings} goal={goal} onGoalChange={setGoal} goalInput={goalInput} busy={busy} disabled={cannotStart}
         onSubmit={start} onCancel={tasks.length?()=>selectTask((current??visible[0]??tasks[0]).task_id):undefined}/>:<>
@@ -589,14 +765,14 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
             ? <PlanDecision key={task.task_id} task={task} hud={hud} hudLoading={hudLoading} hudError={hudError} busy={busy} error={error} onTaskSaved={taskSaved} onOpenArchitectureOverlay={onArchitectureOverlay} onDecision={(snapshot,revision,notes)=>decide(snapshot,revision,notes)}/>
             : undefined}
           onOpenReading={readingAnchor&&!historical?()=>onReading(task):undefined}
-          onViewChanges={file=>{
-            revealTaskRecord(`${task.task_id}-changes`);
-            if(file&&!historical)void action(async()=>setDiff(await api.invoke('engineering_diff',{task_id:task.task_id,path:file})));
-          }}
+          onViewChanges={file=>openChangesDrawer(file)}
           onViewVerification={evidenceId=>{
+            const receipt=evidenceId?task.verification.find(item=>item.evidence_id===evidenceId):undefined;
+            if(receipt?.log_path){
+              openVerificationLog(receipt.log_path,`${verificationEvidenceLabel(receipt)} · ${receipt.command.split('\n')[0]}`,`${receipt.origin==='observed'?'已观测命令执行':'Agent 上报'} · exit ${receipt.exit_code??'未取得'} · ${when(receipt.created_at)}`);
+              return;
+            }
             revealTaskRecord(evidenceId?`${task.task_id}-receipt-${evidenceId}`:`${task.task_id}-verification`);
-            const logPath=task.verification.find(item=>item.evidence_id===evidenceId)?.log_path;
-            if(logPath)openVerificationLog(logPath);
           }}
           onOpenEvolution={hasEvolution?()=>{
             setShowEvolution(true);setShowLegacyGraph(false);
@@ -709,5 +885,41 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
         </>}
       </>}
     </section></div>}
+
+    {mode==='records'&&task&&inspectDrawer&&<div className="eng-inspect-backdrop" onClick={()=>setInspectDrawer(null)}>
+      <aside className="eng-inspect-drawer" role="dialog" aria-modal="true" aria-label={inspectDrawer.kind==='changes'?'修改文件与代码 Diff':'验证执行日志'} onClick={e=>e.stopPropagation()}>
+        <header className="eng-inspect-head">
+          <div>
+            <h3>{inspectDrawer.kind==='changes'?`修改文件与 Diff（${task.changes.length}）`:inspectDrawer.title}</h3>
+            {inspectDrawer.kind==='log'&&inspectDrawer.subtitle&&<small>{inspectDrawer.subtitle}</small>}
+          </div>
+          <div className="row">
+            {inspectDrawer.kind==='changes'&&<RollbackAction key={`drawer:${task.task_id}:${task.version}`} task={task} readOnly={!!historical} busy={busy} onRollback={()=>{setInspectDrawer(null);void action(()=>api.invoke('engineering_rollback',{task_id:task.task_id}),'已撤销本次改动');}}/>}
+            <button type="button" className="hud-drawer-close" aria-label="关闭检查抽屉" onClick={()=>setInspectDrawer(null)}>✕</button>
+          </div>
+        </header>
+        <div className="eng-inspect-body">
+          {inspectDrawer.kind==='changes'?(
+            task.changes_status==='needs_review'?<p className="warning">差异归属待核查，不能自动把当前全部差异归为本任务成果。</p>:
+            task.changes.length>0?<>
+              <div className="eng-inspect-file-tabs" role="tablist" aria-label="修改的文件">
+                {task.changes.map(change=>{
+                  const active=inspectDrawer.activePath===change.path;
+                  return <button key={change.path} type="button" role="tab" aria-selected={active} className={`eng-inspect-file-tab${active?' is-active':''}`} disabled={!!historical||change.text_diff_unavailable} onClick={()=>void loadDiffInDrawer(change.path)}>
+                    <code>{change.path}</code>
+                    {change.ownership==='preexisting_overlap'&&<small className="warning">含重叠</small>}
+                  </button>;
+                })}
+              </div>
+              {diff&&diff.path===inspectDrawer.activePath
+                ? <TextDiffView path={diff.path} before={diff.before} after={diff.after} truncated={diff.truncated} onClose={()=>setInspectDrawer(null)}/>
+                : <p className="muted">{historical?'历史版本暂不支持实时 Diff。':'正在加载文件 Diff…'}</p>}
+            </>:<p className="muted">尚未捕获到可归属于本任务的文件变更。</p>
+          ):(
+            inspectDrawer.loading?<p className="muted">正在读取验证日志…</p>:<pre className="eng-inspect-log">{inspectDrawer.text||'(空日志)'}</pre>
+          )}
+        </div>
+      </aside>
+    </div>}
   </main>;
 }
