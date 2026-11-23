@@ -14,7 +14,7 @@ import type {CodexModelSelection} from './CodexModelSelect';
 import {commandBody,sameVerificationState,verificationEvidenceLabel} from '../delivery-audit';
 import {DeliveryAuditBar} from './DeliveryAuditBar';
 import {TaskBoundaries} from './TaskBoundaries';
-import {TaskBehaviorCockpit} from './TaskBehaviorCockpit';
+import {InlineCodeText,TaskBehaviorCockpit} from './TaskBehaviorCockpit';
 import type {Dispatch} from '../main/external-dispatch';
 import './engineering.css';
 
@@ -354,7 +354,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
   const [goal,setGoal]=useState(''),[continuation,setContinuation]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
   const [dispatches,setDispatches]=useState<Dispatch[]>([]);
   const [taskAttempts,setAttempts]=useState<DevelopmentAttempt[]>([]),[taskEvents,setEvents]=useState<ActivityEvent[]>([]),[history,setHistory]=useState<EngineeringTask[]>([]),[historical,setHistorical]=useState<EngineeringTask|null>(null);
-  const [log,setLog]=useState(''),[showContext,setShowContext]=useState(false);
+  const [log,setLog]=useState<{taskId:string;text:string}|null>(null),[showContext,setShowContext]=useState(false);
   const [goalExpanded,setGoalExpanded]=useState(false);
   const [taskDrawerOpen,setTaskDrawerOpen]=useState(false);
   const [showLegacyGraph,setShowLegacyGraph]=useState(false);
@@ -362,6 +362,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
   const [diff,setDiff]=useState<{path:string;before:string;after:string;truncated:boolean}|null>(null);
   useEffect(()=>{selectedTasks.set(project.project_id,selectedId);setGoalExpanded(false);setShowLegacyGraph(false);},[project.project_id,selectedId]);
   const current=tasks.find(t=>t.task_id===selectedId),task=historical||current;
+  const logText=log?.taskId===task?.task_id?log?.text:undefined;
   const stage=task&&taskDetailStage(task);
   useEffect(()=>{if(stage&&stage!=='analysis'&&notice.includes('只读分析'))setNotice('');},[stage,notice]);
   const mode=page==='materials'?'materials':current?recordMode:'new';
@@ -409,7 +410,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
     if(page==='records')void reload().catch(e=>setError(e.message));
     return()=>{alive.current=false;};
   },[reload,page,context]);
-  useEffect(()=>{let valid=true,reading=false;setHistorical(null);setLog('');setHistory([]);setDiff(null);setAttempts([]);setEvents([]);setDispatches([]);const read=async()=>{if(!selectedId||reading)return;reading=true;try{const value=await api.invoke<{attempts:DevelopmentAttempt[];events:ActivityEvent[]}>('development_events',{task_id:selectedId});if(valid){setAttempts(value.attempts);setEvents(value.events);if(current?.execution_mode&&current.execution_mode!=='codex_desktop')return;const external=await api.invoke<{queue:Dispatch[]}>('executor_status',{project_id:project.project_id});if(valid){setDispatches(external.queue??[]);}}}catch(e){if(valid)setError((e as Error).message);}finally{reading=false;}};void read();const off=api.onEvent(e=>{if(e.type==='development_event'||e.type==='engineering_changed'||e.type==='changed')void read();});const timer=setInterval(()=>void read(),8000);return()=>{valid=false;off();clearInterval(timer);};},[selectedId,current?.execution_mode]);
+  useEffect(()=>{let valid=true,reading=false;setHistorical(null);setLog(null);setHistory([]);setDiff(null);setAttempts([]);setEvents([]);setDispatches([]);const read=async()=>{if(!selectedId||reading)return;reading=true;try{const value=await api.invoke<{attempts:DevelopmentAttempt[];events:ActivityEvent[]}>('development_events',{task_id:selectedId});if(valid){setAttempts(value.attempts);setEvents(value.events);if(current?.execution_mode&&current.execution_mode!=='codex_desktop')return;const external=await api.invoke<{queue:Dispatch[]}>('executor_status',{project_id:project.project_id});if(valid){setDispatches(external.queue??[]);}}}catch(e){if(valid)setError((e as Error).message);}finally{reading=false;}};void read();const off=api.onEvent(e=>{if(e.type==='development_event'||e.type==='engineering_changed'||e.type==='changed')void read();});const timer=setInterval(()=>void read(),8000);return()=>{valid=false;off();clearInterval(timer);};},[selectedId,current?.execution_mode]);
   async function action(fn:()=>Promise<unknown>,message=''){setBusy(true);setError('');setNotice('');try{const result=await fn();if(alive.current){if(message)setNotice(message);await reload();await reloadContext();}return result;}catch(e){if(alive.current)setError((e as Error).message);}finally{if(alive.current)setBusy(false);}}
   const cannotStart=busy||enginePending||inProgress||project.fictional||context?.workspace.status!=='bound'||!goal.trim();
   async function start(submission?:RequirementSubmission){
@@ -437,6 +438,11 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
   )?.steps.find(step=>step.id===reading.target.id&&step.file===readingAnchor.path&&step.before_line===readingAnchor.line_start)?.before_text:undefined;
   const appendRequirement=(text='')=>{
     if(stage==='approval'){
+      const questionIndex=task?.requirement_package?.open_questions?.indexOf(text)??-1;
+      if(questionIndex>=0){
+        const reply=document.querySelector<HTMLTextAreaElement>(`.engineering-task-detail textarea[aria-label="回答待确认项 ${questionIndex+1}"]`);
+        if(reply&&!reply.disabled){reply.focus();return;}
+      }
       const revision=document.querySelector<HTMLDetailsElement>('.engineering-task-detail .hud-revise-details');
       if(revision){
         revision.open=true;
@@ -456,6 +462,15 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
       await reloadHud();
     }catch(e){setError((e as Error).message);}
     finally{setRefreshingScenarioId(null);}
+  }
+  function openVerificationLog(path:string){
+    if(!task)return;
+    const taskId=task.task_id;
+    void action(async()=>{
+      const result=await api.invoke<{text:string}>('engineering_log',{task_id:taskId,path});
+      setLog({taskId,text:result.text});
+      requestAnimationFrame(()=>revealTaskRecord(`${taskId}-verification-log`));
+    });
   }
   return <main className="engineering-workspace" aria-label="开发与工程记录">
     <div className={`engineering-toolbar${mode==='records'&&task?' is-compact':''}`}>
@@ -507,8 +522,8 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
         onSubmit={start} onCancel={tasks.length?()=>selectTask((current??visible[0]??tasks[0]).task_id):undefined}/>:<>
         <header className="engineering-requirement-header">
           <div className="task-goal-heading">
-            <h2 className={!goalExpanded&&task.goal.length>72?'is-clamped':undefined} title={task.goal}>
-              {goalExpanded?task.goal:cleanGoalHeadline(task.goal)}
+            <h2 className={!goalExpanded&&task.goal.length>72?'is-clamped':undefined} title={task.goal.replaceAll('`','')}>
+              <InlineCodeText text={goalExpanded?task.goal:cleanGoalHeadline(task.goal)}/>
             </h2>
             {(task.goal.length>72||cleanGoalHeadline(task.goal)!==task.goal.trim())&&<button type="button" className="task-goal-toggle" onClick={()=>setGoalExpanded(v=>!v)}>{goalExpanded?'收起':'展开原话'}</button>}
           </div>
@@ -520,7 +535,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
               <small>已保存 v{task.version}{historical?' · 历史版本':''}</small>
             </div>
             <div className="task-header-actions">
-              {task.reading&&!historical&&<button onClick={()=>onReading(task)}>返回关联功能走读</button>}
+              {task.reading&&!historical&&(section!=='tasks'||!readingAnchor)&&<button onClick={()=>onReading(task)}>返回关联功能走读</button>}
               <button disabled={busy} onClick={()=>{selectSection('tasks');void showHistory();}}>版本历史</button>
               {!historical&&stage!=='approval'&&(inProgress&&!waitingMcp&&panelAttempt?.origin==='agent'&&latestDispatch?.state!=='queued'?
                 <small>{current?.execution_mode==='mcp'?'请在原 Agent 中停止并回填取消结果。':'请在原 Agent 中停止执行；确认结束后在「连接 Agent」的派发记录中核对回执。'}</small>:
@@ -532,7 +547,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
             </div>
           </div>
           {waitingMcp&&!historical&&<p role="status">等待外部 Agent 领取。在已接入 ARC MCP 的对话中领取任务 <code>{task.task_id}</code>。 <button onClick={onSettings}>连接 Agent</button></p>}
-          {task.reading?.evidence&&<p aria-label="关联源码位置">关联源码 · <code>{task.reading.evidence.path}:{task.reading.evidence.line_start}–{task.reading.evidence.line_end}</code></p>}
+          {section!=='tasks'&&readingAnchor&&<p aria-label="关联源码位置">关联源码 · <code>{readingAnchor.path}:{readingAnchor.line_start}–{readingAnchor.line_end}</code></p>}
         </header>
         {!historical&&stage!=='approval'&&(inProgress||stage==='analysis')&&(stage==='analysis'||latestDispatch||panelAttempt)&&<DevelopmentActivity key={`${stage}:${ended}:${latestDispatch?.dispatch_id||panelAttempt?.attempt_id||task.task_id}`} dispatch={latestDispatch} attempt={panelAttempt} task={task} events={events} onSettings={onSettings}/>}
         {section!=='tasks'?<EngineeringSections taskId={selectedId} projectId={project.project_id} section={section} onSection={selectSection} tasks={tasks} onTask={id=>selectTask(id,true)} onArchitecture={onArchitecture} onDevelop={newRequirement}/>:<>
@@ -549,6 +564,7 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
         {history.length>0&&<label className="engineering-version-picker">查看记录版本<select aria-label="工程任务版本" value={historical?.version??''} onChange={e=>setHistorical(history.find(item=>item.version===Number(e.target.value))||null)}><option value="">当前版本</option>{history.map(item=><option key={item.version} value={item.version}>v{item.version} · {stateNames[item.status]} · {when(item.updated_at)}</option>)}</select></label>}
         {task.origin==='legacy_import'&&<p className="warning">AEC 历史任务 · 待复核。原文与来源已保存，旧验证声明不视为本次真实执行。</p>}
         <TaskBehaviorCockpit key={task.task_id} task={task} beforeReading={beforeReading}
+          onOpenReading={readingAnchor&&!historical?()=>onReading(task):undefined}
           onViewChanges={file=>{
             if(file){
               revealTaskRecord(`${task.task_id}-changes`);
@@ -558,16 +574,19 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
               requestAnimationFrame(()=>revealTaskRecord(`${task.task_id}-evolution`));
             }else revealTaskRecord(`${task.task_id}-changes`);
           }}
-          onViewVerification={evidenceId=>revealTaskRecord(evidenceId?`${task.task_id}-receipt-${evidenceId}`:`${task.task_id}-verification`)}
-          onAppend={historical||stage==='approval'&&!task.requirement_package?undefined:appendRequirement}/>
-        {stage==='approval'&&!historical&&<PlanDecision key={task.task_id} task={task} hud={hud} hudLoading={hudLoading} hudError={hudError} busy={busy} error={error} onTaskSaved={taskSaved} onOpenArchitectureOverlay={onArchitectureOverlay} onDecision={(snapshot,revision,notes)=>decide(snapshot,revision,notes)}/>}
-        {stage==='delivery'&&<>
-        {useEvolutionCockpit ? (
+          onViewVerification={evidenceId=>{
+            revealTaskRecord(evidenceId?`${task.task_id}-receipt-${evidenceId}`:`${task.task_id}-verification`);
+            const logPath=task.verification.find(item=>item.evidence_id===evidenceId)?.log_path;
+            if(logPath)openVerificationLog(logPath);
+          }}
+          onAppend={historical||stage==='approval'&&!task.requirement_package?undefined:appendRequirement}
+          visualSlot={useEvolutionCockpit&&(
           <section id={`${task.task_id}-evolution`} className="behavior-record-target" tabIndex={-1} aria-label="架构与代码演化">
           <EvolutionCockpit
             evolution={hud!.evolution!}
             blueprintEvolution={hud!.blueprintEvolution}
             revisionKey={`${task.task_id}:${task.version}`}
+            foldSummary
             modeLabel={task.changes_status==='needs_review'?`归属待核 · v${task.version}`:task.status==='blocked'?`待收尾 · v${task.version}`:`已落地 · v${task.version}`}
             loadFileDiff={async req => {
               const beforeSnap = hud!.evolution!.base_snapshot_id ?? (task.diff_baseline ?? task.baseline).snapshot_id;
@@ -607,14 +626,17 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
             </>}
           />
           </section>
-        ) : !historical ? (
+          )}/>
+        {stage==='approval'&&!historical&&<PlanDecision key={task.task_id} task={task} hud={hud} hudLoading={hudLoading} hudError={hudError} busy={busy} error={error} onTaskSaved={taskSaved} onOpenArchitectureOverlay={onArchitectureOverlay} onDecision={(snapshot,revision,notes)=>decide(snapshot,revision,notes)}/>}
+        {stage==='delivery'&&<>
+        {!useEvolutionCockpit&&(!historical ? (
           <>
             {hud?.evolution&&<div className="row" style={{marginBottom:8}}><button type="button" className="hud-mini-btn" onClick={()=>setShowLegacyGraph(false)}>← 返回演化驾驶舱</button></div>}
             <DeliveryHud task={task} hud={hud} entries={context?.material_sources??context?.entries??[]} onRefreshMaterials={()=>reloadContext(true)} busy={busy} onReloadHud={reloadHud} onOpenArchitectureOverlay={onArchitectureOverlay} onTargetedContinue={prefill=>{selectSection('tasks');setContinuation(true);setGoal(prefill);requestAnimationFrame(()=>goalInput.current?.focus());}}/>
           </>
         ) : (
           <DeliveryAuditBar key={`audit:${task.task_id}`} task={task} entries={context?.material_sources??context?.entries??[]} onRefresh={()=>reloadContext(true)} busy={true}/>
-        )}
+        ))}
         {task.verification_status==='stale'&&<p className="task-review-notice">上次验证对应较早的代码版本，需重新验证。</p>}
         {!useEvolutionCockpit&&ended&&task.summary&&<section className="task-outcome" aria-label="本次交付结果"><h3>本次交付结果</h3><ContextText text={task.summary}/></section>}
         </>}
@@ -629,15 +651,15 @@ export function EngineeringWorkspace({project,snapshotFiles,page,requestedTask,o
             </div>
             {task.changes_status==='needs_review'&&<p className="warning">差异归属待核查，不能自动把当前全部差异归为本任务成果。</p>}
             {task.changes_status!=='needs_review'&&task.changes.length>0?<><ul className="engineering-changes">{task.changes.map(change=><li key={change.path}><div className="engineering-change-info"><strong>{change.path}</strong>{change.ownership==='preexisting_overlap'&&<span className="warning">含开始前已有改动，不能全部归为本任务</span>}<small>{change.before_sha256?.slice(0,12)||'新增'} → {change.after_sha256?.slice(0,12)||'删除'}</small></div><div className="engineering-change-action">{change.text_diff_unavailable?<small>仅记录内容哈希</small>:<button disabled={!!historical} onClick={()=>void action(async()=>setDiff(await api.invoke('engineering_diff',{task_id:task.task_id,path:change.path})))}>查看 Diff</button>}</div></li>)}</ul>{diff&&<TextDiffView path={diff.path} before={diff.before} after={diff.after} truncated={diff.truncated} onClose={()=>setDiff(null)}/>}</>:!inProgress&&<p className="muted">尚未捕获到可归属于本任务的文件变更。</p>}
-            {attempts.length>0&&<details style={{marginTop:10}}><summary>执行与活动 · {attempts.length} 次</summary>{attempts.map(item=><p key={item.attempt_id}>{item.provider_id} · {item.model} · {stateNames[item.status]}{item.error&&<span className="warning"> · {item.error}</span>}{item.log_path&&<button onClick={()=>void action(async()=>setLog((await api.invoke<{text:string}>('engineering_log',{task_id:task.task_id,path:item.log_path})).text))}>查看执行诊断</button>}</p>)}<ol className="engineering-events">{events.filter(event=>publicActivity(event)).slice(-30).map((event,i)=><li key={i}><small>{when(event.received_at)}</small><p>{publicActivity(event)}</p></li>)}</ol></details>}
+            {attempts.length>0&&<details style={{marginTop:10}}><summary>执行与活动 · {attempts.length} 次</summary>{attempts.map(item=><p key={item.attempt_id}>{item.provider_id} · {item.model} · {stateNames[item.status]}{item.error&&<span className="warning"> · {item.error}</span>}{item.log_path&&<button onClick={()=>openVerificationLog(item.log_path!)}>查看执行诊断</button>}</p>)}<ol className="engineering-events">{events.filter(event=>publicActivity(event)).slice(-30).map((event,i)=><li key={i}><small>{when(event.received_at)}</small><p>{publicActivity(event)}</p></li>)}</ol></details>}
           </div>
         </details>
         <details id={`${task.task_id}-verification`} className="task-additional-records behavior-record-target" tabIndex={-1} open={stage==='delivery'&&!useEvolutionCockpit || undefined}>
           <summary>验证与遗留详情 · {verificationLabels[task.verification_status]}{task.unresolved.length?` · ${task.unresolved.length} 项待处理`:''}</summary>
           <div style={{marginTop:10}}>
-            {!task.verification.length?<p className="muted">尚未保存验证记录，不能视为通过。</p>:<VerificationList task={task} onLog={path=>void action(async()=>setLog((await api.invoke<{text:string}>('engineering_log',{task_id:task.task_id,path})).text))}/>}
+            {!task.verification.length?<p className="muted">尚未保存验证记录，不能视为通过。</p>:<VerificationList task={task} onLog={openVerificationLog}/>}
             {task.unresolved.length>0?<div className="task-unresolved"><h4>待处理事项 · {task.unresolved.length}</h4><ul>{task.unresolved.map((item,i)=><li key={i}>{item}</li>)}</ul></div>:<p className="task-no-unresolved">没有单独记录的遗留事项；仍以实际验证覆盖范围为准。</p>}
-            {log&&<section className="engineering-log"><div className="row between"><h3>验证日志</h3><button onClick={()=>setLog('')}>关闭日志</button></div><pre>{log}</pre></section>}
+            {logText&&<section id={`${task.task_id}-verification-log`} className="engineering-log behavior-record-target" tabIndex={-1}><div className="row between"><h3>验证日志</h3><button onClick={()=>setLog(null)}>关闭日志</button></div><pre>{logText}</pre></section>}
           </div>
         </details>
         {(stage!=='approval'||historical)&&task.requirement_package&&<SavedRequirementPackage key={`pkg:${task.task_id}`} task={task} readOnly={!!historical} onSaved={taskSaved}/>}

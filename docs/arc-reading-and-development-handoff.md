@@ -258,9 +258,9 @@
 - **Phase 1（功能走读右栏重排）** — 提交 `2eb81c0`
   - 已完成：移走右栏顶部开发表单；走读页头收口「分析进度」「历史」辅助入口并强化固定态；按真实数据投影步骤/模块/交接/文件详情（条件、读写、去向、缺口与主/次源码依据，含编辑器行号跳转），稀疏数据不伪造字段；底部固定「问这里」「修改这里」「纠正说明」并保留 `ReadingTarget` 线索绑定。
   - 已验证：`npm run typecheck`、`npm run build`、`tests/feature-reading.test.ts`、`tests/reading-diagrams.test.ts`、`tests/reading-question.test.ts`、`tests/feature-development.test.ts`、`tests/source-editor.test.ts` 全部通过，且已通过 Electron + Playwright 实机截屏核验布局与零页面报错。
-- **Phase 2（协作开发行为主视图、双列验收表与 `blueprintEvolution` 接线）** — 本轮提交
-  - 已完成：新增 `src/ui/task-behavior-model.ts`、`src/ui/TaskBehaviorCockpit.tsx` 与 `src/ui/task-behavior-cockpit.css`；在 `EngineeringWorkspace.tsx` 接入三阶段进度条、行为清单、改前/目标对照、实现与验证双列主视图表以及空态自动收敛的右栏待处理区；在 `development-hud.ts` / `evolution-view.ts` / `EvolutionCockpit.tsx` 中补齐并接通冻结基线 `blueprintEvolution`（改前方案 / 实际改动切换）。
-  - 已验证：`npm run typecheck`、`npm run build`、`tests/task-behavior-model.test.ts`、`tests/evolution-view.test.ts`、`tests/delivery-audit.test.ts`、`tests/development-hud.test.ts`（共 47 项）全部通过，且已通过 Electron + Playwright 实机截屏核验三栏行为视图与 `EvolutionCockpit` 蓝图切换，零页面报错。
+- **Phase 2（协作开发视觉优先主视图、CI 风格双列验收清单与 `blueprintEvolution` 接线）** — 提交 `596717e` 及视觉优先重构提交
+  - 已完成：新增 `src/ui/task-behavior-model.ts`、`src/ui/TaskBehaviorCockpit.tsx` 与 `src/ui/task-behavior-cockpit.css`；在 `EngineeringWorkspace.tsx` 接入顶部三阶段与 KPI 信号条、默认折叠的全宽待拍板/待核对列表、置顶的 `EvolutionCockpit` 架构与流程变动图（`foldSummary` 折叠文字摘要、接通冻结基线 `blueprintEvolution` 蓝图切换）、以及紧凑 CI Check 风格的「行为与验收清单」（支持行内代码胶囊与实现/验证彩色双胶囊）；左侧导航跨栏目保持展开一致（`f279734`）。
+  - 已验证：`npm run typecheck`、`npm run build`、全量 `npm test`（457/457 通过）及长文本 `bams_code` 密度场景下的 Electron + Playwright 实机截屏核验（1440px 与 1280px 均 `overflowX = 0`、零页面报错）。
 - **未完成 / 留待 Phase 3**：
   - 关键决定结构化建模与执行中版本联动重算（第 5.4 节、A6/A7）；
   - 按证据依赖精准判定单条验收条件局部过期（第 5.5 节、A8 局部失效）；

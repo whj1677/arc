@@ -54,6 +54,7 @@ export interface EvolutionCockpitProps {
   modeLabel?: string;
   headerExtra?: React.ReactNode;
   footerActions?: React.ReactNode;
+  foldSummary?: boolean;
   loadFileDiff: (req: EvolutionDiffRequest) => Promise<EvolutionFileDiff>;
   openInEditor?: (path: string, line?: number) => Promise<void>;
   onOpenArchitectureOverlay?: (resultId?: string) => void;
@@ -177,6 +178,7 @@ export function EvolutionCockpit({
   modeLabel,
   headerExtra,
   footerActions,
+  foldSummary,
   loadFileDiff,
   openInEditor,
   onOpenArchitectureOverlay,
@@ -700,6 +702,8 @@ export function EvolutionCockpit({
     return parts.length ? parts.join(' · ') : '无明显额外波及';
   }, [activeEvo.side_effects]);
 
+  const SummaryContainer = foldSummary ? 'details' : 'div';
+
   return (
     <div className="evo-cockpit">
       {/* Compact Top Control Bar */}
@@ -774,7 +778,8 @@ export function EvolutionCockpit({
           </span>
         </div>
       ) : (activeEvo.verdict_summary || activeEvo.approach.length > 0 || activeEvo.assumptions.length > 0) ? (
-        <div className="evo-summary-stack">
+        <SummaryContainer className={foldSummary ? 'evo-summary-stack behavior-notes behavior-evolution-notes' : 'evo-summary-stack'}>
+          {foldSummary && <summary>变更说明与审查记录{reviewBlockers.length > 0 && ` · ${reviewBlockers.length} 项审查阻断`}</summary>}
           {activeEvo.verdict_summary && (
             <div className={`evo-verdict-banner${reviewBlockers.length > 0 ? ' has-blocker' : ''}`}>
               <span className="evo-verdict-label">{reviewBlockers.length > 0 ? '当前卡点' : '本次结论'}</span>
@@ -916,7 +921,7 @@ export function EvolutionCockpit({
               )}
             </section>
           )}
-        </div>
+        </SummaryContainer>
       ) : null}
 
       {/* Document-Only Fast Path */}
