@@ -19,10 +19,11 @@ import {
   featureViewPosition,
   featureViews,
   functionPathPosition,
-  guideEvidenceIds,
   guideItemTitle,
   guidePathForStep,
   hasCollaborationRoles,
+  readingObjectDetail,
+  walkthroughSelection,
 } from './feature-reading-model';
 import { timelineModel } from './timeline-model';
 import { savedBusinessPath } from './home-reading';
@@ -131,8 +132,6 @@ function App() {
 
   const project = data.projects.find(p => p.project_id === projectId);
   const scenario = data.scenarios.find(s => s.scenario_id === scenarioId);
-  const clue = clueDrafts[scenarioId] || '';
-  const setClue = (value: string) => setClueDrafts(d => ({ ...d, [scenarioId]: value }));
 
   const overviewFeature = data.scenarios.find(s => s.scenario_id === project?.overview_scenario_id)?.feature_id;
   const userFeatures = data.features
@@ -184,8 +183,10 @@ function App() {
   const freshness = !catalogReading && explanation && project ? explanationFreshness(explanation, project.snapshot_id, projectFreshness?.changed_files ?? []) : undefined;
   const capabilityCount = catalogExplanation?.result.feature_catalog?.groups.reduce((n, g) => n + g.node_ids.length, 0) || 0;
   const featureReading = reading.entrance === 'walk' && !!scenarioId && ['timeline', 'collaboration', 'files'].includes(reading.view);
-  const readingGuide = featureReading && result ? featureReadingModel(result) : undefined;
-  const readingEvidence = readingGuide && reading.selected ? result?.evidence.filter(e => guideEvidenceIds(readingGuide, reading.selected).includes(e.evidence_id)) : result?.evidence;
+  const walkthroughInspector = featureReading || (reading.entrance === 'walk' && reading.view === 'functions');
+  const readingGuide = useMemo(() => featureReading && result ? featureReadingModel(result) : undefined, [featureReading, result]);
+  const readingObject = useMemo(() => result && readingGuide ? readingObjectDetail(result, readingGuide, reading.selected, reading.reading_path) : undefined,
+    [result, readingGuide, reading.selected, reading.reading_path]);
   const businessReading = reading.view === 'timeline' && !!result && timelineModel(result).ordered;
   const systemReading = overview && ['system', 'modules'].includes(reading.view);
 
@@ -201,6 +202,9 @@ function App() {
         }
       : null;
   const activeObject = selectedNode || selectedEdge;
+  const activeEvidenceIds = functionStep?.step.evidence_ids ?? activeObject?.evidence_ids;
+  const readingEvidence = readingObject ? [readingObject.primaryEvidence, ...readingObject.moreEvidence].filter((e): e is SourceEvidence => !!e)
+    : walkthroughInspector && activeEvidenceIds ? result?.evidence.filter(e => activeEvidenceIds.includes(e.evidence_id)) : result?.evidence;
   const sceneRuns = data.runs.filter(r => r.binding.scenario_id === scenarioId && !r.reading_question_id);
   const sceneAnnotations = data.annotations.filter(a => a.scenario_id === scenarioId);
   const windowMode = width >= 1280 ? 'desktop' : width >= 900 ? 'medium' : 'narrow';
@@ -216,17 +220,18 @@ function App() {
   const sourceSnapshot = data.snapshots.find(s => s.source_snapshot_id === sourceSnapshotId);
   const selectedEvidence = result?.evidence.find(e => e.evidence_id === reading.evidence_id);
   const selectedFile = reading.file || selectedEvidence?.path || '';
-  const citedFile = selectedEvidence && sourceSnapshot?.files.find(file => file.path === selectedEvidence.path);
+  const taskEvidence = selectedEvidence?.path === selectedFile ? selectedEvidence
+    : readingObject?.primaryEvidence ?? readingEvidence?.find(e => activeEvidenceIds?.includes(e.evidence_id));
+  const citedFile = taskEvidence && sourceSnapshot?.files.find(file => file.path === taskEvidence.path);
   const developmentEvidence =
-    selectedEvidence &&
-    selectedEvidence.path === selectedFile &&
-    selectedEvidence.source_snapshot_id === sourceSnapshotId &&
+    taskEvidence &&
+    taskEvidence.source_snapshot_id === sourceSnapshotId &&
     sourceSnapshotId === result?.binding.source_snapshot_id &&
-    citedFile?.content_sha256 === selectedEvidence.content_sha256 &&
-    selectedEvidence.line_start >= 1 &&
-    selectedEvidence.line_end >= selectedEvidence.line_start &&
-    selectedEvidence.line_end <= citedFile.line_count
-      ? { evidence_id: selectedEvidence.evidence_id, path: selectedEvidence.path, line_start: selectedEvidence.line_start, line_end: selectedEvidence.line_end }
+    citedFile?.content_sha256 === taskEvidence.content_sha256 &&
+    taskEvidence.line_start >= 1 &&
+    taskEvidence.line_end >= taskEvidence.line_start &&
+    taskEvidence.line_end <= citedFile.line_count
+      ? { evidence_id: taskEvidence.evidence_id, path: taskEvidence.path, line_start: taskEvidence.line_start, line_end: taskEvidence.line_end }
       : undefined;
 
   const suggestedPath = useMemo(
@@ -351,7 +356,6 @@ function App() {
   const featureTask = (data.development_tasks ?? [])
     .filter(task => task.reading?.scenario_id === scenarioId)
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
-  const featureDraft = featureDrafts[scenarioId] ?? { editing: false, request: '' };
   const questionLocation = readingQuestionTarget(
     result,
     reading,
@@ -360,6 +364,15 @@ function App() {
   );
   if (questionLocation.target.kind === 'feature') {
     questionLocation.label = reading.entrance === 'overview' ? '当前工程整体' : `${currentFeature?.name || scenario?.title || '当前功能'} · 整体`;
+  }
+  const objectDraftKey = JSON.stringify([scenarioId, result?.result_id, questionLocation.target.kind, questionLocation.target.id]);
+  const clueKey = walkthroughInspector ? objectDraftKey : scenarioId;
+  const clue = clueDrafts[clueKey] || '';
+  const setClue = (value: string) => setClueDrafts(d => ({ ...d, [clueKey]: value }));
+  const developmentKey = featureTask?.task_id ?? objectDraftKey;
+  const featureDraft = featureDrafts[developmentKey] ?? { editing: false, request: '' };
+  function updateFeatureDraft(draftPatch: Partial<FeatureDevelopmentDraft>) {
+    setFeatureDrafts(items => ({ ...items, [developmentKey]: { ...(items[developmentKey] ?? { editing: false, request: '' }), ...draftPatch } }));
   }
   const featurePurpose = catalogExplanation?.result.nodes.find(n => n.node_id === currentFeature?.discovery?.node_id)?.description;
   const waitingMcp = waitingForAgent(data, scenarioId);
@@ -761,10 +774,7 @@ function App() {
   }
 
   function select(id: string) {
-    if (reading.pinned && reading.selected !== id) {
-      setNotice('详情已固定。解除固定后可切换对象。');
-      return;
-    }
+    if (!canSelectObject(id)) return;
     setReading(r => ({
       ...r,
       selected: id,
@@ -779,6 +789,12 @@ function App() {
       previousFocus.current = document.activeElement as HTMLElement;
       setShowDetail(true);
     }
+  }
+
+  function canSelectObject(id: string) {
+    if (!reading.pinned || reading.selected === id) return true;
+    setNotice('详情已固定。解除固定后可切换对象。');
+    return false;
   }
 
   function evidence(e: SourceEvidence) {
@@ -801,12 +817,14 @@ function App() {
 
   function navigateFeature(view: string, focus = '') {
     setSearch('');
-    switchView(view, { reading_focus: focus, scroll: { ...reading.scroll, [`canvas-${view}`]: { top: 0, left: 0 } } });
+    switchView(view, { pinned: false, reading_focus: focus, scroll: { ...reading.scroll, [`canvas-${view}`]: { top: 0, left: 0 } } });
     setShowDetail(false);
     setShowCatalog(false);
   }
 
   function selectReading(key: string) {
+    if (!canSelectObject(key)) return;
+    if (detailDrawer && !showDetail) previousFocus.current = document.activeElement as HTMLElement;
     patch({
       selected: key,
       file: key.startsWith('file:') ? key.slice(5) : '',
@@ -819,13 +837,14 @@ function App() {
   }
 
   function readingFile(filePath: string) {
+    if (!canSelectObject('file:' + filePath)) return;
     navigateFeature('files', reading.selected);
     patch({ selected: 'file:' + filePath, file: filePath });
     setShowDetail(true);
   }
 
   function readingStep(id: string) {
-    if (!readingGuide || !result) return;
+    if (!readingGuide || !result || !canSelectObject('step:' + id)) return;
     const stepPath = guidePathForStep(readingGuide, id);
     navigateFeature('timeline');
     setReading(r => ({ ...featurePathPosition(r, result, stepPath?.id || ''), selected: 'step:' + id }));
@@ -833,7 +852,7 @@ function App() {
   }
 
   function readingPath(id: string) {
-    if (!result) return;
+    if (!result || !canSelectObject('')) return;
     setReading(r => featurePathPosition(r, result, id));
     setSearch('');
     setShowDetail(false);
@@ -1031,6 +1050,7 @@ function App() {
       source_snapshot_id: completedExplanation.result.binding.source_snapshot_id,
       detail_tab: 'details',
       mode: 'normal',
+      pinned: false,
     });
     if (detailDrawer) setShowDetail(false);
   }
@@ -1049,6 +1069,7 @@ function App() {
       source_snapshot_id: next.result.binding.source_snapshot_id,
       detail_tab: 'details',
       mode: 'normal',
+      pinned: false,
     });
     if (detailDrawer) setShowDetail(false);
   }
@@ -1071,7 +1092,7 @@ function App() {
           item.line_end === anchor.line_end,
       );
     const latest = data.explanations.find(item => item.result_id === task.walkthrough?.result_id && item.scenario_id === binding.scenario_id);
-    const savedExp = anchor ? original : latest ?? original;
+    const savedExp = anchor || binding.target.kind !== 'feature' ? original : latest ?? original;
     const position: Partial<ReadingState> = {
       entrance: 'walk',
       view: 'timeline',
@@ -1087,32 +1108,10 @@ function App() {
       evidence_id: '',
       pinned: false,
     };
-    if (source && original) {
-      const { kind, id } = binding.target;
-      const guide = featureReadingModel(original.result);
-      const call = kind === 'call_step' ? selectedCallStep(original.result, id) : undefined;
-      const functionTarget =
-        (kind === 'node' && original.result.nodes.some(node => node.node_id === id && node.kind === 'function')) ||
-        (kind === 'edge' && original.result.edges.some(edge => edge.edge_id === id && ['sync_call', 'execution_boundary'].includes(edge.kind)));
-      if (call || functionTarget) {
-        position.view = 'functions';
-        position.selected = kind === 'edge' ? edgeSelection(id) : id;
-        position.function_path = call?.path.id ?? '';
-      } else if (kind === 'file' || kind === 'directory') {
-        position.view = 'files';
-        position.selected = 'file:' + id;
-      } else if (hasCollaborationRoles(original.result) && (kind === 'role' || kind === 'handoff' || kind === 'edge')) {
-        position.view = 'collaboration';
-        position.selected = (kind === 'role' ? 'role:' : 'handoff:') + id;
-        position.reading_path = guide.paths.find(path => (kind === 'role' ? path.role_ids : path.handoff_ids).includes(id))?.id ?? '';
-      } else if (kind === 'step' || kind === 'node') {
-        position.selected = 'step:' + id;
-        position.reading_path = guidePathForStep(guide, id)?.id ?? '';
-      }
-      Object.assign(position, { detail_tab: 'evidence', file: source.path, evidence_id: source.evidence_id });
-    }
+    if (savedExp) Object.assign(position, walkthroughSelection(savedExp.result, binding.target));
+    if (source) Object.assign(position, { detail_tab: 'evidence', file: source.path, evidence_id: source.evidence_id });
     chooseScenario(binding.scenario_id, position);
-    if (source) setShowDetail(true);
+    if (source || position.selected) setShowDetail(true);
   }
 
   function openFeatureTask(taskId: string) {
@@ -1149,7 +1148,7 @@ function App() {
   function showRun() {
     setReading(r => ({ ...r, detail_tab: 'agent', scroll: { ...r.scroll, [`detail-${r.view}-agent`]: { top: 0, left: 0 } } }));
     setActivityFocus(n => n + 1);
-    setShowDetail(featureReading || detailDrawer);
+    setShowDetail(walkthroughInspector || detailDrawer);
   }
 
   const analysisLabel = pending
@@ -1523,8 +1522,11 @@ function App() {
   }
 
   const development =
-    project && (featureReading || (reading.entrance === 'walk' && reading.view === 'functions')) && result && scenario && (
-      <FeatureDevelopment
+    project && walkthroughInspector && result && scenario ? {
+      open: featureDraft.editing,
+      toggle: () => updateFeatureDraft({ editing: !featureDraft.editing }),
+      content: <FeatureDevelopment
+        key={developmentKey}
         defaultEngine={expandMode}
         project={project}
         scenario={scenario}
@@ -1533,12 +1535,12 @@ function App() {
         evidence={developmentEvidence}
         task={featureTask}
         draft={featureDraft}
-        onDraft={draftPatch => setFeatureDrafts(items => ({ ...items, [scenarioId]: { ...featureDraft, ...draftPatch } }))}
+        onDraft={updateFeatureDraft}
         reload={reload}
         onViewResult={viewFeatureResult}
         onOpenTask={openFeatureTask}
-      />
-    );
+      />,
+    } : undefined;
 
   const catalog = walkNavigation && (
     <CatalogSidebar
@@ -1594,6 +1596,7 @@ function App() {
       analysisMode={analysisMode}
       featurePurpose={featurePurpose}
       featureReading={featureReading}
+      walkthroughInspector={walkthroughInspector}
       businessReading={businessReading}
       systemReading={systemReading}
       architectureReading={architectureReading}
@@ -1613,7 +1616,6 @@ function App() {
       sourceSnapshot={sourceSnapshot}
       selectedFile={selectedFile}
       selectedEvidence={selectedEvidence}
-      developmentEvidence={developmentEvidence}
       development={development}
       overviewReviewGaps={overviewReviewGaps}
       sceneAnnotations={sceneAnnotations}
@@ -1638,6 +1640,7 @@ function App() {
       inspectComponent={inspectComponent}
       openFeature={id => void openCapability(id, explanation)}
       askHere={askHere}
+      showRun={showRun}
       reload={reload}
       showMcp={showMcp}
       showDesktop={showDesktop}

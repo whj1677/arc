@@ -169,7 +169,7 @@ app.whenReady().then(async()=>{
         case 'scenario_add':value=service.store.transaction(()=>service.addScenario(args.feature_id,args.question,args.title,args.kind));break;
         case 'scenario_revise':value=service.reviseScenario(args.scenario_id,args.question);break;
         case 'organize':value=service.organize(args.kind,args.id,args.patch);break;
-        case 'annotate':value=service.annotate(args.scenario_id,args.text,args.result_id??null,args.object_id??null,args.object_kind);break;
+        case 'annotate':value=service.annotate(args.scenario_id,args.text,args.result_id??null,args.object_id??null,args.object_kind,args.target);break;
         case 'source':value=await service.source(args.source_snapshot_id,args.path);break;
         case 'source_open_editor':{
           const {source_snapshot_id,path:relative,line,editor}=args;

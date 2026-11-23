@@ -163,3 +163,6 @@
 .task-rollback button { min-height: 26px; padding: .15rem .55rem; font-size: 13px; }
 .verification-history { margin-block: .65rem; color: var(--muted); }
 .verification-history > summary { cursor: pointer; }
+.feature-development.compact{min-width:0;gap:.4rem;margin:0;padding:.55rem .75rem 0;border:0;background:transparent}
+.feature-development.compact form label{margin:.25rem 0 0}
+.feature-development.compact .feature-task-status{font-size:13px}

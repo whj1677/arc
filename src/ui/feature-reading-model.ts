@@ -1,6 +1,8 @@
-import type {AnalysisResult,ReadingGuide,ReadingState} from '../shared';
+import type {AnalysisResult,ReadingGuide,ReadingState,ReadingTarget} from '../shared';
 import {savedReadingGuide} from '../feature-graph-guide';
 import {timelineModel} from './timeline-model';
+import {selectedCallStep} from './function-sequence-model';
+import {edgeSelection} from './reading-target';
 
 // Every projection uses only the selected explanation. No cross-result file lookup.
 export function featureReadingModel(result:AnalysisResult):ReadingGuide {
@@ -18,7 +20,7 @@ export function featureReadingModel(result:AnalysisResult):ReadingGuide {
   const model=timelineModel(result),flow=result.edges.filter(e=>e.kind==='control_flow');
   const exceptionIds=new Set(flow.filter(e=>e.flow_role==='exception').map(e=>e.target_node_id));
   const business=result.nodes.filter(n=>n.kind!=='function'&&!n.source_scope);
-  const steps:ReadingGuide['steps']=business.map(n=>({id:n.node_id,title:n.label,actor:n.execution_context.status==='unknown'?'参与者未确认':n.execution_context.label,text:n.description,outcome:n.outputs.map(o=>o.description||o.name).join('；')||'本结果未说明产出',detail:result.claims.filter(c=>n.claim_ids.includes(c.claim_id)).map(c=>[c.statement,...c.limitations].join(' ')).join('\n'),node_ids:[n.node_id],evidence_ids:n.evidence_ids}));
+  const steps:ReadingGuide['steps']=business.map(n=>({id:n.node_id,title:n.label,actor:n.execution_context.status==='unknown'?'参与者未确认':n.execution_context.label,text:n.description,outcome:n.outputs.filter(o=>o.availability!=='unknown').map(o=>o.description||o.name).join('；'),detail:result.claims.filter(c=>n.claim_ids.includes(c.claim_id)&&c.status==='source_supported').map(c=>[c.statement,...c.limitations].join(' ')).join('\n'),node_ids:[n.node_id],evidence_ids:n.evidence_ids}));
   const calls=result.edges.filter(e=>e.kind!=='control_flow'&&e.kind!=='return');
   const roleNodes=result.nodes.filter(n=>!n.source_scope&&calls.some(e=>e.source_node_id===n.node_id||e.target_node_id===n.node_id));
   const roles:ReadingGuide['roles']=roleNodes.map(n=>({id:n.node_id,title:n.label,duty:n.description,files:[...new Set(result.evidence.filter(e=>n.evidence_ids.includes(e.evidence_id)).map(e=>e.path))],evidence_ids:n.evidence_ids}));
@@ -30,9 +32,105 @@ export function featureReadingModel(result:AnalysisResult):ReadingGuide {
 }
 
 export function guideItem(guide:ReadingGuide,key:string){const split=key.indexOf(':'),kind=key.slice(0,split),id=key.slice(split+1);return kind==='step'?guide.steps.find(s=>s.id===id):kind==='role'?guide.roles.find(r=>r.id===id):kind==='handoff'?guide.handoffs.find(h=>h.id===id):kind==='file'?guide.files.find(f=>f.path===id):undefined;}
-export function guideEvidenceIds(guide:ReadingGuide,key:string){return guideItem(guide,key)?.evidence_ids||[];}
 export function guideItemTitle(guide:ReadingGuide,key:string){const item=guideItem(guide,key);return item?('title' in item?item.title:'label' in item?item.label:''):'';}
 export function guidePathForStep(guide:ReadingGuide,id:string){return guide.paths.find(p=>[...p.step_ids,...p.lanes.flatMap(l=>l.step_ids),...p.failure_ids].includes(id));}
+
+const unique = (values: readonly string[]) => [...new Set(values.filter(value => value.trim()))];
+
+export function guideObjectType(item: ReturnType<typeof guideItem>) {
+  return item && ('node_ids' in item ? '处理步骤' : 'duty' in item ? '参与模块' : 'from' in item ? '交接' : '文件');
+}
+
+export function walkthroughSelection(result: AnalysisResult, target: ReadingTarget): Partial<ReadingState> {
+  const { kind, id } = target;
+  const guide = featureReadingModel(result);
+  const call = kind === 'call_step' ? selectedCallStep(result, id) : undefined;
+  if (call) return { view: 'functions', selected: id, function_path: call.path.id };
+  if (kind === 'file' || kind === 'directory') return { view: 'files', selected: 'file:' + id, file: id };
+  if (kind === 'role' || kind === 'handoff') return {
+    view: 'collaboration', selected: kind + ':' + id,
+    reading_path: guide.paths.find(path => (kind === 'role' ? path.role_ids : path.handoff_ids).includes(id))?.id ?? '',
+  };
+  if (kind === 'edge') {
+    const edge = result.edges.find(edge => edge.edge_id === id);
+    if (edge && ['sync_call', 'execution_boundary'].includes(edge.kind)) return { view: 'functions', selected: edgeSelection(id) };
+    if (guide.handoffs.some(item => item.id === id)) return { view: 'collaboration', selected: 'handoff:' + id };
+    return { view: 'timeline', selected: edgeSelection(id) };
+  }
+  if (kind === 'node' && result.nodes.some(node => node.node_id === id && node.kind === 'function')) {
+    return { view: 'functions', selected: id };
+  }
+  if (kind === 'step' || kind === 'node') {
+    const step = guide.steps.find(step => step.id === id) ?? guide.steps.find(step => step.node_ids.includes(id));
+    return { view: 'timeline', selected: step ? 'step:' + step.id : id, reading_path: step ? guidePathForStep(guide, step.id)?.id ?? '' : '' };
+  }
+  return {};
+}
+
+export function readingObjectDetail(result: AnalysisResult, guide: ReadingGuide, selected: string, pathId?: string) {
+  const item = guideItem(guide, selected);
+  if (!item) return;
+  const step = 'node_ids' in item ? item : undefined;
+  const nodeIds = new Set(step?.node_ids);
+  const nodes = result.nodes.filter(node => nodeIds.has(node.node_id));
+  const incoming = result.edges.filter(edge => nodeIds.has(edge.target_node_id) && !nodeIds.has(edge.source_node_id));
+  const outgoing = result.edges.filter(edge => nodeIds.has(edge.source_node_id) && !nodeIds.has(edge.target_node_id));
+  const io = nodes.flatMap(node => [...node.inputs, ...node.outputs]);
+  const contexts = nodes.map(node => node.execution_context);
+  const conditions = [
+    ...contexts.filter(context => context.kind !== 'unknown' && context.status !== 'unknown' && context.label.trim())
+      .map(context => ({ text: context.label, status: context.status })),
+    ...incoming.flatMap(edge => edge.condition?.trim() ? [{ text: edge.condition, status: edge.status }] : []),
+  ].filter((condition, index, all) => all.findIndex(other => other.text === condition.text && other.status === condition.status) === index);
+  const references = new Map(result.evidence.map(evidence => [evidence.evidence_id, evidence]));
+  const directEvidenceIds = unique([
+    ...item.evidence_ids,
+    ...[...nodes, ...io, ...contexts].flatMap(object => object.evidence_ids),
+  ]);
+  const anchors = unique([...directEvidenceIds, ...incoming.filter(edge => edge.condition?.trim()).flatMap(edge => edge.evidence_ids)]).flatMap(id => {
+    const evidence = references.get(id);
+    return evidence ? [evidence] : [];
+  });
+  const primaryEvidence = ('path' in item ? anchors.find(evidence => evidence.path === item.path) : anchors[0]);
+  const readWrite = (field: 'inputs' | 'outputs', role: 'read' | 'write') => unique([
+    ...nodes.flatMap(node => node[field]).filter(value => value.availability !== 'unknown')
+      .map(value => [value.name, value.description !== value.name && value.description].filter(Boolean).join(' · ')),
+    ...anchors.filter(evidence => directEvidenceIds.includes(evidence.evidence_id) && evidence.role === role)
+      .map(evidence => evidence.note || `${evidence.path}:${evidence.line_start}`),
+  ]);
+  const ioIds = new Set(io.map(value => value.io_id));
+  const directClaimIds = new Set([...nodes, ...io, ...contexts].flatMap(object => object.claim_ids));
+  const claims = result.claims.filter(claim => directClaimIds.has(claim.claim_id)
+    || claim.targets.node_ids.some(id => nodeIds.has(id)) || claim.targets.io_ids.some(id => ioIds.has(id)));
+  const claimIds = new Set(claims.map(claim => claim.claim_id));
+  const edgeIds = new Set([...incoming, ...outgoing].map(edge => edge.edge_id));
+  const gaps = result.gaps.filter(gap => gap.related_node_ids.some(id => nodeIds.has(id))
+    || gap.related_edge_ids?.some(id => edgeIds.has(id)) || gap.claim_ids.some(id => claimIds.has(id)));
+
+  const path = guide.paths.find(path => path.id === pathId) ?? (step && guidePathForStep(guide, step.id));
+  const paths = path ? [path.step_ids, ...path.lanes.map(lane => lane.step_ids), path.failure_ids] : [];
+  const pathSteps = new Set(paths.flat());
+  const next = outgoing.map(edge => {
+    const matches = guide.steps.filter(candidate => pathSteps.has(candidate.id) && candidate.node_ids.includes(edge.target_node_id));
+    return { edge, stepId: matches.length === 1 ? matches[0].id : undefined };
+  });
+  const savedGuide = savedReadingGuide(result);
+  const orderedNext = step && savedGuide ? unique(paths.slice(0, -1).flatMap(ids => {
+    const index = ids.indexOf(step.id);
+    return index >= 0 && ids[index + 1] ? [ids[index + 1]] : [];
+  })).filter(id => !next.some(link => link.stepId === id)) : [];
+  const files = 'path' in item ? [] : unique([
+    ...('files' in item ? item.files : 'from' in item
+      ? guide.roles.filter(role => role.id === item.from || role.id === item.to).flatMap(role => role.files)
+      : guide.files.filter(file => file.step_ids.includes(item.id)).map(file => file.path)),
+    ...anchors.map(evidence => evidence.path).filter(path => guide.files.some(file => file.path === path)),
+  ]);
+  return {
+    item, conditions, reads: step ? readWrite('inputs', 'read') : [], writes: step ? readWrite('outputs', 'write') : [],
+    next, orderedNext, gaps, unresolvedClaims: claims.filter(claim => claim.status !== 'source_supported'),
+    primaryEvidence, moreEvidence: anchors.filter(evidence => evidence !== primaryEvidence), files,
+  };
+}
 
 export function featureReadingPosition(r:ReadingState):ReadingState {
   if(r.entrance!=='walk'||r.feature_reading_version===1)return r;

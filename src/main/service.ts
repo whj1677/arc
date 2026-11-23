@@ -22,6 +22,7 @@ import type {
   ReadingAsk,
   ReadingQuestion,
   ReadingState,
+  ReadingTarget,
   Revision,
   Run,
   RuntimeToolStatus,
@@ -43,7 +44,7 @@ import { makePrompt, probeProviders, redact, runCodex, runCodexPromptRefinement,
 import { buildRefinementContext, goalRefinementSchema, parseGoalRefinement, refinementPrompt } from './prompt-refiner';
 import { normalizeTransport, schema, validateResult } from './validation';
 import { discoveredFeature } from '../discovered-feature';
-import { catalogFeatureClues, promptContext } from './prompt-context';
+import { catalogFeatureClues, promptContext, readingTarget } from './prompt-context';
 import { proposeScenarios, scenarioTitleKey } from './scenario-breakdown';
 import { readingAnswerSchema, validateReadingAnswer } from './reading-question';
 import { isCatalogOverview, overviewDiscoveryQuestion, previousCatalogQuestion, shallowOverviewQuestion } from './architecture-analysis';
@@ -559,11 +560,17 @@ export class ArcService {
     this.changed();
   }
 
-  annotate(scenarioId: string, body: string, resultId: string | null, objectId: string | null, objectKind?: 'node' | 'edge') {
+  annotate(scenarioId: string, body: string, resultId: string | null, objectId: string | null, objectKind?: 'node' | 'edge', target?: ReadingTarget) {
     const scenario = this.store.get<Scenario>('scenario', scenarioId);
     const project = this.store.get<Project>('project', scenario.project_id);
     const result = resultId ? this.store.get<Explanation>('explanation', resultId) : null;
     if (result && result.scenario_id !== scenarioId) throw new Error('批注归属不匹配');
+    const snapshotId = result?.result.binding.source_snapshot_id || project.snapshot_id;
+    if (target) {
+      const snapshot = this.store.get<Snapshot>('snapshot', snapshotId);
+      const feature = this.store.get<Feature>('feature', scenario.feature_id);
+      readingTarget(result?.result, target, snapshot, feature);
+    }
     const kind = objectKind ?? (result?.result.nodes.some(n => n.node_id === objectId) ? 'node' : 'edge');
     if (objectId && !(kind === 'node' && result?.result.nodes.some(n => n.node_id === objectId) ||
       kind === 'edge' && result?.result.edges.some(e => e.edge_id === objectId))) {
@@ -574,9 +581,9 @@ export class ArcService {
       project_id: project.project_id,
       scenario_id: scenarioId,
       result_id: resultId,
-      object_id: objectId,
-      ...(objectId && { target: { kind, id: objectId } }),
-      source_snapshot_id: result?.result.binding.source_snapshot_id || project.snapshot_id,
+      object_id: target?.id ?? objectId,
+      ...(target ? { target } : objectId && { target: { kind, id: objectId } }),
+      source_snapshot_id: snapshotId,
       text: text(body),
       created_at: now(),
     };

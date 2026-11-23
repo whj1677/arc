@@ -6,7 +6,9 @@ import type {
   Explanation,
   Feature,
   Project,
+  ReadingGuide,
   ReadingState,
+  ReadingTarget,
   Run,
   Scenario,
   Snapshot,
@@ -16,6 +18,7 @@ import type {
 import { FunctionDetail, FunctionStepDetail } from './FunctionChain';
 import { edgeNames, claimNames, nodeNames } from './Graph';
 import { FeatureReadingDetail } from './FeatureReading';
+import { guideItem, guideObjectType, walkthroughSelection } from './feature-reading-model';
 import { SystemDetail } from './SystemDetail';
 import { StepDetail } from './StepDetail';
 import { FileSummary } from './FileSummary';
@@ -27,8 +30,6 @@ import { AnalysisError } from './AnalysisError';
 import { annotationTarget } from './annotation';
 import { edgeExplanation } from './presentation';
 import { EvidenceButton, ScrollPanel, short, statuses } from './workbench-primitives';
-
-const api = window.arc;
 
 export interface DetailPaneProps {
   data: WorkspaceData;
@@ -45,6 +46,7 @@ export interface DetailPaneProps {
   analysisMode: { name: string; option: string; start: string; retry: string; description: string };
   featurePurpose?: string;
   featureReading: boolean;
+  walkthroughInspector: boolean;
   businessReading: boolean;
   systemReading: boolean;
   architectureReading: boolean;
@@ -54,7 +56,7 @@ export interface DetailPaneProps {
   pending: boolean;
   indexes: Record<string, any>;
   result?: AnalysisResult;
-  readingGuide: any;
+  readingGuide?: ReadingGuide;
   readingEvidence?: readonly SourceEvidence[];
   selectedNode?: AnalysisResult['nodes'][number];
   selectedEdge?: AnalysisResult['edges'][number];
@@ -64,8 +66,7 @@ export interface DetailPaneProps {
   sourceSnapshot?: Snapshot;
   selectedFile: string;
   selectedEvidence?: SourceEvidence;
-  developmentEvidence: unknown;
-  development: React.ReactNode;
+  development?: { content: React.ReactNode; open: boolean; toggle: () => void };
   overviewReviewGaps: AnalysisResult['gaps'];
   sceneAnnotations: Annotation[];
   sceneExplanations: Explanation[];
@@ -75,7 +76,7 @@ export interface DetailPaneProps {
   completedExplanation?: Explanation;
   events: any[];
   eventError: string;
-  questionLocation: { target: any; label: string };
+  questionLocation: { target: ReadingTarget; label: string };
   clue: string;
   setClue: (value: string) => void;
   patch: (value: Partial<ReadingState>) => void;
@@ -89,6 +90,7 @@ export interface DetailPaneProps {
   inspectComponent: (id: string) => void;
   openFeature: (id: string) => void;
   askHere: () => void;
+  showRun: () => void;
   reload: () => Promise<WorkspaceData>;
   showMcp: () => void;
   showDesktop: () => void;
@@ -112,6 +114,7 @@ export function DetailPane({
   analysisMode,
   featurePurpose,
   featureReading,
+  walkthroughInspector,
   businessReading,
   systemReading,
   architectureReading,
@@ -131,7 +134,6 @@ export function DetailPane({
   sourceSnapshot,
   selectedFile,
   selectedEvidence,
-  developmentEvidence,
   development,
   overviewReviewGaps,
   sceneAnnotations,
@@ -156,6 +158,7 @@ export function DetailPane({
   inspectComponent,
   openFeature,
   askHere,
+  showRun,
   reload,
   showMcp,
   showDesktop,
@@ -163,8 +166,11 @@ export function DetailPane({
   requestAnalysis,
   action,
 }: DetailPaneProps) {
+  const guideObject = readingGuide && guideItem(readingGuide, reading.selected);
+  const objectType = guideObjectType(guideObject)
+    || (functionStep ? '调用步骤' : selectedNode ? nodeNames[selectedNode.kind] : selectedEdge ? '连线' : '功能走读');
   const paneTitle =
-    reading.detail_tab === 'questions'
+    walkthroughInspector ? objectType : reading.detail_tab === 'questions'
       ? '当前位置问答'
       : featureReading
         ? '阅读说明'
@@ -185,7 +191,7 @@ export function DetailPane({
                     : '当前说明';
 
   const tabs =
-    reading.view === 'files' && !featureReading
+    walkthroughInspector || reading.view === 'files' && !featureReading
       ? [
           ['details', '说明'],
           ['questions', '提问'],
@@ -200,6 +206,10 @@ export function DetailPane({
         ];
 
   const summaryRequest = React.useRef<(question: string) => void>(null);
+  const [correctionKey, setCorrectionKey] = React.useState('');
+  const currentKey = JSON.stringify([scenarioId, result?.result_id, reading.selected]);
+  const correctionOpen = correctionKey === currentKey && !development?.open;
+  const mainTab = reading.detail_tab === 'details' || reading.detail_tab === 'evidence';
   const restoreKey =
     loadedKey +
     ':' +
@@ -210,19 +220,74 @@ export function DetailPane({
         ? ':' + reading.selected
         : '');
 
+  const clueEditor = <div className="detail-clue-input">
+    <textarea
+      aria-label="补充线索"
+      autoFocus={walkthroughInspector && correctionOpen}
+      placeholder="补充背景或指出问题，保存后仍是用户线索。"
+      value={clue}
+      onChange={e => setClue(e.target.value)}
+    />
+    <button
+      className="secondary full"
+      disabled={!clue.trim()}
+      onClick={() =>
+        void action(async () => {
+          await window.arc.invoke('annotate', {
+            scenario_id: scenarioId,
+            text: clue,
+            result_id: result?.result_id || null,
+            ...(walkthroughInspector && questionLocation.target.kind !== 'feature' ? { target: questionLocation.target } : {
+              object_id: functionStep?.step.to_node_id || selectedNode?.node_id || selectedEdge?.edge_id || null,
+              object_kind: selectedEdge ? 'edge' : 'node',
+            }),
+          });
+          setClue('');
+          setCorrectionKey('');
+        }, '线索已保存，下次分析可引用')
+      }
+    >
+      保存线索
+    </button>
+  </div>;
+
+  function locateAnnotation(annotation: Annotation, original?: AnalysisResult) {
+    const target = annotation.target;
+    const source = original ?? result;
+    patch({
+      ...(original && { result_id: original.result_id, source_snapshot_id: original.binding.source_snapshot_id }),
+      selected: target?.kind === 'edge' ? edgeSelection(target.id) : annotation.object_id || '',
+      file: '', evidence_id: '', detail_tab: 'details',
+      ...(walkthroughInspector && source && target && { pinned: false, ...walkthroughSelection(source, target) }),
+    });
+  }
+
   return (
-    <section className="detail">
-      <div className="pane-heading">
+    <section className={`detail${walkthroughInspector ? ' walkthrough-inspector' : ''}`}>
+      <div className={`pane-heading${walkthroughInspector ? ' inspector-heading' : ''}`}>
         <span>{paneTitle}</span>
+        {walkthroughInspector && <div className="inspector-utilities">
+          <button className={`quiet${reading.detail_tab === 'agent' ? ' selected' : ''}`} aria-label="分析进度"
+            aria-pressed={reading.detail_tab === 'agent'} onClick={showRun}>
+            {(running || (activityRun && activeStatuses.has(activityRun.status)) || waitingMcp) && <span className="inspector-run-dot" title="任务进行中" aria-hidden="true" />}
+            分析进度
+          </button>
+          <button className={`quiet${reading.detail_tab === 'history' ? ' selected' : ''}`} aria-label="历史" aria-description={`${sceneExplanations.length} 个说明版本`}
+            aria-pressed={reading.detail_tab === 'history'} onClick={() => patch({ detail_tab: 'history' })}>
+            历史 <span className="inspector-version-count">{sceneExplanations.length}</span>
+          </button>
+        </div>}
         <button
           className={`icon ${reading.pinned ? 'selected' : ''}`}
           aria-label={reading.pinned ? '解除固定详情' : '固定详情'}
           title={reading.pinned ? '解除固定详情' : '固定详情'}
+          aria-pressed={reading.pinned}
           onClick={() => patch({ pinned: !reading.pinned })}
         >
           <svg className="arc-ui-icon" viewBox="0 0 16 16" fill={reading.pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M9.8 2.8 13.2 6.2 11.4 8l-.7-.2-2.2 2.2.3 1.4-1.2 1.2-2.2-2.2-2.4 2.4-.6-.6 2.4-2.4-2.2-2.2 1.2-1.2 1.4.3 2.2-2.2-.2-.7z" />
           </svg>
+          {walkthroughInspector && reading.pinned && <span>已固定 · 解除固定</span>}
         </button>
         {(architectureReading || featureReading || reading.view === 'functions') && !detailDrawer && (
           <button
@@ -238,9 +303,9 @@ export function DetailPane({
         )}
       </div>
 
-      <nav className="detail-tabs">
+      <nav className="detail-tabs" aria-label={walkthroughInspector ? '走读详情' : undefined}>
         {tabs.map(([v, l]) => (
-          <button key={v} className={reading.detail_tab === v ? 'selected' : ''} onClick={() => patch({ detail_tab: v })}>
+          <button key={v} className={reading.detail_tab === v ? 'selected' : ''} aria-pressed={reading.detail_tab === v} onClick={() => patch({ detail_tab: v })}>
             {l}
           </button>
         ))}
@@ -249,18 +314,20 @@ export function DetailPane({
       <ScrollPanel positions={reading.scroll} restoreKey={restoreKey} onPosition={savePosition} name={`detail-${reading.view}-${reading.detail_tab}`}>
         {reading.detail_tab === 'details' && (
           <>
-            {development}
-            {featureReading && readingGuide && result ? (
+            {featureReading && !activeObject && readingGuide && result ? (
               <FeatureReadingDetail
                 guide={readingGuide}
                 result={result}
                 selected={reading.selected}
                 view={reading.view}
+                pathId={reading.reading_path}
                 onFile={readingFile}
                 onStep={readingStep}
+                onEdge={id => select(edgeSelection(id))}
                 onEvidence={evidence}
+                askHere={askHere}
               />
-            ) : featureReading ? (
+            ) : featureReading && !activeObject ? (
               <p>当前功能尚未有分析说明，可以直接提问。</p>
             ) : reading.view === 'files' && sourceSnapshot ? (
               <FileSummary data={data} projectId={projectId} snapshot={sourceSnapshot} path={selectedFile} showSource={reading.files_open}
@@ -407,7 +474,7 @@ export function DetailPane({
               </>
             )}
 
-            {!featureReading && !functionStep && reading.view !== 'files' && result && (
+            {(!featureReading || activeObject) && !functionStep && reading.view !== 'files' && result && (
               <details className="supporting-evidence" key={activeObject?.label || result.result_id}>
                 <summary>查看分析依据 · {(activeObject ? activeObject.evidence_ids : result.evidence).length} 处引用</summary>
                 {(activeObject ? result.evidence.filter(e => activeObject.evidence_ids.includes(e.evidence_id)) : result.evidence.slice(0, 4)).map(e => (
@@ -416,37 +483,12 @@ export function DetailPane({
               </details>
             )}
 
-            {reading.view !== 'files' && scenario && (
+            {(walkthroughInspector || reading.view !== 'files') && scenario && (
               <>
-                <details className="user-clue-editor" open={clue ? true : undefined}>
+                {!walkthroughInspector && <details className="user-clue-editor" open={clue ? true : undefined}>
                   <summary>仅保存补充线索</summary>
-                  <textarea
-                    aria-label="补充线索"
-                    placeholder="补充背景或指出问题；保存后仍是用户线索。"
-                    value={clue}
-                    onChange={e => setClue(e.target.value)}
-                  />
-                  <button
-                    className="secondary full"
-                    disabled={!clue.trim()}
-                    onClick={() =>
-                      void action(async () => {
-                        await api.invoke('annotate', {
-                          scenario_id: scenarioId,
-                          text: clue,
-                          result_id: result?.result_id || null,
-                          object_id: featureReading
-                            ? readingGuide?.steps.find((s: any) => 'step:' + s.id === reading.selected)?.node_ids[0] || null
-                            : functionStep?.step.to_node_id || selectedNode?.node_id || selectedEdge?.edge_id || null,
-                          object_kind: selectedEdge ? 'edge' : 'node',
-                        });
-                        setClue('');
-                      }, '线索已保存，下次分析可引用')
-                    }
-                  >
-                    保存线索
-                  </button>
-                </details>
+                  {clueEditor}
+                </details>}
                 {sceneAnnotations.map(a => {
                   const original = sceneExplanations.find(e => e.result_id === a.result_id)?.result;
                   const match = annotationTarget(a, original, result);
@@ -458,23 +500,12 @@ export function DetailPane({
                         {match} · {short(a.source_snapshot_id)}
                       </small>
                       {original && a.result_id !== result?.result_id && (
-                        <button
-                          onClick={() =>
-                            patch({
-                              result_id: original.result_id,
-                              selected: a.target?.kind === 'edge' ? edgeSelection(a.target.id) : a.object_id || '',
-                              file: '',
-                              evidence_id: '',
-                              source_snapshot_id: original.binding.source_snapshot_id,
-                              detail_tab: 'details',
-                            })
-                          }
-                        >
+                        <button onClick={() => locateAnnotation(a, original)}>
                           查看原批注
                         </button>
                       )}
                       {match.startsWith('同源') && (
-                        <button onClick={() => patch({ selected: a.target?.kind === 'edge' ? edgeSelection(a.target.id) : a.object_id || '', detail_tab: 'details' })}>定位对应对象</button>
+                        <button onClick={() => locateAnnotation(a)}>定位对应对象</button>
                       )}
                     </article>
                   );
@@ -520,7 +551,6 @@ export function DetailPane({
                 <SourceExcerpt evidence={selectedEvidence} hidePath />
               </article>
             )}
-            {Boolean(developmentEvidence) && development}
             <p className="warning">结构、引用和哈希校验不等于语义已核实。</p>
             <dl>
               <dt>说明</dt>
@@ -564,7 +594,7 @@ export function DetailPane({
                 events={events}
                 error={eventError}
                 detailed
-                stop={() => void action(() => api.invoke('run_cancel', { run_id: activityRun.binding.run_id }))}
+                stop={() => void action(() => window.arc.invoke('run_cancel', { run_id: activityRun.binding.run_id }))}
               />
             )}
             {completedExplanation && !waitingMcp && (
@@ -631,7 +661,7 @@ export function DetailPane({
                     {run.external_id && <p className="path">原生会话：{run.external_id}</p>}
                     {run.error && <AnalysisError error={run.error} />}
                     {run.status === 'failed' && !run.overview_format && run.provider_id === 'codex' && !run.dsh_overview_format && !run.dsh_function_format && (
-                      <button onClick={() => void action(() => api.invoke('run_revalidate', { run_id: run.binding.run_id }))}>
+                      <button onClick={() => void action(() => window.arc.invoke('run_revalidate', { run_id: run.binding.run_id }))}>
                         重新校验已收原文（不调用 Agent）
                       </button>
                     )}
@@ -647,7 +677,7 @@ export function DetailPane({
                     ) : activeStatuses.has(run.status) ? (
                       <button
                         disabled={run.status === 'cancel_requested'}
-                        onClick={() => void action(() => api.invoke('run_cancel', { run_id: run.binding.run_id }))}
+                        onClick={() => void action(() => window.arc.invoke('run_cancel', { run_id: run.binding.run_id }))}
                       >
                         {run.execution_mode === 'codex_desktop' ? '撤销派发' : '请求停止'}
                       </button>
@@ -687,6 +717,7 @@ export function DetailPane({
                   onClick={() =>
                     patch({
                       result_id: e.result_id,
+                      ...(walkthroughInspector && { pinned: false }),
                       selected: '',
                       file: '',
                       evidence_id: '',
@@ -718,6 +749,26 @@ export function DetailPane({
           </>
         )}
       </ScrollPanel>
+      {walkthroughInspector && mainTab && (
+        <div className="inspector-footer" aria-label="走读操作">
+          <div className="inspector-footer-content">
+            {development?.content}
+            {scenario && correctionOpen && <section className="inspector-correction" aria-label="纠正说明表单">
+              <span className="tag">用户线索</span>
+              {clueEditor}
+            </section>}
+          </div>
+          <div className="inspector-actions">
+            <button onClick={askHere}>问这里</button>
+            <button className="primary" disabled={!development || project?.fictional} aria-expanded={development?.open ?? false}
+              onClick={() => { setCorrectionKey(''); development?.toggle(); }}>修改这里</button>
+            <button disabled={!scenario} aria-expanded={correctionOpen} onClick={() => {
+              if (development?.open) development.toggle();
+              setCorrectionKey(correctionOpen ? '' : currentKey);
+            }}>纠正说明</button>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

@@ -419,7 +419,13 @@ export function CanvasPane({
                   zoom={reading.zoom}
                   search={search}
                   pathId={reading.function_path ?? reading.reading_path ?? ''}
-                  onPath={(pathId, selected) => setReading(r => functionPathPosition(r, result, pathId, selected))}
+                  onPath={(pathId, selected) => {
+                    if (reading.entrance === 'walk' && reading.pinned && reading.selected !== selected) {
+                      select(selected);
+                      return;
+                    }
+                    setReading(r => functionPathPosition(r, result, pathId, selected));
+                  }}
                   evidence={evidence}
                 />
               </>

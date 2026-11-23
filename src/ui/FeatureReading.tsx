@@ -1,8 +1,10 @@
 import React from 'react';
 import type {AnalysisResult,ReadingGuide,SourceEvidence} from '../shared';
-import {guideItem,guideItemTitle,guidePathForStep,hasCollaborationRoles} from './feature-reading-model';
+import {guideItemTitle,guidePathForStep,hasCollaborationRoles,readingObjectDetail} from './feature-reading-model';
 import {timelineModel} from './timeline-model';
 import {BusinessDiagram,CollaborationDiagram,FilesDiagram} from './ReadingDiagrams';
+import {claimNames} from './Graph';
+import {SourceEditorActions} from './SourceEditorActions';
 
 type Props={result:AnalysisResult;guide:ReadingGuide;view:string;pathId:string;selected:string;focus:string;search:string;zoom:number;onPath:(id:string)=>void;onSelect:(key:string)=>void;onNavigate:(view:string,focus?:string)=>void;onStep:(id:string)=>void};
 export function FeatureReading({result,guide:g,view,pathId,selected,focus,search,zoom,onPath,onSelect,onNavigate,onStep}:Props){
@@ -26,17 +28,104 @@ export function FeatureReading({result,guide:g,view,pathId,selected,focus,search
   </section>;
 }
 
-type DetailProps={guide:ReadingGuide;result:AnalysisResult;selected:string;view:string;onFile:(path:string)=>void;onStep:(id:string)=>void;onEvidence:(e:SourceEvidence)=>void};
-export function FeatureReadingDetail({guide:g,result,selected,view,onFile,onStep,onEvidence}:DetailProps){
-  const item=guideItem(g,selected);
-  if(!item)return <div className="fr-detail"><h2>{view==='timeline'?'步骤详情':view==='collaboration'?'协作详情':'文件详情'}</h2><p>{view==='timeline'?'选择处理步骤，查看规则、结果和源码依据。':view==='collaboration'?'选择参与方或交接记录，查看职责与对应源码。':'选择文件，查看引用依据并返回对应步骤。'}</p></div>;
-  const isFile='path' in item,isStep='node_ids' in item,isRole='duty' in item,isHandoff='from' in item;
-  const anchors=result.evidence.filter(e=>item.evidence_ids.includes(e.evidence_id));
-  const files=isFile?[]:isRole?item.files:isHandoff?[...new Set(g.roles.filter(r=>r.id===item.from||r.id===item.to).flatMap(r=>r.files))]:
-    [...new Set([...g.files.filter(file=>file.step_ids.includes(item.id)).map(file=>file.path),...anchors.map(e=>e.path)])];
-  return <div className="fr-detail"><span className="eyebrow">{isFile?'文件说明':isStep?'步骤与条件':isRole?'职责落点':'交接说明'}</span><h2>{guideItemTitle(g,selected)}</h2>{isFile&&<p className="fr-file-path">{item.path}</p>}<p>{isFile?item.description:isRole?item.duty:isStep?item.text:item.send}</p>{'detail' in item&&item.detail&&<p className="fr-detail-copy">{item.detail}</p>}{isStep&&<div className="fr-detail-outcome">{item.outcome}</div>}{isHandoff&&<p><strong>得到的结果：</strong>{item.receive}</p>}
-    {isFile&&item.step_ids.length>0&&<><h3>在哪一步用到</h3>{item.step_ids.map(id=><button className="fr-detail-link" key={id} onClick={()=>onStep(id)}>{g.steps.find(s=>s.id===id)?.title}<small>{guidePathForStep(g,id)?.label} →</small></button>)}</>}
-    {files.length>0&&<><h3>相关文件</h3>{files.map(path=><button className="fr-detail-link" key={path} onClick={()=>onFile(path)}>{g.files.find(f=>f.path===path)?.title||path}<small>{path} ↗</small></button>)}</>}
-    <h3>这条说明的依据</h3>{anchors.map(e=><button className="fr-detail-link" key={e.evidence_id} onClick={()=>onEvidence(e)}>{e.note||e.path}<small>{e.path} · {e.line_start}–{e.line_end} 行</small></button>)}
+type DetailProps = {
+  guide: ReadingGuide; result: AnalysisResult; selected: string; view: string; pathId?: string;
+  onFile: (path: string) => void; onStep: (id: string) => void; onEdge?: (id: string) => void;
+  onEvidence: (e: SourceEvidence) => void; askHere?: () => void;
+};
+
+export function FeatureReadingDetail({ guide, result, selected, view, pathId, onFile, onStep, onEdge, onEvidence, askHere }: DetailProps) {
+  const detail = readingObjectDetail(result, guide, selected, pathId);
+  if (!detail) return <div className="fr-detail">
+    <h2>{view === 'timeline' ? '步骤详情' : view === 'collaboration' ? '协作详情' : '文件详情'}</h2>
+    <p>{view === 'timeline' ? '选择处理步骤，查看规则、结果和源码依据。' : view === 'collaboration' ? '选择参与方或交接记录，查看职责与对应源码。' : '选择文件，查看引用依据并返回对应步骤。'}</p>
+  </div>;
+
+  const { item, conditions, reads, writes, next, orderedNext, gaps, unresolvedClaims, primaryEvidence, moreEvidence, files } = detail;
+  const isFile = 'path' in item, isStep = 'node_ids' in item, isRole = 'duty' in item, isHandoff = 'from' in item;
+  const intro = isFile ? item.description : isRole ? item.duty : isStep ? item.text : '';
+  const stepTitle = (id: string) => guideItemTitle(guide, 'step:' + id);
+  const relatedHandoffs = isRole
+    ? guide.handoffs.filter(handoff => handoff.from === item.id || handoff.to === item.id)
+    : [];
+  return <div className="fr-detail" key={selected}>
+    <span className="eyebrow">{isStep ? '当前选中步骤' : isFile ? '当前选中文件' : isRole ? '当前选中模块' : '当前选中交接'}</span>
+    <h2>{guideItemTitle(guide, selected)}</h2>
+    {isFile && <p className="fr-file-path">{item.path}</p>}
+    {intro.trim() && <p>{intro}</p>}
+    {conditions.length > 0 && <section>
+      <h3>执行条件</h3>
+      <ul className="fr-detail-list">{conditions.map(({ text, status }) => <li key={text + status}>
+        {text}{status !== 'source_supported' && <small> · {claimNames[status]}</small>}
+      </li>)}</ul>
+    </section>}
+    {(reads.length > 0 || writes.length > 0) && <section>
+      <h3>读取与改变</h3>
+      <dl className="fr-detail-facts">
+        {reads.length > 0 && <div><dt>读取</dt><dd>{reads.join('；')}</dd></div>}
+        {writes.length > 0 && <div><dt>改变</dt><dd>{writes.join('；')}</dd></div>}
+      </dl>
+    </section>}
+    {isStep && (item.outcome.trim() || next.length > 0 || orderedNext.length > 0) && <section>
+      <h3>结果与后续去向</h3>
+      {item.outcome.trim() && <div className="fr-detail-outcome">{item.outcome}</div>}
+      {next.map(({ edge, stepId }) => <button className="fr-detail-link" key={edge.edge_id}
+        onClick={() => stepId ? onStep(stepId) : onEdge?.(edge.edge_id)}>
+        → {stepId ? stepTitle(stepId) : edge.label}
+        <small>{[stepId && edge.label, edge.condition, edge.status !== 'source_supported' && claimNames[edge.status]].filter(Boolean).join(' · ')}</small>
+      </button>)}
+      {orderedNext.map(id => <button className="fr-detail-link" key={id} onClick={() => onStep(id)}>→ 下一步 {stepTitle(id)}</button>)}
+    </section>}
+    {isHandoff && <>
+      <p>{guideItemTitle(guide, 'role:' + item.from)} → {guideItemTitle(guide, 'role:' + item.to)} <small>· {item.kind}</small></p>
+      {(item.send.trim() || item.receive.trim()) && <dl className="fr-detail-facts">
+        {item.send.trim() && <div><dt>交接内容</dt><dd>{item.send}</dd></div>}
+        {item.receive.trim() && <div><dt>接收结果</dt><dd>{item.receive}</dd></div>}
+      </dl>}
+    </>}
+    {isRole && relatedHandoffs.length > 0 && <section>
+      <h3>接收与交付</h3>
+      <ul className="fr-detail-list">{relatedHandoffs.map(handoff => <li key={handoff.id}>
+        <strong>{handoff.to === item.id ? '接收' : '交付'} · {handoff.label}</strong>
+        <small>{handoff.to === item.id ? handoff.receive : handoff.send}</small>
+      </li>)}</ul>
+    </section>}
+    {isFile && item.step_ids.length > 0 && <section>
+      <h3>在哪一步用到</h3>
+      {item.step_ids.map(id => <button className="fr-detail-link" key={id} onClick={() => onStep(id)}>
+        {stepTitle(id)}<small>{guidePathForStep(guide, id)?.label} →</small>
+      </button>)}
+    </section>}
+    {(gaps.length > 0 || unresolvedClaims.length > 0) && <section className="fr-detail-gap">
+      <div className="row between"><h3>还没查清</h3>{askHere && <button className="quiet" onClick={askHere}>问这里</button>}</div>
+      <ul className="fr-detail-list">
+        {gaps.map(gap => <li key={gap.gap_id}><strong>{gap.question}</strong><small>{gap.impact}</small></li>)}
+        {unresolvedClaims.map(claim => <li key={claim.claim_id}>
+          <strong>{claim.statement}</strong><small>{[claimNames[claim.status], ...claim.limitations].join(' · ')}</small>
+        </li>)}
+      </ul>
+    </section>}
+    {primaryEvidence && <section className="fr-detail-source">
+      <h3>源码依据</h3>
+      <strong className="fr-file-path">{primaryEvidence.path}</strong>
+      <small>第 {primaryEvidence.line_start}–{primaryEvidence.line_end} 行</small>
+      {primaryEvidence.note && <p>{primaryEvidence.note}</p>}
+      <button className="secondary" onClick={() => onEvidence(primaryEvidence)}>查看对应代码</button>
+      <SourceEditorActions key={primaryEvidence.evidence_id} location={{
+        source_snapshot_id: primaryEvidence.source_snapshot_id, path: primaryEvidence.path, line: primaryEvidence.line_start,
+      }} />
+    </section>}
+    {'detail' in item && item.detail.trim() && <details className="fr-detail-more">
+      <summary>完整说明</summary><p className="fr-detail-copy">{item.detail}</p>
+    </details>}
+    {(moreEvidence.length > 0 || files.length > 0) && <details className="fr-detail-more">
+      <summary>{[moreEvidence.length > 0 && '更多依据', files.length > 0 && '相关文件'].filter(Boolean).join(' / ')}</summary>
+      {moreEvidence.map(evidence => <button className="fr-detail-link" key={evidence.evidence_id} onClick={() => onEvidence(evidence)}>
+        {evidence.note || evidence.path}<small>{evidence.path} · {evidence.line_start}–{evidence.line_end} 行</small>
+      </button>)}
+      {files.map(path => <button className="fr-detail-link" key={path} onClick={() => onFile(path)}>
+        {guideItemTitle(guide, 'file:' + path) || path}<small>{path} ↗</small>
+      </button>)}
+    </details>}
   </div>;
 }

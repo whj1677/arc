@@ -88,3 +88,47 @@ test('auxiliary function paths preserve the selected business entrance and expli
  for(const next of [retry,helper,files,upload]){assert.equal(next.result_id,'history');assert.equal(next.source_snapshot_id,'old-snapshot');}
  assert.equal(featurePathPosition(upload,r,'legacy-business').function_path,'');assert.equal(state.function_path,'upload');
 });
+
+test('structured walkthrough detail projects real step facts without inventing sparse fields',()=>{
+ const detailedNode={
+  ...node,
+  execution_context:{...node.execution_context,kind:'task' as const,status:'source_supported' as const,label:'预充周期检查',evidence_ids:[ev.evidence_id],claim_ids:[]},
+  inputs:[{io_id:'in-v',name:'电压反馈',description:'母线采样',data_type:'float',value_or_shape:null,availability:'specified' as const,evidence_ids:[ev.evidence_id],claim_ids:[]}],
+  outputs:[{io_id:'out-s',name:'运行状态',description:'状态机输出',data_type:'enum',value_or_shape:null,availability:'specified' as const,evidence_ids:[ev.evidence_id],claim_ids:[]}],
+ };
+ const secondEv={...ev,evidence_id:'ev-more',path:'src/extra.ts',line_start:10,line_end:14,note:'次要依据'};
+ const gap={gap_id:'gap-retry',kind:'missing_contract' as const,question:'超时后是否允许自动重试？',impact:'影响故障恢复',suggested_action:'核对状态机',related_node_ids:[node.node_id],claim_ids:[],evidence_ids:[]};
+ const rich:AnalysisResult={
+  ...result,
+  nodes:[detailedNode],
+  evidence:[ev,secondEv],
+  gaps:[gap],
+  reading_guide:{
+   ...guide,
+   steps:[
+    {...guide.steps[0],evidence_ids:[ev.evidence_id,secondEv.evidence_id]},
+    guide.steps[1],
+   ],
+  },
+ };
+ const html=renderToStaticMarkup(React.createElement(FeatureReadingDetail,{
+  guide:rich.reading_guide!,result:rich,selected:'step:input',view:'timeline',pathId:'draft',
+  onFile:()=>{},onStep:()=>{},onEvidence:()=>{},askHere:()=>{},
+ }));
+ assert.ok(html.includes('当前选中步骤'));
+ assert.ok(html.includes('执行条件')&&html.includes('预充周期检查'));
+ assert.ok(html.includes('读取与改变')&&html.includes('电压反馈')&&html.includes('运行状态'));
+ assert.ok(html.includes('还没查清')&&html.includes('超时后是否允许自动重试？'));
+ assert.ok(html.includes('源码依据')&&html.includes('查看对应代码')&&html.includes('更多依据'));
+ assert.ok(html.includes('在编辑器中打开'));
+
+ const sparseNode={...node,execution_context:{...node.execution_context,kind:'unknown' as const,status:'unknown' as const,label:'',evidence_ids:[],claim_ids:[]},inputs:[],outputs:[]};
+ const sparse:AnalysisResult={...result,nodes:[sparseNode],edges:[],gaps:[],claims:[]};
+ const sparseHtml=renderToStaticMarkup(React.createElement(FeatureReadingDetail,{
+  guide,result:sparse,selected:'step:save',view:'timeline',pathId:'draft',
+  onFile:()=>{},onStep:()=>{},onEvidence:()=>{},
+ }));
+ assert.ok(!sparseHtml.includes('执行条件'));
+ assert.ok(!sparseHtml.includes('读取与改变'));
+ assert.ok(!sparseHtml.includes('还没查清'));
+});
