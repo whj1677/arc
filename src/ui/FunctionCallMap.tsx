@@ -1,5 +1,5 @@
 import {edgeSelection} from './reading-target';
-import React,{useEffect,useId,useRef} from 'react';
+import React,{useEffect,useId,useMemo,useRef} from 'react';
 import type {AnalysisResult,SourceEvidence} from '../shared';
 import {functionCallMap,callLabelWidth,callLabelHeight} from './function-call-map';
 import {functionInfo} from './function-chain';
@@ -16,7 +16,7 @@ type Props={
 };
 
 export function FunctionCallMap({result,pathId,selected,select,search,zoom,evidence}:Props){
-  const m=functionCallMap(result,pathId,selected);
+  const m=useMemo(()=>functionCallMap(result,pathId,selected),[result,pathId,selected]);
   const root=useRef<HTMLDivElement>(null);
   const marker='function-map-'+useId().replace(/:/g,'');
   const query=search.trim().toLowerCase();

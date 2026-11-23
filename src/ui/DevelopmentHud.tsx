@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   HudArchitectureEdge,
   HudArchitectureNode,
@@ -19,6 +19,7 @@ import { effectiveTaskBoundaries, taskBoundaryKey } from '../task-boundaries';
 import { collapseUnifiedContext, computeLineDiff } from './text-diff';
 import { TaskBoundaries } from './TaskBoundaries';
 import { SourceEditorActions } from './SourceEditorActions';
+import { clampZoom, wheelZoom, zoomBounds } from './zoom';
 import './development-hud.css';
 
 const arc = () => window.arc;
@@ -1009,54 +1010,116 @@ type SelectedTarget =
   | { kind: 'step'; step: WalkthroughDiffStep };
 
 function useDiagramViewport(svgWidth: number, svgHeight: number, selectedId: string) {
-  const frameRef = useRef<HTMLDivElement>(null);
-  const [zoomMode, setZoomMode] = useState<'fit' | '100%'>('fit');
+  const [frameEl, setFrameEl] = useState<HTMLDivElement | null>(null);
+  const frameRef = useCallback((node: HTMLDivElement | null) => {
+    setFrameEl(node);
+  }, []);
+  const [zoomMode, setZoomMode] = useState<'fit' | 'custom'>('fit');
+  const [customScale, setCustomScale] = useState(1);
   const [frameW, setFrameW] = useState(860);
   const [hasMoreY, setHasMoreY] = useState(false);
 
-  useEffect(() => {
-    const el = frameRef.current;
-    if (!el) return;
-    const measure = () => {
-      if (el.clientWidth > 0) setFrameW(el.clientWidth);
-      setHasMoreY(el.scrollHeight > el.clientHeight + 8 && el.scrollTop + el.clientHeight < el.scrollHeight - 8);
-    };
-    measure();
-    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
-    ro?.observe(el);
-    el.addEventListener('scroll', measure, { passive: true });
-    return () => {
-      ro?.disconnect();
-      el.removeEventListener('scroll', measure);
-    };
-  }, [svgWidth, svgHeight, zoomMode]);
-
-  // Never crush a complex diagram below 0.78x in split view; hold readable scale and center the selected item.
-  const scale = zoomMode === '100%' ? 1 : Math.min(1, Math.max(0.78, (frameW - 22) / Math.max(1, svgWidth)));
+  const fitScale = Math.min(1, Math.max(0.78, (frameW - 22) / Math.max(1, svgWidth)));
+  const scale = zoomMode === 'fit' ? fitScale : customScale;
   const renderW = Math.round(svgWidth * scale);
   const renderH = Math.round(svgHeight * scale);
 
+  const pendingScale = useRef(scale);
+  const anchor = useRef<{ clientX: number; clientY: number; u: number | null; v: number | null } | null>(null);
+
   useEffect(() => {
-    if (!selectedId) return;
-    const frame = frameRef.current;
-    if (!frame) return;
+    if (!frameEl) return;
+    const measure = () => {
+      if (frameEl.clientWidth > 0) setFrameW(frameEl.clientWidth);
+      setHasMoreY(frameEl.scrollHeight > frameEl.clientHeight + 8 && frameEl.scrollTop + frameEl.clientHeight < frameEl.scrollHeight - 8);
+    };
+    measure();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    ro?.observe(frameEl);
+    frameEl.addEventListener('scroll', measure, { passive: true });
+    return () => {
+      ro?.disconnect();
+      frameEl.removeEventListener('scroll', measure);
+    };
+  }, [frameEl, renderW, renderH]);
+
+  useEffect(() => {
+    if (!frameEl) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || !event.deltaY) return;
+      event.preventDefault();
+      const current = pendingScale.current;
+      const next = wheelZoom(current, event.deltaY, event.deltaMode);
+      if (next === current) return;
+      pendingScale.current = next;
+      if (!anchor.current || Math.abs(event.clientX - anchor.current.clientX) > 1 || Math.abs(event.clientY - anchor.current.clientY) > 1) {
+        const svg = frameEl.querySelector('svg');
+        const box = svg?.getBoundingClientRect();
+        if (box && box.width > 0 && box.height > 0) {
+          const insideX = event.clientX >= box.left && event.clientX <= box.right;
+          const insideY = event.clientY >= box.top && event.clientY <= box.bottom;
+          anchor.current = {
+            clientX: event.clientX,
+            clientY: event.clientY,
+            u: insideX ? (event.clientX - box.left) / box.width : null,
+            v: insideY ? (event.clientY - box.top) / box.height : null,
+          };
+        }
+      }
+      setZoomMode('custom');
+      setCustomScale(next);
+    };
+    frameEl.addEventListener('wheel', onWheel, { passive: false });
+    return () => frameEl.removeEventListener('wheel', onWheel);
+  }, [frameEl]);
+
+  useLayoutEffect(() => {
+    pendingScale.current = scale;
+    const a = anchor.current;
+    anchor.current = null;
+    const svg = frameEl?.querySelector('svg');
+    if (!a || !frameEl || !svg) return;
+    const box = svg.getBoundingClientRect();
+    if (a.u !== null) frameEl.scrollLeft += box.left + a.u * box.width - a.clientX;
+    if (a.v !== null) frameEl.scrollTop += box.top + a.v * box.height - a.clientY;
+  }, [frameEl, renderW, renderH, scale]);
+
+  useEffect(() => {
+    if (!selectedId || !frameEl) return;
     const raf = requestAnimationFrame(() => {
-      const target = frame.querySelector<HTMLElement>('[data-hud-selected="true"]');
+      const target = frameEl.querySelector<HTMLElement>('[data-hud-selected="true"]');
       if (!target) return;
       const box = target.getBoundingClientRect();
-      const vp = frame.getBoundingClientRect();
-      const targetLeft = frame.scrollLeft + (box.left - vp.left) - (frame.clientWidth - box.width) / 2;
-      const targetTop = frame.scrollTop + (box.top - vp.top) - (frame.clientHeight - box.height) / 2;
-      frame.scrollTo({
+      const vp = frameEl.getBoundingClientRect();
+      const targetLeft = frameEl.scrollLeft + (box.left - vp.left) - (frameEl.clientWidth - box.width) / 2;
+      const targetTop = frameEl.scrollTop + (box.top - vp.top) - (frameEl.clientHeight - box.height) / 2;
+      frameEl.scrollTo({
         left: Math.max(0, targetLeft),
         top: Math.max(0, targetTop),
         behavior: 'smooth',
       });
     });
     return () => cancelAnimationFrame(raf);
-  }, [selectedId, renderW, renderH]);
+  }, [frameEl, selectedId]);
 
-  return { frameRef, zoomMode, setZoomMode, renderW, renderH, hasMoreY };
+  const stepZoom = useCallback((delta: number) => {
+    const next = clampZoom(pendingScale.current + delta);
+    pendingScale.current = next;
+    setZoomMode('custom');
+    setCustomScale(next);
+  }, []);
+
+  const reset100 = useCallback(() => {
+    pendingScale.current = 1;
+    setZoomMode('custom');
+    setCustomScale(1);
+  }, []);
+
+  const setFit = useCallback(() => {
+    setZoomMode('fit');
+  }, []);
+
+  return { frameRef, zoomMode, scale, stepZoom, reset100, setFit, renderW, renderH, hasMoreY };
 }
 
 const isRiskLabel = (label?: string) => Boolean(label && label.includes('未同步'));
@@ -1755,7 +1818,7 @@ function CallChainDiffGraph({
   const selectedId = selectedTarget?.kind === 'node'
     ? `node:${selectedTarget.node.key}`
     : selectedTarget?.kind === 'edge' ? `edge:${selectedTarget.edge.key}` : '';
-  const { frameRef, zoomMode, setZoomMode, renderW, renderH, hasMoreY } = useDiagramViewport(width, height, selectedId);
+  const { frameRef, zoomMode, scale, stepZoom, reset100, setFit, renderW, renderH, hasMoreY } = useDiagramViewport(width, height, selectedId);
 
   if (!visibleNodes.length) {
     return <p className="muted" style={{ margin: '8px 0' }}>当前过滤条件下没有可展示的函数节点。</p>;
@@ -1922,9 +1985,13 @@ function CallChainDiffGraph({
             {omittedChanges > 0 ? ` · 另有 ${omittedChanges} 个变更函数` : ''}
             {omittedNeighbors > 0 ? ` · 另有 ${omittedNeighbors} 个外部邻接` : ''}
           </span>
-          <span className="hud-zoom-group" role="group" aria-label="画布缩放">
-            <button type="button" aria-pressed={zoomMode === 'fit'} onClick={() => setZoomMode('fit')}>适应</button>
-            <button type="button" aria-pressed={zoomMode === '100%'} onClick={() => setZoomMode('100%')}>100%</button>
+          <span className="hud-zoom-group" role="group" aria-label="画布缩放" title="支持 Ctrl + 滚轮缩放">
+            <button type="button" aria-label="缩小画布" disabled={scale <= zoomBounds.min} onClick={() => stepZoom(-0.1)}>−</button>
+            <button type="button" aria-pressed={zoomMode === 'fit'} onClick={setFit}>适应</button>
+            <button type="button" aria-pressed={zoomMode === 'custom' && Math.round(scale * 100) === 100} onClick={reset100} title="恢复 100%">
+              {Math.round(scale * 100)}%
+            </button>
+            <button type="button" aria-label="放大画布" disabled={scale >= zoomBounds.max} onClick={() => stepZoom(0.1)}>+</button>
           </span>
         </span>
       </div>
@@ -2054,7 +2121,7 @@ function TimelineSequenceDiff({
   const selectedId = selectedTarget?.kind === 'step'
     ? `step:${selectedTarget.step.id}`
     : selectedTarget?.kind === 'node' ? `node:${selectedTarget.node.key}` : '';
-  const { frameRef, zoomMode, setZoomMode, renderW, renderH, hasMoreY } = useDiagramViewport(width, height, selectedId);
+  const { frameRef, zoomMode, scale, stepZoom, reset100, setFit, renderW, renderH, hasMoreY } = useDiagramViewport(width, height, selectedId);
 
   const activeEndpoints = useMemo(() => {
     if (!selectedTarget) return null;
@@ -2269,9 +2336,13 @@ function TimelineSequenceDiff({
         </span>
         <span className="hud-legend-right">
           <span>{participants.length} 参与函数 · {visibleSteps.length} 时序步</span>
-          <span className="hud-zoom-group" role="group" aria-label="画布缩放">
-            <button type="button" aria-pressed={zoomMode === 'fit'} onClick={() => setZoomMode('fit')}>适应</button>
-            <button type="button" aria-pressed={zoomMode === '100%'} onClick={() => setZoomMode('100%')}>100%</button>
+          <span className="hud-zoom-group" role="group" aria-label="画布缩放" title="支持 Ctrl + 滚轮缩放">
+            <button type="button" aria-label="缩小画布" disabled={scale <= zoomBounds.min} onClick={() => stepZoom(-0.1)}>−</button>
+            <button type="button" aria-pressed={zoomMode === 'fit'} onClick={setFit}>适应</button>
+            <button type="button" aria-pressed={zoomMode === 'custom' && Math.round(scale * 100) === 100} onClick={reset100} title="恢复 100%">
+              {Math.round(scale * 100)}%
+            </button>
+            <button type="button" aria-label="放大画布" disabled={scale >= zoomBounds.max} onClick={() => stepZoom(0.1)}>+</button>
           </span>
         </span>
       </div>

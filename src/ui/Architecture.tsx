@@ -120,19 +120,15 @@ export function Architecture({ result, selected, select, inspect, modules, openF
         {focusLabel && <span className="architecture-focus-chip"><span>已聚焦：{focusLabel}</span><button onClick={reset}>显示全部</button></span>}
       </div>}
     </header>
-    {view === 'code' ? <div data-zoom-surface style={{ zoom }}>
-        <CodeModules key={result.binding.source_snapshot_id} snapshotId={result.binding.source_snapshot_id} openFile={openFile} search={search} />
-      </div>
+    {view === 'code' ? <CodeModules key={result.binding.source_snapshot_id} snapshotId={result.binding.source_snapshot_id} openFile={openFile} search={search} />
       : !result.architecture ? <div className="empty compact">
           <h2>系统协作尚未分析</h2><button onClick={modules}>查看已有模块说明</button>
         </div>
-      : view === 'relations' ? <div data-zoom-surface style={{ zoom }}>
-          <RelationTable edges={model.edges} byId={byId} search={search} selected={selected} select={select}/>
-        </div>
+      : view === 'relations' ? <RelationTable edges={model.edges} byId={byId} search={search} selected={selected} select={select}/>
       : !model.nodes.length ? <div className="empty compact"><h2>没有匹配组件</h2><p>清除搜索查看完整系统。</p></div>
       : <>
-        <div className={"architecture-viewport" + (focusOnly ? " focus-only" : "")} tabIndex={0} role="region" aria-label="系统架构图，可横向滚动">
-          <svg className="architecture-map-canvas" data-zoom-surface width={model.width * scale} height={model.height * scale}
+        <div className={"architecture-viewport" + (focusOnly ? " focus-only" : "")} data-zoom-surface tabIndex={0} role="region" aria-label="系统架构图，可横向滚动">
+          <svg className="architecture-map-canvas" data-zoom-content width={model.width * scale} height={model.height * scale}
             viewBox={`0 0 ${model.width} ${model.height}`} role="group" aria-label="系统架构图" onClick={event => {
               if ((selected || hover) && !(event.target as Element).closest('[data-component-id], [data-edge-id]')) reset();
             }}>

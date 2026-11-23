@@ -226,7 +226,9 @@ app.whenReady().then(async()=>{
       return {ok:true,value};
     }catch(e){return {ok:false,error:redact((e as Error).message)};}
   });
-  await window.loadURL(ui);window.show();
+  await window.loadURL(ui);
+  void window.webContents.setVisualZoomLevelLimits(1, 1);
+  window.show();
   window.on('closed',()=>{window=null;});
 });
 app.on('window-all-closed',()=>app.quit());

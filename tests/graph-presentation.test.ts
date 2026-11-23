@@ -34,8 +34,11 @@ test('architecture-only dependencies are explicitly incomplete, not silently exp
 test('wheel and button zoom share hard bounds; wheel directions and delta units are consistent',()=>{
   assert.ok(wheelZoom(1,-80,0)>1);assert.ok(wheelZoom(1,80,0)<1);
   assert.equal(wheelZoom(1,1,1),wheelZoom(1,16,0));
-  assert.equal(wheelZoom(.5,1000,0),.5);assert.equal(wheelZoom(2,-1000,0),2);
-  assert.equal(clampZoom(.2),.5);assert.equal(clampZoom(3),2);
+  assert.equal(wheelZoom(.25,1000,0),.25);assert.equal(wheelZoom(3,-1000,0),3);
+  assert.equal(clampZoom(.1),.25);assert.equal(clampZoom(4),3);
+  // A single standard Windows wheel notch (120px) stays smooth (~11-13%) instead of jumping ~27%.
+  const oneNotchIn=wheelZoom(1,-120,0);
+  assert.ok(oneNotchIn>1.08&&oneNotchIn<1.16);
 });
 test('an edge opens its own condition or claim instead of repeating the entire project summary',()=>{
  const edge=real.edges[0];assert.notEqual(edgeExplanation(real,edge),real.summary.text);

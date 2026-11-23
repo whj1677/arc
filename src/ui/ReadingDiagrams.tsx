@@ -30,14 +30,14 @@ export function Diagram({
   const scale = Math.max(0.85, Math.min(1, available / width)) * zoom;
   const bodyTop = header ? headerHeight : 0;
   return (
-    <div className={'reading-diagram-frame' + (header ? ' function-time-scroll' : '')} ref={root}>
+    <div className={'reading-diagram-frame' + (header ? ' function-time-scroll' : '')} data-zoom-surface ref={root}>
       {header && (
-        <svg className="function-time-header" data-zoom-surface width={width * scale} height={headerHeight * scale} viewBox={`0 0 ${width} ${headerHeight}`} role="group" aria-label="函数节点">
+        <svg className="function-time-header" data-zoom-sticky width={width * scale} height={headerHeight * scale} viewBox={`0 0 ${width} ${headerHeight}`} role="group" aria-label="函数节点">
           {header}
         </svg>
       )}
       <svg
-        data-zoom-surface
+        data-zoom-content
         className="reading-diagram"
         width={width * scale}
         height={(height - bodyTop) * scale}
@@ -56,11 +56,10 @@ type Common = {
   path: ReadingGuide['paths'][number];
   selected: string;
   search: string;
-  zoom: number;
   onSelect: (key: string) => void;
 };
 
-export function BusinessDiagram({ result, guide, path, selected, search, zoom, onSelect, ordered }: Common & { result: AnalysisResult; ordered: boolean }) {
+export function BusinessDiagram({ result, guide, path, selected, search, zoom, onSelect, ordered }: Common & { result: AnalysisResult; ordered: boolean; zoom: number }) {
   const steps = new Map(guide.steps.map(step => [step.id, step]));
   const query = search.trim().toLowerCase();
   const lanes = [...(path.step_ids.length ? [{ label: path.lanes.length ? '共同起点' : '', step_ids: path.step_ids, link_labels: [] as readonly string[] }] : []), ...path.lanes];
@@ -101,13 +100,13 @@ export function BusinessDiagram({ result, guide, path, selected, search, zoom, o
   </div>;
 }
 
-export function CollaborationDiagram({ guide, path, selected, search, zoom, onSelect }: Common) {
+export function CollaborationDiagram({ guide, path, selected, search, onSelect }: Common) {
   const { roles, handoffs } = readingCollaboration(guide, path);
   if (!roles.length) return <p className="fr-empty">这条路径尚未确认参与方。</p>;
   const query = search.trim().toLowerCase();
   const roleById = new Map(roles.map(role => [role.id, role]));
-  return <div data-zoom-surface className="collaboration-map" style={{ zoom }} role="group" aria-label="参与方职责与交接图">
-    <div className="fr-roles">{roles.map(role => <button key={role.id} data-zoom-anchor
+  return <div className="collaboration-map" role="group" aria-label="参与方职责与交接图">
+    <div className="fr-roles">{roles.map(role => <button key={role.id}
       className={query && !(role.title + role.duty).toLowerCase().includes(query) ? 'diagram-dim' : ''}
       aria-pressed={selected === 'role:' + role.id} onClick={() => onSelect('role:' + role.id)}>
       <strong>{role.title}</strong><span>{role.duty}</span>
@@ -116,7 +115,7 @@ export function CollaborationDiagram({ guide, path, selected, search, zoom, onSe
       {handoffs.map(h => {
         const from = roleById.get(h.from)!.title, to = roleById.get(h.to)!.title;
         const dim = query && ![from, to, h.label, h.send, h.receive, h.detail].join(' ').toLowerCase().includes(query);
-        return <button key={h.id} className={'fr-handoff' + (dim ? ' diagram-dim' : '')} data-zoom-anchor
+        return <button key={h.id} className={'fr-handoff' + (dim ? ' diagram-dim' : '')}
           aria-pressed={selected === 'handoff:' + h.id} onClick={() => onSelect('handoff:' + h.id)}>
           <span className="fr-route">{from}<i aria-label="交接给">→</i>{to}</span>
           <strong>{h.label}</strong><span>{h.send}</span>{h.receive && h.receive !== h.send && <span>{h.receive}</span>}
@@ -126,13 +125,13 @@ export function CollaborationDiagram({ guide, path, selected, search, zoom, onSe
   </div>;
 }
 
-export function FilesDiagram({ files, label, selected, zoom, onSelect }: {
-  files: ReadingGuide['files']; label: string; selected: string; zoom: number; onSelect: (key: string) => void;
+export function FilesDiagram({ files, label, selected, onSelect }: {
+  files: ReadingGuide['files']; label: string; selected: string; onSelect: (key: string) => void;
 }) {
   if (!files.length) return <p className="fr-empty">当前路径没有匹配文件。</p>;
-  return <section data-zoom-surface className="fr-files" style={{ zoom }} aria-label={label + '相关文件'}>
+  return <section className="fr-files" aria-label={label + '相关文件'}>
     <h3>{label}<small>{files.length} 个文件</small></h3>
-    {files.map(file => <button key={file.path} className="fr-file" data-file-path={file.path} data-zoom-anchor
+    {files.map(file => <button key={file.path} className="fr-file" data-file-path={file.path}
       aria-pressed={selected === 'file:' + file.path} onClick={() => onSelect('file:' + file.path)}>
       <span><strong>{file.title}</strong><code>{file.path}</code></span>
       <span>{file.description}</span>

@@ -23,7 +23,7 @@ import { FeatureReading } from './FeatureReading';
 import { Composition } from './Composition';
 import { FileMap } from './FileMap';
 import { analyzedSourcePaths } from './file-map';
-import { clampZoom } from './zoom';
+import { clampZoom, zoomBounds } from './zoom';
 import { functionPathPosition } from './feature-reading-model';
 import type { AnalysisMode } from './discovery-state';
 import { runEngineName } from './activity';
@@ -519,7 +519,7 @@ export function CanvasPane({
       {showZoomFloat && (
         <div className="canvas-zoom-float" role="group" aria-label="画布缩放">
           <small className="zoom-hint">Ctrl＋滚轮</small>
-          <button className="icon" aria-label="缩小画布" title="缩小画布" onClick={() => patch({ zoom: clampZoom(reading.zoom - 0.1) })}>
+          <button className="icon" aria-label="缩小画布" title="缩小画布" disabled={reading.zoom <= zoomBounds.min} onClick={() => patch({ zoom: clampZoom(reading.zoom - 0.1) })}>
             <svg className="arc-ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
               <path d="M3.5 8h9" />
             </svg>
@@ -527,7 +527,7 @@ export function CanvasPane({
           <button className="icon zoom-reset" aria-label="重置画布缩放" title="恢复 100%" onClick={() => patch({ zoom: 1 })}>
             {Math.round(reading.zoom * 100)}%
           </button>
-          <button className="icon" aria-label="放大画布" title="放大画布" onClick={() => patch({ zoom: clampZoom(reading.zoom + 0.1) })}>
+          <button className="icon" aria-label="放大画布" title="放大画布" disabled={reading.zoom >= zoomBounds.max} onClick={() => patch({ zoom: clampZoom(reading.zoom + 0.1) })}>
             <svg className="arc-ui-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
               <path d="M8 3.5v9M3.5 8h9" />
             </svg>

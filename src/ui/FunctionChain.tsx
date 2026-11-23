@@ -1,4 +1,4 @@
-import React,{useId,useState} from 'react';
+import React,{useId,useMemo,useState} from 'react';
 import type {AnalysisResult,SourceEvidence} from '../shared';
 import {FunctionCallMap} from './FunctionCallMap';
 import {functionCallMap} from './function-call-map';
@@ -13,7 +13,7 @@ export function FunctionChain({result,selected,select,zoom,search,pathId,onPath,
   const [internalMode,setInternalMode]=useState<FunctionChainMode>('calls');
   const mode=controlledMode??internalMode;
   const changeMode=(next:FunctionChainMode)=>{if(controlledMode===undefined)setInternalMode(next);onModeChange?.(next);};
-  const model=functionSequence(result,pathId),marker='call-'+useId().replace(/:/g,'');
+  const model=useMemo(()=>functionSequence(result,pathId),[result,pathId]),marker='call-'+useId().replace(/:/g,'');
   const paths=result.function_walkthroughs||[];
   if(pathId&&paths.length&&!paths.some(path=>path.id===pathId))return <section className="function-chain function-sequence-empty"><h2>原入口已不在这版结果中</h2><p>选择这版已记录的入口继续阅读，不自动混入其他路径。</p><nav className="function-entry-paths" aria-label="选择函数入口">{paths.map(p=><button key={p.id} onClick={()=>onPath(p.id,p.entry_node_id)}>{p.label}</button>)}</nav></section>;
   if(!model){
