@@ -30,7 +30,7 @@ app.whenReady().then(async()=>{
   if(!primaryInstance)return;
   const resources=app.getAppPath();
   try{service=new ArcService(app.getPath('userData'),resources,event=>{
-    window?.webContents.send('arc:event',event);
+    window?.webContents.send('arc:event',event.type==='run_event'?{type:'run_event',run_id:event.run_id}:event);
   });}
   catch(e){dialog.showErrorBox('Arc 无法打开数据',(e as Error).message);app.quit();return;}
   bridge=new ArcMcpBridge(service,resources);await bridge.start();

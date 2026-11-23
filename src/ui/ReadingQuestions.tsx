@@ -3,6 +3,7 @@ import type {WorkspaceData,ReadingTarget,ReadingQuestion,ReadingAsk,SourceEviden
 import {analysisModes,isAnalysisMode,type AnalysisMode} from './discovery-state';
 import {RunActivity} from './RunActivity';
 import {SourceExcerpt} from './SourceExcerpt';
+import {useRunEvents} from './useRunEvents';
 import './reading-questions.css';
 
 type Props={data:WorkspaceData;projectId:string;scenarioId:string;resultId:string|null;target:ReadingTarget;targetLabel:string;featureId:string;featureLabel:string;snapshotId:string;disabled:boolean;reload:()=>Promise<unknown>;settings:()=>void;desktopSettings:()=>void};
@@ -126,7 +127,6 @@ function answerText(text:string,evidence:SourceEvidence[],open:(evidence:SourceE
 }
 
 function QuestionProgress({run,cancel}:{run:Run;cancel:()=>void}){
-  const [events,setEvents]=useState<any[]>([]),[error,setError]=useState('');
-  useEffect(()=>{let current=true,busy=false;const refresh=async()=>{if(busy)return;busy=true;try{const items=await window.arc.invoke<any[]>('run_events',{run_id:run.binding.run_id});if(current){setEvents(items);setError('');}}catch(reason){if(current)setError((reason as Error).message);}finally{busy=false;}};void refresh();const off=window.arc.onEvent(e=>{if(e.type==='run_event'&&e.run_id===run.binding.run_id)void refresh();});return()=>{current=false;off();};},[run.binding.run_id,run.status]);
+  const {items:events,error}=useRunEvents(run);
   return <RunActivity run={run} events={events} error={error} stop={cancel}/>;
 }

@@ -188,6 +188,8 @@ export function EvolutionCockpit({
 }: EvolutionCockpitProps) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const codeRef = useRef<HTMLPreElement | null>(null);
+  const loadFileDiffRef = useRef(loadFileDiff);
+  loadFileDiffRef.current = loadFileDiff;
   const [stageWidth, setStageWidth] = useState(1240);
   const [phaseView, setPhaseView] = useState<'actual' | 'blueprint'>('actual');
   const [layoutPref, setLayoutPref] = useState<'dual' | 'arch' | 'flow'>('dual');
@@ -254,7 +256,7 @@ export function EvolutionCockpit({
     let alive = true;
     setDrawerDiffLoading(true);
     setDrawerDiffError('');
-    loadFileDiff({
+    loadFileDiffRef.current({
       path: drawerFile, snapshotId: drawerSnap ?? blueprintSnapshot,
       side: isBlueprint ? 'before' : drawerSide, preferFrozen: isBlueprint || drawerPreferFrozen,
     })
@@ -262,7 +264,7 @@ export function EvolutionCockpit({
       .catch((e: Error) => { if (alive) { setDrawerDiff(null); setDrawerDiffError(e.message); } })
       .finally(() => { if (alive) setDrawerDiffLoading(false); });
     return () => { alive = false; };
-  }, [drawerFile, drawerSnap, drawerSide, drawerPreferFrozen, loadFileDiff, evoVersionKey, isBlueprint, blueprintSnapshot]);
+  }, [drawerFile, drawerSnap, drawerSide, drawerPreferFrozen, evoVersionKey, isBlueprint, blueprintSnapshot]);
 
   useEffect(() => {
     if (!activeEvo.document_only || !docSelectedFile) {
@@ -273,12 +275,12 @@ export function EvolutionCockpit({
     let alive = true;
     setDocDiffLoading(true);
     setDocDiffError('');
-    loadFileDiff({ path: docSelectedFile, snapshotId: blueprintSnapshot, preferFrozen: isBlueprint })
+    loadFileDiffRef.current({ path: docSelectedFile, snapshotId: blueprintSnapshot, preferFrozen: isBlueprint })
       .then(res => { if (alive) setDocDiff(res); })
       .catch((e: Error) => { if (alive) { setDocDiff(null); setDocDiffError(e.message); } })
       .finally(() => { if (alive) setDocDiffLoading(false); });
     return () => { alive = false; };
-  }, [activeEvo.document_only, docSelectedFile, loadFileDiff, evoVersionKey, isBlueprint, blueprintSnapshot]);
+  }, [activeEvo.document_only, docSelectedFile, evoVersionKey, isBlueprint, blueprintSnapshot]);
 
   const focusedRows = useMemo(() => {
     if (!drawerDiff || drawerDiff.binary) return null;

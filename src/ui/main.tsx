@@ -33,6 +33,8 @@ import { WorkbenchNavigation, type WorkbenchView } from './WorkbenchNavigation';
 import { edgeSelection, readingQuestionTarget } from './reading-target';
 import { compactTitle, isLegacyOverview, modernReading } from './presentation';
 import { RunActivity } from './RunActivity';
+import { createReloadCoalescer } from './reload-coalescer';
+import { useRunEvents } from './useRunEvents';
 import {
   Compare,
   Separator,
@@ -105,12 +107,10 @@ function App() {
   const [railCollapsed, setRailCollapsed] = useState(false);
   useEffect(() => { setArchOverlay(null); }, [projectId]);
   const [indexes, setIndexes] = useState<Record<string, any>>({});
-  const [eventState, setEventState] = useState<{ runId: string; items: any[] }>({ runId: '', items: [] });
   const [showDetail, setShowDetail] = useState(false);
   const [showCatalog, setShowCatalog] = useState(false);
   const [archiveVisible, setArchiveVisible] = useState(false);
   const [renameFeature, setRenameFeature] = useState('');
-  const [eventError, setEventError] = useState('');
   const [activityFocus, setActivityFocus] = useState(0);
   const [openDesktop, setOpenDesktop] = useState(false);
   const [mcp, setMcp] = useState<any>(null);
@@ -375,7 +375,7 @@ function App() {
   }
   const featurePurpose = catalogExplanation?.result.nodes.find(n => n.node_id === currentFeature?.discovery?.node_id)?.description;
   const waitingMcp = waitingForAgent(data, scenarioId);
-  const events = eventState.runId === activityRun?.binding.run_id ? eventState.items : [];
+  const { items: events, error: eventError } = useRunEvents(activityRun);
   const indexTasks = Object.values(indexes);
 
   const patch = useCallback((value: Partial<ReadingState>) => setReading(r => ({ ...r, ...value })), []);
@@ -429,11 +429,13 @@ function App() {
   }
 
   const savePosition = useCallback((name: string, top: number, left: number) => setReading(r => ({ ...r, scroll: { ...r.scroll, [name]: { top, left } } })), []);
-  const reload = useCallback(async () => {
-    const d = await api.invoke<WorkspaceData>('data');
-    setData(d);
-    return d;
-  }, []);
+  const [{ reload, schedule: scheduleReload, cancelScheduled: cancelScheduledReload }] = useState(() =>
+    createReloadCoalescer(async () => {
+      const d = await api.invoke<WorkspaceData>('data');
+      setData(d);
+      return d;
+    }, 150, reason => setError((reason as Error).message)),
+  );
 
   async function action<T>(fn: () => Promise<T>, success?: string): Promise<T | undefined> {
     setError('');
@@ -449,17 +451,20 @@ function App() {
   }
 
   useEffect(() => {
+    let current = true;
     void (async () => {
       const d = await reload();
+      if (!current) return;
       const last = await api.invoke('reading_get', { key: 'last-session' });
+      if (!current) return;
       const initialProject = d.projects.find(p => p.project_id === last?.project_id) ?? d.projects[0];
       const savedScene = d.scenarios.some(s => s.scenario_id === last?.scenario_id) ? last.scenario_id : '';
       emptyEntrance.current = last?.entrance === 'walk' ? 'walk' : 'overview';
       setProjectId(initialProject?.project_id || '');
       setScenarioId(savedScene || (emptyEntrance.current === 'walk' ? '' : initialProject?.overview_scenario_id || ''));
-    })();
+    })().catch(reason => { if (current) setError((reason as Error).message); });
     const off = api.onEvent(e => {
-      if (e.type === 'changed') void reload();
+      if (e.type === 'changed') scheduleReload();
       if (e.type === 'indexing') {
         setNotice('');
         setIndexes(items => ({ ...items, [e.project_id]: e }));
@@ -471,10 +476,13 @@ function App() {
           return next;
         });
       }
-      if (e.type === 'run_event') void reload();
     });
-    return off;
-  }, [reload]);
+    return () => {
+      current = false;
+      cancelScheduledReload();
+      off();
+    };
+  }, [reload, scheduleReload, cancelScheduledReload]);
 
   useEffect(() => {
     const outside = (e: PointerEvent) => closePopovers(e.target as Node);
@@ -614,44 +622,6 @@ function App() {
       unsubscribe();
     };
   }, [projectId, project?.fictional, project?.snapshot_id]);
-
-  useEffect(() => {
-    let current = true;
-    let busy = false;
-    const runId = activityRun?.binding.run_id;
-    setEventError('');
-    const refresh = async () => {
-      if (!runId || busy) return;
-      busy = true;
-      try {
-        const items = await api.invoke<any[]>('run_events', { run_id: runId });
-        if (current) {
-          setEventState({ runId, items });
-          setEventError('');
-        }
-      } catch (e) {
-        if (current) setEventError((e as Error).message);
-      } finally {
-        busy = false;
-      }
-    };
-    void refresh();
-    const off = api.onEvent(e => {
-      if (e.type === 'run_event' && e.run_id === runId) void refresh();
-    });
-    const timer =
-      runId && ['queued', 'running', 'validating', 'cancel_requested'].includes(activityRun?.status || '')
-        ? setInterval(() => {
-            void refresh();
-            if (current && ['queued', 'running', 'validating', 'cancel_requested'].includes(activityRun?.status || '')) void reload();
-          }, 2500)
-        : undefined;
-    return () => {
-      current = false;
-      off();
-      clearInterval(timer);
-    };
-  }, [activityRun?.binding.run_id, activityRun?.status, reload]);
 
   useEffect(() => {
     if (modal) {

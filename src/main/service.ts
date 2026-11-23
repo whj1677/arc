@@ -1012,8 +1012,11 @@ export class ArcService {
     const clean = JSON.parse(redact(JSON.stringify(event)));
     if (!this.store.event(runId, eventId || `${runId}:${seq}`, seq, { sequence: seq, received_at: now(), ...clean })) return;
     if (terminalRunStatuses.has(run.status)) return;
-    if (typeof event.thread_id === 'string') run.external_id = event.thread_id;
-    this.store.put('run', runId, run);
+    if (typeof event.thread_id === 'string' && run.external_id !== event.thread_id) {
+      run.external_id = event.thread_id;
+      this.store.put('run', runId, run);
+      this.changed();
+    }
     this.emit({ type: 'run_event', run_id: runId, event: clean });
   }
 
@@ -1200,6 +1203,7 @@ export class ArcService {
         run.status = 'validating';
         this.store.put('run', runId, run);
         this.event(runId, { type: 'local.stage', stage: 'overview_synthesis', message: '取证阶段已停止，正在用已读源码生成首轮草稿，随后独立复核。' });
+        this.changed();
         const directory = path.join(path.dirname(initial.output_path), 'synthesis');
         candidatePath = path.join(directory, 'result.json');
         result = await this.codexRunner({
