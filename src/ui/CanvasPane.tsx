@@ -16,6 +16,7 @@ import { FunctionChain } from './FunctionChain';
 import { Graph } from './Graph';
 import { FeatureCatalog, CatalogFeatureReading } from './FeatureCatalog';
 import { Architecture } from './Architecture';
+import type { ArchitectureEditor } from './useArchitectureDocument';
 import type { TaskArchitectureOverlay } from './DevelopmentHud';
 import { ZoomSurface } from './ZoomSurface';
 import { Timeline } from './Timeline';
@@ -30,6 +31,8 @@ import { runEngineName } from './activity';
 import { ScrollPanel } from './workbench-primitives';
 
 export interface CanvasPaneProps {
+  editor?: ArchitectureEditor;
+  architectureResult?: AnalysisResult;
   freshness?: ExplanationFreshness;
   refreshAndAnalyze: () => void;
   data: WorkspaceData;
@@ -88,6 +91,8 @@ export interface CanvasPaneProps {
 }
 
 export function CanvasPane({
+  editor,
+  architectureResult,
   data,
   freshness,
   refreshAndAnalyze,
@@ -113,7 +118,7 @@ export function CanvasPane({
   readingGuide,
   featurePurpose,
   explanation,
-  result,
+  result: analysisResult,
   overviewRun,
   overviewSections,
   discovery,
@@ -145,6 +150,23 @@ export function CanvasPane({
   taskOverlay,
 }: CanvasPaneProps) {
   const [archZoomable, setArchZoomable] = useState(true);
+  const result = architectureResult ?? analysisResult;
+  const architectureCanvas = result && ['system', 'map'].includes(reading.view) && (
+    <Architecture
+      key={editor?.doc?.id ?? result.result_id}
+      editor={editor}
+      result={result}
+      selected={reading.selected}
+      select={select}
+      zoom={reading.zoom}
+      search={search}
+      modules={() => switchView('modules', { stage: '' })}
+      inspect={inspectComponent}
+      openFile={file => chooseFile(file, result.binding.source_snapshot_id || project?.snapshot_id)}
+      taskOverlay={taskOverlay}
+      onZoomableChange={setArchZoomable}
+    />
+  );
   const isCatalogDetail = !catalogReading && !!graphCatalog && !!discovery && !!project;
   const archNonZoomable = !featureReading && ['system', 'map'].includes(reading.view) && !archZoomable;
   const featureNonZoomable = featureReading && reading.view !== 'timeline';
@@ -219,14 +241,14 @@ export function CanvasPane({
         <div className="canvas-tools">
           <div className={'row' + (reading.entrance === 'walk' ? ' fr-toolbar' : '')}>
             <span className="eyebrow">{reading.entrance === 'overview' ? '工程全貌' : '功能走读'}</span>
-            {result && (
+            {analysisResult && (
               <span className="tag">
-                {data.runs.find(r => r.binding.run_id === result.binding.run_id)?.origin === 'manual_import'
+                {data.runs.find(r => r.binding.run_id === analysisResult.binding.run_id)?.origin === 'manual_import'
                   ? '手动导入 · 非联调'
-                  : result.fictional
+                  : analysisResult.fictional
                     ? '演示'
                     : '真实返回'}{' '}
-                · {result.gaps.length ? '部分覆盖' : '已返回说明'}
+                · {analysisResult.gaps.length ? '部分覆盖' : '已返回说明'}
               </span>
             )}
             {filters}
@@ -235,6 +257,12 @@ export function CanvasPane({
       )}
 
       <ScrollPanel positions={reading.scroll} restoreKey={loadedKey + ':' + (result?.result_id || '')} onPosition={savePosition} name={`canvas-${reading.view}`}>
+        {editor?.loadError && <div role="alert">架构加载失败 · {editor.loadError} <button onClick={() => void editor.load()}>重新加载</button></div>}
+        {architectureResult && !analysisResult && (waitingMcp || running || latestRun?.status === 'failed') && (
+          <p role="status">{waitingMcp ? '等待 Agent 对话领取' : running ? '工程分析进行中' : '工程分析未完成，请查看分析进度。'}
+            {waitingMcp && <button onClick={showMcp}>查看接入方法</button>}
+          </p>
+        )}
         {catalogReading ? (
           <FeatureCatalog
             explanation={catalogExplanation}
@@ -348,19 +376,7 @@ export function CanvasPane({
             )}
             {['system', 'map'].includes(reading.view) && (
               <>
-                <Architecture
-                  key={result.result_id}
-                  result={result}
-                  selected={reading.selected}
-                  select={select}
-                  zoom={reading.zoom}
-                  search={search}
-                  modules={() => switchView('modules', { stage: '' })}
-                  inspect={inspectComponent}
-                  openFile={file => chooseFile(file, result.binding.source_snapshot_id)}
-                  taskOverlay={taskOverlay}
-                  onZoomableChange={setArchZoomable}
-                />
+                {architectureCanvas}
                 {!overviewSections && (
                   <div className="overview-feature-entry">
                     <div>
@@ -373,7 +389,7 @@ export function CanvasPane({
                 )}
               </>
             )}
-            <details
+            {analysisResult && <details
               className="overview-summary"
               open={!!reading.summary_expanded}
               onToggle={e => {
@@ -394,7 +410,7 @@ export function CanvasPane({
                   <p className="warning">这是历史问题的结果；当前新问题尚未由此说明回答。</p>
                 )}
               </div>
-            </details>
+            </details>}
             {reading.view === 'modules' && reading.stage && (
               <button className="architecture-back" onClick={() => switchView('system')}>
                 ← 返回系统架构

@@ -1,4 +1,5 @@
 import type { AnalysisResult, RunBinding, ProviderId, SourceEvidence } from '../contracts/agent-adapter';
+import type { ArchitectureDocument, ArchitectureModule, ArchitectureRelation, CodeBaseline } from './architecture-workspace';
 export type { AnalysisResult, RunBinding, SourceEvidence, ProviderId };
 export type {ReadingGuide} from '../contracts/agent-adapter';
 export type ExecutionMode = 'codex' | 'dsh' | 'codex_desktop' | 'mcp';
@@ -37,7 +38,14 @@ export interface ScenarioBreakdownResult {
 export interface Revision { question_revision_id: string; scenario_id: string; question: string; created_at: string }
 export interface Annotation { annotation_id: string; project_id: string; scenario_id: string; result_id: string | null; object_id: string | null; source_snapshot_id: string; text: string; created_at: string; target?: ReadingTarget }
 export interface ReadingTarget { kind:'feature'|'node'|'edge'|'file'|'directory'|'step'|'role'|'handoff'|'call_step'; id:string }
+export interface ArchitectureContext extends Pick<ArchitectureDocument,'id'|'version'|'branch_key'|'title'|'summary'|'update_status'|'last_confirmed_version'> {
+  baseline?: Omit<CodeBaseline,'file_hashes'>;
+  pending_review_count: number;
+  modules: (Pick<ArchitectureModule,'id'|'name'|'kind'|'layer'|'parent_id'|'summary'|'notes'|'io'|'origin'|'implementation_status'|'code_links'> & { implementation_note?: string })[];
+  relations: Pick<ArchitectureRelation,'id'|'from'|'to'|'kind'|'label'|'notes'|'transfers'|'origin'|'status'>[];
+}
 export interface ReadingContext {
+  architecture_document?:ArchitectureContext;
   project:{project_id:string;name:string}; feature:{feature_id:string;name:string};
   scenario:{scenario_id:string;title:string;question:string;question_revision_id:string};
   result_id:string|null; target:ReadingTarget; source_snapshot_id:string;

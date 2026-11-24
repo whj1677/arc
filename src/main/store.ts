@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { CodexPreferences, Explanation, Project } from '../shared';
 import type { ContextEntry } from '../engineering';
+import { architectureDocId, type ArchitectureDocument, type ArchitectureVersionSummary } from '../architecture-workspace';
 
 export const id = (prefix: string) => `${prefix}-${randomUUID()}`;
 export const now = () => new Date().toISOString();
@@ -61,9 +62,59 @@ export class Store {
   codexPreferences(): CodexPreferences {
     return this.maybe<CodexPreferences>('settings', 'codex_preferences') ?? { model: '', reasoning_effort: 'auto' };
   }
-  put(kind: string, key: string, value: unknown) { this.db.prepare('INSERT INTO objects VALUES (?,?,?) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json').run(kind, key, JSON.stringify(value)); }
-  putVersion(kind:string,key:string,version:number,value:unknown) { this.db.prepare('INSERT INTO engineering_versions VALUES(?,?,?,?)').run(kind,key,version,JSON.stringify(value)); this.put(kind,key,value); }
+  private putJson(kind: string, key: string, json: string) {
+    this.db.prepare('INSERT INTO objects VALUES (?,?,?) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json').run(kind, key, json);
+  }
+  put(kind: string, key: string, value: unknown) { this.putJson(kind, key, JSON.stringify(value)); }
+  putVersion(kind: string, key: string, version: number, value: unknown) {
+    const json = JSON.stringify(value);
+    this.db.prepare('INSERT INTO engineering_versions VALUES(?,?,?,?)').run(kind, key, version, json);
+    this.putJson(kind, key, json);
+    return json;
+  }
   versions<T = any>(kind:string,key:string):T[] { return this.db.prepare('SELECT json FROM engineering_versions WHERE kind=? AND id=? ORDER BY version').all(kind,key).map((r:any)=>JSON.parse(r.json)); }
+  getArchitectureDoc(projectId: string, branchKey?: string) {
+    return this.getArchitectureDocById(architectureDocId(projectId, branchKey));
+  }
+  getArchitectureDocById(docId: string): ArchitectureDocument | undefined {
+    const row = this.db.prepare("SELECT json FROM objects WHERE kind='architecture_doc' AND id=?").get(docId);
+    return row && JSON.parse(String(row.json));
+  }
+  listArchitectureDocs(projectId: string): ArchitectureDocument[] {
+    return this.db.prepare(`SELECT json FROM objects WHERE kind='architecture_doc'
+      AND json_extract(json,'$.project_id')=? ORDER BY json_extract(json,'$.branch_key')`)
+      .all(projectId).map(row => JSON.parse(String(row.json)));
+  }
+  saveArchitectureDoc(doc: ArchitectureDocument, expectedVersion?: number): ArchitectureDocument {
+    return this.transaction(() => {
+      const row = this.db.prepare("SELECT json_extract(json,'$.version') AS version FROM objects WHERE kind='architecture_doc' AND id=?").get(doc.id);
+      const currentVersion = row ? Number(row.version) : 0;
+      if (expectedVersion !== undefined && currentVersion !== expectedVersion) {
+        throw new Error(`Architecture document version conflict for ${doc.id}: expected ${expectedVersion}, current ${currentVersion}`);
+      }
+      const next = { ...doc, version: currentVersion + 1, updated_at: now() };
+      return JSON.parse(this.putVersion('architecture_doc', doc.id, next.version, next));
+    });
+  }
+  listArchitectureDocVersions(docId: string): ArchitectureVersionSummary[] {
+    return this.db.prepare(`SELECT version, json_extract(json,'$.title') AS title,
+      json_extract(json,'$.updated_at') AS updated_at, json_extract(json,'$.update_status') AS update_status,
+      json_array_length(json,'$.modules') AS module_count, json_array_length(json,'$.relations') AS relation_count
+      FROM engineering_versions WHERE kind='architecture_doc' AND id=? ORDER BY version DESC`)
+      .all(docId) as unknown as ArchitectureVersionSummary[];
+  }
+  getArchitectureDocVersion(docId: string, version: number): ArchitectureDocument | undefined {
+    const row = this.db.prepare("SELECT json FROM engineering_versions WHERE kind='architecture_doc' AND id=? AND version=?").get(docId, version);
+    return row && JSON.parse(String(row.json));
+  }
+  restoreArchitectureDocVersion(docId: string, targetVersion: number): ArchitectureDocument {
+    const target = this.getArchitectureDocVersion(docId, targetVersion);
+    if (!target) throw new Error(`Architecture document version ${targetVersion} not found for ${docId}`);
+    const currentVersion = this.getArchitectureDocById(docId)?.version ?? 0;
+    return this.saveArchitectureDoc({
+      ...target, last_confirmed_version: target.last_confirmed_version === target.version ? currentVersion + 1 : target.last_confirmed_version,
+    }, currentVersion);
+  }
   transaction<T>(fn: () => T): T { this.db.exec('BEGIN IMMEDIATE'); try { const result = fn(); this.db.exec('COMMIT'); return result; } catch (e) { this.db.exec('ROLLBACK'); throw e; } }
   event(runId: string, eventId: string, sequence: number, value: unknown) {
     return this.db.prepare('INSERT OR IGNORE INTO events VALUES(?,?,?,?)').run(runId, eventId, sequence, JSON.stringify(value)).changes > 0;

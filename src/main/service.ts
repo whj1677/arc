@@ -44,7 +44,7 @@ import { makePrompt, probeProviders, redact, runCodex, runCodexPromptRefinement,
 import { buildRefinementContext, goalRefinementSchema, parseGoalRefinement, refinementPrompt } from './prompt-refiner';
 import { normalizeTransport, schema, validateResult } from './validation';
 import { discoveredFeature } from '../discovered-feature';
-import { catalogFeatureClues, promptContext, readingTarget } from './prompt-context';
+import { catalogFeatureClues, promptContext, readingTarget, savedPromptArchitecture } from './prompt-context';
 import { proposeScenarios, scenarioTitleKey } from './scenario-breakdown';
 import { readingAnswerSchema, validateReadingAnswer } from './reading-question';
 import { isCatalogOverview, overviewDiscoveryQuestion, previousCatalogQuestion, shallowOverviewQuestion } from './architecture-analysis';
@@ -53,6 +53,8 @@ import { featureGraphSchema, prepareFeatureGraph } from './feature-graph-result'
 import { parseDshReply } from './dsh';
 import { runDshWeb } from './dsh-web';
 import { EngineeringService } from './engineering-service';
+import { ArchitectureWorkspaceService } from './architecture-workspace-service';
+import type { ArchitectureDocument } from '../architecture-workspace';
 import { buildTaskHud, previousFeatureResultId } from './development-hud';
 import { buildLiveWorkspaceRadar, liveWorkspaceImpact, openLiveWorkspaceFile, readLiveFileDiff, type FileDiffOptions, type RadarOptions } from './live-radar';
 import { DevelopmentService } from './development-service';
@@ -87,6 +89,7 @@ export function isSupportedNodeVersion(version: string) {
 
 export class ArcService {
   readonly store: Store;
+  private readonly architectureWorkspace: ArchitectureWorkspaceService;
   readonly engineering: EngineeringService;
   readonly development: DevelopmentService;
   dispatchRun?: (run: Run) => void;
@@ -116,6 +119,7 @@ export class ArcService {
     private readonly dshRunner: typeof runDshWeb = runDshWeb,
   ) {
     this.store = new Store(directory);
+    this.architectureWorkspace = new ArchitectureWorkspaceService(this.store, () => this.changed());
     this.snapshotCleanup = pruneUnreferencedSnapshots(directory, this.store)
       .catch(error => console.warn('无法完成未引用快照清理', error));
     this.syncToolPathOverrides();
@@ -223,6 +227,34 @@ export class ArcService {
 
   changed() {
     this.emit({ type: 'changed' });
+  }
+
+  getActiveArchitectureBranch(projectId: string) {
+    return this.architectureWorkspace.getActiveArchitectureBranch(projectId);
+  }
+
+  getArchitectureDocument(projectId: string, opts?: { branchKey?: string; version?: number }) {
+    return this.architectureWorkspace.getArchitectureDocument(projectId, opts);
+  }
+
+  saveArchitectureDocument(projectId: string, doc: ArchitectureDocument, expectedVersion?: number) {
+    return this.architectureWorkspace.saveArchitectureDocument(projectId, doc, expectedVersion);
+  }
+
+  getModuleDeleteImpact(projectId: string, branchKey: string, moduleId: string, draftPaths?: import('../architecture-workspace').ModuleReferencePaths) {
+    return this.architectureWorkspace.getModuleDeleteImpact(projectId, branchKey, moduleId, draftPaths);
+  }
+
+  listArchitectureVersions(projectId: string, branchKey?: string) {
+    return this.architectureWorkspace.listArchitectureVersions(projectId, branchKey);
+  }
+
+  restoreArchitectureVersion(projectId: string, branchKey: string, version: number) {
+    return this.architectureWorkspace.restoreArchitectureVersion(projectId, branchKey, version);
+  }
+
+  listArchitectureBranches(projectId: string) {
+    return this.architectureWorkspace.listArchitectureBranches(projectId);
   }
 
   async refineDevelopmentGoal(projectId: string, goal: string, nonGoals: string[], engine: GoalRefinement['engine']): Promise<GoalRefinement> {
@@ -779,11 +811,12 @@ export class ArcService {
     };
   }
 
-  analysisContext(run: Run) {
+  async analysisContext(run: Run) {
     if (run.reading_context) return run.reading_context;
     const snapshot = this.store.get<Snapshot>('snapshot', run.binding.source_snapshot_id);
     const { annotations, previous, catalogFeature } = this.analysisHistory(run);
-    return promptContext(snapshot, annotations, previous, catalogFeature);
+    const architecture = await savedPromptArchitecture(this.store, run.binding.project_id);
+    return promptContext(snapshot, annotations, previous, catalogFeature, architecture);
   }
 
   async startRun(
@@ -1126,7 +1159,8 @@ export class ArcService {
       freshRun.feature_graph_format = 'feature-graph-1';
       this.store.put('run', runId, freshRun);
     }
-    let prompt = await makePrompt(initial, snapshot, this.directory, annotations, previous, featureDetail, catalogFeature);
+    const architecture = initial.reading_context ? undefined : await savedPromptArchitecture(this.store, initial.binding.project_id);
+    let prompt = await makePrompt(initial, snapshot, this.directory, annotations, previous, featureDetail, catalogFeature, architecture);
     const retry = provider === 'codex' && initial.overview_format ? this.overviews.retrySource(initial) : undefined;
     let savedCandidate: string | undefined;
     let inheritedEvidence = false;

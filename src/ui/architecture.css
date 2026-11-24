@@ -55,3 +55,8 @@
 .system-sources { display: grid; gap: 6px; }
 .system-sources .module-partner { width: 100%; overflow-wrap: anywhere; }
 .system-detail .module-purpose p { font-size: 15px; line-height: 1.75; }
+
+.architecture-detail-fields { min-width: 0; border: 0; padding: 0; margin: 0; }
+.architecture-detail-fields label { color: var(--ink-secondary); }
+.architecture-detail-fields label :is(input, select, textarea) { width: 100%; }
+dialog input[type="radio"][name="delete-strategy"] { width: auto; }

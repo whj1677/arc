@@ -5,7 +5,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { AnalysisResult } from '../src/shared';
 import { Architecture } from '../src/ui/Architecture';
 import { cubicPoint, overlaps } from '../src/ui/flow-layout';
-import { architectureMap } from '../src/ui/architecture-map';
+import type { ArchitectureDocument, ArchitectureModule, ArchitectureRelation } from '../src/architecture-workspace';
+import { architectureMap, computeAutoLayoutPositions, moveArchitectureModule } from '../src/ui/architecture-map';
 
 type Node = AnalysisResult['nodes'][number];
 const node = (id: string, parent?: string, kind: Node['kind'] = 'stage') =>
@@ -182,4 +183,42 @@ test('layered cards show responsibility and feature counts while detailed eviden
     assert.ok(html.includes(label), label);
   }
   for (const detail of ['app/control.cpp', '采样结果', '设定值', '<table']) assert.ok(!html.includes(detail), detail);
+});
+
+
+test('document layout keeps exact coordinates and filters hidden items without modifying the saved document', () => {
+  const module = (id: string, layer: ArchitectureModule['layer']): ArchitectureModule => ({
+    id, name: id, kind: 'stage', layer, summary: '', evidence: [], code_links: [],
+    origin: 'manual', implementation_status: 'planned', updated_at: '',
+  });
+  const relation = (id: string, from: string, to: string): ArchitectureRelation => ({
+    id, from, to, label: id, kind: 'dependency', evidence: [], origin: 'manual', status: 'manual', updated_at: '',
+  });
+  const doc: ArchitectureDocument = {
+    id: 'arch', project_id: 'project', branch_key: 'main', title: '工程架构', version: 1, summary: '',
+    modules: [module('a', 'entry'), { ...module('b', 'foundation'), parent_id: 'a' }, { ...module('hidden', 'core'), hidden: true }],
+    relations: [relation('ab', 'a', 'b'), relation('ba', 'b', 'a'), relation('invisible', 'hidden', 'a'), { ...relation('removed', 'a', 'b'), hidden: true }],
+    layout: { positions: { a: { x: -85, y: -160 }, b: { x: 1500, y: 1900 } }, manual_positions: ['b'] },
+    created_at: '', updated_at: '', exclusions: [], review_items: [], update_status: 'up_to_date',
+  };
+  const before = structuredClone(doc);
+  const map = architectureMap(doc);
+  assert.deepEqual([...map.boxes.keys()], ['a', 'b']);
+  assert.deepEqual(map.layers.map(l => [l.id, l.roots]), [['boundary', ['a']], ['infrastructure', ['b']]]);
+  for (const id of ['a', 'b']) {
+    const { x, y, height, width } = map.boxes.get(id)!;
+    assert.deepEqual({ x, y }, doc.layout.positions[id]);
+    assert.ok(x > map.minX && y > map.minY && x + width < map.minX + map.width && y + height < map.minY + map.height);
+  }
+  assert.deepEqual(map.edges.map(e => e.edge_id), ['ab', 'ba']);
+  assert.notDeepEqual(map.links[0].labelPos, map.links[1].labelPos);
+  const firstPath = map.links[0].path.match(/-?[\d.]+/g)!.map(Number);
+  const reversePath = map.links[1].path.match(/-?[\d.]+/g)!.map(Number);
+  assert.notDeepEqual(firstPath.slice(0, 2), reversePath.slice(-2));
+  const auto = computeAutoLayoutPositions(doc, 900);
+  assert.deepEqual(Object.keys(auto).sort(), ['a', 'b', 'hidden']);
+  assert.notDeepEqual(auto.b, doc.layout.positions.b);
+  const moved = moveArchitectureModule(doc, 'a', { x: 20, y: 30 });
+  assert.deepEqual(moved, { ...doc, layout: { positions: { ...doc.layout.positions, a: { x: 20, y: 30 } }, manual_positions: ['b', 'a'] } });
+  assert.deepEqual(doc, before);
 });

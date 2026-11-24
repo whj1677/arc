@@ -1,6 +1,41 @@
-import type {Snapshot,Annotation,AnalysisResult,ReadingContext,ReadingQuestion,ReadingTarget,Project,Feature,Scenario} from '../shared';
+import type {Snapshot,Annotation,AnalysisResult,ArchitectureContext,ReadingContext,ReadingQuestion,ReadingTarget,Project,Feature,Scenario} from '../shared';
+import type { ArchitectureDocument, CodeBaseline } from '../architecture-workspace';
+import { detectWorkspaceGitState } from './architecture-workspace-service';
+import type { Store } from './store';
 import {relativePath} from './snapshot';
 import {savedReadingGuide} from '../feature-graph-guide';
+
+// Existing frozen-only projects can still be read without touching a live checkout.
+export async function savedPromptArchitecture(store: Store, projectId: string) {
+  const hasDocument = store.db.prepare("SELECT 1 FROM objects WHERE kind='architecture_doc' AND json_extract(json,'$.project_id')=? LIMIT 1").get(projectId);
+  if (!hasDocument) return;
+  const project = store.get<Project>('project', projectId);
+  const { branchKey } = await detectWorkspaceGitState(project.root_path);
+  return store.getArchitectureDoc(projectId, branchKey);
+}
+
+const baselineSummary = ({file_hashes, ...baseline}: CodeBaseline) => baseline;
+
+export function architectureContext(doc: ArchitectureDocument): ArchitectureContext {
+  const modules = doc.modules.filter(module => !module.hidden);
+  const visible = new Set(modules.map(module => module.id));
+  return {
+    id:doc.id, version:doc.version, branch_key:doc.branch_key, title:doc.title, summary:doc.summary,
+    update_status:doc.update_status, last_confirmed_version:doc.last_confirmed_version,
+    baseline:doc.baseline && baselineSummary(doc.baseline),
+    pending_review_count:doc.review_items.filter(item => item.status === 'pending').length,
+    modules:modules.map(({id,name,kind,layer,parent_id,summary,notes,io,origin,implementation_status,code_links}) => ({
+      id,name,kind,layer,parent_id:parent_id && visible.has(parent_id) ? parent_id : undefined,
+      summary,notes,io,origin,implementation_status,code_links,
+      ...(implementation_status === 'planned' && { implementation_note:'尚未实现（NOT YET IMPLEMENTED）' }),
+    })),
+    relations:doc.relations.filter(rel => !rel.hidden && visible.has(rel.from) && visible.has(rel.to))
+      .map(({id,from,to,kind,label,notes,transfers,origin,status}) => ({id,from,to,kind,label,notes,transfers,origin,status})),
+  };
+}
+
+export const architectureContextField = (doc?: ArchitectureDocument) =>
+  doc ? {architecture_document:architectureContext(doc)} : {};
 
 export const indexDiscoveryInstructions = '先用 list_modules 清点模块、跨目录引用和 shared_states 共享状态线索，用 list_symbols 按 dir、path 或 query 定位入口和定义，再按需用 get_call_graph 查上下游、签名和引用行。静态匹配只提供线索，用 arc_read_source 核对实际定义和调用点。未索引的语言、动态调用或缺失的符号可用 arc_search_source 定向补查。';
 
@@ -46,7 +81,7 @@ export function readingTarget(result:AnalysisResult|undefined,target:ReadingTarg
   return selected;
 }
 
-export function buildReadingContext(input:{project:Project;feature:Feature;scenario:Scenario;result?:AnalysisResult;target:ReadingTarget;snapshot:Snapshot;annotations:Annotation[];questions:ReadingQuestion[];sourceMode:'bound'|'latest';previousSnapshotId:string|null;replyTo?:ReadingQuestion}):ReadingContext {
+export function buildReadingContext(input:{project:Project;feature:Feature;scenario:Scenario;result?:AnalysisResult;architecture?:ArchitectureDocument;target:ReadingTarget;snapshot:Snapshot;annotations:Annotation[];questions:ReadingQuestion[];sourceMode:'bound'|'latest';previousSnapshotId:string|null;replyTo?:ReadingQuestion}):ReadingContext {
   const {project,feature,scenario,result,target,snapshot}=input;
   const selected=readingTarget(result,target,snapshot,feature),evidenceIds=new Set(selected.evidence_ids);
   const nodeIds=new Set<string>(target.kind==='node'?[target.id]:'node_ids'in selected?selected.node_ids:[]);
@@ -62,6 +97,7 @@ export function buildReadingContext(input:{project:Project;feature:Feature;scena
   const recent=input.questions.filter(q=>q.question_id!==input.replyTo?.question_id&&q.project_id===project.project_id&&q.scenario_id===scenario.scenario_id&&q.result_id===(result?.result_id??null)&&matchingTarget(q.target)&&q.source_snapshot_id===snapshot.source_snapshot_id).slice(-6);
   const excerpt=(v:unknown,max:number)=>{const raw=JSON.stringify(v);return raw.length<=max?v:{excerpt:raw.slice(0,max),truncated:true};};
   return {
+    ...architectureContextField(input.architecture),
     project:{project_id:project.project_id,name:project.name},feature:{feature_id:feature.feature_id,name:feature.name},
     scenario:{scenario_id:scenario.scenario_id,title:scenario.title,question:scenario.question,question_revision_id:scenario.question_revision_id},
     result_id:result?.result_id??null,target,source_snapshot_id:snapshot.source_snapshot_id,
@@ -166,7 +202,7 @@ function sourceDirectories(snapshot:Snapshot,prefix:string) {
   return result;
 }
 
-export function promptContext(snapshot:Snapshot,annotations:Annotation[],previous?:any,catalogFeature?:ReturnType<typeof catalogFeatureClues>) {
+export function promptContext(snapshot:Snapshot,annotations:Annotation[],previous?:any,catalogFeature?:ReturnType<typeof catalogFeatureClues>,architecture?:ArchitectureDocument) {
   const clipped=(value:unknown,max:number)=>{const text=typeof value==='string'?value:JSON.stringify(value??null);return text.length<=max?text:text.slice(0,max)+'…（上下文节选，非完整内容）';};
   const roots=new Map<string,number>();
   const prefix=wrapperPrefix(snapshot);
@@ -176,5 +212,6 @@ export function promptContext(snapshot:Snapshot,annotations:Annotation[],previou
   const entryPattern=/(?:^|\/)(?:package\.json|cargo\.toml|pyproject\.toml|go\.mod|cmakelists\.txt|makefile|readme(?:\.[a-z0-9]+)?|(?:main|index|app|server|cli|init|entry)\.[a-z0-9]+)$/i;
   const entryHints=snapshot.files.filter(f=>entryPattern.test(f.path)&&!nonSourceDirectory.test(f.path)&&f.path.split('/').length<=5).slice(0,20).map(f=>clipped(f.path,180));
   const clues=annotations.slice(-12).map(a=>({text:clipped(a.text,600),source_snapshot_id:a.source_snapshot_id,result_id:a.result_id,object_id:a.object_id,target:a.target}));
-  return {inventory:{total_files:snapshot.files.length,excluded_count:snapshot.excluded.length,largest_roots:rootList,root_file_hints:hints,entry_file_hints:entryHints,source_directories:sourceDirectories(snapshot,prefix),inventory_is_partial:true},clues:{items:clues,omitted_count:Math.max(0,annotations.length-clues.length)},previous:previous?{result_id:previous.result_id,binding:previous.binding,summary_excerpt:clipped(previous.summary?.text??previous.summary,3000)}:null,...(catalogFeature?{catalog_feature:catalogFeature}:{})};
+  return {inventory:{total_files:snapshot.files.length,excluded_count:snapshot.excluded.length,largest_roots:rootList,root_file_hints:hints,entry_file_hints:entryHints,source_directories:sourceDirectories(snapshot,prefix),inventory_is_partial:true},clues:{items:clues,omitted_count:Math.max(0,annotations.length-clues.length)},previous:previous?{result_id:previous.result_id,binding:previous.binding,summary_excerpt:clipped(previous.summary?.text??previous.summary,3000)}:null,...(catalogFeature?{catalog_feature:catalogFeature}:{}),
+    ...architectureContextField(architecture)};
 }

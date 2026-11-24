@@ -83,33 +83,39 @@ async function ignoredByGit(root:string) {
   // exclusions; do not recurse into nested worktrees to discover their rules.
   const gitIgnored = new Set<string>();
   try {
-    const {stdout}=await exec(await locate('git'),['-C',root,'ls-files','--others','--ignored','--exclude-standard','--directory','-z'],{windowsHide:true,timeout:10000,maxBuffer:8*1024*1024});
+    const {stdout}=await exec(await locate('git'),['--no-optional-locks','-c','core.fsmonitor=false','-C',root,'ls-files','--others','--ignored','--exclude-standard','--directory','-z'],{windowsHide:true,timeout:10000,maxBuffer:8*1024*1024});
     for(const entry of stdout.split('\0').filter(Boolean))gitIgnored.add(entry.replace(/\/$/,''));
   } catch { /* Without a verified Git list, retain the ordinary exclusions. */ }
   return gitIgnored;
 }
-// Hash eligible worktree bytes without storing them or exposing binary contents.
-export async function workspaceFiles(root:string, snapshot?:Snapshot) {
-  const gitIgnored=await ignoredByGit(root), files=new Map<string,string>(), assets:WorkspaceAsset[]=[];
-  const textFiles=new Map(snapshot?.files.map(file=>[file.path,file.content_sha256]));
-  async function walk(dir:string,prefix='') {
+export async function* workspacePaths(root:string, includePath?: (file:string)=>boolean): AsyncGenerator<string> {
+  const gitIgnored=await ignoredByGit(root);
+  async function* walk(dir:string,prefix=''): AsyncGenerator<string> {
     for(const entry of await sourceDirectoryEntries(dir)??[]){
       const rel=prefix?`${prefix}/${entry.name}`:entry.name;
       if(gitIgnored.has(rel)||excludedEntry(entry.name)||entry.isSymbolicLink())continue;
-      if(entry.isDirectory()){await walk(path.join(dir,entry.name),rel);continue;}
-      if(!entry.isFile())continue;
-      const input=await safeFile(root,rel), before=await fs.stat(input);
-      const digest=await fileSha256(input);
-      const after=await fs.stat(input);
-      if(before.size!==after.size||before.mtimeMs!==after.mtimeMs||before.ctimeMs!==after.ctimeMs||before.ino!==after.ino)throw Error(`采集期间文件变化：${rel}，请重试`);
-      files.set(rel,digest);
-      if(!snapshot)continue;
-      if(textFiles.get(rel)===digest)textFiles.delete(rel);
-      else if(textFiles.has(rel))throw Error(`采集期间文本文件变化：${rel}，请重试`);
-      else assets.push({path:rel,sha256:digest});
+      if(includePath && !includePath(rel))continue;
+      if(entry.isDirectory())yield* walk(path.join(dir,entry.name),rel);
+      else if(entry.isFile())yield rel;
     }
   }
-  await walk(root);
+  yield* walk(root);
+}
+// Hash eligible worktree bytes without storing them or exposing binary contents.
+export async function workspaceFiles(root:string, snapshot?:Snapshot) {
+  const files=new Map<string,string>(), assets:WorkspaceAsset[]=[];
+  const textFiles=new Map(snapshot?.files.map(file=>[file.path,file.content_sha256]));
+  for await(const rel of workspacePaths(root)){
+    const input=await safeFile(root,rel), before=await fs.stat(input);
+    const digest=await fileSha256(input);
+    const after=await fs.stat(input);
+    if(before.size!==after.size||before.mtimeMs!==after.mtimeMs||before.ctimeMs!==after.ctimeMs||before.ino!==after.ino)throw Error(`采集期间文件变化：${rel}，请重试`);
+    files.set(rel,digest);
+    if(!snapshot)continue;
+    if(textFiles.get(rel)===digest)textFiles.delete(rel);
+    else if(textFiles.has(rel))throw Error(`采集期间文本文件变化：${rel}，请重试`);
+    else assets.push({path:rel,sha256:digest});
+  }
   if(textFiles.size)throw Error('采集期间文本文件清单变化，请重试');
   return {fingerprint:sha(JSON.stringify([...files].sort(([a],[b])=>a<b?-1:a>b?1:0))),assets};
 }

@@ -5,6 +5,7 @@ import { matchesUiUrl } from './ipc-origin';
 import { isValidCodexModel } from './codex-models';
 import {ArcMcpBridge} from './mcp-bridge';
 import { ArcService } from './service';
+import { architectureIpc, architectureOperations } from './architecture-ipc';
 import { redact } from './providers';
 import {isExecutionMode,type ExecutionMode,type ReadingQuestion,type Run,type Scenario,type Snapshot} from '../shared';
 import {scanAecLegacy,applyAecRuleMigration,installArcAgentRules} from './aec-migration';
@@ -46,7 +47,9 @@ app.whenReady().then(async()=>{
   ipcMain.handle('arc:invoke',async(event,operation:string,args:any={})=>{
     try {
       if(event.sender!==window?.webContents||event.senderFrame!==window.webContents.mainFrame||!matchesUiUrl(event.senderFrame.url,ui))throw new Error('IPC 来源不可信');
-      if(JSON.stringify(args).length>200000)throw new Error('请求超过大小限制');
+      if(JSON.stringify(args).length>(operation==='architecture_save'?16*1024*1024:200_000))throw new Error('请求超过大小限制');
+      const architectureOperation = architectureOperations.find(name => name === operation);
+      if (architectureOperation) return {ok:true, value:await architectureIpc(service, architectureOperation, args)};
       let value:any;
       switch(operation){
         case 'mcp_status':value=bridge.status();break;

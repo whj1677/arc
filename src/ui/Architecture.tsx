@@ -1,13 +1,17 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { AnalysisResult } from '../shared';
-import { architectureColumns, architectureMap } from './architecture-map';
+import { architectureColumns, architectureMap, moveArchitectureModule } from './architecture-map';
 import { componentContext } from './architecture-context';
 import { CodeModules } from './CodeModules';
 import type { TaskArchitectureOverlay } from './DevelopmentHud';
 import { edgeNames } from './Graph';
 import { edgeSelection } from './reading-target';
 
+import type { ArchitectureEditor } from './useArchitectureDocument';
+import { ArchitectureToolbar } from './ArchitectureToolbar';
+
 interface Props {
+  editor?: ArchitectureEditor;
   result: AnalysisResult;
   selected: string;
   select: (id: string) => void;
@@ -61,7 +65,7 @@ function RoleIcon({ kind }: { kind: Node['kind'] }) {
   </svg>;
 }
 
-export function Architecture({ result, selected, select, inspect, modules, openFile, zoom, search, taskOverlay, onZoomableChange }: Props) {
+export function Architecture({ result, editor, selected, select, inspect, modules, openFile, zoom, search, taskOverlay, onZoomableChange }: Props) {
   const root = useRef<HTMLElement>(null);
   const [width, setWidth] = useState(820);
   const [view, setView] = useState<'layers' | 'relations' | 'code'>('layers');
@@ -71,7 +75,35 @@ export function Architecture({ result, selected, select, inspect, modules, openF
   const marker = 'arch-' + useId().replace(/:/g, '');
   const columns = architectureColumns(width);
   const diagramSearch = view === 'layers' ? search : '';
-  const model = useMemo(() => architectureMap(result, diagramSearch, columns), [result, diagramSearch, columns]);
+  const doc = editor?.doc;
+  const modulesById = useMemo(() => new Map(doc?.modules.map(m => [m.id, m])), [doc?.modules]);
+  const model = useMemo(() => architectureMap(result, diagramSearch, columns, doc?.layout.positions),
+    [result, diagramSearch, columns, doc?.layout.positions]);
+  const drag = useRef<{ id: string; pointer: number; clientX: number; clientY: number; x: number; y: number; scale: number; moved: boolean } | null>(null);
+  const ignoreClick = useRef(false);
+  const draggable = editor?.editMode && editor.saveState !== 'saving';
+  function startDrag(e: React.PointerEvent<HTMLButtonElement>, id: string) {
+    ignoreClick.current = false;
+    if (!draggable || e.button !== 0 || !e.isPrimary) return;
+    const { x, y } = model.boxes.get(id)!;
+    const svg = e.currentTarget.closest<SVGSVGElement>('svg.architecture-map-canvas')!;
+    drag.current = { id, pointer: e.pointerId, clientX: e.clientX, clientY: e.clientY, x, y, scale: svg.getScreenCTM()!.a, moved: false };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function moveDrag(e: React.PointerEvent<HTMLButtonElement>) {
+    const d = drag.current;
+    if (!d || d.pointer !== e.pointerId || !draggable) return;
+    const dx = e.clientX - d.clientX, dy = e.clientY - d.clientY;
+    if (!d.moved && Math.hypot(dx, dy) <= 4) return;
+    d.moved = true;
+    const point = { x: Math.round(d.x + dx / d.scale), y: Math.round(d.y + dy / d.scale) };
+    editor.updateDraft(doc => moveArchitectureModule(doc, d.id, point));
+  }
+  function finishDrag(e: React.PointerEvent<HTMLButtonElement>) {
+    if (drag.current?.pointer !== e.pointerId) return;
+    ignoreClick.current = drag.current.moved;
+    drag.current = null;
+  }
   const contexts = useMemo(() => new Map(model.nodes.map(node => [node.node_id, componentContext(node, result)])), [model.nodes, result]);
   const byId = useMemo(() => new Map(model.nodes.map(node => [node.node_id, node])), [model.nodes]);
   useEffect(() => {
@@ -80,7 +112,7 @@ export function Architecture({ result, selected, select, inspect, modules, openF
     return () => observer.disconnect();
   }, []);
 
-  const scale = Math.min(1.15, (width - 4) / model.width) * zoom;
+  const scale = Math.min(1.15, (width - 4) / model.layoutWidth) * zoom;
   const isInDiagram = (id: string) => byId.has(id) || model.edges.some(e => edgeSelection(e.edge_id) === id);
   const focusId = hover && isInDiagram(hover) ? hover : isInDiagram(selected) ? selected : '';
   const focusedNode = byId.get(focusId);
@@ -106,6 +138,7 @@ export function Architecture({ result, selected, select, inspect, modules, openF
       </div>
     )}
     <header className="architecture-map-heading">
+      {editor && doc && <ArchitectureToolbar key={doc.id} editor={editor} doc={doc} width={width} select={select}/>}
       <div className="architecture-view-switch" role="group" aria-label="架构视图">
         <button aria-pressed={view === 'layers'} onClick={() => chooseView('layers')}>分层架构图</button>
         <button aria-pressed={view === 'relations'} onClick={() => chooseView('relations')}>协作关系表 ({result.architecture?.edge_ids.length ?? 0})</button>
@@ -125,11 +158,12 @@ export function Architecture({ result, selected, select, inspect, modules, openF
           <h2>系统协作尚未分析</h2><button onClick={modules}>查看已有模块说明</button>
         </div>
       : view === 'relations' ? <RelationTable edges={model.edges} byId={byId} search={search} selected={selected} select={select}/>
-      : !model.nodes.length ? <div className="empty compact"><h2>没有匹配组件</h2><p>清除搜索查看完整系统。</p></div>
+      : !model.nodes.length ? <div className="empty compact"><h2>{search.trim() ? '没有匹配组件' : doc?.modules.length ? '当前没有可见模块' : '尚无架构模块'}</h2>
+          <p>{search.trim() ? '清除搜索查看完整系统。' : doc?.modules.length ? '可在“已隐藏”中恢复显示。' : editor?.editMode ? '点击“新增模块”创建第一个模块。' : editor ? '点击“编辑架构”后可新增模块。' : '当前视图没有已分析的组件。'}</p></div>
       : <>
         <div className={"architecture-viewport" + (focusOnly ? " focus-only" : "")} data-zoom-surface tabIndex={0} role="region" aria-label="系统架构图，可横向滚动">
           <svg className="architecture-map-canvas" data-zoom-content width={model.width * scale} height={model.height * scale}
-            viewBox={`0 0 ${model.width} ${model.height}`} role="group" aria-label="系统架构图" onClick={event => {
+            viewBox={`${model.minX} ${model.minY} ${model.width} ${model.height}`} role="group" aria-label="系统架构图" onClick={event => {
               if ((selected || hover) && !(event.target as Element).closest('[data-component-id], [data-edge-id]')) reset();
             }}>
             <defs><marker id={marker} markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto">
@@ -163,19 +197,26 @@ export function Architecture({ result, selected, select, inspect, modules, openF
               x={layer.x + 15} y={layer.y + 25}>●  {layer.title}<tspan dx="8">· {layer.roots.length}</tspan></text>)}
             {model.nodes.map(node => {
               const context = contexts.get(node.node_id)!;
+              const module = modulesById.get(node.node_id);
               const overlayRole = taskOverlay?.nodes.get(node.node_id);
               return <foreignObject key={node.node_id} {...model.boxes.get(node.node_id)} data-component-id={node.node_id} data-zoom-anchor
                 className={focusId && !activeNodes.has(node.node_id) ? 'architecture-node-dimmed' : undefined}>
-                <button className={'architecture-card architecture-node kind-' + node.kind + (model.hubs.has(node.node_id) ? ' is-hub' : '') + (overlayRole ? ' hud-' + overlayRole : '')} aria-pressed={selected === node.node_id}
+                <button className={'architecture-card architecture-node kind-' + node.kind + (draggable ? ' is-draggable' : '') + (module?.implementation_status === 'planned' ? ' is-planned' : '') + (model.hubs.has(node.node_id) ? ' is-hub' : '') + (overlayRole ? ' hud-' + overlayRole : '')} aria-pressed={selected === node.node_id}
                   onMouseEnter={() => setHover(node.node_id)} onMouseLeave={() => setHover('')}
-                  onFocus={() => setHover(node.node_id)} onBlur={() => setHover('')} onClick={() => select(node.node_id)}>
+                  onFocus={() => setHover(node.node_id)} onBlur={() => setHover('')} onPointerDown={e => startDrag(e, node.node_id)} onPointerMove={moveDrag}
+                  onPointerUp={finishDrag} onLostPointerCapture={finishDrag} onPointerCancel={finishDrag}
+                  onClick={e => { if (!ignoreClick.current || !e.detail) select(node.node_id); ignoreClick.current = false; }}>
                   <span className="architecture-card-header">
                     <span className="architecture-card-icon" aria-hidden="true"><RoleIcon kind={node.kind}/></span>
                     <strong className="architecture-card-title" title={node.label}>{node.label}</strong>
                     {overlayRole ? <span className={'architecture-hud-tag ' + overlayRole}>{overlayRole === 'direct' ? '直改' : '波及'}</span> : model.hubs.has(node.node_id) && <span className="architecture-hub-badge">核心</span>}
                   </span>
                   <span className="architecture-card-copy">{node.description}</span>
-                  <span className="architecture-card-meta"><span>{model.degrees.get(node.node_id) ?? 0} 关系</span>
+                  <span className="architecture-card-meta">
+                    {module?.implementation_status === 'planned' && <span className="planned-badge">规划中</span>}
+                    {(module?.origin === 'manual' || module?.origin === 'manual_override') && <span className="manual-badge">人工补充</span>}
+                    {(module?.implementation_status === 'needs_verification' || module?.origin === 'needs_verification') && <span className="verification-badge">待核实</span>}
+                    <span>{model.degrees.get(node.node_id) ?? 0} 关系</span>
                     {context.children.length > 0 ? <span>{context.children.length} 子模块</span> : context.features.length > 0 && <span>{context.features.length} 功能</span>}
                   </span>
                 </button>

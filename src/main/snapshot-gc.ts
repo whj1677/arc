@@ -10,6 +10,8 @@ function databaseVersion(store:Store) {
 }
 
 async function excludeReferenced(store:Store,candidates:Set<string>) {
+  // Architecture baselines, update-run read baselines and evidence can pin a
+  // snapshot in either the current document or any historical version.
   // Task versions, receipts and attempts also retain frozen evidence. Walk
   // persisted records in bounded batches without holding a transaction open.
   for(const table of ['objects','engineering_versions']){

@@ -19,6 +19,7 @@ import { FunctionDetail, FunctionStepDetail } from './FunctionChain';
 import { edgeNames, claimNames, nodeNames } from './Graph';
 import { FeatureReadingDetail } from './FeatureReading';
 import { guideItem, guideObjectType, walkthroughSelection } from './feature-reading-model';
+import type { ArchitectureEditor } from './useArchitectureDocument';
 import { SystemDetail } from './SystemDetail';
 import { StepDetail } from './StepDetail';
 import { FileSummary } from './FileSummary';
@@ -32,6 +33,7 @@ import { edgeExplanation } from './presentation';
 import { EvidenceButton, ScrollPanel, short, statuses } from './workbench-primitives';
 
 export interface DetailPaneProps {
+  editor?: ArchitectureEditor;
   data: WorkspaceData;
   project?: Project;
   projectId: string;
@@ -100,6 +102,7 @@ export interface DetailPaneProps {
 }
 
 export function DetailPane({
+  editor,
   data,
   project,
   projectId,
@@ -340,7 +343,8 @@ export function DetailPane({
             ) : businessReading && result ? (
               <StepDetail result={result} selected={reading.selected} select={select} />
             ) : systemReading && result ? (
-              <SystemDetail result={result} selected={reading.selected} select={select} inspect={inspectComponent}
+              <SystemDetail editor={editor} snapshot={data.snapshots.find(s => s.source_snapshot_id ===
+                (editor?.doc?.baseline?.snapshot_id ?? project?.snapshot_id))} result={result} selected={reading.selected} select={select} inspect={inspectComponent}
                 openEvidence={evidence} openFeature={openFeature} />
             ) : (
               <>

@@ -1,4 +1,4 @@
-import type { ExecutionMode,ProviderId,ReadingTarget } from './shared';
+import type { ArchitectureContext,ExecutionMode,ProviderId,ReadingTarget } from './shared';
 import type {AnalysisNode,AnalysisEdge,AnalysisClaim,SourceEvidence,RunBinding} from '../contracts/agent-adapter';
 
 export interface GoalRefinement {
@@ -65,6 +65,7 @@ export function activeContextEntries(entries: ContextEntry[]): ContextEntry[] {
 }
 
 export interface EngineeringContext {
+  architecture_document?:ArchitectureContext;
   material_sources?:MaterialSourceIndexEntry[];
   environment_brief?:string;
   knowledge_brief?:string;

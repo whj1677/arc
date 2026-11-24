@@ -9,6 +9,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { AnalysisResult } from '../src/shared';
 import { componentContext } from '../src/ui/architecture-context';
 import { Architecture } from '../src/ui/Architecture';
+import { architectureDocumentToAnalysisResult, applyModuleDelete, type ArchitectureModule, type ArchitectureRelation, type ArchitectureDocument } from '../src/architecture-workspace';
+import type { ArchitectureEditor } from '../src/ui/useArchitectureDocument';
+import { DeleteImpactDetails, draftDeleteImpact } from '../src/ui/ArchitectureDeleteDialog';
+import { reviseRelation } from '../src/ui/ArchitectureDetailFields';
 import { SystemDetail } from '../src/ui/SystemDetail';
 
 const node = (node_id: string, label: string, evidence_ids: string[]) => ({
@@ -154,4 +158,55 @@ test('architecture selection survives leaving the card and the three views remai
   } finally {
     await app.close();
   }
+});
+
+test('maintained detail separates manual descriptions, linked code and frozen evidence', () => {
+  const module: ArchitectureModule = { id: 'planned', name: '规划调度', kind: 'stage', layer: 'entry', summary: '计划下发指令',
+    notes: '待实施接口', code_links: [], evidence: [], origin: 'manual', implementation_status: 'planned', updated_at: 'now' };
+  const doc = makeDocument([module], []);
+  const editor = { doc, savedDoc: doc, editMode: false } as ArchitectureEditor;
+  const noop = () => {};
+  const html = renderToStaticMarkup(createElement(SystemDetail, {
+    editor, selected: module.id, result: architectureDocumentToAnalysisResult(doc),
+    select: noop, inspect: noop, openFeature: noop, openEvidence: noop,
+  }));
+  for (const label of ['人工补充', '规划中', '入口层', '父模块', '计划下发指令', '人工说明', '待实施接口', '代码关联', '代码依据'])
+    assert.ok(html.includes(label), label);
+  assert.doesNotMatch(html, /已实现/);
+});
+
+function makeDocument(modules: ArchitectureModule[], relations: ArchitectureRelation[]): ArchitectureDocument {
+  return { id: 'doc', project_id: 'p', branch_key: 'main', version: 1, title: '架构', summary: '',
+    modules, relations, layout: { positions: {}, manual_positions: [] }, exclusions: [], review_items: [],
+    update_status: 'up_to_date', created_at: 'now', updated_at: 'now' };
+}
+
+test('delete review counts draft descendants and lists the relations removed by the selected strategy', () => {
+  const template: ArchitectureModule = { id: '', name: '', kind: 'stage', layer: 'core', summary: '', code_links: [],
+    evidence: [], origin: 'manual', implementation_status: 'planned', updated_at: 'now' };
+  const modules = [['root'], ['draft', 'root'], ['leaf', 'draft'], ['other']].map(([id, parent_id]) => ({ ...template, id, name: id, parent_id }));
+  const relation: ArchitectureRelation = { id: 'external', from: 'root', to: 'other', label: '分组协作', status: 'manual',
+    kind: 'dependency', origin: 'manual', evidence: [], updated_at: 'now' };
+  const doc = makeDocument(modules, [relation, { ...relation, id: 'nested', from: 'leaf', label: '新增关系' }]);
+  for (const strategy of ['reparent_children', 'delete_subtree'] as const) {
+    const details = draftDeleteImpact(doc, 'root', strategy);
+    assert.equal(details.descendantCount, 2);
+    assert.deepEqual(details.children.map(m => m.id), ['draft']);
+    assert.deepEqual(details.relations.map(r => r.id), applyModuleDelete(doc, 'root', strategy).removed_relation_ids);
+    const html = renderToStaticMarkup(createElement(DeleteImpactDetails, { doc, moduleId: 'root', strategy, choose: () => {},
+      features: [{ id: 'f', title: '历史走读' }] }));
+    for (const label of ['draft', '历史走读', '源码和功能走读数据不会被删除', '子模块移至上层', '及其子模块']) assert.ok(html.includes(label));
+    assert.equal(html.includes('新增关系'), strategy === 'delete_subtree');
+  }
+});
+
+test('editing endpoints releases transfer mappings bound to the previous endpoints', () => {
+  const old: ArchitectureRelation = { id: 'r', from: 'a', to: 'b', label: '', kind: 'dependency', origin: 'code_analysis',
+    status: 'confirmed', evidence: [], updated_at: '', transfers: [{ label: 'old pair', source_output_id: 'a-out',
+      target_input_id: 'b-in', status: 'source_supported', claim_ids: [], evidence_ids: [] }] };
+  assert.equal(reviseRelation(old, { notes: '说明' }).transfers, old.transfers);
+  const reversed = reviseRelation(old, { from: 'b', to: 'a' });
+  assert.equal(reversed.transfers, undefined);
+  assert.equal(reversed.origin, 'manual_override');
+  assert.equal(reversed.status, 'manual');
 });

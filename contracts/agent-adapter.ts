@@ -484,6 +484,8 @@ export interface AnalysisEdge {
   readonly evidence_ids: readonly Id[];
 }
 
+export type TransferSpec = NonNullable<AnalysisEdge['transfers']>[number];
+
 export interface AnalysisClaim {
   readonly claim_id: Id;
   readonly statement: string;

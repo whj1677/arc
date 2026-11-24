@@ -208,3 +208,35 @@
 .architecture-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 10px 3px 0; color: #6d8179; font-size: 12px; }
 .legend-blue { color: #557aa5; }.legend-green { color: #28765f; }.legend-amber { color: #a87a35; }
 .architecture-zoom-hint { margin-left: auto; }
+
+.architecture-maintenance { width: 100%; color: var(--ink); }
+.architecture-maintenance-tools {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  min-width: 0; margin: 0 0 8px; padding: 0; border: 0;
+}
+.architecture-save-status { color: var(--muted); font-size: 13px; }
+.architecture-save-status.saved { color: var(--accent); }
+.architecture-save-status.error, .architecture-error { color: #a02e20; }
+.architecture-error { margin: 6px 0; overflow-wrap: anywhere; }
+.architecture-quick-form, .architecture-hidden-panel {
+  display: grid; gap: 10px; padding: 14px; margin: 8px 0;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-tint);
+}
+.architecture-quick-form { grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); align-items: end; }
+.architecture-quick-form label { display: grid; gap: 3px; font-size: 13px; color: var(--ink-secondary); }
+.architecture-quick-form :is(input, select, textarea) { min-width: 0; width: 100%; font: inherit; }
+.architecture-form-wide, .architecture-form-actions { grid-column: 1 / -1; }
+.architecture-form-actions, .architecture-hidden-panel > div { display: flex; align-items: center; gap: 8px; }
+.architecture-hidden-panel > div { justify-content: space-between; }
+.architecture-hidden-panel > button { justify-self: end; }
+.architecture-map .architecture-card.is-draggable { cursor: grab; touch-action: none; user-select: none; }
+.architecture-map .architecture-card.is-draggable:active { cursor: grabbing; }
+.architecture-map .architecture-card.is-planned { border: 2px dashed #a97737; background: #fffcf6; }
+.architecture-card-meta .planned-badge { background: #fbebcb; color: #795319; }
+.architecture-card-meta .manual-badge { color: #325f89; background: #ecf3fb; }
+.architecture-card-meta .verification-badge { color: #814e3a; background: #fae9dd; }
+.architecture-code-links, .architecture-code-links fieldset { min-width: 0; display: grid; gap: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.architecture-code-links legend { color: var(--ink-secondary); font-size: 13px; }
+.architecture-code-links label { min-width: 0; display: grid; gap: 3px; }
+.architecture-code-links :is(input,select) { min-width: 0; width: 100%; }
+.architecture-code-links button { justify-self: start; }

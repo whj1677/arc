@@ -10,7 +10,8 @@ import {locate} from './executables';
 import {capture,fileSha256,freshness,readSource,sha,relativePath,rollbackPathAllowed,safeFile,workspaceFiles,workspaceGitDirectory} from './snapshot';
 import {exportEngineeringProject,restoreEngineeringProject} from './engineering-transfer';
 import {scanAecLegacy,type AecScan,type AecLegacyDocument} from './aec-migration';
-import {readingTarget} from './prompt-context';
+import {architectureContextField,readingTarget,savedPromptArchitecture} from './prompt-context';
+import {workspaceBranchKey} from './architecture-workspace-service';
 import {ProjectEnvironmentService,formatEnvironmentBrief} from './env-probe';
 import {buildDevelopmentKnowledgeBrief} from './development-knowledge';
 import {commandBody,evidenceFailed,evidenceSupportsPass,sameVerificationState} from '../delivery-audit';
@@ -220,7 +221,8 @@ export class EngineeringService {
       if(cached&&state){
         const entry=this.store.maybe<ContextEntry>(contextKind,entryId);
         const entries=entry&&entry.project_id===projectId&&this.matchesContext(entry,input)?[this.contextEntry(entry,60000)]:[];
-        return {project_id:projectId,workspace,version:cached.version,code_state:state,entries,total_entries:entries.length,next_offset:null,analysis_refs:[],recent_tasks:[]};
+        const doc=restored||input.cached?this.store.getArchitectureDoc(projectId,workspaceBranchKey(state.branch,state.head)):await savedPromptArchitecture(this.store,projectId);
+        return {project_id:projectId,workspace,version:cached.version,code_state:state,entries,total_entries:entries.length,next_offset:null,analysis_refs:[],recent_tasks:[],...architectureContextField(doc)};
       }
     }
     const readContextState=()=>this.store.maybe<{fingerprint:string;version:number}>('engineering_context_state',projectId);
@@ -244,10 +246,11 @@ export class EngineeringService {
     const ordered:ContextEntry[]=[];for(let i=0;i<Math.max(...groups.map(group=>group.length));i++)for(const group of groups)if(group[i])ordered.push(group[i]);
     const offset=input.entry_id?0:input.offset??0,limit=input.entry_id?1:Math.min(input.limit??24,40),maxText=input.entry_id?60000:1500;
     const page=ordered.slice(offset,offset+limit).map(e=>this.contextEntry(e,maxText));
-    if(entryId)return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:page,total_entries:ordered.length,next_offset:null,analysis_refs:[],recent_tasks:[]};
+    const architecture=architectureContextField(this.store.getArchitectureDoc(projectId,workspaceBranchKey(state.branch,state.head)));
+    if(entryId)return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:page,total_entries:ordered.length,next_offset:null,analysis_refs:[],recent_tasks:[],...architecture};
     const analysis=input.result_id?this.readAnalysis(input.result_id,workspace,state,input):undefined;
     const materialSources=includeMaterialSources?{material_sources:entries.map(({entry_id,key,category,sources})=>({entry_id,key,category,sources:[...new Set(sources.map(s=>s.path))].map(path=>({path}))}))}:{};
-    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.recentProjectExplanations(projectId).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),architecture:!!e.result.architecture?.node_ids.length,summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),...materialSources,recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id&&(input.view!=='execution'||!input.task_id||t.task_id===input.task_id)).slice(0,5).map(t=>this.currentVerification(t,restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
+    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.recentProjectExplanations(projectId).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),architecture:!!e.result.architecture?.node_ids.length,summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),...materialSources,...architecture,recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id&&(input.view!=='execution'||!input.task_id||t.task_id===input.task_id)).slice(0,5).map(t=>this.currentVerification(t,restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
   }
   private reclassifyLegacy(projectId:string){
     const rows=this.store.db.prepare(`SELECT json FROM objects WHERE kind='engineering_context'

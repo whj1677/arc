@@ -54,6 +54,8 @@ import { ScenarioBreakdownForm } from './ScenarioBreakdownForm';
 import { CatalogSidebar } from './CatalogSidebar';
 import { DetailPane } from './DetailPane';
 import { CanvasPane } from './CanvasPane';
+import { useArchitectureDocument } from './useArchitectureDocument';
+import { architectureDocumentToAnalysisResult } from '../architecture-workspace';
 import './styles.css';
 import './reading-diagrams.css';
 import './function-chain.css';
@@ -145,12 +147,24 @@ function App() {
   const sceneExplanations = data.explanations.filter(e => e.scenario_id === scenarioId);
   const explanation = sceneExplanations.find(e => e.result_id === storedReading.result_id) || (storedReading.result_id ? undefined : sceneExplanations.at(-1));
   const result = explanation?.result;
+  const latestOverview = data.explanations.findLast(item => item.scenario_id === project?.overview_scenario_id && item.result.binding.project_id === projectId);
+  const architecture = useArchitectureDocument(projectId, JSON.stringify([project?.snapshot_id, latestOverview?.result_id]), api.invoke);
+  const architectureSource = data.explanations.find(item => item.result_id === architecture.doc?.source_explanation_id);
+  const maintainedView = storedReading.entrance === 'overview' && ['system', 'map', 'modules'].includes(storedReading.view)
+    && !(explanation && latestOverview && explanation.result_id !== latestOverview.result_id);
+  const projected = useMemo(() => {
+    if (!maintainedView || !architecture.doc) return;
+    const view = architectureDocumentToAnalysisResult(architecture.doc, architectureSource?.result);
+    // A manual-first document has no analysis baseline. Its code browser uses the project's frozen snapshot.
+    return view.binding.source_snapshot_id ? view : { ...view, binding: { ...view.binding, source_snapshot_id: project?.snapshot_id ?? '' } };
+  }, [maintainedView, architecture.doc, architectureSource, project?.snapshot_id]);
+  const paneResult = projected ?? result;
   // Older reading positions stored a bare edge ID while all IDs were globally unique.
   const reading = useMemo(() => {
     const id = storedReading.selected;
-    return id && result?.edges.some(e => e.edge_id === id) && !result.nodes.some(n => n.node_id === id)
+    return id && paneResult?.edges.some(e => e.edge_id === id) && !paneResult.nodes.some(n => n.node_id === id)
       ? { ...storedReading, selected: edgeSelection(id) } : storedReading;
-  }, [storedReading, result]);
+  }, [storedReading, paneResult]);
 
   const analysisScope =
     (!scenarioId && reading.entrance === 'walk') || reading.view === 'capabilities'
@@ -189,10 +203,10 @@ function App() {
   const readingObject = useMemo(() => result && readingGuide ? readingObjectDetail(result, readingGuide, reading.selected, reading.reading_path) : undefined,
     [result, readingGuide, reading.selected, reading.reading_path]);
   const businessReading = reading.view === 'timeline' && !!result && timelineModel(result).ordered;
-  const systemReading = overview && ['system', 'modules'].includes(reading.view);
+  const systemReading = overview && ['system', 'map', 'modules'].includes(reading.view);
 
-  const selectedNode = result?.nodes.find(n => n.node_id === reading.selected);
-  const selectedEdge = result?.edges.find(n => edgeSelection(n.edge_id) === reading.selected);
+  const selectedNode = paneResult?.nodes.find(n => n.node_id === reading.selected);
+  const selectedEdge = paneResult?.edges.find(n => edgeSelection(n.edge_id) === reading.selected);
   const functionStep = reading.view === 'functions' && result ? selectedCallStep(result, reading.selected) : undefined;
   const selectedCall =
     reading.view === 'functions' && result && selectedEdge && ['sync_call', 'execution_boundary'].includes(selectedEdge.kind)
@@ -205,21 +219,21 @@ function App() {
   const activeObject = selectedNode || selectedEdge;
   const activeEvidenceIds = functionStep?.step.evidence_ids ?? activeObject?.evidence_ids;
   const readingEvidence = readingObject ? [readingObject.primaryEvidence, ...readingObject.moreEvidence].filter((e): e is SourceEvidence => !!e)
-    : walkthroughInspector && activeEvidenceIds ? result?.evidence.filter(e => activeEvidenceIds.includes(e.evidence_id)) : result?.evidence;
+    : walkthroughInspector && activeEvidenceIds ? result?.evidence.filter(e => activeEvidenceIds.includes(e.evidence_id)) : paneResult?.evidence;
   const sceneRuns = data.runs.filter(r => r.binding.scenario_id === scenarioId && !r.reading_question_id);
   const sceneAnnotations = data.annotations.filter(a => a.scenario_id === scenarioId);
   const windowMode = width >= 1280 ? 'desktop' : width >= 900 ? 'medium' : 'narrow';
   const detailDrawer = width < 1280;
-  const architectureReading = overview && reading.view === 'system';
+  const architectureReading = overview && ['system', 'map'].includes(reading.view);
   const hasDetailSelection = reading.view === 'functions' ? !!(selectedNode?.kind === 'function' || selectedCall || functionStep) : !!reading.selected;
   const detailVisible = (!featureReading && !architectureReading && reading.view !== 'functions') || hasDetailSelection || reading.detail_tab !== 'details' || showDetail;
   const readingKey = `${projectId}/${scenarioId || emptyEntrance.current}/${windowMode}`;
   const activeReadingKey = useRef(readingKey);
   activeReadingKey.current = readingKey;
 
-  const sourceSnapshotId = reading.source_snapshot_id || result?.binding.source_snapshot_id || project?.snapshot_id || '';
+  const sourceSnapshotId = reading.source_snapshot_id || paneResult?.binding.source_snapshot_id || project?.snapshot_id || '';
   const sourceSnapshot = data.snapshots.find(s => s.source_snapshot_id === sourceSnapshotId);
-  const selectedEvidence = result?.evidence.find(e => e.evidence_id === reading.evidence_id);
+  const selectedEvidence = paneResult?.evidence.find(e => e.evidence_id === reading.evidence_id);
   const selectedFile = reading.file || selectedEvidence?.path || '';
   const taskEvidence = selectedEvidence?.path === selectedFile ? selectedEvidence
     : readingObject?.primaryEvidence ?? readingEvidence?.find(e => activeEvidenceIds?.includes(e.evidence_id));
@@ -1464,8 +1478,8 @@ function App() {
   }
 
   function openArchitecture(objectId = '') {
-    const object = result?.nodes.find(node => node.node_id === objectId) ?? result?.edges.find(edge => edge.edge_id === objectId);
-    const firstEvidence = result?.evidence.find(item => object?.evidence_ids.includes(item.evidence_id));
+    const object = paneResult?.nodes.find(node => node.node_id === objectId) ?? paneResult?.edges.find(edge => edge.edge_id === objectId);
+    const firstEvidence = paneResult?.evidence.find(item => object?.evidence_ids.includes(item.evidence_id));
     setSearch('');
     setShowCatalog(false);
     setShowDetail(!!object && detailDrawer);
@@ -1479,7 +1493,7 @@ function App() {
       detail_tab: firstEvidence ? 'evidence' : 'details',
       file: firstEvidence?.path || '',
       evidence_id: firstEvidence?.evidence_id || '',
-      source_snapshot_id: result?.binding.source_snapshot_id || '',
+      source_snapshot_id: paneResult?.binding.source_snapshot_id || '',
       scroll: { ...reading.scroll, 'canvas-system': { top: 0, left: 0 }, 'detail-system-evidence': { top: 0, left: 0 } },
     });
   }
@@ -1561,6 +1575,7 @@ function App() {
 
   const detail = (
     <DetailPane
+      editor={maintainedView ? architecture : undefined}
       data={data}
       project={project}
       projectId={projectId}
@@ -1584,7 +1599,7 @@ function App() {
       waitingMcp={waitingMcp}
       pending={pending}
       indexes={indexes}
-      result={result}
+      result={paneResult}
       readingGuide={readingGuide}
       readingEvidence={readingEvidence}
       selectedNode={selectedNode}
@@ -1617,7 +1632,7 @@ function App() {
       readingFile={readingFile}
       readingStep={readingStep}
       inspectComponent={inspectComponent}
-      openFeature={id => void openCapability(id, explanation)}
+      openFeature={id => void openCapability(id, projected ? architectureSource : explanation)}
       askHere={askHere}
       showRun={showRun}
       reload={reload}
@@ -1669,7 +1684,7 @@ function App() {
       }
       onResume={resumeHomeReading}
       project={project}
-      result={result}
+      result={paneResult}
       onArchitecture={openArchitecture}
       onWalk={() => setEntrance('walk')}
       onFiles={() => navigateView('files')}
@@ -1683,6 +1698,8 @@ function App() {
 
   const canvas = (
     <CanvasPane
+      editor={maintainedView ? architecture : undefined}
+      architectureResult={projected}
       overviewSections={overviewSections}
       data={data}
       project={project}

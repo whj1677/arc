@@ -116,7 +116,7 @@ test('one project analysis schedules frozen feature graphs, continues after a fa
   assert.equal(attempts.at(-1),deferredEntry);
   await fs.writeFile(path.join(root,'main.c'),'// edited\n'+source.join('\n'));
   const refreshed=await service.refresh(project.project_id);
-  const context=service.analysisContext({...manual,binding:{...manual.binding,source_snapshot_id:refreshed.source_snapshot_id}});
+  const context=await service.analysisContext({...manual,binding:{...manual.binding,source_snapshot_id:refreshed.source_snapshot_id}});
   assert.ok(!('catalog_feature' in context),'old line numbers must not be carried into a new frozen snapshot');
 });
 

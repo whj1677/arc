@@ -1,4 +1,5 @@
 import type { AnalysisResult } from '../shared';
+import { architectureDocumentToAnalysisResult, architectureTopology, type ArchitectureDocument, type ArchitectureLayout, type ArchitectureView } from '../architecture-workspace';
 import { cubicPoint, overlaps, type Point, type Rect } from './flow-layout';
 
 type Node = AnalysisResult['nodes'][number];
@@ -24,7 +25,21 @@ function verticalCurve(from: Point, to: Point, middle = (from.y + to.y) / 2) {
   return [from, { x: from.x, y: middle }, { x: to.x, y: middle }, to];
 }
 
-export function architectureMap(result: AnalysisResult, search = '', maxColumns = 6) {
+export function computeAutoLayoutPositions(doc: ArchitectureDocument, width: number): ArchitectureLayout['positions'] {
+  const view = architectureDocumentToAnalysisResult(doc, undefined, { includeHidden: true });
+  const { boxes } = architectureMap(view, '', architectureColumns(width));
+  return Object.fromEntries([...boxes].map(([id, { x, y }]) => [id, { x, y }]));
+}
+
+export function moveArchitectureModule(doc: ArchitectureDocument, id: string, point: Point): ArchitectureDocument {
+  const { positions, manual_positions } = doc.layout;
+  return { ...doc, layout: { ...doc.layout, positions: { ...positions, [id]: point },
+    manual_positions: manual_positions.includes(id) ? manual_positions : [...manual_positions, id] } };
+}
+
+export function architectureMap(input: ArchitectureView | ArchitectureDocument, search = '', maxColumns = 6,
+  positions: ArchitectureLayout['positions'] = 'modules' in input ? input.layout.positions : {}) {
+  const result = 'modules' in input ? architectureDocumentToAnalysisResult(input) : input;
   const byId = new Map(result.nodes.map(node => [node.node_id, node]));
   const byEdge = new Map(result.edges.map(edge => [edge.edge_id, edge]));
   const all = (result.architecture?.node_ids ?? []).map(id => byId.get(id)).filter(node => !!node);
@@ -43,55 +58,27 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
     }
   }
 
-  const rootOf = new Map<string, string>();
-  for (const node of all) {
-    let root = node;
-    while (root.parent_node_id && allIds.has(root.parent_node_id)) {
-      root = byId.get(root.parent_node_id)!;
-      if (matches.has(node.node_id)) matches.add(root.node_id);
-    }
-    rootOf.set(node.node_id, root.node_id);
+  const { rootOf, incoming, outgoing, layers: defaultLayers } = architectureTopology(all, relations);
+  if (query) for (const id of matches) {
+    const parent = byId.get(id)!.parent_node_id;
+    if (parent && allIds.has(parent)) matches.add(parent);
   }
   const nodes = all.filter(node => matches.has(node.node_id));
   const edges = relations.filter(edge => matches.has(edge.source_node_id) && matches.has(edge.target_node_id));
   const degrees = new Map<string, number>();
-  const incoming = new Map<string, string[]>(), outgoing = new Map<string, string[]>();
   for (const edge of relations) {
     for (const id of new Set([edge.source_node_id, edge.target_node_id])) degrees.set(id, (degrees.get(id) ?? 0) + 1);
-    const source = rootOf.get(edge.source_node_id)!, target = rootOf.get(edge.target_node_id)!;
-    if (source !== target) {
-      append(incoming, target, source);
-      append(outgoing, source, target);
-    }
-  }
-
-  const isBoundaryEntry = (id: string) => outgoing.has(id) || !incoming.has(id);
-  const hasExplicitEntry = all.some(node => node.kind === 'execution_boundary' &&
-    rootOf.get(node.node_id) === node.node_id && isBoundaryEntry(node.node_id));
-
-  function isEntry(id: string): boolean {
-    const kind = byId.get(id)!.kind, targets = outgoing.get(id) ?? [];
-    if (kind === 'execution_boundary') return isBoundaryEntry(id);
-    if (hasExplicitEntry || kind !== 'stage' || incoming.has(id) || !outgoing.size) return false;
-    // Preserve entry stages in older maps while keeping orchestration of both business and resources in core.
-    return !(targets.some(target => byId.get(target)!.kind === 'stage') &&
-      targets.some(target => byId.get(target)!.kind === 'resource'));
   }
 
   const tiers: Record<Tier, Node[]> = { boundary: [], core: [], infrastructure: [] };
   const children = new Map<string, Node[]>();
   for (const node of nodes) {
-    if (rootOf.get(node.node_id) !== node.node_id) {
+    if (rootOf.get(node.node_id) !== node.node_id && result.module_layers?.[node.parent_node_id!] === result.module_layers?.[node.node_id]) {
       append(children, node.parent_node_id!, node);
       continue;
     }
-    const inputs = incoming.get(node.node_id) ?? [];
-    let tier: Tier = 'core';
-    if (isEntry(node.node_id)) {
-      tier = 'boundary';
-    } else if (node.kind === 'resource' || (node.kind === 'execution_boundary' && inputs.every(id => !isEntry(id)))) {
-      tier = 'infrastructure';
-    }
+    const layer = result.module_layers?.[node.node_id] ?? defaultLayers.get(node.node_id)!;
+    const tier: Tier = layer === 'entry' ? 'boundary' : layer === 'foundation' ? 'infrastructure' : 'core';
     tiers[tier].push(node);
   }
 
@@ -141,7 +128,7 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
     }
   }
 
-  const width = inset * 2 + (columns - 1) * pitch + cardWidth;
+  const layoutWidth = inset * 2 + (columns - 1) * pitch + cardWidth;
   const boxes = new Map<string, Rect>();
   const boundaries: (Rect & { id: string })[] = [];
   const layers: (Rect & { id: Tier; title: string; roots: string[] })[] = [];
@@ -176,11 +163,42 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
       aisleYs.push(height - 14, floor + 14);
       height = floor + (row + 1 === rowCount ? 18 : 32);
     }
-    layers.push({ id: tier, title: tierNames[tier], roots: roots.map(n => n.node_id), x: 4, y: top, width: width - 8, height: height - top });
+    layers.push({ id: tier, title: tierNames[tier], roots: roots.map(n => n.node_id), x: 4, y: top, width: layoutWidth - 8, height: height - top });
     height += 60;
   }
 
   if (layers.length) height -= 52; // Keep the generous corridors between bands, not below the last one.
+
+  let minX = 0, minY = 0, right = layoutWidth;
+  const placed = new Map<string, Rect>();
+  for (const [id, box] of boxes) {
+    if (Object.hasOwn(positions, id)) placed.set(id, Object.assign(box, positions[id]));
+  }
+  if (placed.size) {
+    // Keep every saved card anchored. Only move unpositioned cards out of occupied slots.
+    for (const [id, box] of boxes) {
+      if (!placed.has(id)) {
+        while ([...placed.values()].some(other => overlaps(box, other, 4))) box.x += pitch;
+        placed.set(id, box);
+      }
+      right = Math.max(right, box.x + box.width + inset);
+      height = Math.max(height, box.y + box.height + 32);
+      minX = Math.min(minX, box.x - inset);
+      minY = Math.min(minY, box.y - 32);
+      aisleYs.push(box.y - 14, box.y + box.height + 14);
+    }
+    // Rebuild group outlines bottom-up, including descendants moved by hand.
+    const outlines = new Map<string, Rect>();
+    for (const group of boundaries) {
+      const members = [boxes.get(group.id)!, ...children.get(group.id)!.map(n => outlines.get(n.node_id) ?? boxes.get(n.node_id)!)];
+      group.x = Math.min(...members.map(b => b.x)) - 6;
+      group.y = Math.min(...members.map(b => b.y)) - 6;
+      group.width = Math.max(...members.map(b => b.x + b.width)) - group.x + 6;
+      group.height = Math.max(...members.map(b => b.y + b.height)) - group.y + 6;
+      outlines.set(group.id, group);
+    }
+  }
+  const width = right - minX;
 
   type Side = 'top' | 'bottom' | 'left' | 'right';
   const portGroups = new Map<string, { point: Point; rank: number }[]>();
@@ -193,6 +211,7 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
     append(portGroups, id + ':' + side, { point, rank: horizontal ? other.x : other.y });
     return point;
   }
+  const directions = new Set(edges.map(e => JSON.stringify([e.source_node_id, e.target_node_id])));
   const endpoints = edges.map(edge => {
     const a = boxes.get(edge.source_node_id)!, b = boxes.get(edge.target_node_id)!;
     const adjacent = a.y === b.y && Math.abs(a.x - b.x) === pitch;
@@ -217,7 +236,9 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
     let curves: Point[][];
     if (adjacent) {
       const middle = (start.x + end.x) / 2;
-      curves = [[start, { x: middle, y: start.y }, { x: middle, y: end.y }, end]];
+      const reciprocal = directions.has(JSON.stringify([edge.target_node_id, edge.source_node_id]));
+      const bend = reciprocal ? Math.sign(end.x - start.x) * 14 : 0;
+      curves = [[start, { x: middle, y: start.y + bend }, { x: middle, y: end.y + bend }, end]];
     } else if (a.y === b.y) {
       const aisle = start.y + (a.x <= b.x ? -21 : 21);
       curves = [verticalCurve(start, end, aisle)];
@@ -254,12 +275,12 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
       const nearAisles = [...aisleYs].sort((a, b) => Math.abs(a - p.y) - Math.abs(b - p.y)).slice(0, 4);
       for (const y of [p.y, ...nearAisles]) {
         for (const offset of [0, -labelWidth / 2, labelWidth / 2, -(labelWidth / 2 + 6), labelWidth / 2 + 6, -labelWidth, labelWidth]) {
-          const x = Math.max(labelWidth / 2 + 4, Math.min(width - labelWidth / 2 - 4, p.x + offset));
+          const x = Math.max(minX + labelWidth / 2 + 4, Math.min(right - labelWidth / 2 - 4, p.x + offset));
           const dx = Math.abs(x - p.x), dy = Math.abs(y - p.y);
           const score = Math.max(0, dx - labelWidth / 2) ** 2 + Math.max(0, dy - 10) ** 2 + 0.025 * (dx * dx + dy * dy);
           if (score >= best) continue;
           const rect = { x: x - labelWidth / 2, y: y - 10, width: labelWidth, height: 20 };
-          if (rect.y < 2 || rect.y + 20 > height - 2 || occupied.some(r => overlaps(rect, r, 2))) continue;
+          if (rect.y < minY + 2 || rect.y + 20 > height - 2 || occupied.some(r => overlaps(rect, r, 2))) continue;
           best = score;
           labelPos = { x, y };
           labelAnchor = p;
@@ -271,9 +292,9 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
     if (singleEdgeLabel) {
       // A dense hub can fill its local aisles. Reserve a card-free caption
       // for this edge alone, instead of overlaying its neighbors' captions.
-      const x = Math.max(labelWidth / 2 + 4, Math.min(width - labelWidth / 2 - 4, labelAnchor.x));
+      const x = Math.max(minX + labelWidth / 2 + 4, Math.min(right - labelWidth / 2 - 4, labelAnchor.x));
       const y = [...aisleYs].sort((a, b) => Math.abs(a - labelAnchor.y) - Math.abs(b - labelAnchor.y))
-        .find(y => !fixedLabels.some(r => overlaps({ x: x - labelWidth / 2, y: y - 10, width: labelWidth, height: 20 }, r, 2)))!;
+        .find(y => !fixedLabels.some(r => overlaps({ x: x - labelWidth / 2, y: y - 10, width: labelWidth, height: 20 }, r, 2))) ?? height - 12;
       labelPos = { x, y };
     } else {
       const rect = { x: labelPos.x - labelWidth / 2, y: labelPos.y - 10, width: labelWidth, height: 20 };
@@ -281,5 +302,5 @@ export function architectureMap(result: AnalysisResult, search = '', maxColumns 
     }
     return { edge, path, labelPos, labelWidth, labelAnchor, singleEdgeLabel };
   });
-  return { nodes, edges, degrees, hubs, boxes, boundaries, layers, links, width, height };
+  return { nodes, edges, degrees, hubs, boxes, boundaries, layers, links, width, height: height - minY, minX, minY, layoutWidth };
 }
