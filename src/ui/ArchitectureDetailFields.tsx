@@ -56,8 +56,8 @@ export function ModuleMaintenance({ module: m, editor, snapshot, select }: Detai
   }
   return <>
     <div className="row"><span className="tag">{origins[m.origin]}</span><span className="tag">{statuses[m.implementation_status]}</span></div>
-    {editor.editMode ? <fieldset className="architecture-detail-fields" disabled={editor.saveState === 'saving'}>
-      <label>名称<input value={m.name} onChange={e => update({ name: e.target.value })} /></label>
+    {editor.editMode ? <fieldset className="architecture-detail-fields" disabled={editor.maintenanceBusy}>
+      <label>名称<input aria-label="名称" value={m.name} onChange={e => update({ name: e.target.value })} /></label>
       <label>职责<textarea aria-label="职责" value={m.summary} onChange={e => update({ summary: e.target.value })} /></label>
       <label>人工说明<textarea aria-label="人工说明" value={m.notes ?? ''} onChange={e => update({ notes: e.target.value })} /></label>
       <label>所属分层<select aria-label="所属分层" value={m.layer} onChange={e => update({ layer: e.target.value as ArchitectureModule['layer'] })}>{options(layers)}</select></label>
@@ -93,12 +93,12 @@ export function RelationMaintenance({ relation: r, editor, select }: DetailProps
   const endpoints = doc.modules.map(module => <option key={module.id} value={module.id}>{module.name}</option>);
   return <>
     <div className="row"><span className="tag">{origins[r.origin]}</span><span className="tag">{relationStatuses[r.status]}</span></div>
-    {editor.editMode ? <fieldset className="architecture-detail-fields" disabled={editor.saveState === 'saving'}>
+    {editor.editMode ? <fieldset className="architecture-detail-fields" disabled={editor.maintenanceBusy}>
       <label>起点<select aria-label="起点" value={r.from} onChange={e => update({ from: e.target.value })}>{endpoints}</select></label>
       <label>终点<select aria-label="终点" value={r.to} onChange={e => update({ to: e.target.value })}>{endpoints}</select></label>
       <button onClick={() => update({ from: r.to, to: r.from })}>反转方向</button>
       <label>关系类型<select aria-label="关系类型" value={r.kind} onChange={e => update({ kind: e.target.value as ArchitectureRelation['kind'] })}>{options(edgeNames)}</select></label>
-      <label>说明/标签<input value={r.label} onChange={e => update({ label: e.target.value })} /></label>
+      <label>说明/标签<input aria-label="说明/标签" value={r.label} onChange={e => update({ label: e.target.value })} /></label>
       <label>人工备注<textarea aria-label="人工备注" value={r.notes ?? ''} onChange={e => update({ notes: e.target.value })} /></label>
       <div className="row"><button onClick={() => { editor.updateDraft(d => ({ ...d, relations: d.relations.map(item => item.id === r.id ? { ...item, hidden: true } : item) })); select(''); }}>隐藏关系</button>
         <button onClick={() => { editor.updateDraft(d => applyRelationDelete(d, r.id)); select(''); }}>删除关系</button></div>

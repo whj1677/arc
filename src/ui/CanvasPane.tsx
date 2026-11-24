@@ -16,6 +16,7 @@ import { FunctionChain } from './FunctionChain';
 import { Graph } from './Graph';
 import { FeatureCatalog, CatalogFeatureReading } from './FeatureCatalog';
 import { Architecture } from './Architecture';
+import type { ReviewItem } from '../architecture-workspace';
 import type { ArchitectureEditor } from './useArchitectureDocument';
 import type { TaskArchitectureOverlay } from './DevelopmentHud';
 import { ZoomSurface } from './ZoomSurface';
@@ -32,6 +33,7 @@ import { ScrollPanel } from './workbench-primitives';
 
 export interface CanvasPaneProps {
   editor?: ArchitectureEditor;
+  onReviewResolved?: (item: ReviewItem) => void;
   architectureResult?: AnalysisResult;
   freshness?: ExplanationFreshness;
   refreshAndAnalyze: () => void;
@@ -92,6 +94,7 @@ export interface CanvasPaneProps {
 
 export function CanvasPane({
   editor,
+  onReviewResolved,
   architectureResult,
   data,
   freshness,
@@ -155,6 +158,8 @@ export function CanvasPane({
     <Architecture
       key={editor?.doc?.id ?? result.result_id}
       editor={editor}
+      openEvidence={evidence}
+      onReviewResolved={onReviewResolved}
       result={result}
       selected={reading.selected}
       select={select}

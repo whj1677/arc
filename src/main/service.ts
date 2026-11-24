@@ -54,6 +54,8 @@ import { parseDshReply } from './dsh';
 import { runDshWeb } from './dsh-web';
 import { EngineeringService } from './engineering-service';
 import { ArchitectureWorkspaceService } from './architecture-workspace-service';
+import { createCodexSemanticAnalyzer, type IncrementalSemanticAnalyzer } from './architecture-semantic';
+import type { ArchitectureUpdateOptions } from './architecture-updater';
 import type { ArchitectureDocument } from '../architecture-workspace';
 import { buildTaskHud, previousFeatureResultId } from './development-hud';
 import { buildLiveWorkspaceRadar, liveWorkspaceImpact, openLiveWorkspaceFile, readLiveFileDiff, type FileDiffOptions, type RadarOptions } from './live-radar';
@@ -117,9 +119,11 @@ export class ArcService {
     readonly emit: (e: any) => void = () => {},
     private readonly codexRunner: typeof runCodex = runCodex,
     private readonly dshRunner: typeof runDshWeb = runDshWeb,
+    architectureAnalyzer?: IncrementalSemanticAnalyzer,
   ) {
     this.store = new Store(directory);
-    this.architectureWorkspace = new ArchitectureWorkspaceService(this.store, () => this.changed());
+    this.architectureWorkspace = new ArchitectureWorkspaceService(this.store, () => this.changed(),
+      architectureAnalyzer ?? createCodexSemanticAnalyzer(this.store, resources, this.codexRunner));
     this.snapshotCleanup = pruneUnreferencedSnapshots(directory, this.store)
       .catch(error => console.warn('无法完成未引用快照清理', error));
     this.syncToolPathOverrides();
@@ -255,6 +259,18 @@ export class ArcService {
 
   listArchitectureBranches(projectId: string) {
     return this.architectureWorkspace.listArchitectureBranches(projectId);
+  }
+
+  checkArchitectureUpdates(projectId: string, opts?: { branchKey?: string }) {
+    return this.architectureWorkspace.checkArchitectureUpdates(projectId, opts);
+  }
+
+  updateAffectedArchitecture(projectId: string, opts?: ArchitectureUpdateOptions) {
+    return this.architectureWorkspace.updateAffectedArchitecture(projectId, opts);
+  }
+
+  resolveArchitectureReview(projectId: string, opts: Parameters<ArchitectureWorkspaceService['resolveArchitectureReview']>[1]) {
+    return this.architectureWorkspace.resolveArchitectureReview(projectId, opts);
   }
 
   async refineDevelopmentGoal(projectId: string, goal: string, nonGoals: string[], engine: GoalRefinement['engine']): Promise<GoalRefinement> {

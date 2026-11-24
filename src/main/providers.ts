@@ -352,13 +352,15 @@ export async function runCodex(options:{
   event:(value:any)=>void;started:(active:ActiveProcess)=>void;shouldStart?:()=>boolean;
   phase?:OverviewPhase;outputSchema?:object;outputDirectory?:string;outputPath?:string;reasoningEffort?:'low'|'medium';
   overviewSynthesis?:boolean;preferences:CodexPreferences;timeoutMs?:number;turnMinutes?:number;
+  sourcePaths?: readonly string[];
 }):Promise<{code:number|null;raw:string;stderr:string;protocol_error?:string;timeout?:CodexTimeout}> {
   const {run,snapshot,storage,profile,prompt}=options;
   const deadlineAt=options.timeoutMs===undefined?undefined:Date.now()+options.timeoutMs;
   const env=codexChildEnvironment(process.env);
   const runRoot=options.outputDirectory??(run?.binding?.run_id?path.join(storage,'runs',run.binding.run_id):undefined);
   const runDir=runRoot?path.join(runRoot,...(options.phase?[overviewPhaseDirectory[options.phase]]:[])):undefined;
-  const workspace=snapshot?.source_snapshot_id?path.join(storage,'snapshots',snapshot.source_snapshot_id):undefined;
+  const workspace=options.sourcePaths ? runDir : snapshot?.source_snapshot_id?path.join(storage,'snapshots',snapshot.source_snapshot_id):undefined;
+  if(options.sourcePaths)await fs.mkdir(runDir!,{recursive:true});
   const preflightKey=run?.binding?.run_id&&workspace?JSON.stringify([run.binding.run_id,workspace,profile.path,profile.version]):'';
   const cached=options.phase&&!options.overviewSynthesis&&preflightKey?runPreflightCache.get(preflightKey):undefined;
   const cacheFresh=!!cached&&Date.now()-cached.at<5*60*1000;
@@ -401,12 +403,17 @@ export async function runCodex(options:{
     fs.writeFile(schemaPath,JSON.stringify(options.outputSchema??(options.phase?transportSchema(options.phase==='overview_research'?overviewResearchSchema:overviewReviewSchema):run.overview_format?overviewSchema:run.reading_question_id?readingAnswerTransportSchema():transportSchema()))),
   ];
   const hasContext=await fs.access(contextPath).then(()=>true,()=>false);
-  if(!hasContext)writes.push(fs.writeFile(contextPath,JSON.stringify({storage,snapshot})));
+  if(!hasContext){
+    const scoped=options.sourcePaths && new Set(options.sourcePaths);
+    writes.push(fs.writeFile(contextPath,JSON.stringify(scoped ? {storage,scoped:true,
+      snapshot:{...snapshot,files:snapshot.files.filter(file=>scoped.has(file.path)),excluded:[]}} : {storage,snapshot})));
+  }
   await Promise.all(writes);
 
   const outputPath=options.outputPath??run.output_path;
   const args=['exec','--json','--sandbox','read-only','--skip-git-repo-check','--color','never','--cd',workspace!,
     ...readOnlyToolFlags,
+    ...(options.sourcePaths?['-c','project_doc_max_bytes=0','-c','features.in_app_browser=false']:[]),
     ...(options.overviewSynthesis?['-c','features.in_app_browser=false','-c','project_doc_max_bytes=0']:[
       '-c',`mcp_servers.arc_frozen_source.command=${JSON.stringify(nodePath)}`,
       '-c',`mcp_servers.arc_frozen_source.args=${JSON.stringify(contextArgs)}`,

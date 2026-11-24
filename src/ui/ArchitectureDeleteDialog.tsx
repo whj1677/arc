@@ -29,8 +29,8 @@ export function DeleteImpactDetails({ doc, moduleId, strategy, choose, features 
     <p>直接子模块（{children.length}） · 全部后代（{descendantCount}）</p>
     {children.length > 0 && <><ul>{children.map(m => <li key={m.id}>{m.name}</li>)}</ul>
       <fieldset><legend>删除范围</legend>
-        <label className="row"><input type="radio" name="delete-strategy" checked={strategy === 'reparent_children'} onChange={() => choose('reparent_children')} />仅删除此分组，子模块移至上层</label>
-        <label className="row"><input type="radio" name="delete-strategy" checked={strategy === 'delete_subtree'} onChange={() => choose('delete_subtree')} />一并移除此分组及其子模块</label>
+        <label className="row"><input aria-label="仅删除此分组，子模块移至上层" type="radio" name="delete-strategy" checked={strategy === 'reparent_children'} onChange={() => choose('reparent_children')} />仅删除此分组，子模块移至上层</label>
+        <label className="row"><input aria-label="一并移除此分组及其子模块" type="radio" name="delete-strategy" checked={strategy === 'delete_subtree'} onChange={() => choose('delete_subtree')} />一并移除此分组及其子模块</label>
       </fieldset></>}
     <h3>{!strategy && children.length ? '分组直接关联' : '将移除的关系'}（{relations.length}）</h3>
     <ul>{relations.map(r => <li key={r.id}>{moduleName(r.from)} → {moduleName(r.to)} · {r.label}</li>)}</ul>

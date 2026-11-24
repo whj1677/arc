@@ -44,6 +44,7 @@ export function SystemDetail({ editor, snapshot, result, selected, select, inspe
   const node = result.nodes.find(n => n.node_id === selected);
   const edge = result.edges.find(e => edgeSelection(e.edge_id) === selected);
   const module = editor?.doc?.modules.find(m => m.id === node?.node_id);
+  const outcome = module && editor?.savedDoc?.last_update?.module_outcomes[module.id];
   const relation = editor?.doc?.relations.find(r => r.id === edge?.edge_id);
   const endpoint = (id: string) => result.nodes.find(n => n.node_id === id);
   const context = node && componentContext(node, result);
@@ -86,6 +87,13 @@ export function SystemDetail({ editor, snapshot, result, selected, select, inspe
       {owner ? <button className="quiet" onClick={() => select(owner.node_id)}>所属组件 · {owner.label}</button>
         : <span className="eyebrow">{result.architecture?.node_ids.includes(node.node_id) ? '系统组件' : '模块 / 支持工具'}</span>}
       <h2>{node.label}</h2>
+      {editor && module && (module.analysis_status === 'failed' || outcome?.status === 'failed') &&
+        <section className="architecture-error" aria-label="模块更新失败">
+        <h3>更新失败</h3><p>{module.analysis_error ?? outcome?.error}</p>
+        <button disabled={editor.dirty || editor.updateBusy !== 'idle' || editor.saveState === 'saving'}
+          title={editor.dirty ? '请先保存或取消当前架构草稿。' : undefined}
+          onClick={() => void editor.updateAffected({ moduleIds: [module.id] })}>重试此模块</button>
+      </section>}
       {module && editor && <ModuleMaintenance key={module.id} module={module} editor={editor} select={select} snapshot={snapshot} />}
       <section className="module-purpose"><h3>负责什么</h3><p>{node.description}</p></section>
       <Sources title={module && '代码依据'} items={module?.evidence ?? context.evidence} open={openEvidence} />

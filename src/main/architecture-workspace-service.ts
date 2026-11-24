@@ -1,64 +1,42 @@
-import { isUtf8 } from 'node:buffer';
-import fs from 'node:fs/promises';
-import type { Explanation, Feature, Project, Snapshot, SourceEvidence } from '../shared';
+import type { Explanation, Feature, Project, Snapshot } from '../shared';
 import {
-  architectureDocId, buildModuleExclusionSignature, buildRelationExclusionSignature, canonicalEvidenceKey,
+  architectureDocId, architectureUpdateStatus, buildModuleExclusionSignature, buildRelationExclusionSignature,
   normalizeBranchKey, seedArchitectureFromExplanation, validateArchitectureDocument,
   moduleReferencePaths, type ModuleReferencePaths, type ArchitectureDocument, type ArchitectureModule, type CodeBaseline, type ModuleDeleteImpact,
 } from '../architecture-workspace';
-import { git } from './live-radar-git';
-import { safeFile, sha, workspaceGitDirectory, workspacePaths } from './snapshot';
+import { sha } from './snapshot';
 import { now, type Store } from './store';
-
-export function workspaceBranchKey(branch?: string | null, commit?: string | null) {
-  return normalizeBranchKey(branch ?? (commit ? 'HEAD:' + commit : undefined));
-}
-
-export async function detectWorkspaceGitState(rootPath: string) {
-  if (!await workspaceGitDirectory(rootPath)) {
-    return { isGit: false, branch: undefined, branchKey: workspaceBranchKey(), commit: undefined, dirty: false };
-  }
-  const status = await git(rootPath, 'status', '--porcelain=v2', '-z', '--branch', '--no-ahead-behind',
-    '--no-renames', '--untracked-files=normal', '--', '.');
-  const [headHeader, branchHeader, ...changes] = status.split('\0');
-  const oid = headHeader.match(/^# branch\.oid (.+)$/)?.[1];
-  const name = branchHeader.match(/^# branch\.head (.+)$/)?.[1];
-  if (!oid || !name) throw Error('无法读取 Git 工作区标识');
-  const commit = oid === '(initial)' ? undefined : oid;
-  const branch = name === '(detached)' ? undefined : name;
-  return { isGit: true, branch, branchKey: workspaceBranchKey(branch, commit), commit, dirty: changes.some(line => line && !line.startsWith('#')) };
-}
-
-export function computeEvidenceFingerprint(evidence: SourceEvidence[], extra?: string) {
-  return sha(canonicalEvidenceKey(evidence, extra));
-}
-
-const inScope = (file: string) => !/(?:^|\/)(?:logs?|cache|coverage|target)(?:\/|$)|\.log(?:\.\d+)?$/i.test(file);
-
-function manifest(entries: [string, string][]) {
-  entries.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-  return { file_hashes: Object.fromEntries(entries), workspace_fingerprint: sha(JSON.stringify(entries)) };
-}
-
-// With a frozen snapshot, use its recorded bytes even if the checkout has moved.
-export async function collectInScopeFileHashes(rootPath: string, snapshot?: Snapshot) {
-  if (snapshot) return frozenManifest(snapshot);
-  const entries: [string, string][] = [];
-  for await (const file of workspacePaths(rootPath, inScope)) {
-    const input = await safeFile(rootPath, file);
-    if ((await fs.stat(input)).size > 2 * 1024 * 1024) continue;
-    const bytes = await fs.readFile(input);
-    if (!bytes.includes(0) && isUtf8(bytes)) entries.push([file, sha(bytes)]);
-  }
-  return manifest(entries);
-}
-
-function frozenManifest(snapshot: Snapshot) {
-  return manifest(snapshot.files.filter(file => inScope(file.path)).map(file => [file.path, file.content_sha256]));
-}
+import { collectInScopeFileHashes, detectWorkspaceGitState, frozenManifest } from './architecture-change-detector';
+import { ArchitectureUpdater, type ArchitectureUpdateOptions } from './architecture-updater';
+import { computeEvidenceFingerprint, createCodexSemanticAnalyzer, type IncrementalSemanticAnalyzer } from './architecture-semantic';
+import { resolveArchitectureReviewDecision } from './architecture-review';
+export { collectInScopeFileHashes, detectWorkspaceGitState, workspaceBranchKey } from './architecture-change-detector';
+export { computeEvidenceFingerprint };
 
 export class ArchitectureWorkspaceService {
-  constructor(private readonly store: Store, private readonly changed: () => void = () => {}) {}
+  private readonly updater: ArchitectureUpdater;
+  constructor(private readonly store: Store, private readonly changed: () => void = () => {},
+    analyzer: IncrementalSemanticAnalyzer = createCodexSemanticAnalyzer(store, process.cwd())) {
+    this.updater = new ArchitectureUpdater(store, analyzer, this.getArchitectureDocument.bind(this),
+      this.saveArchitectureDocument.bind(this), changed);
+  }
+
+  checkArchitectureUpdates(projectId: string, opts?: { branchKey?: string }) {
+    return this.updater.check(projectId, opts);
+  }
+
+  updateAffectedArchitecture(projectId: string, opts?: ArchitectureUpdateOptions) {
+    return this.updater.update(projectId, opts);
+  }
+
+  async resolveArchitectureReview(projectId: string, opts: {
+    branchKey?: string; reviewId: string; decision: 'accept' | 'reject' | 'defer'; note?: string;
+  }) {
+    const doc = await this.getArchitectureDocument(projectId, { branchKey: opts.branchKey });
+    const document = resolveArchitectureReviewDecision(this.store, doc, opts,
+      (next, version, companionWrite) => this.saveArchitectureDocument(projectId, next, version, companionWrite));
+    return { document, versions: this.store.listArchitectureDocVersions(doc.id) };
+  }
 
   async getActiveArchitectureBranch(projectId: string) {
     const project = this.store.get<Project>('project', projectId);
@@ -115,19 +93,17 @@ export class ArchitectureWorkspaceService {
     }
   }
 
-  saveArchitectureDocument(projectId: string, doc: ArchitectureDocument, expectedVersion?: number) {
+  saveArchitectureDocument(projectId: string, doc: ArchitectureDocument, expectedVersion?: number, companionWrite?: () => void) {
     this.store.get<Project>('project', projectId);
     const errors = validateArchitectureDocument(doc);
     if (errors.length) throw Error('架构文档校验失败：' + errors.join('；'));
     if (doc.project_id !== projectId || doc.branch_key !== normalizeBranchKey(doc.branch_key) ||
         doc.id !== architectureDocId(projectId, doc.branch_key)) throw Error('架构文档的工程、分支与标识不一致');
     const current = this.store.getArchitectureDocById(doc.id);
-    const confirmed = doc.update_status === 'up_to_date' && !doc.review_items.some(item => item.status === 'pending') &&
-      !doc.modules.some(mod => mod.analysis_status === 'failed') &&
-      !Object.values(doc.last_update?.module_outcomes ?? {}).some(outcome => outcome.status === 'failed');
+    const update_status = doc.update_status === 'up_to_date' ? architectureUpdateStatus(doc) : doc.update_status;
     const normalizeBaseline = (next: CodeBaseline | undefined, previous?: CodeBaseline) => {
       if (!next) return previous;
-      if (previous?.snapshot_id === next.snapshot_id) {
+      if (previous?.snapshot_id === next.snapshot_id && previous.workspace_fingerprint === next.workspace_fingerprint) {
         return { ...next, fingerprint: previous.fingerprint,
           file_hashes: previous.file_hashes, workspace_fingerprint: previous.workspace_fingerprint };
       }
@@ -149,9 +125,9 @@ export class ArchitectureWorkspaceService {
     const last_update = doc.last_update && { ...doc.last_update,
       read_baseline: normalizeBaseline(doc.last_update.read_baseline, current?.last_update?.read_baseline)! };
     const saved = this.store.saveArchitectureDoc({
-      ...doc, exclusions, baseline: normalizeBaseline(doc.baseline, current?.baseline), last_update,
-      last_confirmed_version: confirmed ? (current?.version ?? 0) + 1 : current?.last_confirmed_version,
-    }, expectedVersion ?? current?.version ?? 0);
+      ...doc, exclusions, update_status, baseline: normalizeBaseline(doc.baseline, current?.baseline), last_update,
+      last_confirmed_version: update_status === 'up_to_date' ? (current?.version ?? 0) + 1 : current?.last_confirmed_version,
+    }, expectedVersion ?? doc.version, companionWrite);
     this.changed();
     return saved;
   }
@@ -163,7 +139,7 @@ export class ArchitectureWorkspaceService {
     // Draft-only modules have no saved hierarchy. The editor computes structural impact from the current draft.
     if (!mod && draftPaths) return {
       module_id: moduleId, module_name: moduleId, child_modules: [], descendant_count: 0, incident_relations: [],
-      referenced_features: this.referencingFeatures(project, draftPaths),
+      referenced_features: this.referencingFeatures(project, branchKey, draftPaths),
     };
     if (!doc || !mod) throw Error('找不到指定架构模块：' + moduleId);
     const children = new Map<string, ArchitectureModule[]>();
@@ -181,11 +157,11 @@ export class ArchitectureWorkspaceService {
       child_modules: direct.map(({ id, name }) => ({ id, name })), descendant_count: descendants.length,
       incident_relations: doc.relations.filter(rel => rel.from === moduleId || rel.to === moduleId)
         .map(({ id, from, to, label }) => ({ id, from, to, label })),
-      referenced_features: this.referencingFeatures(project, draftPaths ?? moduleReferencePaths(mod)),
+      referenced_features: this.referencingFeatures(project, branchKey, draftPaths ?? moduleReferencePaths(mod)),
     };
   }
 
-  private referencingFeatures(project: Project, paths: ModuleReferencePaths) {
+  private referencingFeatures(project: Project, branchKey: string, paths: ModuleReferencePaths) {
     const files = new Set([...paths.files, ...paths.directories]);
     if (!files.size) return [];
     const dirs = paths.directories.map(dir => dir.replace(/\/$/, ''));
@@ -193,13 +169,7 @@ export class ArchitectureWorkspaceService {
       dirs.some(dir => dir === '.' || file.startsWith(dir + '/')) ||
       directory && [...files].some(bound => file === '.' || bound.startsWith(file + '/'));
     const featureIds = new Set<string>();
-    const rows = this.store.db.prepare(`SELECT json FROM (SELECT json, row_number() OVER (
-      PARTITION BY json_extract(json,'$.scenario_id') ORDER BY json_extract(json,'$.created_at') DESC,rowid DESC
-      ) AS recency FROM objects WHERE kind='explanation' AND json_extract(json,'$.result.binding.project_id')=?
-      AND json_extract(json,'$.scenario_id') IS NOT ?) WHERE recency=1`)
-      .all(project.project_id, project.overview_scenario_id ?? null);
-    for (const row of rows) {
-      const { result } = JSON.parse(String(row.json)) as Explanation;
+    for (const { result } of this.store.latestFeatureExplanations(project, branchKey)) {
       if (result.evidence.some(ev => overlaps(ev.path)) || result.nodes.some(node =>
         node.source_scope && overlaps(node.source_scope.path, node.source_scope.kind === 'folder'))) featureIds.add(result.binding.feature_id);
     }

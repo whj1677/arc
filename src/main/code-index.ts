@@ -1,4 +1,4 @@
-import {randomUUID} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import Parser from 'web-tree-sitter';
@@ -22,6 +22,7 @@ export interface SharedState {name:string; file:string; line:number; access_dirs
 export interface CodeIndex {
   schema_version:number; snapshot_id:string; fingerprint:string; files:string[]; symbols:CodeSymbol[]; calls:CodeCall[];
   modules:CodeModule[]; module_edges:{from:string;to:string;count:number}[]; shared_states:SharedState[]; parse_errors:{file:string;reason:string}[];
+  imports?:Record<string,string[]>;
 }
 const version = 4;
 const extensions:Record<string,Language> = {
@@ -170,7 +171,7 @@ function emptyCppFacts():CppFacts {
 }
 export interface SourceUnit {
   file:string; parsed:boolean; symbols:CodeSymbol[]; calls:CodeCall[]; namespaces:Set<string>;
-  facts:CppFacts; parse_errors:CodeIndex['parse_errors'];
+  facts:CppFacts; parse_errors:CodeIndex['parse_errors']; imports:string[];
 }
 const statementScopes = new Set(['compound_statement','for_statement','for_range_loop','if_statement','while_statement','switch_statement']);
 const cIndexNodes = [...indexNodes, 'declaration','parameter_declaration','init_declarator','identifier',
@@ -521,19 +522,79 @@ async function* indexSources(storage:string, snapshot:Snapshot) {
   }
 }
 
-export async function parseSourceUnit(file:string, source:string, hasCpp=false, lineCount=linesOf(source).length):Promise<SourceUnit> {
+async function sourceParser(file:string, text:string, hasCpp:boolean) {
   const ext = path.extname(file).toLowerCase();
   let lang = extensions[ext];
   if (!lang) throw Error(`不支持 AST 索引的文件: ${file}`);
-  const text = source.replace(/\r\n?/g,'\n');
   if (ext === '.h' && (hasCpp || !ambiguousCHeader(file, text))) lang = 'cpp';
   runtime ??= Parser.init({locateFile:(file:string)=>asset(`web-tree-sitter/${file}`)});
   await runtime;
   const language = await grammar(lang);
-  const unit:SourceUnit = {file,parsed:false,symbols:[],calls:[],namespaces:new Set(),facts:emptyCppFacts(),parse_errors:[]};
   const parser = new Parser();
+  parser.setLanguage(language);
+  return {parser,lang};
+}
+
+// Preserve syntax tree boundaries as well as token text. This distinguishes
+// edits such as JavaScript's newline-sensitive return from cosmetic shifts.
+export async function architectureSyntax(file:string, source:string, hasCpp:boolean) {
+  const text = source.replace(/\r\n?/g,'\n');
+  const {parser,lang} = await sourceParser(file,text,hasCpp);
   try {
-    parser.setLanguage(language);
+    const tree = parser.parse(text);
+    try {
+      const root = tree.rootNode;
+      if (root.hasError) return;
+      const structure = createHash('sha256'), contract = createHash('sha256');
+      const rows:Array<[number,number]> = [];
+      const namedExports = new Set(root.descendantsOfType('export_specifier').map(n => field(n,'name')?.text));
+      for (const n of root.namedChildren) if (n.type === 'export_statement' && field(n,'value')?.type === 'identifier')
+        namedExports.add(field(n,'value')!.text);
+      function visit(node:Node, exposed:boolean) {
+        if (node.type.includes('comment')) return;
+        const children = node.children;
+        const token = JSON.stringify(children.length ? [node.type] : [node.type,node.text]);
+        structure.update(token);
+        if (exposed) contract.update(token);
+        if (!children.length && node.text) rows.push([node.startPosition.row+1,node.endPosition.row+1]);
+        const body = functionNodes.includes(node.type) ? field(node,'body') : null;
+        for (const child of children) {
+          const name = field(child,'name')?.text;
+          const topLevel = node.id === root.id;
+          const visible = child.type === 'export_statement' || (name && namedExports.has(name) && (topLevel || node.parent?.id === root.id)) ||
+            (topLevel && (lang === 'c' || lang === 'cpp') &&
+              !child.namedChildren.some(n => n.type === 'storage_class_specifier' && n.text === 'static')) ||
+            (lang === 'python' && topLevel && ['function_definition','class_definition'].includes(child.type) && !name?.startsWith('_')) ||
+            (lang === 'java' && child.firstNamedChild?.type === 'modifiers' && /\bpublic\b/.test(child.firstNamedChild.text));
+          visit(child, child.id !== body?.id && (exposed || !!visible));
+        }
+        structure.update(']');
+        if (exposed) contract.update(']');
+      }
+      visit(root,false);
+      return {structure:structure.digest('hex'),contract:contract.digest('hex'),rows};
+    } finally { tree.delete(); }
+  } finally { parser.delete(); }
+}
+
+function importedPaths(root:Node) {
+  const paths = new Set<string>();
+  for (const node of root.descendantsOfType(['preproc_include','import_statement','import_from_statement','export_statement','import_declaration'])) {
+    const source = field(node,'source') ?? field(node,'path') ?? field(node,'module_name');
+    if (source) paths.add(source.text.replace(/^["'<]|["'>]$/g,''));
+    else if (node.type === 'import_declaration' || node.type === 'import_statement') {
+      for (const name of node.namedChildren) if (['dotted_name','scoped_identifier','aliased_import'].includes(name.type))
+        paths.add((field(name,'name') ?? name).text);
+    }
+  }
+  return [...paths];
+}
+
+export async function parseSourceUnit(file:string, source:string, hasCpp=false, lineCount=linesOf(source).length):Promise<SourceUnit> {
+  const text = source.replace(/\r\n?/g,'\n');
+  const {parser,lang} = await sourceParser(file,text,hasCpp);
+  const unit:SourceUnit = {file,parsed:false,symbols:[],calls:[],namespaces:new Set(),facts:emptyCppFacts(),parse_errors:[],imports:[]};
+  try {
     let tree:Parser.Tree;
     try { tree = parser.parse(text); }
     catch (error) {
@@ -542,6 +603,7 @@ export async function parseSourceUnit(file:string, source:string, hasCpp=false, 
     }
     try {
       extract(tree,text,lineCount,file,lang,unit);
+      unit.imports = importedPaths(tree.rootNode);
       unit.parsed = true;
       if (tree.rootNode.hasError) unit.parse_errors.push({file,reason:'语法树含错误节点，已索引可识别部分'});
     } finally { tree.delete(); }
@@ -551,9 +613,10 @@ export async function parseSourceUnit(file:string, source:string, hasCpp=false, 
 
 export function assembleCodeIndex(units:Iterable<SourceUnit>, snapshotId:string, fingerprint:string):CodeIndex {
   const index:CodeIndex = {schema_version:version,snapshot_id:snapshotId,fingerprint,
-    files:[],symbols:[],calls:[],modules:[],module_edges:[],shared_states:[],parse_errors:[]};
+    files:[],symbols:[],calls:[],modules:[],module_edges:[],shared_states:[],parse_errors:[],imports:{}};
   const namespaces = new Set<string>(), facts = emptyCppFacts();
   for (const unit of units) {
+    if (unit.imports.length) index.imports![unit.file] = unit.imports;
     if (unit.parsed) index.files.push(unit.file);
     for (const error of unit.parse_errors) index.parse_errors.push({...error});
     for (const symbol of unit.symbols) index.symbols.push({...symbol});
@@ -602,7 +665,7 @@ export async function getCodeIndex(storage:string, snapshot:Snapshot):Promise<Co
   const directory = path.join(storage,'indexes'), cache = path.join(directory,id+'.json');
   try {
     const cached = JSON.parse(await fs.readFile(cache,'utf8')) as CodeIndex;
-    if (cached?.schema_version === version && cached.snapshot_id === id && cached.fingerprint === snapshot.fingerprint) return cached;
+    if (cached?.schema_version === version && cached.imports && cached.snapshot_id === id && cached.fingerprint === snapshot.fingerprint) return cached;
   } catch (error) {
     if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }

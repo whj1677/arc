@@ -214,7 +214,7 @@ test('version zero supports manual creation, optimistic saves, exact reads and r
   const {service,project}=await projectFixture(t), projectId=project.project_id;
   const store=service.store;
   const get=await architectureIpc(service,'architecture_get',{project_id:projectId});
-  assert.ok('document' in get && get.document);
+  assert.ok('active_branch' in get && 'document' in get && get.document);
   assert.equal(get.active_branch,'main');
   const initial=get.document;
   assert.equal(initial.version,0);

@@ -560,12 +560,12 @@ export function DetailPane({
               <dt>说明</dt>
               <dd>{result?.result_id || '暂无'}</dd>
               <dt>来源版本</dt>
-              <dd>{result?.binding.source_snapshot_id || project?.snapshot_id}</dd>
+              <dd>{selectedEvidence?.source_snapshot_id || result?.binding.source_snapshot_id || project?.snapshot_id}</dd>
               <dt>问题修订</dt>
               <dd>{result?.binding.question_revision_id || scenario?.question_revision_id}</dd>
               <dt>构建条件</dt>
               <dd>
-                {data.snapshots.find(s => s.source_snapshot_id === (result?.binding.source_snapshot_id || project?.snapshot_id))?.build_config ||
+                {data.snapshots.find(s => s.source_snapshot_id === (selectedEvidence?.source_snapshot_id || result?.binding.source_snapshot_id || project?.snapshot_id))?.build_config ||
                   '未知；没有指定宏、目标和包含路径'}
               </dd>
             </dl>

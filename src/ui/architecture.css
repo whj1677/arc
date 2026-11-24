@@ -60,3 +60,42 @@
 .architecture-detail-fields label { color: var(--ink-secondary); }
 .architecture-detail-fields label :is(input, select, textarea) { width: 100%; }
 dialog input[type="radio"][name="delete-strategy"] { width: auto; }
+
+.architecture-maintenance-tools .architecture-execution-pill {
+  min-height: 24px; padding: 1px 9px; border-radius: 20px; color: var(--accent); background: var(--soft); font-size: 13px;
+}
+.architecture-execution-pill:is(.changes_pending, .partial, .needs_review) { color: #795319; background: #fbefda; }
+.architecture-execution-pill.update_failed { color: #923b2d; background: #fce8e3; }
+.architecture-maintenance .architecture-update-warning {
+  margin: 6px 0; padding: 8px 12px; border-left: 3px solid #b3682e;
+  background: #fff2dd; color: #6f411b; overflow-wrap: anywhere; white-space: pre-wrap;
+}
+.architecture-update-panel {
+  display: grid; gap: 14px; min-width: 0; margin: 8px 0; padding: 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface);
+  color: var(--ink-secondary); font-size: 14px; line-height: 1.7; overflow-wrap: anywhere;
+}
+.architecture-update-panel > section + section { padding-top: 10px; border-top: 1px solid var(--border); }
+.architecture-update-panel :is(h3, h4, h5) { margin: 0 0 4px; color: var(--ink); font-weight: 560; }
+.architecture-update-panel h3 { font-size: 16px; }
+.architecture-update-panel h4 { font-size: 15px; }
+.architecture-update-panel h5 { font-size: 13px; }
+.architecture-update-panel p { margin: 4px 0; }
+.architecture-update-panel :is(ul, ol) { margin: 4px 0; padding-inline-start: 1.4em; }
+.architecture-update-heading, .architecture-baseline, .architecture-review-badges, .architecture-review-actions {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+}
+.architecture-review-card { margin-top: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.architecture-review-badges { margin-bottom: 6px; }
+.architecture-review-comparison { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 8px; margin: 8px 0; }
+.architecture-review-comparison > div { min-width: 0; padding: 8px 10px; background: var(--surface-tint); border-radius: var(--radius-sm); }
+.architecture-review-comparison dl { margin: 0; }
+.architecture-review-comparison dl > div { margin-top: 4px; }
+.architecture-review-comparison dt { color: var(--muted); font-size: 12px; }
+.architecture-review-comparison dd { margin: 0; white-space: pre-wrap; }
+.architecture-review-comparison details { margin-top: 6px; }
+.architecture-review-comparison summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+.architecture-review-evidence button { max-width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; color: var(--accent); }
+.architecture-review-actions { margin: 8px 0 0; padding: 0; min-width: 0; border: 0; }
+.architecture-review-actions label { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.architecture-review-actions input { min-width: 0; max-width: 100%; }

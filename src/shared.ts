@@ -128,7 +128,7 @@ export function hasFunctionGraphs(result:AnalysisResult):boolean {
     return result.edges.some(edge=>edge.kind===kind&&edge.status==='source_supported'&&edge.source_node_id===step.from_node_id&&edge.target_node_id===step.to_node_id);
   }));
 }
-export interface Explanation { result_id: string; scenario_id: string; created_at: string; source_status: string; result: AnalysisResult }
+export interface Explanation { result_id: string; scenario_id: string; created_at: string; source_status: string; result: AnalysisResult; architecture_branch?: string }
 export interface ProjectFreshness { snapshot_id: string; changed_files: string[]; checked_at: string }
 export type ProgramPathKey = 'codex_path' | 'dsh_path' | 'node_path' | 'git_path';
 export type ProviderPathConfig = Partial<Record<ProgramPathKey, string>>;

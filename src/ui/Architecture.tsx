@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { AnalysisResult } from '../shared';
+import type { AnalysisResult, SourceEvidence } from '../shared';
+import type { ReviewItem } from '../architecture-workspace';
 import { architectureColumns, architectureMap, moveArchitectureModule } from './architecture-map';
 import { componentContext } from './architecture-context';
 import { CodeModules } from './CodeModules';
@@ -18,6 +19,8 @@ interface Props {
   inspect: (id: string) => void;
   modules: () => void;
   openFile?: (path: string) => void;
+  openEvidence?: (item: SourceEvidence) => void;
+  onReviewResolved?: (item: ReviewItem) => void;
   zoom: number;
   search: string;
   taskOverlay?: (TaskArchitectureOverlay & { onClear: () => void; onReturnTask: () => void }) | null;
@@ -65,7 +68,7 @@ function RoleIcon({ kind }: { kind: Node['kind'] }) {
   </svg>;
 }
 
-export function Architecture({ result, editor, selected, select, inspect, modules, openFile, zoom, search, taskOverlay, onZoomableChange }: Props) {
+export function Architecture({ result, editor, selected, select, inspect, modules, openFile, openEvidence, onReviewResolved, zoom, search, taskOverlay, onZoomableChange }: Props) {
   const root = useRef<HTMLElement>(null);
   const [width, setWidth] = useState(820);
   const [view, setView] = useState<'layers' | 'relations' | 'code'>('layers');
@@ -81,7 +84,7 @@ export function Architecture({ result, editor, selected, select, inspect, module
     [result, diagramSearch, columns, doc?.layout.positions]);
   const drag = useRef<{ id: string; pointer: number; clientX: number; clientY: number; x: number; y: number; scale: number; moved: boolean } | null>(null);
   const ignoreClick = useRef(false);
-  const draggable = editor?.editMode && editor.saveState !== 'saving';
+  const draggable = editor?.editMode && !editor.maintenanceBusy;
   function startDrag(e: React.PointerEvent<HTMLButtonElement>, id: string) {
     ignoreClick.current = false;
     if (!draggable || e.button !== 0 || !e.isPrimary) return;
@@ -138,7 +141,8 @@ export function Architecture({ result, editor, selected, select, inspect, module
       </div>
     )}
     <header className="architecture-map-heading">
-      {editor && doc && <ArchitectureToolbar key={doc.id} editor={editor} doc={doc} width={width} select={select}/>}
+      {editor && doc && <ArchitectureToolbar key={doc.id} editor={editor} doc={doc} width={width} select={select}
+        openEvidence={openEvidence} onReviewResolved={onReviewResolved}/>}
       <div className="architecture-view-switch" role="group" aria-label="架构视图">
         <button aria-pressed={view === 'layers'} onClick={() => chooseView('layers')}>分层架构图</button>
         <button aria-pressed={view === 'relations'} onClick={() => chooseView('relations')}>协作关系表 ({result.architecture?.edge_ids.length ?? 0})</button>
@@ -213,6 +217,10 @@ export function Architecture({ result, editor, selected, select, inspect, module
                   </span>
                   <span className="architecture-card-copy">{node.description}</span>
                   <span className="architecture-card-meta">
+                    {module?.analysis_status && module.analysis_status !== 'current' &&
+                      <span className={'analysis-' + module.analysis_status}>
+                        {{ failed: '更新失败', needs_review: '待复核', updated: '已更新' }[module.analysis_status]}
+                      </span>}
                     {module?.implementation_status === 'planned' && <span className="planned-badge">规划中</span>}
                     {(module?.origin === 'manual' || module?.origin === 'manual_override') && <span className="manual-badge">人工补充</span>}
                     {(module?.implementation_status === 'needs_verification' || module?.origin === 'needs_verification') && <span className="verification-badge">待核实</span>}

@@ -112,6 +112,7 @@ function App() {
   useEffect(() => { setArchOverlay(null); setComposerDraft(null); }, [projectId]);
   const [indexes, setIndexes] = useState<Record<string, any>>({});
   const [showDetail, setShowDetail] = useState(false);
+  const [openedEvidence, setOpenedEvidence] = useState<{ scope: string; item: SourceEvidence }>();
   const [showCatalog, setShowCatalog] = useState(false);
   const [archiveVisible, setArchiveVisible] = useState(false);
   const [renameFeature, setRenameFeature] = useState('');
@@ -148,10 +149,11 @@ function App() {
   const explanation = sceneExplanations.find(e => e.result_id === storedReading.result_id) || (storedReading.result_id ? undefined : sceneExplanations.at(-1));
   const result = explanation?.result;
   const latestOverview = data.explanations.findLast(item => item.scenario_id === project?.overview_scenario_id && item.result.binding.project_id === projectId);
-  const architecture = useArchitectureDocument(projectId, JSON.stringify([project?.snapshot_id, latestOverview?.result_id]), api.invoke);
-  const architectureSource = data.explanations.find(item => item.result_id === architecture.doc?.source_explanation_id);
   const maintainedView = storedReading.entrance === 'overview' && ['system', 'map', 'modules'].includes(storedReading.view)
     && !(explanation && latestOverview && explanation.result_id !== latestOverview.result_id);
+  const architecture = useArchitectureDocument(projectId, JSON.stringify([project?.snapshot_id, latestOverview?.result_id]), api.invoke,
+    maintainedView && storedReading.view !== 'modules');
+  const architectureSource = data.explanations.find(item => item.result_id === architecture.doc?.source_explanation_id);
   const projected = useMemo(() => {
     if (!maintainedView || !architecture.doc) return;
     const view = architectureDocumentToAnalysisResult(architecture.doc, architectureSource?.result);
@@ -233,7 +235,13 @@ function App() {
 
   const sourceSnapshotId = reading.source_snapshot_id || paneResult?.binding.source_snapshot_id || project?.snapshot_id || '';
   const sourceSnapshot = data.snapshots.find(s => s.source_snapshot_id === sourceSnapshotId);
-  const selectedEvidence = paneResult?.evidence.find(e => e.evidence_id === reading.evidence_id);
+  const evidenceScope = maintainedView ? architecture.savedDoc?.id : readingKey;
+  const matchesEvidence = (ev: SourceEvidence) => ev.evidence_id === reading.evidence_id &&
+    ev.source_snapshot_id === reading.source_snapshot_id && ev.path === reading.file;
+  const selectedEvidence = openedEvidence && openedEvidence.scope === evidenceScope && matchesEvidence(openedEvidence.item)
+    ? openedEvidence.item : (maintainedView && reading.evidence_id
+      ? architecture.savedDoc?.review_items.flatMap(item => item.evidence).find(matchesEvidence) : undefined)
+      ?? paneResult?.evidence.find(ev => ev.evidence_id === reading.evidence_id);
   const selectedFile = reading.file || selectedEvidence?.path || '';
   const taskEvidence = selectedEvidence?.path === selectedFile ? selectedEvidence
     : readingObject?.primaryEvidence ?? readingEvidence?.find(e => activeEvidenceIds?.includes(e.evidence_id));
@@ -788,6 +796,7 @@ function App() {
   }
 
   function evidence(e: SourceEvidence) {
+    setOpenedEvidence({ scope: evidenceScope ?? readingKey, item: e });
     patch({ mode: 'normal', file: e.path, evidence_id: e.evidence_id, source_snapshot_id: e.source_snapshot_id, detail_tab: 'evidence' });
     setShowDetail(featureReading || reading.view === 'functions' || detailDrawer);
   }
@@ -1699,6 +1708,10 @@ function App() {
   const canvas = (
     <CanvasPane
       editor={maintainedView ? architecture : undefined}
+      onReviewResolved={item => {
+        if ((item.operation ?? item.category) === 'dataflow_change')
+          void reload().catch(reason => setError('刷新功能走读失败：' + String(reason)));
+      }}
       architectureResult={projected}
       overviewSections={overviewSections}
       data={data}

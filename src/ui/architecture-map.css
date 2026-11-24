@@ -233,6 +233,9 @@
 .architecture-map .architecture-card.is-draggable:active { cursor: grabbing; }
 .architecture-map .architecture-card.is-planned { border: 2px dashed #a97737; background: #fffcf6; }
 .architecture-card-meta .planned-badge { background: #fbebcb; color: #795319; }
+.architecture-card-meta .analysis-failed { background: #fbe8e5; color: #92332a; }
+.architecture-card-meta .analysis-needs_review { background: #fff0ce; color: #73510b; }
+.architecture-card-meta .analysis-updated { background: #dff3e8; color: #256043; }
 .architecture-card-meta .manual-badge { color: #325f89; background: #ecf3fb; }
 .architecture-card-meta .verification-badge { color: #814e3a; background: #fae9dd; }
 .architecture-code-links, .architecture-code-links fieldset { min-width: 0; display: grid; gap: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); }

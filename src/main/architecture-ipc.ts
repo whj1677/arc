@@ -4,6 +4,7 @@ import type { ArcService } from './service';
 export const architectureOperations = [
   'architecture_get', 'architecture_save', 'architecture_versions', 'architecture_restore',
   'architecture_delete_impact', 'architecture_branches',
+  'architecture_check_updates', 'architecture_update_affected', 'architecture_review_resolve',
 ] as const;
 type Operation = typeof architectureOperations[number];
 
@@ -29,6 +30,21 @@ export async function architectureIpc(service: ArcService, operation: Operation,
   const project = identifier(args.project_id, 'project_id');
   const branch = args.branch_key === undefined ? undefined : identifier(args.branch_key, 'branch_key');
   switch (operation) {
+    case 'architecture_check_updates':
+      return service.checkArchitectureUpdates(project, { branchKey: branch });
+    case 'architecture_update_affected': {
+      const modules = args.module_ids, retry = args.retry_failed_only;
+      if (modules !== undefined && !Array.isArray(modules)) throw Error('module_ids 必须是模块标识数组');
+      if (retry !== undefined && typeof retry !== 'boolean') throw Error('retry_failed_only 必须是布尔值');
+      return service.updateAffectedArchitecture(project, { branchKey: branch,
+        moduleIds: modules?.map(id => identifier(id, 'module_id')), retryFailedOnly: retry });
+    }
+    case 'architecture_review_resolve': {
+      const { decision, note } = args;
+      if (decision !== 'accept' && decision !== 'reject' && decision !== 'defer') throw Error('审查决定无效');
+      if (note !== undefined && typeof note !== 'string') throw Error('审查备注必须是文本');
+      return service.resolveArchitectureReview(project, { branchKey: branch, reviewId: identifier(args.review_id, 'review_id'), decision, note });
+    }
     case 'architecture_get': {
       const active_branch = await service.getActiveArchitectureBranch(project);
       const document = await service.getArchitectureDocument(project, {

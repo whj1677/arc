@@ -39,6 +39,14 @@ export class Store {
       ORDER BY json_extract(json,'$.created_at') DESC, rowid DESC LIMIT 1`).get(project.overview_scenario_id, project.project_id);
     return row ? JSON.parse(String(row.json)) : undefined;
   }
+  latestFeatureExplanations(project: Project, branchKey?:string): Explanation[] {
+    return this.db.prepare(`SELECT json FROM (SELECT json, row_number() OVER (
+      PARTITION BY json_extract(json,'$.scenario_id') ORDER BY json_extract(json,'$.created_at') DESC, rowid DESC
+      ) AS recency FROM objects WHERE kind='explanation' AND json_extract(json,'$.result.binding.project_id')=?
+      AND json_extract(json,'$.scenario_id') IS NOT ? AND (? IS NULL OR json_extract(json,'$.architecture_branch') IS NULL
+      OR json_extract(json,'$.architecture_branch')=?)) WHERE recency=1`)
+      .all(project.project_id, project.overview_scenario_id ?? null, branchKey ?? null, branchKey ?? null).map(row => JSON.parse(String(row.json)));
+  }
   developmentExplanations(project: Project): Explanation[] {
     if (!project.overview_scenario_id) return [];
     return this.db.prepare(`SELECT json FROM objects WHERE kind='explanation'
@@ -85,7 +93,7 @@ export class Store {
       AND json_extract(json,'$.project_id')=? ORDER BY json_extract(json,'$.branch_key')`)
       .all(projectId).map(row => JSON.parse(String(row.json)));
   }
-  saveArchitectureDoc(doc: ArchitectureDocument, expectedVersion?: number): ArchitectureDocument {
+  saveArchitectureDoc(doc: ArchitectureDocument, expectedVersion?: number, companionWrite?: () => void): ArchitectureDocument {
     return this.transaction(() => {
       const row = this.db.prepare("SELECT json_extract(json,'$.version') AS version FROM objects WHERE kind='architecture_doc' AND id=?").get(doc.id);
       const currentVersion = row ? Number(row.version) : 0;
@@ -93,7 +101,23 @@ export class Store {
         throw new Error(`Architecture document version conflict for ${doc.id}: expected ${expectedVersion}, current ${currentVersion}`);
       }
       const next = { ...doc, version: currentVersion + 1, updated_at: now() };
+      companionWrite?.();
       return JSON.parse(this.putVersion('architecture_doc', doc.id, next.version, next));
+    });
+  }
+  patchArchitectureCheckState(docId: string, expectedVersion: number,
+    pending_changes_summary: ArchitectureDocument['pending_changes_summary'],
+    update_status: ArchitectureDocument['update_status']): ArchitectureDocument {
+    return this.transaction(() => {
+      const current = this.getArchitectureDocById(docId);
+      const currentVersion = current?.version ?? 0;
+      if (currentVersion !== expectedVersion) {
+        throw new Error(`Architecture document version conflict for ${docId}: expected ${expectedVersion}, current ${currentVersion}`);
+      }
+      if (!current) throw new Error(`未找到 architecture_doc：${docId}`);
+      const json = JSON.stringify({ ...current, pending_changes_summary, update_status });
+      this.putJson('architecture_doc', docId, json);
+      return JSON.parse(json);
     });
   }
   listArchitectureDocVersions(docId: string): ArchitectureVersionSummary[] {

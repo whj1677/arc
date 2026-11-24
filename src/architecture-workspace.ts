@@ -88,6 +88,8 @@ export interface ReviewItem {
   category: 'module_add' | 'module_remove' | 'module_update' | 'hierarchy_change' | 'relation_add'
     | 'relation_remove' | 'relation_update' | 'exclusion_conflict' | 'manual_conflict'
     | 'rename_uncertain' | 'dataflow_change' | 'uncertain';
+  operation?: ReviewItem['category'];
+  analysis_run_id?: string;
   status: 'pending' | 'accepted' | 'rejected' | 'deferred';
   target_id?: string;
   target_kind?: 'module' | 'relation' | 'feature';
@@ -132,6 +134,7 @@ export interface UpdateRunRecord {
       path: string;
       status: 'added' | 'modified' | 'deleted' | 'renamed';
       old_path?: string;
+      rename_confidence?: 'exact' | 'uncertain';
       source: 'committed' | 'staged' | 'unstaged' | 'untracked' | 'snapshot_diff';
       category: 'code' | 'config_or_contract' | 'rule';
     }>;
@@ -150,6 +153,8 @@ export interface UpdateRunRecord {
   auto_updates: AutoUpdateSummary[];
   review_item_ids: string[];
   module_outcomes: Record<string, { status: 'succeeded' | 'failed' | 'needs_review' | 'reused'; error?: string }>;
+  unit_outcomes?: UpdateRunRecord['module_outcomes'];
+  remaining_units?: string[];
   overall_status: ArchitectureUpdateStatus;
 }
 
@@ -171,7 +176,7 @@ export interface ArchitectureDocument {
   update_status: ArchitectureUpdateStatus;
   last_update?: UpdateRunRecord;
   pending_changes_summary?: UpdateRunRecord['detection_summary'] & {
-    checked_at: string; has_changes: boolean; impact_preview?: UpdateRunRecord['impact_summary'];
+    checked_at: string; has_changes: boolean; checked_read_snapshot_id?: string; impact_preview?: UpdateRunRecord['impact_summary'];
   };
   created_at: string;
   updated_at: string;
@@ -184,6 +189,20 @@ export interface ArchitectureVersionSummary {
   title: string;
   module_count: number;
   relation_count: number;
+}
+
+export function architectureUpdateStatus(doc: ArchitectureDocument): ArchitectureUpdateStatus {
+  const run = doc.last_update;
+  const review = doc.review_items.some(item => item.status === 'pending' || item.status === 'deferred');
+  const outcomes = Object.values(run?.unit_outcomes ?? run?.module_outcomes ?? {});
+  if (doc.modules.some(mod => mod.analysis_status === 'failed') || outcomes.some(unit => unit.status === 'failed')) {
+    return review || outcomes.some(unit => unit.status === 'succeeded' || unit.status === 'needs_review') ? 'partial' : 'update_failed';
+  }
+  if (review) return 'needs_review';
+  const pending = doc.pending_changes_summary;
+  if (run?.post_check_consistent === false || run?.remaining_units?.length ||
+      pending?.has_changes && (!run || pending.checked_read_snapshot_id !== run.read_baseline.snapshot_id)) return 'changes_pending';
+  return 'up_to_date';
 }
 
 export interface ModuleReferencePaths { files: string[]; directories: string[] }
@@ -304,7 +323,9 @@ function baselineShape(v: unknown) {
 }
 function reviewShape(v: unknown) {
   return record(v) && fieldsAreStrings(v, 'id', 'dedupe_key', 'title', 'scope_summary', 'evidence_fingerprint', 'code_baseline_fingerprint', 'created_at')
-    && optionalStrings(v, 'branch', 'target_id', 'decision_note', 'decided_at')
+    && optionalStrings(v, 'branch', 'target_id', 'decision_note', 'decided_at', 'analysis_run_id')
+    && (v.operation === undefined || v.operation === v.category || oneOf(v.category, 'manual_conflict', 'exclusion_conflict') &&
+      oneOf(v.operation, 'module_add','module_remove','module_update','hierarchy_change','relation_add','relation_update','relation_remove','uncertain'))
     && (v.target_kind === undefined || oneOf(v.target_kind, 'module', 'relation', 'feature'))
     && oneOf(v.category, 'module_add', 'module_remove', 'module_update', 'hierarchy_change', 'relation_add', 'relation_remove', 'relation_update',
       'exclusion_conflict', 'manual_conflict', 'rename_uncertain', 'dataflow_change', 'uncertain')
@@ -313,6 +334,7 @@ function reviewShape(v: unknown) {
 function detectionShape(v: unknown) {
   return record(v) && boolean(v.detection_reliable) && optionalStrings(v, 'git_branch', 'git_commit', 'base_branch', 'base_commit', 'detection_error')
     && arrayOf(v.changed_files, f => record(f) && string(f.path) && optional(f.old_path, string) && oneOf(f.status, 'added', 'modified', 'deleted', 'renamed')
+      && (f.rename_confidence === undefined || f.status === 'renamed' && oneOf(f.rename_confidence, 'exact', 'uncertain'))
       && oneOf(f.source, 'committed', 'staged', 'unstaged', 'untracked', 'snapshot_diff') && oneOf(f.category, 'code', 'config_or_contract', 'rule'));
 }
 function impactShape(v: unknown) {
@@ -320,11 +342,12 @@ function impactShape(v: unknown) {
     && string(v.reason) && strings(v.affected_module_ids) && strings(v.affected_feature_ids) && strings(v.reused_module_ids) && strings(v.unmapped_files);
 }
 function updateRunShape(v: unknown) {
+  const outcomes = (value: unknown) => record(value) && Object.values(value).every(o =>
+    record(o) && oneOf(o.status, 'succeeded', 'failed', 'needs_review', 'reused') && optional(o.error, string));
   return record(v) && fieldsAreStrings(v, 'id', 'started_at') && optionalStrings(v, 'finished_at', 'stale_reason')
     && integer(v.base_doc_version) && baselineShape(v.read_baseline) && boolean(v.post_check_consistent)
     && detectionShape(v.detection_summary) && impactShape(v.impact_summary) && integer(v.model_calls) && strings(v.review_item_ids)
-    && updateStatus(v.overall_status) && record(v.module_outcomes) && Object.values(v.module_outcomes).every(o =>
-      record(o) && oneOf(o.status, 'succeeded', 'failed', 'needs_review', 'reused') && optional(o.error, string))
+    && updateStatus(v.overall_status) && outcomes(v.module_outcomes) && optional(v.unit_outcomes, outcomes) && optional(v.remaining_units, strings)
     && arrayOf(v.auto_updates, u => record(u) && fieldsAreStrings(u, 'id', 'target_id', 'target_name', 'description', 'at')
       && oneOf(u.kind, 'code_link_relocated', 'file_moved', 'evidence_refreshed', 'dataflow_refreshed') && optionalStrings(u, 'old_path', 'new_path'));
 }
@@ -350,7 +373,7 @@ export function validateArchitectureDocument(doc: ArchitectureDocument): string[
     || !strings(layout.manual_positions) || !optional(layout.auto_layout_version, integer) || !optional(layout.updated_at, string)) errors.push('Invalid architecture layout');
   if (!optional(doc.baseline, baselineShape)) errors.push('Invalid architecture baseline');
   if (!optional(doc.last_update, updateRunShape)) errors.push('Invalid architecture last_update');
-  if (!optional(doc.pending_changes_summary, s => record(s) && detectionShape(s) && string(s.checked_at) && boolean(s.has_changes)
+  if (!optional(doc.pending_changes_summary, s => record(s) && detectionShape(s) && string(s.checked_at) && boolean(s.has_changes) && optional(s.checked_read_snapshot_id, string)
     && optional(s.impact_preview, impactShape))) errors.push('Invalid architecture pending_changes_summary');
   if (errors.length) return errors;
   const parents = new Map<string, string | undefined>();

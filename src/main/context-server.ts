@@ -11,7 +11,7 @@ import {getCallGraph,listModules,listSymbols} from './code-index-query';
 async function main() {
 const contextPath=process.argv[2];
 if(!contextPath||!path.isAbsolute(contextPath))throw new Error('Explicit run context required');
-const context=JSON.parse(await fs.readFile(contextPath,'utf8')) as {storage:string;snapshot:Snapshot;resultSchema?:object};
+const context=JSON.parse(await fs.readFile(contextPath,'utf8')) as {storage:string;snapshot:Snapshot;resultSchema?:object;scoped?:boolean};
 const discovery=process.argv[3]==='overview-discovery';
 const {discovery:overviewDiscoveryBudget,discoveryMinutes}=analysisBudget(context.snapshot);
 const discoveryDeadline=Date.now()+discoveryMinutes*60000;
@@ -43,7 +43,9 @@ const tools=[
   {name:'get_call_graph',annotations:readOnly,description:'按符号名、限定名或索引 id 查询调用和引用。可指定 file 消除歧义。roots 和 targets 含签名、文件和行号。syntax=reference 标记取址、传参或表项引用，实际回调执行处需另查。未解析的边没有 targets。depth 默认为 2，direction 默认为 both。',inputSchema:{type:'object',properties:{symbol:text,file:text,direction:{enum:['outgoing','incoming','both']},depth:{type:'integer',minimum:1,maximum:3},...paging},required:['symbol'],additionalProperties:false}},
   ...(resultSchema?[{name:'arc_submit_result',description:'提交本轮符合合同的完整结果。ARC 将在会话结束后核验并处理；此工具不会修改工程文件。',inputSchema:resultSchema}]:[]),
 ];
-const validators=new Map(tools.map(tool=>[tool.name,ajv.compile(tool.inputSchema)]));
+// A unit-scoped manifest may only serve files. The shared index describes the whole snapshot.
+const availableTools=context.scoped?tools.filter(tool=>['arc_list_files','arc_search_source','arc_read_source'].includes(tool.name)):tools;
+const validators=new Map(availableTools.map(tool=>[tool.name,ajv.compile(tool.inputSchema)]));
 function validateArguments(name:string,args:unknown) {
   const validate=validators.get(name);
   if(!validate)throw new Error('未知工具');
@@ -56,7 +58,7 @@ async function handle(message:any){
   try{
     if(message.method==='initialize')return send({protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'arc-frozen-source',version:'0.1.0'}});
     if(message.method==='ping')return send({});
-    if(message.method==='tools/list')return send({tools});
+    if(message.method==='tools/list')return send({tools:availableTools});
     if(message.method!=='tools/call')throw new Error('不支持的方法');
     const {name,arguments:args={}}=message.params||{};
     validateArguments(name,args);

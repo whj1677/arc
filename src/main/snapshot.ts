@@ -77,7 +77,7 @@ export function decode(bytes: Uint8Array) {
   catch { throw new Error('非 UTF-8 文本，未提供可靠行定位'); }
 }
 export const linesOf = (text: string) => { const lines = text.split(/\r\n|\n|\r/); if (lines.at(-1) === '') lines.pop(); return lines; };
-async function ignoredByGit(root:string) {
+async function ignoredByGit(root:string, strictGit = false) {
   // Ask Git for ignored, untracked paths. Tracked files remain eligible even
   // when they match a later ignore rule. A non-worktree root yields no Git
   // exclusions; do not recurse into nested worktrees to discover their rules.
@@ -85,11 +85,14 @@ async function ignoredByGit(root:string) {
   try {
     const {stdout}=await exec(await locate('git'),['--no-optional-locks','-c','core.fsmonitor=false','-C',root,'ls-files','--others','--ignored','--exclude-standard','--directory','-z'],{windowsHide:true,timeout:10000,maxBuffer:8*1024*1024});
     for(const entry of stdout.split('\0').filter(Boolean))gitIgnored.add(entry.replace(/\/$/,''));
-  } catch { /* Without a verified Git list, retain the ordinary exclusions. */ }
+  } catch (error) {
+    if (strictGit) throw error;
+    // Non-Git snapshots retain the ordinary exclusions.
+  }
   return gitIgnored;
 }
-export async function* workspacePaths(root:string, includePath?: (file:string)=>boolean): AsyncGenerator<string> {
-  const gitIgnored=await ignoredByGit(root);
+export async function* workspacePaths(root:string, includePath?: (file:string)=>boolean, strictGit = false): AsyncGenerator<string> {
+  const gitIgnored=await ignoredByGit(root, strictGit);
   async function* walk(dir:string,prefix=''): AsyncGenerator<string> {
     for(const entry of await sourceDirectoryEntries(dir)??[]){
       const rel=prefix?`${prefix}/${entry.name}`:entry.name;
@@ -126,7 +129,13 @@ export async function workspaceGitDirectory(root:string):Promise<string|null> {
     return path.resolve(root,stdout.trim());
   } catch(error) {
     const failure=error as NodeJS.ErrnoException&{stderr?:string};
-    if(failure.stderr?.includes('not a git repository'))return null;
+    if(failure.stderr?.includes('not a git repository')){
+      // A malformed .git file at the selected root is an inspection error.
+      // Respect Git discovery ceilings when deciding whether to inspect ancestors.
+      try { await fs.lstat(path.join(root,'.git')); }
+      catch (lookup) { if ((lookup as NodeJS.ErrnoException).code==='ENOENT') return null; throw lookup; }
+      throw error;
+    }
     if(failure.code!=='ENOENT')throw error;
     for(let directory=root;;directory=path.dirname(directory)){
       try{await fs.lstat(path.join(directory,'.git'));}
