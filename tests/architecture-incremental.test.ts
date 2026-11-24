@@ -58,14 +58,14 @@ function proposedUpdate(input: Input, summary: string): SemanticProposal {
     proposed: {summary}, evidence: [cite(input.snapshot, owned[input.unit.id])] };
 }
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, extraSources: Record<string,string> = {}) {
   const base = path.resolve('.test-data');
   await fs.mkdir(base, {recursive: true});
   const dir = await fs.mkdtemp(path.join(base, 'incremental-'));
   const root = path.join(dir, '目标 工程');
   const store = new Store(path.join(dir, 'arc-data'));
   t.after(async () => { store.close(); await fs.rm(dir, {recursive: true, force: true}); });
-  for (const [file, contents] of Object.entries(sources)) await write(root, file, contents);
+  for (const [file, contents] of Object.entries({...sources, ...extraSources})) await write(root, file, contents);
   git(root, 'init', '-b', 'main');
   git(root, 'add', '.');
   git(root, 'commit', '-m', 'initial source');
@@ -248,7 +248,7 @@ test('A09: private transform change updates only the saved walkthrough selected 
   };
   const result = await service.updateAffectedArchitecture(projectId);
   assert.ok(['local_module','dataflow_only'].includes(result.update_run.impact_summary.mode));
-  assert.deepEqual(result.update_run.impact_summary.affected_module_ids, ['sensor']);
+  assert.deepEqual(result.update_run.impact_summary.affected_module_ids, ['sensor','persist']);
   assert.deepEqual(result.update_run.impact_summary.affected_feature_ids, ['sample']);
   assert.deepEqual(calls.filter(u => u.kind === 'feature').map(u => u.id), ['sample']);
   assert.deepEqual(result.document.modules.map(m => m.summary), doc.modules.map(m => m.summary));
@@ -256,6 +256,13 @@ test('A09: private transform change updates only the saved walkthrough selected 
   assert.ok(review);
   assert.ok(JSON.stringify(review.before).includes('Old transform'));
   assert.deepEqual(store.get('explanation', walk.result_id), walk);
+  const revised = structuredClone(walk);
+  revised.result.reading_guide!.steps[0].text = 'Owner revised this step';
+  store.put('explanation',walk.result_id,revised);
+  await assert.rejects(service.resolveArchitectureReview(projectId,{reviewId:review.id,decision:'accept'}),/走读已变化/);
+  assert.deepEqual(store.getArchitectureDoc(projectId,'main'),result.document);
+  assert.deepEqual(store.get('explanation',walk.result_id),revised);
+  store.put('explanation',walk.result_id,walk);
   await service.resolveArchitectureReview(projectId, {reviewId:review.id, decision:'accept'});
   const updated = store.all<Explanation>('explanation').find(e => e.result.reading_guide?.steps[0]?.text === 'Clamp negative samples')!;
   assert.ok(updated);
@@ -301,7 +308,8 @@ test('A08 to A09: a walkthrough follows successive exact moves before reanalyzin
 });
 
 test('A10: a changed header reaches its static include consumer without an architecture relation', async t => {
-  const {root, service, calls} = await fixture(t);
+  const {root, service, calls, store, snapshot} = await fixture(t);
+  saveWalkthrough(store,snapshot,'show-sample',owned.display);
   await write(root, owned.api, sources[owned.api].replace('int voltage', 'long voltage'));
   const result = await service.checkArchitectureUpdates(projectId);
   const preview = result.document.pending_changes_summary!.impact_preview!;
@@ -309,6 +317,158 @@ test('A10: a changed header reaches its static include consumer without an archi
   assert.deepEqual(new Set(preview.affected_module_ids), new Set(['api','display']));
   assert.deepEqual(new Set(preview.reused_module_ids), new Set(['sensor','persist','timer']));
   assert.equal(calls.length, 0);
+  await service.updateAffectedArchitecture(projectId);
+  for (const id of ['display','show-sample']) {
+    const consumer = calls.find(unit => unit.id === id)!;
+    assert.deepEqual(new Set(consumer.paths),new Set([owned.display,owned.api]));
+  }
+});
+
+test('deleting the only evidence for a confirmed relation checks both endpoints and leaves a review', async t => {
+  const {root,service,doc,snapshot,calls} = await fixture(t);
+  const file = 'legacy/normalize.c', rel = doc.relations[0];
+  rel.status = 'confirmed';
+  rel.evidence = [cite(snapshot,file)];
+  service.saveArchitectureDocument(projectId,doc,doc.version);
+  await fs.unlink(path.join(root,file));
+  const result = await service.updateAffectedArchitecture(projectId);
+  assert.deepEqual(result.update_run.impact_summary.affected_module_ids.sort(),[rel.to,rel.from].sort());
+  assert.ok(calls.some(unit => unit.id === rel.from));
+  assert.ok(calls.some(unit => unit.id === rel.to));
+  assert.equal(result.document.update_status,'needs_review');
+  assert.ok(result.document.review_items.some(item => item.target_id === rel.id && item.title.includes(file)));
+});
+
+test('unindexed contract consumers receive the changed protocol in every affected frozen read', async t => {
+  const file = 'api/sample.proto';
+  const {root,service,doc,calls,store,snapshot} = await fixture(t,{[file]:'message Sample { int32 x = 1; }'});
+  doc.modules.find(m => m.id === 'api')!.code_links.push({id:'proto',origin:'manual',kind:'file',path:file});
+  service.saveArchitectureDocument(projectId,doc,doc.version);
+  saveWalkthrough(store,snapshot,'generated-consumer',owned.display);
+  await write(root,file,'message Sample { int64 x = 1; }');
+  const {update_run} = await service.updateAffectedArchitecture(projectId);
+  assert.equal(update_run.impact_summary.mode,'wide_recheck');
+  assert.match(update_run.impact_summary.reason,/契约/);
+  assert.deepEqual(new Set(calls.map(unit => unit.id)),new Set([...doc.modules.map(m => m.id),'generated-consumer']));
+  assert.ok(calls.every(unit => unit.paths.includes(file)));
+});
+
+test('bound nonstandard text files and new directory members participate in frozen and live manifests', async t => {
+  const link = 'api/linked.idl', evidence = 'display/display.idl', relation = 'api/edge.idl';
+  const {root,service,doc,snapshot,store} = await fixture(t,{[link]:'link',[evidence]:'display',[relation]:'edge'});
+  doc.modules[0].code_links.push({id:'idl',kind:'file',path:link,origin:'manual'},
+    {id:'owned-dir',kind:'directory',path:'extra',origin:'manual'});
+  doc.modules[1].evidence.push(cite(snapshot,evidence));
+  doc.relations[0].evidence = [cite(snapshot,relation)];
+  const scoped = service.saveArchitectureDocument(projectId,doc,doc.version);
+  for (const file of [link,evidence,relation]) assert.equal(scoped.baseline!.file_hashes[file],cite(snapshot,file).content_sha256);
+  // Simulate a pre-fix document whose persisted, extension-only manifest missed the bound files.
+  store.saveArchitectureDoc({...scoped,baseline:doc.baseline},scoped.version);
+  await write(root,link,'changed link');
+  await write(root,evidence,'changed evidence');
+  await fs.unlink(path.join(root,relation));
+  const added = 'extra/new.ipp';
+  await write(root,added,'template <class T> struct Value {};');
+  for (const file of ['extra/cache/ignore.ipp','extra/.test-data/ignore.ipp','extra/node_modules/p/file.ipp',
+      'extra/dist/file.ipp','extra/trace.log','extra/binary.ipp']) {
+    await write(root,file,file.endsWith('binary.ipp') ? 'a\0b' : 'excluded');
+  }
+  const {detection} = await service.checkArchitectureUpdates(projectId);
+  assert.deepEqual(Object.fromEntries(detection.detection_summary.changed_files.map(f => [f.path,f.status])),
+    {[added]:'added',[link]:'modified',[evidence]:'modified',[relation]:'deleted'});
+  const update = await service.updateAffectedArchitecture(projectId);
+  assert.equal(update.update_run.post_check_consistent,true);
+  assert.equal(update.update_run.read_baseline.file_hashes[added],detection.live_hashes[added]);
+});
+
+test('newly assigned owner during an S1 run is completed on the next run before advancing the baseline', async t => {
+  const {root,service,store,doc,analyzer,calls} = await fixture(t);
+  await write(root,owned.sensor,sources[owned.sensor].replace('+ 1','+ 3'));
+  analyzer.analyze = async ({unit}) => {
+    if (unit.id === 'sensor') {
+      const latest = store.getArchitectureDoc(projectId,'main')!;
+      latest.modules.find(m => m.id === 'timer')!.code_links.push({id:'new-owner',kind:'file',path:owned.sensor,origin:'manual'});
+      service.saveArchitectureDocument(projectId,latest,latest.version);
+    }
+    return [];
+  };
+  const first = await service.updateAffectedArchitecture(projectId);
+  assert.equal(first.document.baseline!.snapshot_id,doc.baseline!.snapshot_id);
+  assert.equal(first.document.update_status,'changes_pending');
+  assert.deepEqual(first.update_run.remaining_units,[JSON.stringify(['module','timer'])]);
+  assert.equal(first.update_run.module_outcomes.timer,undefined);
+  assert.ok(!first.update_run.impact_summary.reused_module_ids.includes('timer'));
+  calls.length = 0;
+  const second = await service.updateAffectedArchitecture(projectId);
+  assert.deepEqual(calls.map(u => u.id),['timer']);
+  assert.deepEqual(second.update_run.remaining_units,[]);
+  assert.equal(second.document.baseline!.snapshot_id,first.update_run.read_baseline.snapshot_id);
+});
+
+test('a new owner of an exact move is analyzed on the next update even when the move only relocated references', async t => {
+  const {root,service,doc,store,calls} = await fixture(t);
+  const dest = 'sensor/relocated.c';
+  git(root,'mv',owned.sensor,dest);
+  const read = fs.readFile;
+  let saved = false;
+  t.mock.method(fs,'readFile',async (...args: Parameters<typeof read>) => {
+    if (!saved && args[0] === path.join(root,dest)) {
+      saved = true;
+      const latest = store.getArchitectureDoc(projectId,'main')!;
+      latest.modules.find(m => m.id === 'timer')!.code_links.push({id:'extra-owner',kind:'file',path:dest,origin:'manual'});
+      service.saveArchitectureDocument(projectId,latest,latest.version);
+    }
+    return read(...args);
+  });
+  const first = await service.updateAffectedArchitecture(projectId);
+  assert.equal(first.update_run.impact_summary.mode,'reference_only');
+  assert.deepEqual(first.update_run.remaining_units,[JSON.stringify(['module','timer'])]);
+  assert.equal(first.document.baseline!.snapshot_id,doc.baseline!.snapshot_id);
+  assert.equal(calls.length,0);
+  const next = await service.updateAffectedArchitecture(projectId);
+  assert.deepEqual(calls.map(unit => unit.id),['timer']);
+  assert.ok(calls[0].paths.includes(dest));
+  assert.equal(next.update_run.module_outcomes.timer.status,'succeeded');
+  assert.equal(next.document.baseline!.snapshot_id,first.update_run.read_baseline.snapshot_id);
+});
+
+for (const change of ['content','membership']) test('dirty live scan rejects mid-scan ' + change + ' changes', async t => {
+  const {root,doc} = await fixture(t);
+  const target = path.join(root,owned.sensor);
+  await fs.appendFile(target,'// already dirty\n');
+  const read = fs.readFile;
+  let changed = false;
+  t.mock.method(fs,'readFile',async (...args: Parameters<typeof read>) => {
+    const result = await read(...args);
+    if (!changed && args[0] === target) {
+      changed = true;
+      if (change === 'content') await fs.appendFile(target,'// modified during scan\n');
+      else await write(root,'new.c','int added;');
+    }
+    return result;
+  });
+  const {detection_summary} = await detectArchitectureChanges(root,doc);
+  assert.ok(changed);
+  assert.equal(detection_summary.detection_reliable,false);
+  assert.equal(detection_summary.detection_error,'扫描期间工作区文件发生变化，请重新检查');
+});
+
+test('a directory disappearing during enumeration reports the same unstable-scan error', async t => {
+  const {root,doc} = await fixture(t);
+  await fs.appendFile(path.join(root,owned.sensor),'// already dirty\n');
+  const directory = path.join(root,'timers'), read = fs.readdir;
+  let moved = false;
+  t.mock.method(fs,'readdir',async (...args: Parameters<typeof read>) => {
+    if (!moved && args[0] === directory) {
+      await fs.rename(directory,path.join(path.dirname(root),'removed-timers'));
+      moved = true;
+    }
+    return read(...args);
+  });
+  const {detection_summary} = await detectArchitectureChanges(root,doc);
+  assert.ok(moved);
+  assert.equal(detection_summary.detection_reliable,false);
+  assert.equal(detection_summary.detection_error,'扫描期间工作区文件发生变化，请重新检查');
 });
 
 test('A10: a committed public signature change reaches its static caller while an unrelated line shift only relocates evidence', async t => {
@@ -361,6 +521,20 @@ test('A11: deleted relation stays excluded with identical evidence and a new cal
   const accept = await service.resolveArchitectureReview(projectId, {reviewId:conflict.id,decision:'accept'});
   assert.deepEqual(accept.document.relations.map(r => [r.from,r.to,r.kind]), [[original.from,original.to,original.kind]]);
   assert.deepEqual(accept.document.exclusions, []);
+  // The user corrected the evidence on the accepted relation, then deleted it.
+  // Rediscovering the earlier callsite must produce a fresh conflict against that deletion.
+  const acceptedRelation = accept.document.relations[0];
+  acceptedRelation.origin = 'manual_override';
+  acceptedRelation.evidence = original.evidence;
+  const corrected = service.saveArchitectureDocument(projectId, accept.document, accept.document.version);
+  service.saveArchitectureDocument(projectId, applyRelationDelete(corrected,acceptedRelation.id),corrected.version);
+  await write(root, 'sensor/filter.c', 'int filter(int v) { return v < 1 ? 1 : v; }\n');
+  const rediscovered = await service.updateAffectedArchitecture(projectId);
+  const pending = rediscovered.document.review_items.find(item => item.category === 'exclusion_conflict' && item.status === 'pending');
+  assert.ok(pending);
+  assert.notEqual(pending.id,conflict.id);
+  assert.equal(pending.dedupe_key,conflict.dedupe_key);
+  assert.equal(rediscovered.document.review_items.find(item => item.id === conflict.id)?.status,'accepted');
 });
 
 test('A12: a different checkout cannot consume reviews from main and returning restores the saved main document', async t => {
@@ -391,6 +565,7 @@ test('A13: a changed live file and a concurrent manual edit cannot alter the S1 
   await write(root, owned.sensor, s1);
   let baseVersion = -1;
   analyzer.analyze = async input => {
+    if (input.unit.id !== 'sensor') return [];
     baseVersion = input.doc.version;
     await write(root, owned.sensor, s2);
     const manual = store.getArchitectureDoc(projectId, 'main')!;
@@ -455,6 +630,7 @@ test('A15: individual decisions preserve siblings and repeated runs do not dupli
   const {root, doc, service, analyzer} = await fixture(t);
   await write(root, owned.sensor, sources[owned.sensor].replace('+ 1','+ 8'));
   analyzer.analyze = async input => {
+    if (input.unit.id !== 'sensor') return [];
     const evidence = [cite(input.snapshot, owned.sensor)];
     return [
       proposedUpdate(input, 'Adjusted conversion'),
@@ -633,7 +809,14 @@ test('review decisions reject a hierarchy cycle atomically and apply only the se
   assert.deepEqual(edited.document.layout, doc.layout);
   const removal = await decide('relation_remove');
   assert.deepEqual(new Set(removal.document.relations.map(r => r.id)), new Set([first.id,'display-clock']));
-  const graph = (await decide('module_remove')).document;
+  // The accepted rename changed an edge that the original module removal would delete.
+  await assert.rejects(decide('module_remove'),/目标内容已变化/);
+  analyzer.analyze = async input => input.unit.id==='sensor' ? [{category:'module_remove',target_kind:'module',target_id:'sensor',
+    title:'Remove sensor',evidence:[cite(input.snapshot,owned.sensor)]}] : [];
+  const rechecked = await service.updateAffectedArchitecture(projectId);
+  const removalId = rechecked.document.review_items.find(i=>i.operation==='module_remove')!.id;
+  assert.notEqual(removalId,byOperation('module_remove').id);
+  const graph = (await service.resolveArchitectureReview(projectId,{reviewId:removalId,decision:'accept'})).document;
   assert.ok(!graph.modules.some(m => m.id === 'sensor'));
   assert.equal(graph.modules.find(m => m.id === 'timer')!.parent_id, undefined);
   assert.deepEqual(graph.relations.map(r => r.id), ['display-clock']);
@@ -661,7 +844,7 @@ test('selecting modules across runs advances the baseline only after all affecte
 
 test('a no-model check between a proposed change and final acceptance confirms the analyzed snapshot', async t => {
   const {root,service,doc,analyzer,calls} = await fixture(t);
-  analyzer.analyze = async input => [proposedUpdate(input, 'Calibrated sensor')];
+  analyzer.analyze = async input => input.unit.id === 'sensor' ? [proposedUpdate(input, 'Calibrated sensor')] : [];
   await write(root, owned.sensor, sources[owned.sensor].replace('+ 1', '+ 8'));
   const pending = await service.updateAffectedArchitecture(projectId);
   assert.equal(pending.document.update_status, 'needs_review');
@@ -669,7 +852,7 @@ test('a no-model check between a proposed change and final acceptance confirms t
   const checked = await service.checkArchitectureUpdates(projectId);
   assert.equal(checked.document.update_status, 'needs_review');
   assert.equal(checked.document.baseline!.snapshot_id, doc.baseline!.snapshot_id);
-  assert.equal(calls.length, 1);
+  assert.deepEqual(calls.map(unit => unit.id), ['sensor','persist']);
   const item = pending.document.review_items[0];
   const accepted = await service.resolveArchitectureReview(projectId,{reviewId:item.id,decision:'accept'});
   assert.equal(accepted.document.modules[0].summary, 'Calibrated sensor');
@@ -677,4 +860,88 @@ test('a no-model check between a proposed change and final acceptance confirms t
   assert.equal(accepted.document.baseline!.snapshot_id, pending.update_run.read_baseline.snapshot_id);
   assert.equal(accepted.document.last_confirmed_version, accepted.document.version);
   assert.equal((await service.updateAffectedArchitecture(projectId)).update_run.model_calls, 0);
+});
+
+test('a manual save keeps the later host check and a restored version requires a fresh check', async t => {
+  const {root,service,doc} = await fixture(t);
+  await write(root,owned.sensor,sources[owned.sensor].replace('+ 1','+ 9'));
+  const checked = await service.checkArchitectureUpdates(projectId);
+  const saved = service.saveArchitectureDocument(projectId,{...doc,title:'Local edit'},doc.version);
+  assert.equal(saved.update_status,'changes_pending');
+  assert.deepEqual(saved.pending_changes_summary,checked.document.pending_changes_summary);
+  await service.updateAffectedArchitecture(projectId);
+  const restored = service.restoreArchitectureVersion(projectId,'main',saved.version);
+  assert.equal(restored.pending_changes_summary,undefined);
+  assert.equal(restored.update_status,'changes_pending');
+  assert.equal(restored.baseline?.snapshot_id,doc.baseline?.snapshot_id);
+  const edited = service.saveArchitectureDocument(projectId,{...restored,title:'Restored edit'},restored.version);
+  assert.equal(edited.update_status,'changes_pending');
+});
+
+test('accept checks the proposed module and relation fields and the latest read fingerprint before writing', async t => {
+  const {root,service,doc,store,analyzer} = await fixture(t);
+  await write(root,owned.sensor,sources[owned.sensor].replace('+ 1','+ 9'));
+  analyzer.analyze = async input => input.unit.id==='sensor' ? [proposedUpdate(input,'Proposed summary'),
+    {category:'relation_update',target_kind:'relation',target_id:doc.relations[0].id,title:'Proposed label',
+      proposed:{label:'Proposed label'},evidence:[cite(input.snapshot,owned.sensor)]}] : [];
+  const {document} = await service.updateAffectedArchitecture(projectId);
+  const edited = structuredClone(document);
+  edited.modules[0].summary='New user summary';
+  edited.relations[0].label='New user label';
+  const saved = service.saveArchitectureDocument(projectId,edited,document.version);
+  for (const item of saved.review_items) {
+    await assert.rejects(service.resolveArchitectureReview(projectId,{reviewId:item.id,decision:'accept'}),/目标内容已变化.*重新检查/);
+  }
+  assert.deepEqual(store.getArchitectureDoc(projectId,'main'),saved);
+  // S2 observes a different checkout state and produces no replacement proposal.
+  await write(root,owned.sensor,sources[owned.sensor].replace('+ 1','+ 12'));
+  analyzer.analyze = async () => [];
+  const newer = await service.updateAffectedArchitecture(projectId);
+  assert.notEqual(newer.update_run.read_baseline.fingerprint,saved.last_update!.read_baseline.fingerprint);
+  await assert.rejects(service.resolveArchitectureReview(projectId,{reviewId:saved.review_items[0].id,decision:'accept'}),/读取快照已变化.*重新检查/);
+  assert.deepEqual(store.getArchitectureDoc(projectId,'main'),newer.document);
+});
+
+test('rechecking the same snapshot replaces a conflicting suggestion and preserves independent edits', async t => {
+  const {root,service,analyzer} = await fixture(t);
+  await write(root,owned.sensor,sources[owned.sensor].replace('+ 1','+ 9'));
+  analyzer.analyze = async input => input.unit.id==='sensor' ? [proposedUpdate(input,'Proposal')] : [];
+  const {document} = await service.updateAffectedArchitecture(projectId);
+  const original = document.review_items[0];
+  const deferred = await service.resolveArchitectureReview(projectId,{reviewId:original.id,decision:'defer',note:'Ask owner'});
+  const edited = deferred.document;
+  edited.modules[0].summary='Owner revision';
+  service.saveArchitectureDocument(projectId,edited,edited.version);
+  const refreshed = await service.updateAffectedArchitecture(projectId);
+  const replacement = refreshed.document.review_items.find(i=>i.dedupe_key===original.dedupe_key)!;
+  assert.notEqual(replacement.id,original.id);
+  assert.equal(replacement.status,'deferred');
+  assert.equal(replacement.decision_note,'Ask owner');
+  assert.equal((replacement.before as ArchitectureModule).summary,'Owner revision');
+  await assert.rejects(service.resolveArchitectureReview(projectId,{reviewId:original.id,decision:'accept'}));
+  refreshed.document.modules[0].notes='Unrelated new note';
+  service.saveArchitectureDocument(projectId,refreshed.document,refreshed.document.version);
+  const accepted = await service.resolveArchitectureReview(projectId,{reviewId:replacement.id,decision:'accept'});
+  assert.equal(accepted.document.modules[0].summary,'Proposal');
+  assert.equal(accepted.document.modules[0].notes,'Unrelated new note');
+});
+
+test('an old module removal cannot delete a newly edited edge or reparent a newly attached child', async t => {
+  const {root,service,store,analyzer} = await fixture(t);
+  await write(root,owned.sensor,sources[owned.sensor].replace('+ 1','+ 9'));
+  analyzer.analyze = async input => input.unit.id==='sensor' ? [{category:'module_remove',target_kind:'module',target_id:'sensor',
+    title:'Remove sensor',evidence:[cite(input.snapshot,owned.sensor)]}] : [];
+  const {document} = await service.updateAffectedArchitecture(projectId);
+  const reviewId = document.review_items[0].id;
+  const changedEdge = structuredClone(document);
+  changedEdge.relations[0].label='User edited this edge';
+  const saved = service.saveArchitectureDocument(projectId,changedEdge,document.version);
+  await assert.rejects(service.resolveArchitectureReview(projectId,{reviewId,decision:'accept'}),/目标内容已变化/);
+  assert.deepEqual(store.getArchitectureDoc(projectId,'main'),saved);
+  const changedChild = structuredClone(saved);
+  changedChild.relations=document.relations;
+  changedChild.modules.find(m=>m.id==='timer')!.parent_id='sensor';
+  const next = service.saveArchitectureDocument(projectId,changedChild,saved.version);
+  await assert.rejects(service.resolveArchitectureReview(projectId,{reviewId,decision:'accept'}),/目标内容已变化/);
+  assert.deepEqual(store.getArchitectureDoc(projectId,'main'),next);
 });

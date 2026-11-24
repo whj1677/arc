@@ -12,7 +12,7 @@ type Edge = AnalysisResult['edges'][number];
 
 interface Props {
   editor?: ArchitectureEditor;
-  snapshot?: Snapshot;
+  snapshots?: Snapshot[];
   result: AnalysisResult;
   selected: string;
   select: (id: string) => void;
@@ -40,7 +40,7 @@ function IO({ title, items }: { title: string; items: Node['inputs'] }) {
     </div>) : <p className="muted">这份分析尚未说明。</p>}</section>;
 }
 
-export function SystemDetail({ editor, snapshot, result, selected, select, inspect, openEvidence, openFeature }: Props) {
+export function SystemDetail({ editor, snapshots, result, selected, select, inspect, openEvidence, openFeature }: Props) {
   const node = result.nodes.find(n => n.node_id === selected);
   const edge = result.edges.find(e => edgeSelection(e.edge_id) === selected);
   const module = editor?.doc?.modules.find(m => m.id === node?.node_id);
@@ -94,7 +94,8 @@ export function SystemDetail({ editor, snapshot, result, selected, select, inspe
           title={editor.dirty ? '请先保存或取消当前架构草稿。' : undefined}
           onClick={() => void editor.updateAffected({ moduleIds: [module.id] })}>重试此模块</button>
       </section>}
-      {module && editor && <ModuleMaintenance key={module.id} module={module} editor={editor} select={select} snapshot={snapshot} />}
+      {module && editor && <ModuleMaintenance key={module.id} module={module} editor={editor} select={select}
+        snapshots={snapshots} defaultSnapshotId={editor.doc?.baseline?.snapshot_id ?? result.binding.source_snapshot_id} />}
       <section className="module-purpose"><h3>负责什么</h3><p>{node.description}</p></section>
       <Sources title={module && '代码依据'} items={module?.evidence ?? context.evidence} open={openEvidence} />
       {context.children.length > 0 && <section className="module-partners"><h3>内部子模块 · {context.children.length}</h3>

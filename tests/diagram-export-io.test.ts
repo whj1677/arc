@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { architectureDocId, type ArchitectureDocument } from '../src/architecture-workspace';
@@ -7,7 +7,7 @@ import { architectureIpc } from '../src/main/architecture-ipc';
 import { diagramSaveDirectory, exportDiagramFile } from '../src/main/diagram-file';
 import { ArcService } from '../src/main/service';
 import type { ArcApi } from '../src/shared';
-import { exportSavedDiagram, pngDimensions } from '../src/ui/diagram-export';
+import { exportSavedDiagram, pngDimensions, readExportVersion } from '../src/ui/diagram-export';
 
 test('PNG sizing applies the requested scale within both canvas limits', () => {
   assert.deepEqual(pngDimensions(700, 550, 'standard'), { scale: 2, pixelWidth: 1400, pixelHeight: 1100 });
@@ -56,6 +56,29 @@ test('the writer validates output paths and bytes, respects cancellation, and at
   assert.deepEqual((await readdir(dir)).sort(), [path.basename(output_path), path.basename(pngPath)].sort());
 });
 
+test('explicit and picked exports reject the project root and directories reached through junctions', async t => {
+  const base = path.resolve('.test-data');
+  await mkdir(base, { recursive: true });
+  const dir = await mkdtemp(path.join(base, 'export-boundary-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const project = path.join(dir, 'project'), nested = path.join(project, 'sub');
+  const alias = path.join(dir, 'project-alias'), sibling = path.join(dir, 'project-other');
+  await mkdir(nested, { recursive: true });
+  await mkdir(sibling);
+  await symlink(project, alias, 'junction');
+  const svg = { format: 'svg', suggested_name: 'test.svg', content_utf8: '<svg></svg>' };
+  for (const parent of [project, nested, path.join(alias, 'sub')]) {
+    const target = path.join(parent, 'test.svg');
+    await assert.rejects(exportDiagramFile(svg, async () => target, project), /工程外/);
+    await assert.rejects(exportDiagramFile({ ...svg, output_path: target }, async () => undefined, alias), /工程外/);
+  }
+  assert.deepEqual(await readdir(project), ['sub']);
+  assert.deepEqual(await readdir(nested), []);
+  const allowed = path.join(sibling, 'test.svg');
+  await exportDiagramFile(svg, async () => allowed, project);
+  assert.equal(await readFile(allowed, 'utf8'), svg.content_utf8);
+});
+
 test('the coordinator binds project, branch and version before rendering and writing', async () => {
   const doc: ArchitectureDocument = { id: 'a', project_id: 'p', branch_key: 'main', version: 4, title: '旧版架构', summary: '',
     modules: [], relations: [], review_items: [], exclusions: [], layout: { positions: {}, manual_positions: [] },
@@ -68,7 +91,7 @@ test('the coordinator binds project, branch and version before rendering and wri
     if (op === 'architecture_get') {
       assert.deepEqual(args, { ...key, document_only: true });
       const frozen = structuredClone(head);
-      head = { ...head, version: 5, title: '较新架构' };
+      head = { ...head, title: '较新架构', update_status: 'changes_pending' as const };
       return { document: frozen } as T;
     }
     assert.equal(op, 'export_diagram_file');
@@ -78,9 +101,11 @@ test('the coordinator binds project, branch and version before rendering and wri
     assert.doesNotMatch(output, /较新架构/);
     return { canceled: false, file_path: 'file.svg', bytes: 1024 } as T;
   };
-  const source = { mode: 'architecture' as const, key, options: { projectName: '工程' } };
+  const previewed = await readExportVersion(invoke, key);
+  const source = { mode: 'architecture' as const, document: previewed, options: { projectName: '工程' } };
   await exportSavedDiagram(invoke, source, 'svg', 'standard');
-  await assert.rejects(exportSavedDiagram(invoke, source, 'svg', 'standard'), /保存版本不一致/);
+  head = { ...head, version: 5 };
+  await assert.rejects(readExportVersion(invoke, key), /保存版本不一致/);
   assert.deepEqual(operations, ['architecture_get', 'export_diagram_file', 'architecture_get']);
 });
 

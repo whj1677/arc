@@ -17,6 +17,15 @@ const relationStatuses = { confirmed: '已确认', inferred: '推断', needs_ver
 const options = (labels: Record<string, string>) => Object.entries(labels).map(([k, v]) => <option key={k} value={k}>{v}</option>);
 function revised(origin: ArchitectureModule['origin']) { return origin === 'manual' ? origin : 'manual_override'; }
 
+export function bindingSnapshotId(link: CodeBinding, evidence: SourceEvidence[], fallback: string) {
+  if (link.source_snapshot_id) return link.source_snapshot_id;
+  const matches = evidence.filter(e => e.path === link.path && (!link.file_sha256 || e.content_sha256 === link.file_sha256));
+  const source = matches.find(e => e.evidence_id === link.id)
+    ?? matches.find(e => e.line_start === link.start_line || e.content_sha256 === link.file_sha256)
+    ?? (matches.length === 1 ? matches[0] : undefined);
+  return source?.source_snapshot_id ?? fallback;
+}
+
 function BindingPreview({ link, snapshot }: { link: CodeBinding; snapshot?: Snapshot }) {
   const [expanded, setExpanded] = useState(false);
   const [path, setPath] = useState('');
@@ -41,7 +50,9 @@ function BindingPreview({ link, snapshot }: { link: CodeBinding; snapshot?: Snap
 }
 
 interface DetailProps { editor: ArchitectureEditor; select: (id: string) => void }
-export function ModuleMaintenance({ module: m, editor, snapshot, select }: DetailProps & { module: ArchitectureModule; snapshot?: Snapshot }) {
+export function ModuleMaintenance({ module: m, editor, snapshots, defaultSnapshotId, select }: DetailProps & {
+  module: ArchitectureModule; snapshots?: Snapshot[]; defaultSnapshotId: string;
+}) {
   const [parentError, setParentError] = useState('');
   const [deleting, setDeleting] = useState(false);
   const doc = editor.doc!;
@@ -75,8 +86,10 @@ export function ModuleMaintenance({ module: m, editor, snapshot, select }: Detai
       <div className="row"><span>所属分层 · {layers[m.layer]}</span><span>父模块 · {doc.modules.find(item => item.id === m.parent_id)?.name ?? '无'}</span></div>
       <section><h3>人工说明</h3><p>{m.notes || '暂无人工说明'}</p></section>
     </>}
-    <section className="system-sources"><h3>代码关联</h3>{m.code_links.length ? m.code_links.map(link =>
-      <BindingPreview key={link.id + '/' + link.path} link={link} snapshot={snapshot} />) : <p className="muted">尚未关联源码位置。</p>}</section>
+    <section className="system-sources"><h3>代码关联</h3>{m.code_links.length ? m.code_links.map(link => {
+      const id = bindingSnapshotId(link, m.evidence, defaultSnapshotId);
+      return <BindingPreview key={link.id + '/' + link.path + '/' + id} link={link} snapshot={snapshots?.find(s => s.source_snapshot_id === id)} />;
+    }) : <p className="muted">尚未关联源码位置。</p>}</section>
   </>;
 }
 

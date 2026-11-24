@@ -32,19 +32,20 @@ export class Store {
       AND json_extract(json,'$.result.binding.project_id')=? ORDER BY rowid DESC LIMIT 10`)
       .all(projectId).reverse().map(row => JSON.parse(String(row.json)));
   }
-  latestOverview(project: Project): Explanation | undefined {
+  latestOverview(project: Project, branchKey?: string): Explanation | undefined {
     if (!project.overview_scenario_id) return;
     const row = this.db.prepare(`SELECT json FROM objects WHERE kind='explanation'
       AND json_extract(json,'$.scenario_id')=? AND json_extract(json,'$.result.binding.project_id')=?
-      ORDER BY json_extract(json,'$.created_at') DESC, rowid DESC LIMIT 1`).get(project.overview_scenario_id, project.project_id);
+      AND (? IS NULL OR coalesce(json_extract(json,'$.branch_key'),json_extract(json,'$.architecture_branch'),'') IN ('',?))
+      ORDER BY json_extract(json,'$.created_at') DESC, rowid DESC LIMIT 1`).get(project.overview_scenario_id, project.project_id, branchKey ?? null, branchKey ?? null);
     return row ? JSON.parse(String(row.json)) : undefined;
   }
   latestFeatureExplanations(project: Project, branchKey?:string): Explanation[] {
     return this.db.prepare(`SELECT json FROM (SELECT json, row_number() OVER (
       PARTITION BY json_extract(json,'$.scenario_id') ORDER BY json_extract(json,'$.created_at') DESC, rowid DESC
       ) AS recency FROM objects WHERE kind='explanation' AND json_extract(json,'$.result.binding.project_id')=?
-      AND json_extract(json,'$.scenario_id') IS NOT ? AND (? IS NULL OR json_extract(json,'$.architecture_branch') IS NULL
-      OR json_extract(json,'$.architecture_branch')=?)) WHERE recency=1`)
+      AND json_extract(json,'$.scenario_id') IS NOT ? AND (? IS NULL OR
+      coalesce(json_extract(json,'$.branch_key'),json_extract(json,'$.architecture_branch'),'') IN ('',?))) WHERE recency=1`)
       .all(project.project_id, project.overview_scenario_id ?? null, branchKey ?? null, branchKey ?? null).map(row => JSON.parse(String(row.json)));
   }
   developmentExplanations(project: Project): Explanation[] {
@@ -86,6 +87,19 @@ export class Store {
   }
   getArchitectureDocById(docId: string): ArchitectureDocument | undefined {
     const row = this.db.prepare("SELECT json FROM objects WHERE kind='architecture_doc' AND id=?").get(docId);
+    return row && JSON.parse(String(row.json));
+  }
+  findArchitectureDocForSnapshot(projectId: string, snapshotId: string, preferredBranchKey?: string): ArchitectureDocument | undefined {
+    // A check can update the current row without adding a version. Prefer it over its history copy.
+    const row = this.db.prepare(`SELECT json FROM (
+      SELECT json, 1 AS head FROM objects WHERE kind='architecture_doc'
+      UNION ALL SELECT json, 0 AS head FROM engineering_versions WHERE kind='architecture_doc')
+      WHERE json_extract(json,'$.project_id')=? AND
+        ? IN (json_extract(json,'$.baseline.snapshot_id'), json_extract(json,'$.last_update.read_baseline.snapshot_id'))
+      ORDER BY (json_extract(json,'$.branch_key')=?) DESC,
+        (json_extract(json,'$.branch_key')=json_extract(json,'$.baseline.branch')) DESC, head DESC,
+        json_extract(json,'$.updated_at') DESC, json_extract(json,'$.version') DESC, json_extract(json,'$.branch_key')
+      LIMIT 1`).get(projectId, snapshotId, preferredBranchKey ?? null);
     return row && JSON.parse(String(row.json));
   }
   listArchitectureDocs(projectId: string): ArchitectureDocument[] {
@@ -136,7 +150,7 @@ export class Store {
     if (!target) throw new Error(`Architecture document version ${targetVersion} not found for ${docId}`);
     const currentVersion = this.getArchitectureDocById(docId)?.version ?? 0;
     return this.saveArchitectureDoc({
-      ...target, last_confirmed_version: target.last_confirmed_version === target.version ? currentVersion + 1 : target.last_confirmed_version,
+      ...target, pending_changes_summary: undefined, update_status: 'changes_pending',
     }, currentVersion);
   }
   transaction<T>(fn: () => T): T { this.db.exec('BEGIN IMMEDIATE'); try { const result = fn(); this.db.exec('COMMIT'); return result; } catch (e) { this.db.exec('ROLLBACK'); throw e; } }

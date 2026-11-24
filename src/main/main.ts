@@ -55,15 +55,17 @@ app.whenReady().then(async()=>{
       if (architectureOperation) return {ok:true, value:await architectureIpc(service, architectureOperation, args)};
       let value:any;
       switch(operation){
-        case diagramExportOperation:
+        case diagramExportOperation: {
+          const projectRoot = args.project_id === undefined ? undefined : service.store.get<Project>('project', args.project_id).root_path;
           value = await exportDiagramFile(args, async (name, format) => {
             const downloads = app.getPath('downloads');
-            const directory = args.project_id ? diagramSaveDirectory(downloads, service.store.get<Project>('project', args.project_id).root_path) : downloads;
+            const directory = projectRoot ? diagramSaveDirectory(downloads, projectRoot) : downloads;
             const picked = await dialog.showSaveDialog(window!, { title: '导出图表',
               defaultPath: path.join(directory, name), filters: [{ name: format.toUpperCase(), extensions: [format] }] });
             return picked.canceled ? undefined : picked.filePath;
-          });
+          }, projectRoot);
           break;
+        }
         case 'mcp_status':value=bridge.status();break;
         case 'mcp_enable':value=await bridge.enable(args.project_id,args.register_codex===true);break;
         case 'mcp_disable':value=bridge.disable();break;

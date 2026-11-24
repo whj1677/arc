@@ -10,9 +10,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { architectureDocumentToAnalysisResult, type ArchitectureDocument, type ArchitectureModule, type CodeBaseline } from '../src/architecture-workspace';
 import { architectureIpc } from '../src/main/architecture-ipc';
 import { ArcService } from '../src/main/service';
-import type { Snapshot } from '../src/shared';
+import { selectedSceneExplanation, type Explanation, type Project, type Snapshot, type SourceEvidence } from '../src/shared';
 import { ArchitectureEditorStore, type ArchitectureInvoke } from '../src/ui/useArchitectureDocument';
 import { Architecture } from '../src/ui/Architecture';
+import { bindingSnapshotId } from '../src/ui/ArchitectureDetailFields';
 import { moveArchitectureModule } from '../src/ui/architecture-map';
 
 const at = '2026-01-01T00:00:00Z';
@@ -86,7 +87,11 @@ test('editor state saves a small IPC payload, reopens the exact draft, cancels e
   assert.deepEqual(store.getSnapshot().savedDoc!.last_update!.read_baseline.file_hashes, hashes);
   assert.deepEqual(store.getSnapshot().versions.map(v => v.version), [2, 1]);
 
-  const reopened = new ArchitectureEditorStore('p', invoke);
+  const operations: string[] = [];
+  const reopened = new ArchitectureEditorStore('p',(op,args) => {
+    operations.push(op);
+    return invoke(op,args);
+  });
   await reopened.load();
   assert.deepEqual(reopened.getSnapshot().doc!.modules, draft.modules);
   assert.deepEqual(reopened.getSnapshot().doc!.layout, draft.layout);
@@ -96,6 +101,7 @@ test('editor state saves a small IPC payload, reopens the exact draft, cancels e
   assert.equal(reopened.getSnapshot().draftDoc, null);
   assert.equal(reopened.getSnapshot().doc!.title, blank.title);
   await reopened.restoreVersion(1);
+  assert.deepEqual(operations.slice(-2),['architecture_restore','architecture_check_updates']);
   assert.equal(reopened.getSnapshot().draftDoc, null);
   assert.deepEqual(reopened.getSnapshot().versions.map(v => v.version), [3, 2, 1]);
   assert.deepEqual(reopened.getSnapshot().doc!.modules, first.modules);
@@ -143,6 +149,66 @@ test('editor state blocks cyclic parents before IPC and preserves a losing write
   assert.equal(store.getSnapshot().doc!.title, winner.title);
 });
 
+test('dirty positions are restored independently across branch and project switches', async t => {
+  const { service, invoke } = await fixture(t);
+  const project = service.store.get<Project>('project', 'p');
+  service.store.put('project', 'q', { ...project, project_id: 'q' });
+  let branch = 'main';
+  t.mock.method(service, 'getActiveArchitectureBranch', async () => branch);
+  const drafts = new Map<string, ArchitectureDocument>();
+  const editor = new ArchitectureEditorStore('p', invoke, drafts);
+  await editor.load();
+  editor.enterEditMode();
+  editor.updateDraft(doc => ({ ...doc, modules: [module('node', '主分支')] }));
+  editor.updateDraft(doc => moveArchitectureModule(doc, 'node', { x: 15, y: 40 }));
+  branch = 'topic';
+  await editor.load();
+  assert.equal(editor.getSnapshot().dirty, false);
+  assert.match(editor.getSnapshot().branchNotice!, /topic.*main.*未保存草稿/);
+  editor.enterEditMode();
+  editor.updateDraft(doc => ({ ...doc, title: '其他分支草稿' }));
+  const other = new ArchitectureEditorStore('q', invoke, drafts);
+  await other.load();
+  assert.equal(other.getSnapshot().dirty, false);
+  assert.notEqual(other.getSnapshot().doc!.title, '其他分支草稿');
+  const returned = new ArchitectureEditorStore('p', invoke, drafts);
+  await returned.load();
+  assert.equal(returned.getSnapshot().draftDoc!.title, '其他分支草稿');
+  branch = 'main';
+  await returned.load();
+  assert.equal(returned.getSnapshot().dirty, true);
+  assert.deepEqual(returned.getSnapshot().draftDoc!.layout.positions.node, { x: 15, y: 40 });
+  returned.cancelEdit();
+  await returned.load();
+  assert.equal(returned.getSnapshot().draftDoc, null);
+});
+
+test('default walkthroughs are branch-scoped in SQLite and the workbench, while historical ids remain readable', async t => {
+  const { service, store } = await fixture(t);
+  const project = service.store.get<Project>('project', 'p');
+  const result = architectureDocumentToAnalysisResult(store.getSnapshot().doc!);
+  const base: Explanation = { result_id: 'legacy', scenario_id: 'walk', created_at: at, source_status: 'current', result };
+  for (const row of [base, { ...base, result_id: 'old-main', architecture_branch: 'main' },
+    { ...base, result_id: 'topic', branch_key: 'topic' }]) service.store.put('explanation', row.result_id, row);
+  for (const [branch, expected] of [['main', 'old-main'], ['topic', 'topic'], ['release', 'legacy']]) {
+    assert.equal(service.store.latestFeatureExplanations(project, branch)[0].result_id, expected);
+    const scene = service.store.all<Explanation>('explanation');
+    assert.equal(selectedSceneExplanation(scene, { result_id: '' }, branch)?.result_id, expected);
+    assert.equal(selectedSceneExplanation(scene, { result_id: 'topic', result_branch_key: 'topic' }, branch)?.result_id, expected);
+    assert.equal(selectedSceneExplanation(scene, { result_id: 'topic' }, branch)?.result_id, 'topic');
+  }
+  assert.equal(service.store.get<Explanation>('explanation', 'topic').branch_key, 'topic');
+});
+
+test('binding previews prefer their own frozen snapshot, then matching evidence, then the document baseline', () => {
+  const link = { id: 'binding', kind: 'file' as const, origin: 'manual' as const, path: 'control.ts', file_sha256: 'digest' };
+  const evidence: SourceEvidence = { evidence_id: 'reference', path: link.path, source_snapshot_id: 'evidence-snapshot',
+    content_sha256: 'digest', role: 'context', line_start: 6, line_end: 7, note: '' };
+  assert.equal(bindingSnapshotId({ ...link, source_snapshot_id: 'pinned' }, [evidence], 'baseline'), 'pinned');
+  assert.equal(bindingSnapshotId(link, [evidence], 'baseline'), 'evidence-snapshot');
+  assert.equal(bindingSnapshotId(link, [{ ...evidence, content_sha256: 'old' }], 'baseline'), 'baseline');
+});
+
 test('deletion preview resolves saved and draft-only bindings against the current project walkthroughs', async t => {
   const { service, store, invoke } = await fixture(t);
   const group = module('group', '控制组');
@@ -177,6 +243,7 @@ test('Electron editor maintains modules, relations, positions and deletion impac
   const group = { ...module('group', '控制组'), origin: 'code_analysis' as const,
     implementation_status: 'implemented' as const, code_links: [{ id: 'f', kind: 'file' as const, path: 'control.ts', origin: 'code_analysis' as const }] };
   service.saveArchitectureDocument('p', { ...store.getSnapshot().savedDoc!,
+    baseline: { snapshot_id: 's', fingerprint: digest, workspace_fingerprint: digest, file_hashes: { 'control.ts': digest }, dirty: false, captured_at: at },
     modules: [group, module('child', '采样', 'group'), module('sink', '缓存')],
     relations: [{ id: 'publish', from: 'group', to: 'sink', kind: 'data_publish', label: '发布状态',
       origin: 'code_analysis', status: 'confirmed', evidence: [], updated_at: at }] }, 0);
@@ -200,9 +267,10 @@ test('Electron editor maintains modules, relations, positions and deletion impac
       const editor = useArchitectureDocument('p', '', window.arc.invoke);
       if (!editor.doc) return editor.loadError;
       const result = architectureDocumentToAnalysisResult(editor.doc);
+      result.binding.source_snapshot_id = 'older-overview';
       return <><section style={{width:680}}><Architecture {...{ editor, result, selected, select }}
         inspect={noop} modules={noop} zoom={0.75} search=""/></section>
-        <aside><SystemDetail {...{ editor, result, selected, select }} snapshot={${JSON.stringify(snapshot)}} inspect={noop} openFeature={noop} openEvidence={noop}/></aside>
+        <aside><SystemDetail {...{ editor, result, selected, select }} snapshots={[${JSON.stringify(snapshot)}]} inspect={noop} openFeature={noop} openEvidence={noop}/></aside>
         <output hidden id="test-document">{JSON.stringify(editor.doc)}</output></>;
     }
     createRoot(document.getElementById('root')).render(<Fixture/>);
@@ -215,7 +283,12 @@ test('Electron editor maintains modules, relations, positions and deletion impac
   try {
     const page = await app.firstWindow();
     page.setDefaultTimeout(8000);
-    await page.exposeFunction('editorInvoke', invoke);
+    let indexedSnapshot: string | undefined;
+    await page.exposeFunction('editorInvoke', (op: string, payload: { source_snapshot_id: string }) => {
+      if (op !== 'code_index_summary') return invoke(op, payload);
+      indexedSnapshot = payload.source_snapshot_id;
+      return { modules: [], module_edges: [], total_files: 0, total_symbols: 0, total_calls: 0 };
+    });
     await page.addScriptTag({ path: path.join(dir, 'fixture.js') });
     const button = (name: string) => page.getByRole('button', { name, exact: true });
     const detail = page.locator('aside');
@@ -225,6 +298,10 @@ test('Electron editor maintains modules, relations, positions and deletion impac
     const excerpt = detail.getByRole('region', { name: '冻结源码依据' }).locator('pre');
     assert.match(await excerpt.innerText(), /frozenController/);
     assert.doesNotMatch(await excerpt.innerText(), /liveController/);
+    await button('代码模块依赖（静态索引）').click();
+    await page.getByText('此快照中没有可索引的源码文件。').waitFor();
+    assert.equal(indexedSnapshot, 's');
+    await button('分层架构图').click();
     await button('编辑架构').click();
     await card('group').click();
     const parentField = detail.getByLabel('父模块', { exact: true });

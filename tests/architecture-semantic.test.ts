@@ -4,7 +4,7 @@ import path from 'node:path';
 import {test} from 'node:test';
 import type {ArchitectureDocument} from '../src/architecture-workspace';
 import type {Explanation, SourceEvidence} from '../src/shared';
-import {createCodexSemanticAnalyzer, makeReviewItem, type SemanticInput} from '../src/main/architecture-semantic';
+import {createCodexSemanticAnalyzer, makeReviewItem, validateSemanticProposals, type SemanticInput} from '../src/main/architecture-semantic';
 import {resolveArchitectureReviewDecision} from '../src/main/architecture-review';
 import type {ActiveProcess} from '../src/main/providers';
 import {capture} from '../src/main/snapshot';
@@ -61,7 +61,11 @@ test('default incremental Codex adapter scopes files, applies model settings, va
   assert.deepEqual(proposal.evidence,[ev]);
   assert.match(proposal.analysis_run_id!,/^architecture-/);
   response={proposals:[{...wire,evidence:[{...ev,path:'unrelated.c',symbol_id:null}]}]};
-  await assert.rejects(analyzer.analyze(input),/冻结源码范围/);
+  await assert.rejects(analyzer.analyze(input),/文件哈希错误/);
+  const outside=snapshot.files.find(f=>f.path==='unrelated.c')!;
+  response={proposals:[{...wire,evidence:[{...ev,path:outside.path,content_sha256:outside.content_sha256,symbol_id:null}]}]};
+  const outsideProposals=await analyzer.analyze(input);
+  assert.throws(()=>validateSemanticProposals(outsideProposals,input),/冻结源码范围/);
   response={proposals:[{...wire,proposed:{...wire.proposed,arbitrary_field:'unexpected'}}]};
   await assert.rejects(analyzer.analyze(input),/结构无效/);
   input.unit={kind:'unmapped',id:'a.c',paths:['a.c']};
@@ -84,5 +88,5 @@ test('default incremental Codex adapter scopes files, applies model settings, va
   input.unit={kind:'feature',id:'f',paths:['a.c'],explanation:prior};
   response={proposals:[]};
   assert.deepEqual(await analyzer.analyze(input),[]);
-  assert.equal(calls,5);
+  assert.equal(calls,6);
 });

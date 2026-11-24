@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client';
 import type { EngineeringTask } from '../engineering';
 import type { CodexPreferences, Project, ReadingState, Run, Scenario, SourceEvidence, WorkspaceData } from '../shared';
-import { hasFunctionGraphs } from '../shared';
+import { explanationOnBranch, hasFunctionGraphs, selectedSceneExplanation } from '../shared';
 import { explanationFreshness } from '../freshness';
 import { discoveredFeature } from '../discovered-feature';
 import { functionCallMap } from './function-call-map';
@@ -78,7 +78,8 @@ const overviewLanding = {
 } as const;
 
 function applyReadingPosition(reading: ReadingState, position: Partial<ReadingState>): ReadingState {
-  return { ...reading, ...position, ...(position.scroll && { scroll: { ...reading.scroll, ...position.scroll } }) };
+  return { ...reading, ...(position.result_id !== undefined && { result_branch_key: undefined }),
+    ...position, ...(position.scroll && { scroll: { ...reading.scroll, ...position.scroll } }) };
 }
 
 function scrollArchitectureToTop() {
@@ -146,13 +147,17 @@ function App() {
     .sort((a, b) => userFeatures.findIndex(f => f.feature_id === a.feature_id) - userFeatures.findIndex(f => f.feature_id === b.feature_id) || a.sort_order - b.sort_order);
 
   const sceneExplanations = data.explanations.filter(e => e.scenario_id === scenarioId);
-  const explanation = sceneExplanations.find(e => e.result_id === storedReading.result_id) || (storedReading.result_id ? undefined : sceneExplanations.at(-1));
-  const result = explanation?.result;
   const latestOverview = data.explanations.findLast(item => item.scenario_id === project?.overview_scenario_id && item.result.binding.project_id === projectId);
-  const maintainedView = storedReading.entrance === 'overview' && ['system', 'map', 'modules'].includes(storedReading.view)
-    && !(explanation && latestOverview && explanation.result_id !== latestOverview.result_id);
+  const viewingOverview = storedReading.entrance === 'overview' && ['system', 'map', 'modules'].includes(storedReading.view);
   const architecture = useArchitectureDocument(projectId, JSON.stringify([project?.snapshot_id, latestOverview?.result_id]), api.invoke,
-    maintainedView && storedReading.view !== 'modules');
+    viewingOverview && storedReading.view !== 'modules' && (!storedReading.result_id || storedReading.result_id === latestOverview?.result_id));
+  const branchExplanations = useMemo(() => data.explanations.filter(e => explanationOnBranch(e, architecture.activeBranch)),
+    [data.explanations, architecture.activeBranch]);
+  const branchData = { ...data, explanations: branchExplanations };
+  const explanation = selectedSceneExplanation(sceneExplanations, storedReading, architecture.activeBranch);
+  const branchOverview = branchExplanations.findLast(e => e.scenario_id === project?.overview_scenario_id && e.result.binding.project_id === projectId);
+  const maintainedView = viewingOverview && (!explanation || explanation.result_id === branchOverview?.result_id);
+  const result = explanation?.result;
   const architectureSource = data.explanations.find(item => item.result_id === architecture.doc?.source_explanation_id);
   const projected = useMemo(() => {
     if (!maintainedView || !architecture.doc) return;
@@ -194,7 +199,7 @@ function App() {
   const overview = reading.entrance === 'overview';
   const overviewSectionsVisible = overview && reading.view === 'system' && !project?.fictional;
   const walkNavigation = reading.entrance === 'walk' && !engineeringReading;
-  const catalogExplanation = data.explanations.filter(e => e.scenario_id === project?.overview_scenario_id && e.result.feature_catalog).at(-1);
+  const catalogExplanation = branchExplanations.findLast(e => e.scenario_id === project?.overview_scenario_id && e.result.feature_catalog);
   const lastCheck = data.project_freshness?.[projectId];
   const projectFreshness = lastCheck?.snapshot_id === project?.snapshot_id ? lastCheck : undefined;
   const freshness = !catalogReading && explanation && project ? explanationFreshness(explanation, project.snapshot_id, projectFreshness?.changed_files ?? []) : undefined;
@@ -258,8 +263,8 @@ function App() {
       : undefined;
 
   const suggestedPath = useMemo(
-    () => (overviewSectionsVisible && project ? savedBusinessPath(project, walkScenes, data.explanations) : undefined),
-    [overviewSectionsVisible, project, data.scenarios, data.features, data.explanations],
+    () => (overviewSectionsVisible && project ? savedBusinessPath(project, walkScenes, branchExplanations) : undefined),
+    [overviewSectionsVisible, project, data.scenarios, data.features, branchExplanations],
   );
   const currentFeature = data.features.find(f => f.feature_id === scenario?.feature_id);
   const breakdownFeature = modal === 'breakdown' && data.features.find(f => f.feature_id === formFeature);
@@ -276,16 +281,17 @@ function App() {
         )
       : undefined;
   const requestedCatalog =
-    discovery && !result ? data.explanations.find(e => e.result_id === reading.result_id && e.result.feature_catalog && e.result.binding.project_id === projectId) : undefined;
+    discovery && !result && (reading.result_branch_key === undefined || reading.result_branch_key === architecture.activeBranch)
+      ? data.explanations.find(e => e.result_id === reading.result_id && e.result.feature_catalog && e.result.binding.project_id === projectId) : undefined;
   const featureSource =
     discovery && reading.entrance === 'walk' && scenario?.kind === 'feature_overview' && !result
       ? requestedCatalog && discoveredFeature(data.features, data.explanations, requestedCatalog.result, discovery.node_id, project?.snapshot_id || '')?.feature_id === currentFeature?.feature_id
         ? requestedCatalog
-        : data.explanations.find(e => e.result_id === discovery.result_id && e.result.binding.project_id === projectId)
+        : branchExplanations.find(e => e.result_id === discovery.result_id && e.result.binding.project_id === projectId)
       : undefined;
   const preview = featureSource && !catalogReading && !engineeringReading && project && discovery;
   const functionPreview = !!preview && reading.view === 'functions';
-  const previewGraphs = preview ? catalogGraphState(data, featureSource, preview.node_id) : undefined;
+  const previewGraphs = preview ? catalogGraphState(branchData, featureSource, preview.node_id) : undefined;
   const previewRun = previewGraphs?.run;
   const automaticRun = previewRun?.overview_parent_run_id;
   const previewExplanation = functionPreview ? previewGraphs?.ready ?? (!automaticRun ? previewGraphs?.latest : undefined) : undefined;
@@ -402,7 +408,7 @@ function App() {
   const { items: events, error: eventError } = useRunEvents(activityRun);
   const indexTasks = Object.values(indexes);
 
-  const patch = useCallback((value: Partial<ReadingState>) => setReading(r => ({ ...r, ...value })), []);
+  const patch = useCallback((value: Partial<ReadingState>) => setReading(r => applyReadingPosition(r, value)), []);
 
   useEffect(() => {
     if (reading.entrance === 'walk' && reading.view === 'collaboration' && result && !hasCollaboration && loadedKey === readingKey) {
@@ -414,6 +420,7 @@ function App() {
     if (!previewExplanation || loadedKey !== readingKey) return;
     patch({
       result_id: previewExplanation.result_id,
+      result_branch_key: architecture.activeBranch,
       source_snapshot_id: previewExplanation.result.binding.source_snapshot_id,
       selected: '',
       file: '',
@@ -425,7 +432,7 @@ function App() {
       mode: 'normal',
     });
     setShowDetail(false);
-  }, [previewExplanation?.result_id, loadedKey, readingKey, patch]);
+  }, [previewExplanation?.result_id, architecture.activeBranch, loadedKey, readingKey, patch]);
 
   function switchView(view: string, overrides: Partial<ReadingState> = {}) {
     closePopovers();
@@ -435,8 +442,8 @@ function App() {
       const featurePosition = featureViewPosition(r, view, result?.binding.source_snapshot_id || '');
       if (featurePosition) return { ...featurePosition, ...overrides };
       if (r.view === view) return { ...r, ...overrides };
-      const { selected, file, evidence_id, source_snapshot_id, mode, detail_tab, zoom, stage, result_id } = r;
-      const savedState = { selected, file, evidence_id, source_snapshot_id, mode, detail_tab, zoom, stage, result_id };
+      const { selected, file, evidence_id, source_snapshot_id, mode, detail_tab, zoom, stage, result_id, result_branch_key } = r;
+      const savedState = { selected, file, evidence_id, source_snapshot_id, mode, detail_tab, zoom, stage, result_id, result_branch_key };
       const target = r.view_states?.[view] || {
         selected: '',
         file: '',
@@ -447,6 +454,7 @@ function App() {
         zoom: 1,
         stage: '',
         result_id: r.result_id,
+        result_branch_key: r.result_branch_key,
       };
       return { ...r, ...target, view, view_states: { ...r.view_states, [r.view]: savedState }, ...overrides };
     });
@@ -724,10 +732,10 @@ function App() {
     setArchOverlay(null);
     const scene = data.scenarios.find(s => s.scenario_id === id);
     if (!value && (scene?.kind === 'feature_overview' || scene?.kind === 'breakdown')) {
-      const graph = data.explanations.findLast(e => e.scenario_id === id && e.result.binding.question_revision_id === scene.question_revision_id && hasFunctionGraphs(e.result));
+      const graph = branchExplanations.findLast(e => e.scenario_id === id && e.result.binding.question_revision_id === scene.question_revision_id && hasFunctionGraphs(e.result));
       if (graph) value = {
         entrance: 'walk', view: 'functions', function_mode: 'calls', function_path: firstGraphPath(graph.result),
-        result_id: graph.result_id, source_snapshot_id: graph.result.binding.source_snapshot_id,
+        result_id: graph.result_id, result_branch_key: architecture.activeBranch, source_snapshot_id: graph.result.binding.source_snapshot_id,
         mode: 'normal', detail_tab: 'details', selected: '', file: '', evidence_id: '', pinned: false,
       };
     }
@@ -1313,7 +1321,7 @@ function App() {
         const opened = await api.invoke('feature_open', { project_id: projectId, result_id: catalog.result_id, node_id: nodeId, request_mcp: false });
         const workspace = await reload();
         if (requestedProject !== projectSwitch.current) return;
-        const graph = catalogGraphState(workspace, catalog, nodeId);
+        const graph = catalogGraphState({ ...workspace, explanations: workspace.explanations.filter(e => explanationOnBranch(e, architecture.activeBranch)) }, catalog, nodeId);
         const automatic = !!graph.run?.overview_parent_run_id;
         const report = graph.ready ?? (!automatic ? graph.latest : undefined);
         emptyEntrance.current = 'walk';
@@ -1322,6 +1330,7 @@ function App() {
           view: graph.ready || automatic ? 'functions' : 'timeline',
           mode: 'normal',
           result_id: report?.result_id || catalog.result_id,
+          result_branch_key: architecture.activeBranch,
           selected: '',
           file: '',
           evidence_id: '',
@@ -1546,7 +1555,7 @@ function App() {
 
   const catalog = walkNavigation && (
     <CatalogSidebar
-      data={data}
+      data={branchData}
       project={project}
       catalogExplanation={catalogExplanation}
       projectFreshness={projectFreshness}
@@ -1662,7 +1671,7 @@ function App() {
     ? data.scenarios
         .filter(s => s.project_id === project.project_id && s.scenario_id !== project.overview_scenario_id)
         .flatMap(s => {
-          const latest = data.explanations
+          const latest = branchExplanations
             .filter(e => e.scenario_id === s.scenario_id)
             .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
             .at(-1);
@@ -1714,7 +1723,7 @@ function App() {
       }}
       architectureResult={projected}
       overviewSections={overviewSections}
-      data={data}
+      data={branchData}
       project={project}
       freshness={freshness}
       refreshAndAnalyze={() => void requestAnalysis(catalogReading || scenarioId === project?.overview_scenario_id, true)}

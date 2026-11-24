@@ -75,6 +75,8 @@ async function seed(root: string, data: string) {
     db.put('scenario', walk.scenario_id, { project_id: project, feature_id: 'measure', scenario_id: walk.scenario_id,
       title: '采集走读', question: '怎样采集温度', question_revision_id: 'r', sort_order: 1, archived: false });
     db.put('explanation', walk.result_id, walk);
+    db.put('explanation', 'other-branch-walk', { ...walk, result_id: 'other-branch-walk', branch_key: 'other-branch',
+      result: { ...walk.result, result_id: 'other-branch-walk' } });
     return snapshot.source_snapshot_id;
   } finally { db.close(); }
 }
@@ -220,21 +222,14 @@ test('Electron exports frozen whole, subgraph and reading diagrams to standalone
       const back = button('← 返回图与原位置');
       if (await back.isVisible()) await back.click();
     };
-    const versionRead = async (version: number) => {
-      await electron.evaluate(({ app }, v) => { app.emit('export-test-hold', v); }, version);
-    };
     const write = async (filename: string, concurrent?: () => void) => {
       const dest = path.join(output, filename);
       await electron.evaluate(({ app }, file) => { app.emit('export-test-path', file); }, dest);
-      await modalButton('确认导出').click();
       if (concurrent) {
-        await electron.evaluate(({ app }) => new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => reject(Error('No exact version read during confirmation')), 10_000);
-          app.emit('export-test-arrived', (arrived: Promise<void>) => arrived.then(() => { clearTimeout(timer); resolve(); }));
-        }));
-        try { concurrent(); }
-        finally { await electron.evaluate(({ app }) => { app.emit('export-test-resume'); }); }
+        await modal.getByLabel('范围预览').waitFor();
+        concurrent();
       }
+      await modalButton('确认导出').click();
       await modal.waitFor({ state: 'hidden' });
       assert.ok((await fs.stat(dest)).size > 100);
       return dest;
@@ -282,7 +277,6 @@ test('Electron exports frozen whole, subgraph and reading diagrams to standalone
     await button('导出').click();
     await field('文件格式').selectOption('png');
     await field('分辨率').selectOption('standard');
-    await versionRead(2);
     const wholePng = await write('完整.png', () => anotherWriter(data, 2, '三版采样'));
     // v3 moves the faraway cache by 1250px. A mixed render would have different PNG dimensions.
     await inspectPng(viewer, wholePng, whole, 2);
@@ -301,7 +295,6 @@ test('Electron exports frozen whole, subgraph and reading diagrams to standalone
       await modal.getByText(/\[外部\].*远端缓存/).first().waitFor();
     };
     await openSubgraph();
-    await versionRead(3);
     const sub = await inspectSvg(viewer, await write('子图.svg', () => anotherWriter(data, 3, '四版替换')));
     assert.deepEqual(sub.nodes.map(n => n.id).sort(), ['child', 'sensor']);
     assert.equal(sub.external, 1);

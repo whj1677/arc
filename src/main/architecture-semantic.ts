@@ -175,6 +175,10 @@ export function makeReviewItem(proposal:SemanticProposal, base:ArchitectureDocum
   const signature=proposalSignature(kind,target,proposed,saved ?? lookup(base));
   const evidence_fingerprint=computeEvidenceFingerprint(evidence,signature);
   let before:unknown=saved;
+  if (saved && operation==='module_remove') {
+    before={...saved,incident_relations:latest.relations.filter(rel=>rel.from===target || rel.to===target),
+      child_ids:latest.modules.filter(mod=>mod.parent_id===target).map(mod=>mod.id)};
+  }
   if (kind==='feature' && explanation) {
     const patch=proposed as FlowPatch;
     if((!patch.reading_guide||isDeepStrictEqual(patch.reading_guide,explanation.result.reading_guide)) &&
@@ -186,7 +190,7 @@ export function makeReviewItem(proposal:SemanticProposal, base:ArchitectureDocum
   if (exclusion && !operation.endsWith('_remove') && operation!=='rename_uncertain') {
     if(exclusion.evidence_fingerprint===evidence_fingerprint)return;
     category='exclusion_conflict';
-    before=exclusion;
+    before=saved ?? exclusion;
   } else if (operation!=='rename_uncertain' && kind!=='feature') {
     const patch=fields(proposed ?? {});
     if(saved && !operation.endsWith('_remove') && operation!=='uncertain' &&
@@ -269,7 +273,6 @@ export function createCodexSemanticAnalyzer(store:Store, resources:string, runne
       for(const [key,value] of Object.entries(patch))if(value===null && !(key==='parent_id'&&p.category==='hierarchy_change'))delete patch[key];
       for(const e of p.evidence)if(e.symbol_id===null)delete (e as {symbol_id?:string}).symbol_id;
     }
-    validateSemanticProposals(proposals,input);
     const errors=await validateEvidence(proposals.flatMap(p=>p.evidence),snapshot,store.directory);
     if(errors.length)throw Error(errors.join('；'));
     return proposals.map(proposal=>({...proposal,analysis_run_id:runId}));

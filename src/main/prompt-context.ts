@@ -1,18 +1,7 @@
 import type {Snapshot,Annotation,AnalysisResult,ArchitectureContext,ReadingContext,ReadingQuestion,ReadingTarget,Project,Feature,Scenario} from '../shared';
 import type { ArchitectureDocument, CodeBaseline } from '../architecture-workspace';
-import { detectWorkspaceGitState } from './architecture-workspace-service';
-import type { Store } from './store';
 import {relativePath} from './snapshot';
 import {savedReadingGuide} from '../feature-graph-guide';
-
-// Existing frozen-only projects can still be read without touching a live checkout.
-export async function savedPromptArchitecture(store: Store, projectId: string) {
-  const hasDocument = store.db.prepare("SELECT 1 FROM objects WHERE kind='architecture_doc' AND json_extract(json,'$.project_id')=? LIMIT 1").get(projectId);
-  if (!hasDocument) return;
-  const project = store.get<Project>('project', projectId);
-  const { branchKey } = await detectWorkspaceGitState(project.root_path);
-  return store.getArchitectureDoc(projectId, branchKey);
-}
 
 const baselineSummary = ({file_hashes, ...baseline}: CodeBaseline) => baseline;
 

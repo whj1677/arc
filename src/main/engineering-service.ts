@@ -10,7 +10,7 @@ import {locate} from './executables';
 import {capture,fileSha256,freshness,readSource,sha,relativePath,rollbackPathAllowed,safeFile,workspaceFiles,workspaceGitDirectory} from './snapshot';
 import {exportEngineeringProject,restoreEngineeringProject} from './engineering-transfer';
 import {scanAecLegacy,type AecScan,type AecLegacyDocument} from './aec-migration';
-import {architectureContextField,readingTarget,savedPromptArchitecture} from './prompt-context';
+import {architectureContextField,readingTarget} from './prompt-context';
 import {workspaceBranchKey} from './architecture-workspace-service';
 import {ProjectEnvironmentService,formatEnvironmentBrief} from './env-probe';
 import {buildDevelopmentKnowledgeBrief} from './development-knowledge';
@@ -160,9 +160,19 @@ export class EngineeringService {
     this.store.put(workspaceKind,workspace.workspace_id,workspace);
     await this.context({project_id:projectId});return workspace;
   }
-  async resolve(input:ContextRequest):Promise<WorkspaceBinding> {
+  async resolve(input:ContextRequest,allowOfflineRead=false):Promise<WorkspaceBinding> {
     let workspace:WorkspaceBinding|undefined;
-    if(input.workspace_path){const real=await fs.realpath(input.workspace_path);workspace=this.store.all<WorkspaceBinding>(workspaceKind).find(w=>w.status==='bound'&&samePath(w.root_path,real));if(!workspace)throw Error('此工作区尚未绑定 ARC 工程，请先连接工程。');if(input.project_id&&input.project_id!==workspace.project_id)throw Error('工作区与工程归属不一致');}
+    if(input.workspace_path){
+      const requested=input.workspace_path;
+      const real=await fs.realpath(requested).catch(error=>{
+        // A missing mount can only identify frozen data by its recorded absolute path.
+        if(!allowOfflineRead||error.code!=='ENOENT'||path.resolve(requested)!==requested)throw error;
+        return requested;
+      });
+      workspace=this.store.all<WorkspaceBinding>(workspaceKind).find(w=>w.status==='bound'&&samePath(w.root_path,real));
+      if(!workspace)throw Error('此工作区尚未绑定 ARC 工程，请先连接工程。');
+      if(input.project_id&&input.project_id!==workspace.project_id)throw Error('工作区与工程归属不一致');
+    }
     else if(input.project_id)workspace=this.store.all<WorkspaceBinding>(workspaceKind).find(w=>w.project_id===input.project_id);
     if(!workspace)throw Error('必须指定已连接工程或真实工作区');
     if(workspace.status!=='bound')throw Error('恢复的工程尚未绑定本机工作区，请先重新绑定');
@@ -208,10 +218,18 @@ export class EngineeringService {
     const currentWorkspace=this.store.get<WorkspaceBinding>(workspaceKind,workspace.workspace_id);if(currentWorkspace.status!=='bound'||!samePath(currentWorkspace.root_path,workspace.root_path))throw Error('采集期间工作区已重新绑定，请重新读取');
     this.store.put('engineering_state',workspace.workspace_id,state);return state;
   }
-  async context(input:ContextRequest,includeMaterialSources=false):Promise<EngineeringContext> {
+  private frozenArchitecture(projectId:string,state:CodeState,explanation?:Explanation){
+    const branch=explanation?.branch_key??explanation?.architecture_branch??workspaceBranchKey(state.branch,state.head);
+    const matching=this.store.findArchitectureDocForSnapshot(projectId,explanation?.result.binding.source_snapshot_id??state.snapshot_id,branch);
+    if(matching)return matching;
+    // Manual architecture can exist before its first code baseline.
+    const head=this.store.getArchitectureDoc(projectId,branch);
+    return head?.baseline?undefined:head;
+  }
+  async context(input:ContextRequest & {requireLiveState?:boolean},includeMaterialSources=false):Promise<EngineeringContext> {
     if(input.view!==undefined&&!['strict','execution'].includes(input.view))throw Error('上下文读取模式无效');
     const restored=input.project_id&&!input.workspace_path?this.store.all<WorkspaceBinding>(workspaceKind).find(w=>w.project_id===input.project_id&&w.status==='unbound'):undefined;
-    const workspace=restored??await this.resolve(input),projectId=workspace.project_id;
+    const workspace=restored??await this.resolve(input,!input.refresh&&!input.requireLiveState),projectId=workspace.project_id;
     if(input.task_id&&this.task(input.task_id).project_id!==projectId)throw Error('任务不属于当前工程');
     if(input.offset!==undefined&&(!Number.isSafeInteger(input.offset)||input.offset<0)||input.limit!==undefined&&(!Number.isSafeInteger(input.limit)||input.limit<1))throw Error('上下文分页参数无效');
     const entryId=input.result_id?undefined:input.entry_id;
@@ -221,15 +239,22 @@ export class EngineeringService {
       if(cached&&state){
         const entry=this.store.maybe<ContextEntry>(contextKind,entryId);
         const entries=entry&&entry.project_id===projectId&&this.matchesContext(entry,input)?[this.contextEntry(entry,60000)]:[];
-        const doc=restored||input.cached?this.store.getArchitectureDoc(projectId,workspaceBranchKey(state.branch,state.head)):await savedPromptArchitecture(this.store,projectId);
+        const doc=this.frozenArchitecture(projectId,state);
         return {project_id:projectId,workspace,version:cached.version,code_state:state,entries,total_entries:entries.length,next_offset:null,analysis_refs:[],recent_tasks:[],...architectureContextField(doc)};
       }
     }
     const readContextState=()=>this.store.maybe<{fingerprint:string;version:number}>('engineering_context_state',projectId);
     const cachedContext=input.cached&&!input.refresh&&!input.result_id?readContextState():null;
     const cachedState=cachedContext?this.store.maybe<CodeState>('engineering_state',workspace.workspace_id):null;
-    const state=cachedState??(restored?this.store.get<CodeState>('engineering_state',workspace.workspace_id):await this.captureState(projectId));
-    if(!cachedState){
+    let liveStateError:string|undefined;
+    const state=cachedState??(restored?this.store.get<CodeState>('engineering_state',workspace.workspace_id):await this.captureState(projectId).catch(error=>{
+      if(input.refresh||input.requireLiveState||!readContextState())throw error;
+      const saved=this.store.maybe<CodeState>('engineering_state',workspace.workspace_id);
+      if(!saved)throw error;
+      liveStateError=String(error);
+      return saved;
+    }));
+    if(!cachedState&&!liveStateError){
       const old=readContextState();
       if(!restored&&(input.refresh||!old||old.fingerprint!==state.fingerprint)){
         const pending=this.scanning.get(projectId);if(pending)await pending;else{const scan=this.scanContext(projectId,state);this.scanning.set(projectId,scan);try{await scan;}finally{this.scanning.delete(projectId);}}
@@ -246,11 +271,15 @@ export class EngineeringService {
     const ordered:ContextEntry[]=[];for(let i=0;i<Math.max(...groups.map(group=>group.length));i++)for(const group of groups)if(group[i])ordered.push(group[i]);
     const offset=input.entry_id?0:input.offset??0,limit=input.entry_id?1:Math.min(input.limit??24,40),maxText=input.entry_id?60000:1500;
     const page=ordered.slice(offset,offset+limit).map(e=>this.contextEntry(e,maxText));
-    const architecture=architectureContextField(this.store.getArchitectureDoc(projectId,workspaceBranchKey(state.branch,state.head)));
+    const explanation=input.result_id?this.store.get<Explanation>('explanation',input.result_id):undefined;
+    const doc=explanation||cachedState||restored||liveStateError?this.frozenArchitecture(projectId,state,explanation)
+      :this.store.getArchitectureDoc(projectId,workspaceBranchKey(state.branch,state.head));
+    const architecture={...architectureContextField(doc),...(liveStateError&&{live_state_error:liveStateError})};
     if(entryId)return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:page,total_entries:ordered.length,next_offset:null,analysis_refs:[],recent_tasks:[],...architecture};
-    const analysis=input.result_id?this.readAnalysis(input.result_id,workspace,state,input):undefined;
+    const analysis=explanation?this.readAnalysis(explanation,workspace,state,input):undefined;
+    if(analysis&&liveStateError)analysis.status='needs_review';
     const materialSources=includeMaterialSources?{material_sources:entries.map(({entry_id,key,category,sources})=>({entry_id,key,category,sources:[...new Set(sources.map(s=>s.path))].map(path=>({path}))}))}:{};
-    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.recentProjectExplanations(projectId).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:this.analysisStatus(e,workspace,state),architecture:!!e.result.architecture?.node_ids.length,summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),...materialSources,...architecture,recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id&&(input.view!=='execution'||!input.task_id||t.task_id===input.task_id)).slice(0,5).map(t=>this.currentVerification(t,restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
+    return {project_id:projectId,workspace,version:contextState.version,code_state:state,entries:input.result_id?[]:page,total_entries:ordered.length,next_offset:input.result_id?null:offset+limit<ordered.length?offset+limit:null,analysis_refs:this.store.recentProjectExplanations(projectId).map(e=>({result_id:e.result_id,source_snapshot_id:e.result.binding.source_snapshot_id,status:liveStateError?'needs_review':this.analysisStatus(e,workspace,state),architecture:!!e.result.architecture?.node_ids.length,summary:e.result.summary.text.slice(0,500)})),...(analysis?{analysis}:{}),...materialSources,...architecture,recent_tasks:this.tasks({project_id:projectId}).filter(t=>t.workspace_id===workspace.workspace_id&&(input.view!=='execution'||!input.task_id||t.task_id===input.task_id)).slice(0,5).map(t=>this.currentVerification(t,liveStateError?null:restored?undefined:state)).map(t=>({task_id:t.task_id,goal:t.goal.slice(0,1000),status:t.status,summary:t.summary.slice(0,1500),version:t.version,updated_at:t.updated_at,verification_status:t.verification_status,decisions:t.decisions.slice(0,5).map(s=>s.slice(0,500)),unresolved:t.unresolved.slice(0,5).map(s=>s.slice(0,500))}))};
   }
   private reclassifyLegacy(projectId:string){
     const rows=this.store.db.prepare(`SELECT json FROM objects WHERE kind='engineering_context'
@@ -275,7 +304,7 @@ export class EngineeringService {
     return {...e,text:e.text.slice(0,maxText),truncated:e.text.length>maxText,...(source&&changed?{update_suggestion:{source_entry_id:source.entry_id,source_version:source.version,previous_text:previous?.text??'原来源见冻结引用',proposed_text:source.text}}:{})};
   }
   async executionContext(projectId:string,taskId:string):Promise<EngineeringContext>{
-    let context=await this.context({project_id:projectId,task_id:taskId,view:'execution',limit:40});
+    let context=await this.context({project_id:projectId,task_id:taskId,view:'execution',limit:40,requireLiveState:true});
     const entries=[...context.entries];
     while(context.next_offset!==null){context=await this.context({project_id:projectId,task_id:taskId,view:'execution',limit:40,offset:context.next_offset,cached:true});entries.push(...context.entries);}
     const environment_brief=formatEnvironmentBrief(await this.projectEnvironment(projectId));
@@ -293,8 +322,8 @@ export class EngineeringService {
     return this.environment.save(projectId,workspace.root_path,commands);
   }
   private analysisStatus(explanation:Explanation,workspace:WorkspaceBinding,state:CodeState):EngineeringAnalysis['status']{if(workspace.status==='unbound')return 'unbound';return explanation.source_status==='current'&&this.store.get<Snapshot>('snapshot',explanation.result.binding.source_snapshot_id).fingerprint===state.fingerprint?'current':'needs_review';}
-  private readAnalysis(resultId:string,workspace:WorkspaceBinding,state:CodeState,input:ContextRequest):EngineeringAnalysis {
-    const explanation=this.store.get<Explanation>('explanation',resultId),result=explanation.result;
+  private readAnalysis(explanation:Explanation,workspace:WorkspaceBinding,state:CodeState,input:ContextRequest):EngineeringAnalysis {
+    const result=explanation.result;
     if(result.binding.project_id!==workspace.project_id)throw Error('工程分析不属于当前授权工作区');
     const source=this.store.get<Snapshot>('snapshot',result.binding.source_snapshot_id);
     if(source.project_id!==workspace.project_id)throw Error('工程分析来源快照归属不一致');
@@ -415,7 +444,7 @@ export class EngineeringService {
     this.store.transaction(()=>{this.store.putVersion(contextKind,revision.entry_id,revision.version,revision);this.store.put('engineering_receipt',key,revision);const state=this.store.get<any>('engineering_context_state',entry.project_id);state.version++;this.store.put('engineering_context_state',entry.project_id,state);});this.changed();return revision;
   }
   async saveEntry(input:SaveEngineeringEntry,origin:'user'|'agent',maySave:()=>boolean=()=>true):Promise<ContextEntry> {
-    const workspace=await this.resolve(input),context=await this.context({project_id:workspace.project_id});
+    const workspace=await this.resolve(input),context=await this.context({project_id:workspace.project_id,requireLiveState:true});
     if(!engineeringCategories.includes(input.category)||!['user','agent'].includes(origin))throw Error('工程栏目或来源无效');
     if(!Number.isSafeInteger(input.expected_version)||input.expected_version<0)throw Error('条目版本无效');
     if(input.status!==undefined&&!['current','needs_review'].includes(input.status))throw Error('条目状态无效');
@@ -838,7 +867,7 @@ export class EngineeringService {
       });this.changed();return task;
     }
     const key=this.receiptKey('create',workspace.workspace_id,input.submission_key),existing=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(existing)return this.task(existing.task_id);
-    const context=await this.context({project_id:workspace.project_id});
+    const context=await this.context({project_id:workspace.project_id,requireLiveState:true});
     if(input.scope?.length)await this.retainRollbackAssets(workspace,context.code_state,input.scope);
     return this.store.transaction(()=>{const retry=this.store.maybe<EngineeringTask>('engineering_receipt',key);if(retry)return this.task(retry.task_id);
       const task:EngineeringTask={task_id:id('task'),project_id:workspace.project_id,workspace_id:workspace.workspace_id,workspace_path:workspace.root_path,...(reading?{reading}:{}),version:0,submission_key:input.submission_key,goal:requireText(input.goal),scope:(input.scope??[]).map(relativePath),status:'pending',baseline:context.code_state,context_version:context.version,summary:'',decisions:[],unresolved:[],changes:[],verification:[],verification_status:'not_run',attempt_ids:[],requests:[],created_at:now(),updated_at:now(),saved:'saved'};

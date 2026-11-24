@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { rename, rm, writeFile } from 'node:fs/promises';
+import { realpath, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -14,7 +14,7 @@ export function diagramSaveDirectory(downloads: string, projectRoot: string) {
   return parent;
 }
 
-export async function exportDiagramFile(args: Record<string, unknown>, pick: SavePicker) {
+export async function exportDiagramFile(args: Record<string, unknown>, pick: SavePicker, projectRoot?: string) {
   const { format, suggested_name, output_path, content_base64, content_utf8 } = args;
   if (format !== 'svg' && format !== 'png') throw Error('图表文件格式无效');
   if (typeof suggested_name !== 'string' || !suggested_name.trim()) throw Error('图表文件名不能为空');
@@ -40,10 +40,16 @@ export async function exportDiagramFile(args: Record<string, unknown>, pick: Sav
   if (process.platform === 'win32' && (!/^(?:[a-z]:[\\/]|\\\\[^?.])/.test(dest.toLowerCase())
     || dest.slice(path.parse(dest).root.length).split(/[\\/]/).some(part => deviceName.test(part) || /[:<>|?*"]|[. ]$/.test(part))))
     throw Error('无效的 Windows 文件路径');
-  const temp = path.join(path.dirname(dest), '.arc-' + randomUUID() + '.tmp');
+  const directory = await realpath(path.dirname(dest));
+  if (projectRoot !== undefined) {
+    const relative = path.relative(await realpath(projectRoot), directory);
+    if (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep))
+      throw Error('不能将图表导出到分析工程内，请选择工程外的目录');
+  }
+  const temp = path.join(directory, '.arc-' + randomUUID() + '.tmp');
   try {
     await writeFile(temp, content, { flag: 'wx' });
-    await rename(temp, dest);
+    await rename(temp, path.join(directory, path.basename(dest)));
   } finally {
     await rm(temp, { force: true });
   }

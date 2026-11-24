@@ -20,7 +20,7 @@ interface Props {
   select: (id: string) => void;
   inspect: (id: string) => void;
   modules: () => void;
-  openFile?: (path: string) => void;
+  openFile?: (path: string, snapshotId: string) => void;
   openEvidence?: (item: SourceEvidence) => void;
   onReviewResolved?: (item: ReviewItem) => void;
   zoom: number;
@@ -82,6 +82,7 @@ export function Architecture({ result, editor, projectName, selected, select, in
   const columns = architectureColumns(width);
   const diagramSearch = view === 'layers' ? search : '';
   const doc = editor?.doc;
+  const codeSnapshotId = doc?.baseline?.snapshot_id ?? result.binding.source_snapshot_id;
   const modulesById = useMemo(() => new Map(doc?.modules.map(m => [m.id, m])), [doc?.modules]);
   const model = useMemo(() => architectureMap(result, diagramSearch, columns, doc?.layout.positions),
     [result, diagramSearch, columns, doc?.layout.positions]);
@@ -162,7 +163,8 @@ export function Architecture({ result, editor, projectName, selected, select, in
         {focusLabel && <span className="architecture-focus-chip"><span>已聚焦：{focusLabel}</span><button onClick={reset}>显示全部</button></span>}
       </div>}
     </header>
-    {view === 'code' ? <CodeModules key={result.binding.source_snapshot_id} snapshotId={result.binding.source_snapshot_id} openFile={openFile} search={search} />
+    {view === 'code' ? <CodeModules key={codeSnapshotId} snapshotId={codeSnapshotId}
+      openFile={openFile && (path => openFile(path, codeSnapshotId))} search={search} />
       : !result.architecture ? <div className="empty compact">
           <h2>系统协作尚未分析</h2><button onClick={modules}>查看已有模块说明</button>
         </div>

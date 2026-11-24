@@ -13,7 +13,7 @@ import type {
   Snapshot,
 } from '../shared';
 import { Store, id, now } from './store';
-import { buildReadingContext, readingTarget, savedPromptArchitecture } from './prompt-context';
+import { buildReadingContext, readingTarget } from './prompt-context';
 
 export interface ReadingServiceHost {
   readonly store: Store;
@@ -132,7 +132,8 @@ export class ReadingService {
       feature,
       scenario,
       result: explanation?.result,
-      architecture: await savedPromptArchitecture(store, project.project_id),
+      architecture: store.findArchitectureDocForSnapshot(project.project_id, snapshot.source_snapshot_id,
+        previous?.context.architecture_document?.branch_key ?? explanation?.branch_key ?? explanation?.architecture_branch),
       target: args.target,
       snapshot,
       annotations,

@@ -1,4 +1,5 @@
 import type { Explanation, Feature, Project, Snapshot } from '../shared';
+import { isDeepStrictEqual } from 'node:util';
 import {
   architectureDocId, architectureUpdateStatus, buildModuleExclusionSignature, buildRelationExclusionSignature,
   normalizeBranchKey, seedArchitectureFromExplanation, validateArchitectureDocument,
@@ -6,7 +7,7 @@ import {
 } from '../architecture-workspace';
 import { sha } from './snapshot';
 import { now, type Store } from './store';
-import { collectInScopeFileHashes, detectWorkspaceGitState, frozenManifest } from './architecture-change-detector';
+import { architectureBoundPaths, collectInScopeFileHashes, detectWorkspaceGitState, frozenManifest } from './architecture-change-detector';
 import { ArchitectureUpdater, type ArchitectureUpdateOptions } from './architecture-updater';
 import { computeEvidenceFingerprint, createCodexSemanticAnalyzer, type IncrementalSemanticAnalyzer } from './architecture-semantic';
 import { resolveArchitectureReviewDecision } from './architecture-review';
@@ -18,7 +19,7 @@ export class ArchitectureWorkspaceService {
   constructor(private readonly store: Store, private readonly changed: () => void = () => {},
     analyzer: IncrementalSemanticAnalyzer = createCodexSemanticAnalyzer(store, process.cwd())) {
     this.updater = new ArchitectureUpdater(store, analyzer, this.getArchitectureDocument.bind(this),
-      this.saveArchitectureDocument.bind(this), changed);
+      (projectId, doc, version) => this.saveArchitectureDocument(projectId, doc, version, undefined, true), changed);
   }
 
   checkArchitectureUpdates(projectId: string, opts?: { branchKey?: string }) {
@@ -58,7 +59,7 @@ export class ArchitectureWorkspaceService {
     }
     const saved = this.store.getArchitectureDocById(docId);
     if (saved) return saved;
-    const explanation = this.store.latestOverview(project);
+    const explanation = this.store.latestOverview(project, branchKey);
     if (!explanation) {
       const at = now();
       const draft: ArchitectureDocument = {
@@ -70,8 +71,9 @@ export class ArchitectureWorkspaceService {
     }
     const snapshot = this.store.get<Snapshot>('snapshot', explanation.result.binding.source_snapshot_id);
     const state = gitState ?? await detectWorkspaceGitState(project.root_path);
-    const baseline = frozenManifest(snapshot);
-    const live = await collectInScopeFileHashes(project.root_path);
+    const seeded = seedArchitectureFromExplanation({ projectId, branchKey, explanation, snapshot });
+    const baseline = frozenManifest(snapshot, seeded);
+    const live = await collectInScopeFileHashes(project.root_path, undefined, state.isGit, seeded);
     const after = await detectWorkspaceGitState(project.root_path);
     if (after.branchKey !== state.branchKey || after.commit !== state.commit) throw Error('采集期间 Git 分支或提交变化，请重试');
     const matches = baseline.workspace_fingerprint === live.workspace_fingerprint;
@@ -79,12 +81,8 @@ export class ArchitectureWorkspaceService {
       FROM objects WHERE kind='architecture_doc' AND json_extract(json,'$.project_id')=?
       AND json_extract(json,'$.baseline.snapshot_id')=? AND json_type(json,'$.baseline.branch')='text'
       ORDER BY rowid LIMIT 1`).get(projectId, snapshot.source_snapshot_id) as { branch: string } | undefined;
-    const seeded = seedArchitectureFromExplanation({
-      projectId, branchKey, explanation, snapshot, fileHashes: baseline.file_hashes,
-      workspaceFingerprint: baseline.workspace_fingerprint, commit: snapshot.commit ?? undefined,
-      branch: previous?.branch ?? (matches && (snapshot.commit ?? undefined) === state.commit ? state.branch : undefined),
-      dirty: Boolean(snapshot.dirty),
-    });
+    seeded.baseline = { ...seeded.baseline!, ...baseline,
+      branch: previous?.branch ?? (matches && (snapshot.commit ?? undefined) === state.commit ? state.branch : undefined) };
     if (!matches || branchKey !== state.branchKey) seeded.update_status = 'changes_pending';
     // Another connection may have published v1 while this reader was hashing.
     try { return this.saveArchitectureDocument(projectId, seeded, 0); }
@@ -96,23 +94,30 @@ export class ArchitectureWorkspaceService {
     }
   }
 
-  saveArchitectureDocument(projectId: string, doc: ArchitectureDocument, expectedVersion?: number, companionWrite?: () => void) {
+  saveArchitectureDocument(projectId: string, doc: ArchitectureDocument, expectedVersion?: number, companionWrite?: () => void,
+    fromUpdateRun = false) {
     this.store.get<Project>('project', projectId);
     const errors = validateArchitectureDocument(doc);
     if (errors.length) throw Error('架构文档校验失败：' + errors.join('；'));
     if (doc.project_id !== projectId || doc.branch_key !== normalizeBranchKey(doc.branch_key) ||
         doc.id !== architectureDocId(projectId, doc.branch_key)) throw Error('架构文档的工程、分支与标识不一致');
     const current = this.store.getArchitectureDocById(doc.id);
-    const update_status = doc.update_status === 'up_to_date' ? architectureUpdateStatus(doc) : doc.update_status;
+    let update_status = doc.update_status;
+    if (!fromUpdateRun && current && doc.baseline?.snapshot_id === current.baseline?.snapshot_id) {
+      doc = { ...doc, pending_changes_summary: current.pending_changes_summary };
+      update_status = architectureUpdateStatus(doc);
+      // A historical restore has no valid scan until its first check finishes.
+      if (update_status === 'up_to_date' && !current.pending_changes_summary && current.update_status === 'changes_pending')
+        update_status = 'changes_pending';
+    } else if (update_status === 'up_to_date') update_status = architectureUpdateStatus(doc);
+    const bindingsUnchanged = current && isDeepStrictEqual(architectureBoundPaths(current), architectureBoundPaths(doc));
     const normalizeBaseline = (next: CodeBaseline | undefined, previous?: CodeBaseline) => {
       if (!next) return previous;
-      if (previous?.snapshot_id === next.snapshot_id && previous.workspace_fingerprint === next.workspace_fingerprint) {
-        return { ...next, fingerprint: previous.fingerprint,
-          file_hashes: previous.file_hashes, workspace_fingerprint: previous.workspace_fingerprint };
-      }
+      if (bindingsUnchanged && previous?.snapshot_id === next.snapshot_id && previous.workspace_fingerprint === next.workspace_fingerprint)
+        return { ...next, fingerprint: previous.fingerprint, file_hashes: previous.file_hashes, workspace_fingerprint: previous.workspace_fingerprint };
       const snapshot = this.store.get<Snapshot>('snapshot', next.snapshot_id);
       if (snapshot.project_id !== projectId) throw Error('架构基线快照不属于当前工程');
-      return { ...next, fingerprint: snapshot.fingerprint, ...frozenManifest(snapshot) };
+      return { ...next, fingerprint: snapshot.fingerprint, ...frozenManifest(snapshot, doc) };
     };
     const exclusions = doc.exclusions.map(item => {
       if (item.evidence_fingerprint) {

@@ -65,6 +65,7 @@ export function activeContextEntries(entries: ContextEntry[]): ContextEntry[] {
 }
 
 export interface EngineeringContext {
+  live_state_error?:string;
   architecture_document?:ArchitectureContext;
   material_sources?:MaterialSourceIndexEntry[];
   environment_brief?:string;

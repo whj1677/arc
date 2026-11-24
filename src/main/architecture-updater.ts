@@ -3,9 +3,10 @@ import {
   architectureUpdateStatus, moduleReferencePaths, type ArchitectureDocument, type CodeBaseline,
   type CodeBinding, type ReviewItem, type UpdateRunRecord,
 } from '../architecture-workspace';
-import type { Project, Snapshot, SourceEvidence } from '../shared';
+import type { Explanation, Project, Snapshot, SourceEvidence } from '../shared';
 import { detectArchitectureChanges, detectWorkspaceGitState, frozenManifest, type ArchitectureDetection } from './architecture-change-detector';
-import { analyzeArchitectureImpact, captureArchitectureSnapshot } from './architecture-impact';
+import { analyzeArchitectureImpact, architectureFileOwners, captureArchitectureSnapshot } from './architecture-impact';
+import { reviewTargetChanged } from './architecture-review';
 import { getCodeIndex } from './code-index';
 import {
   makeReviewItem, type IncrementalSemanticAnalyzer, type SemanticProposal, type SemanticUnit, validateSemanticProposals,
@@ -38,7 +39,8 @@ function semanticUnits(doc: ArchitectureDocument, impact: Impact, detection: Arc
   const units: SemanticUnit[] = [];
   for (const mod of doc.modules) {
     if (impact.impact_summary.affected_module_ids.includes(mod.id) || mod.analysis_status === 'failed') {
-      units.push({ kind: 'module', id: mod.id, paths: paths(moduleReferencePaths(mod)) });
+      const extra = impact.modulePaths.get(mod.id) ?? [];
+      units.push({ kind: 'module', id: mod.id, paths: [...new Set([...paths(moduleReferencePaths(mod)), ...extra])] });
     }
   }
   for (const file of impact.impact_summary.unmapped_files) units.push({ kind: 'unmapped', id: file, paths: [file] });
@@ -86,7 +88,7 @@ function uncertainRenames(doc: ArchitectureDocument, detection: ArchitectureDete
       const context: SourceEvidence = { evidence_id: id('evidence'), source_snapshot_id: snapshot.source_snapshot_id,
         content_sha256: file.content_sha256, path: file.path, line_start: 1, line_end: file.line_count, role: 'context', note };
       const evidence = oldEvidence.map(ev => ({ ...context, evidence_id: ev.evidence_id }));
-      const code_links = links.map(link => ({ ...link, kind: 'file', path: file.path, file_sha256: file.content_sha256,
+      const code_links = links.map(link => ({ ...link, kind: 'file', path: file.path, source_snapshot_id: snapshot.source_snapshot_id, file_sha256: file.content_sha256,
         symbol_name: undefined, symbol_id: undefined, start_line: undefined, end_line: undefined }));
       proposals.push({ category: 'rename_uncertain', target_id: target.id, target_kind: 'code_links' in target ? 'module' : 'relation',
         title: note, proposed: 'code_links' in target ? { code_links, evidence } : { evidence }, evidence: [context] });
@@ -133,6 +135,10 @@ export class ArchitectureUpdater {
       }
     }
     const doc = await this.load(projectId, { branchKey });
+    // Older saved manifests only included known source extensions. Project the
+    // original frozen files through today's bindings before comparing them.
+    const baseSnapshot = doc.baseline && this.store.maybe<Snapshot>('snapshot', doc.baseline.snapshot_id);
+    if (baseSnapshot) Object.assign(doc.baseline!, frozenManifest(baseSnapshot, doc));
     const detection = await detectArchitectureChanges(project.root_path, doc);
     if (detection.detection_summary.detection_reliable && detection.live_git.branchKey !== doc.branch_key) {
       throw Error('当前工作区与架构文档分支不一致，请切换到目标分支再检查更新');
@@ -175,8 +181,8 @@ export class ArchitectureUpdater {
       this.persistCheckState(latest);
       throw Error('无法可靠检测工作区变更：' + detection.detection_summary.detection_error);
     }
-    const snapshot = await captureArchitectureSnapshot(project, store, detection);
-    const manifest = frozenManifest(snapshot);
+    const snapshot = await captureArchitectureSnapshot(project, store, detection, doc);
+    const manifest = frozenManifest(snapshot, doc);
     const git = await detectWorkspaceGitState(rootPath);
     if (!isDeepStrictEqual(git, detection.live_git) || manifest.workspace_fingerprint !== detection.live_workspace_fingerprint) {
       throw Error('冻结读取快照期间工作区已变化，请重新检查更新');
@@ -191,8 +197,20 @@ export class ArchitectureUpdater {
     const outcomes: Record<string, Outcome> = {};
     const results: Array<{ unit: SemanticUnit; proposals: SemanticProposal[] }> = [];
     const notices: ReviewItem[] = [];
-    const units = semanticUnits(doc, impact, detection, store, project);
     const sameSnapshot = sameReadState(previous?.read_baseline, detection);
+    if (sameSnapshot && previous?.remaining_units?.length) {
+      const pendingOwners = doc.modules.filter(mod => previous.remaining_units!.includes(JSON.stringify(['module', mod.id])) &&
+        !summary.affected_module_ids.includes(mod.id));
+      if (pendingOwners.length) {
+        summary.affected_module_ids.push(...pendingOwners.map(mod => mod.id));
+        summary.reused_module_ids = summary.reused_module_ids.filter(id => !summary.affected_module_ids.includes(id));
+        if (summary.mode === 'reference_only' || summary.mode === 'none') {
+          summary.mode = 'local_module';
+          summary.reason = '上次更新期间文件归属发生变化，需要检查新归属的模块';
+        }
+      }
+    }
+    const units = semanticUnits(doc, impact, detection, store, project);
     const remaining: string[] = [];
     let index: Awaited<ReturnType<typeof getCodeIndex>> | undefined;
     for (const unit of units) {
@@ -201,7 +219,11 @@ export class ArchitectureUpdater {
       const failed = prior?.status === 'failed' || unit.kind === 'module' && doc.modules.find(m => m.id === unit.id)?.analysis_status === 'failed';
       const selected = opts.retryFailedOnly ? failed : !opts.moduleIds || unit.kind === 'module' && opts.moduleIds.includes(unit.id);
       const referenceOnly = summary.mode === 'reference_only' || summary.mode === 'none';
-      const alreadyAnalyzed = sameSnapshot && (prior?.status === 'succeeded' || prior?.status === 'needs_review');
+      const reviewChanged = prior?.status === 'needs_review' && doc.review_items.some(item =>
+        (item.status === 'pending' || item.status === 'deferred') && reviewTargetChanged(doc,item,unit.explanation) &&
+        (item.target_id === unit.id || unit.kind === 'module' && item.target_kind === 'relation' &&
+          doc.relations.some(rel => rel.id === item.target_id && (rel.from === unit.id || rel.to === unit.id))));
+      const alreadyAnalyzed = sameSnapshot && !reviewChanged && (prior?.status === 'succeeded' || prior?.status === 'needs_review');
       if (referenceOnly || !selected || alreadyAnalyzed && !failed) {
         if (sameSnapshot && prior && prior.status !== 'reused') outcomes[key] = prior;
         else if (!referenceOnly) remaining.push(key);
@@ -231,16 +253,45 @@ export class ArchitectureUpdater {
 
     // No awaits between reading the latest version and its optimistic SQLite write.
     const latest = store.getArchitectureDocById(doc.id) ?? structuredClone(doc);
-    function enqueue(item: ReviewItem | undefined) {
+    if (latest.version !== doc.version) {
+      const before = architectureFileOwners(doc), after = architectureFileOwners(latest);
+      for (const change of detection.detection_summary.changed_files) {
+        for (const file of new Set([change.path, change.old_path ?? change.path])) {
+          const previousOwners = new Set(before(file));
+          for (const id of after(file)) {
+            const key = JSON.stringify(['module', id]);
+            if (previousOwners.has(id) || outcomes[key] || remaining.includes(key)) continue;
+            remaining.push(key);
+            if (!summary.affected_module_ids.includes(id)) summary.affected_module_ids.push(id);
+            summary.reused_module_ids = summary.reused_module_ids.filter(other => other !== id);
+          }
+        }
+      }
+    }
+    applyRelocations(latest, impact, run);
+    function enqueue(item: ReviewItem | undefined, explanation?: Explanation) {
       if (!item) return;
       const existing = latest.review_items.find(old => old.dedupe_key === item.dedupe_key &&
-        (old.status === 'pending' || old.status === 'deferred' || old.evidence_fingerprint === item.evidence_fingerprint));
-      if (existing) return existing;
+        (old.status === 'pending' || old.status === 'deferred' || old.status === 'rejected' && old.evidence_fingerprint === item.evidence_fingerprint));
+      if (existing) {
+        if (existing.status !== 'rejected' && (item.code_baseline_fingerprint !== existing.code_baseline_fingerprint ||
+          item.category !== existing.category || reviewTargetChanged(latest,existing,explanation))) {
+          Object.assign(existing, item, { status: existing.status });
+          run.review_item_ids.push(existing.id);
+        }
+        return existing;
+      }
       latest.review_items.push(item);
       run.review_item_ids.push(item.id);
       return item;
     }
     const renames = uncertainRenames(doc, detection, snapshot);
+    const deleted = new Set(detection.detection_summary.changed_files.filter(change => change.status === 'deleted').map(change => change.path));
+    for (const rel of latest.relations) if (rel.status === 'confirmed') {
+      const lost = rel.evidence.filter(ev => deleted.has(ev.path));
+      if (lost.length) notices.push(reviewNotice(latest,snapshot,'uncertain',
+        '已确认关系的源码依据已删除，请重新核实：' + [...new Set(lost.map(ev => ev.path))].join('、'), undefined, rel.id, 'relation'));
+    }
     for (const move of impact.unresolvedRelocations) {
       notices.push(reviewNotice(doc, snapshot, 'uncertain', move.reason, move.path, move.target_id, move.target_kind));
     }
@@ -252,13 +303,14 @@ export class ArchitectureUpdater {
     for (const notice of notices) enqueue(notice);
     for (const { unit, proposals } of results) {
       for (const proposal of proposals) {
-        const item = enqueue(makeReviewItem(proposal, doc, latest, snapshot, unit.explanation));
+        const item = enqueue(makeReviewItem(proposal, doc, latest, snapshot, unit.explanation), unit.explanation);
         if (item?.status === 'pending' || item?.status === 'deferred') outcomes[unitKey(unit)] = { status: 'needs_review' };
       }
     }
-    applyRelocations(latest, impact, run);
     for (const mod of latest.modules) {
-      const outcome = outcomes[JSON.stringify(['module', mod.id])];
+      const key = JSON.stringify(['module', mod.id]);
+      if (remaining.includes(key)) continue;
+      const outcome = outcomes[key];
       run.module_outcomes[mod.id] = outcome ?? { status: 'reused' };
       if (!outcome) {
         if (!sameSnapshot && (summary.mode === 'none' || summary.mode === 'reference_only') && mod.analysis_status === 'failed') {

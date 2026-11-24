@@ -93,11 +93,12 @@ function ArchitectureExport({ editor, selected, search, columns, projectName, cl
   const boundary = preview
     ? [...preview.externalInbound.map(r => r.from), ...preview.externalOutbound.map(r => r.to)] : [];
   const names = new Map(roots.map(m => [m.id, m.name]));
-  return <ExportForm close={close} disabled={!preview?.includedModules.length} submit={(format, resolution) =>
-    exportSavedDiagram(window.arc.invoke, { mode: 'architecture', key: { ...head, version }, options: {
+  return <ExportForm close={close} disabled={!preview?.includedModules.length} submit={(format, resolution) => {
+    if (!doc) throw Error('请等保存版本加载完成后再导出。');
+    return exportSavedDiagram(window.arc.invoke, { mode: 'architecture', document: doc, options: {
       projectName, search, columns, includeHidden: false, selectedModuleId: scope === 'subgraph' ? rootId : undefined,
       subgraphOptions: { includeChildren, includeNeighbors },
-    } }, format, resolution)}>
+    } }, format, resolution); }}>
     <label>保存版本<select aria-label="保存版本" value={version} onChange={e => setVersion(Number(e.target.value))}>
       <option value={head.version}>当前已保存版本 (v{head.version}) · {architectureExportStatus(head)}</option>
       {confirmed && confirmed !== head.version && <option value={confirmed}>最近已确认版本 (v{confirmed})</option>}

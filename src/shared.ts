@@ -128,7 +128,16 @@ export function hasFunctionGraphs(result:AnalysisResult):boolean {
     return result.edges.some(edge=>edge.kind===kind&&edge.status==='source_supported'&&edge.source_node_id===step.from_node_id&&edge.target_node_id===step.to_node_id);
   }));
 }
-export interface Explanation { result_id: string; scenario_id: string; created_at: string; source_status: string; result: AnalysisResult; architecture_branch?: string }
+export interface Explanation { result_id: string; scenario_id: string; created_at: string; source_status: string; result: AnalysisResult; branch_key?: string; architecture_branch?: string }
+export function explanationOnBranch(explanation: Explanation, activeBranch: string) {
+  const branch = explanation.branch_key ?? explanation.architecture_branch;
+  return !branch || branch === activeBranch;
+}
+export function selectedSceneExplanation(scene: Explanation[], reading: Pick<ReadingState, 'result_id' | 'result_branch_key'>, branch: string) {
+  if (reading.result_id && (reading.result_branch_key === undefined || reading.result_branch_key === branch))
+    return scene.find(e => e.result_id === reading.result_id);
+  return scene.findLast(e => explanationOnBranch(e, branch));
+}
 export interface ProjectFreshness { snapshot_id: string; changed_files: string[]; checked_at: string }
 export type ProgramPathKey = 'codex_path' | 'dsh_path' | 'node_path' | 'git_path';
 export type ProviderPathConfig = Partial<Record<ProgramPathKey, string>>;
@@ -136,11 +145,13 @@ export type RuntimeToolStatus = { id: 'node' | 'git'; label: string; status: 'av
 export interface ProviderProfile { provider_id: ProviderId; requested_name: string; product: string; status: string; version?: string; path?: string; reason: string; transport: string; auth: string; capabilities: Record<string,string>; checked_at: string }
 export interface ReadingState {
   entrance: 'overview' | 'walk'; view: string; scenario_id: string; result_id: string;
+  /** An automatic choice is valid only on its original branch. Explicit history links omit this field. */
+  result_branch_key?: string;
   selected: string; file: string; evidence_id: string; source_snapshot_id: string;
   mode: 'normal' | 'source' | 'compare'; left_width: number; right_width: number;
   catalog_hidden: boolean; pinned: boolean; detail_tab: string; expanded: string[];
   scroll: Record<string, {top:number;left:number}>; zoom: number; stage: string; compare_id: string; linked: boolean;
-  view_states?: Record<string, Pick<ReadingState,'selected'|'file'|'evidence_id'|'source_snapshot_id'|'mode'|'detail_tab'|'zoom'|'stage'|'result_id'>>;
+  view_states?: Record<string, Pick<ReadingState,'selected'|'file'|'evidence_id'|'source_snapshot_id'|'mode'|'detail_tab'|'zoom'|'stage'|'result_id'|'result_branch_key'>>;
   files_open?: boolean;
   summary_expanded?: boolean;
   graph_scope?: 'focus' | 'all';

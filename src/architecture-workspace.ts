@@ -15,6 +15,7 @@ export interface CodeBinding {
   start_line?: number;
   end_line?: number;
   file_sha256?: string;
+  source_snapshot_id?: string;
   origin: ContentOrigin;
 }
 
@@ -294,7 +295,7 @@ function evidenceShape(v: unknown) {
 }
 function bindingShape(v: unknown) {
   return record(v) && fieldsAreStrings(v, 'id', 'path') && oneOf(v.kind, 'directory', 'file', 'symbol') && origin(v.origin)
-    && optionalStrings(v, 'symbol_name', 'symbol_id', 'file_sha256') && optional(v.start_line, integer) && optional(v.end_line, integer);
+    && optionalStrings(v, 'symbol_name', 'symbol_id', 'file_sha256', 'source_snapshot_id') && optional(v.start_line, integer) && optional(v.end_line, integer);
 }
 function ioShape(v: unknown) {
   return record(v) && fieldsAreStrings(v, 'io_id', 'name', 'description') && oneOf(v.availability, 'specified', 'partial', 'unknown')
@@ -459,7 +460,7 @@ export function seedArchitectureFromExplanation(params: {
       summary: node.description, io: { inputs: [...node.inputs], outputs: [...node.outputs] },
       evidence, code_links: evidence.map(e => ({
         id: e.evidence_id, kind: e.symbol_id ? 'symbol' : 'file', path: e.path, symbol_id: e.symbol_id,
-        start_line: e.line_start, end_line: e.line_end, file_sha256: e.content_sha256, origin: 'code_analysis',
+        start_line: e.line_start, end_line: e.line_end, file_sha256: e.content_sha256, source_snapshot_id: e.source_snapshot_id, origin: 'code_analysis',
       })),
       origin: evidence.length ? 'code_analysis' : 'needs_verification',
       implementation_status: evidence.length ? 'implemented' : 'needs_verification', updated_at,
@@ -487,6 +488,10 @@ export function seedArchitectureFromExplanation(params: {
 }
 
 type EvidenceFingerprint = (evidence: SourceEvidence[], key: string) => string;
+
+function needsExclusion(item: ArchitectureModule | ArchitectureRelation) {
+  return item.origin === 'code_analysis' || item.origin === 'manual_override' || item.evidence.length > 0;
+}
 
 function exclusion(target: ArchitectureModule | ArchitectureRelation, targetKind: ManualExclusion['target_kind'],
   signature: string, version: number, at: string, fingerprint: EvidenceFingerprint, reason?: string): ManualExclusion {
@@ -518,7 +523,7 @@ export function applyModuleDelete(doc: ArchitectureDocument, moduleId: string, s
   const reparented_child_ids: string[] = [];
   const modules = doc.modules.flatMap(module => {
     if (removed.has(module.id)) {
-      if (module.origin === 'code_analysis') exclusions.push(exclusion(module, 'module',
+      if (needsExclusion(module)) exclusions.push(exclusion(module, 'module',
         buildModuleExclusionSignature(module.id), doc.version + 1, updated_at, exclusionFingerprint));
       return [];
     }
@@ -529,6 +534,8 @@ export function applyModuleDelete(doc: ArchitectureDocument, moduleId: string, s
   const removed_relation_ids: string[] = [];
   const relations = doc.relations.filter(relation => {
     if (!removed.has(relation.from) && !removed.has(relation.to)) return true;
+    if (needsExclusion(relation)) exclusions.push(exclusion(relation, 'relation',
+      buildRelationExclusionSignature(relation.from, relation.to, relation.kind), doc.version + 1, updated_at, exclusionFingerprint));
     removed_relation_ids.push(relation.id);
     return false;
   });
@@ -545,7 +552,7 @@ export function applyRelationDelete(doc: ArchitectureDocument, relationId: strin
   if (!relation) throw new Error('Unknown architecture relation: ' + relationId);
   const updated_at = new Date().toISOString();
   const exclusions = [...doc.exclusions];
-  if (relation.origin === 'code_analysis') exclusions.push(exclusion(relation, 'relation',
+  if (needsExclusion(relation)) exclusions.push(exclusion(relation, 'relation',
     buildRelationExclusionSignature(relation.from, relation.to, relation.kind), doc.version + 1, updated_at, exclusionFingerprint, reason));
   return { ...doc, relations: doc.relations.filter(r => r.id !== relationId), exclusions, updated_at };
 }

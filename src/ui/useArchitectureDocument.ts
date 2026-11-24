@@ -21,6 +21,7 @@ interface EditorState {
   versions: ArchitectureVersionSummary[];
   activeBranch: string;
   branches: string[];
+  branchNotice?: string;
 }
 interface Saved {
   document: ArchitectureDocument;
@@ -50,7 +51,8 @@ export class ArchitectureEditorStore {
   private loading = false;
   private refreshPending = false;
   private checkedOnOpen = false;
-  constructor(private projectId: string, private invoke: ArchitectureInvoke) {}
+  constructor(private projectId: string, private invoke: ArchitectureInvoke,
+    private drafts = new Map<string, ArchitectureDocument>()) {}
 
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => {
@@ -76,11 +78,15 @@ export class ArchitectureEditorStore {
       if (request !== this.request) return;
       const sameBranch = this.state.savedDoc?.branch_key === response.document.branch_key;
       if (!sameBranch) this.checkedOnOpen = false;
-      let draftDoc: ArchitectureDocument | null = null;
-      if (sameBranch && this.state.editMode) draftDoc = this.state.dirty ? this.state.draftDoc : response.document;
+      const dirtyDraft = this.drafts.get(response.document.id);
+      const draftDoc = dirtyDraft ?? (sameBranch && this.state.editMode ? response.document : null);
+      const previous = this.state.draftDoc;
       this.patch({ savedDoc: response.document, versions: response.versions, branches: response.branches,
-        activeBranch: response.active_branch, draftDoc, dirty: !!draftDoc && this.state.dirty, loadError: undefined,
-        ...(!sameBranch && { saveState: 'idle', saveError: undefined, updateError: undefined }) });
+        activeBranch: response.active_branch, draftDoc, dirty: !!dirtyDraft, loadError: undefined,
+        ...(!sameBranch && { saveState: 'idle', saveError: undefined, updateError: undefined,
+          branchNotice: previous && this.state.dirty
+            ? `当前分支已切换至 ${response.active_branch}。${previous.branch_key} 的未保存草稿已保留，切回该分支可继续编辑。`
+            : dirtyDraft ? `已恢复 ${dirtyDraft.branch_key} 的未保存草稿。` : undefined }) });
     } catch (error) {
       if (request === this.request) this.patch({ loadError: String(error instanceof Error ? error.message : error) });
     } finally {
@@ -93,7 +99,9 @@ export class ArchitectureEditorStore {
     this.patch({ draftDoc: this.state.savedDoc, dirty: false, saveState: 'idle', saveError: undefined });
   };
   cancelEdit = () => {
-    if (this.state.saveState !== 'saving') this.patch({ draftDoc: null, dirty: false, saveState: 'idle', saveError: undefined });
+    if (this.state.saveState === 'saving') return;
+    if (this.state.draftDoc) this.drafts.delete(this.state.draftDoc.id);
+    this.patch({ draftDoc: null, dirty: false, saveState: 'idle', saveError: undefined, branchNotice: undefined });
   };
   updateDraft = (update: (doc: ArchitectureDocument) => ArchitectureDocument) => {
     const { savedDoc, draftDoc } = this.state;
@@ -101,6 +109,8 @@ export class ArchitectureEditorStore {
     const next = update(draftDoc);
     if (next === draftDoc) return;
     const dirty = JSON.stringify(savePayload(withCheckMetadata(next, savedDoc))) !== JSON.stringify(savePayload(savedDoc));
+    if (dirty) this.drafts.set(savedDoc.id, next);
+    else this.drafts.delete(savedDoc.id);
     this.patch({ draftDoc: next, dirty, saveState: 'idle', saveError: undefined });
   };
   applyAutoLayout = (width: number) => this.updateDraft(doc => ({ ...doc, layout: {
@@ -155,11 +165,13 @@ export class ArchitectureEditorStore {
   }
 
   private async persist(operation: string, args: Record<string, unknown>) {
+    const submitted = this.state.draftDoc;
     this.invalidateLoad();
     this.patch({ saveState: 'saving', saveError: undefined });
     try {
       const { document, versions } = await this.invoke<Saved>(operation, { project_id: this.projectId, ...args });
-      this.patch({ savedDoc: document, draftDoc: null, dirty: false, versions, saveState: 'saved',
+      if (this.drafts.get(document.id) === submitted) this.drafts.delete(document.id);
+      this.patch({ savedDoc: document, draftDoc: null, dirty: false, versions, saveState: 'saved', branchNotice: undefined,
         branches: [...new Set([...this.state.branches, document.branch_key])] });
       return { document };
     } catch (error) {
@@ -195,15 +207,23 @@ export class ArchitectureEditorStore {
     return this.persist('architecture_save', { document: savePayload(document), expected_version: savedDoc.version });
   };
   restoreVersion = async (version: number) => {
-    if (this.state.savedDoc && this.state.saveState !== 'saving' && this.state.updateBusy === 'idle')
-      await this.persist('architecture_restore', { branch_key: this.state.savedDoc.branch_key, version });
+    const branch = this.state.savedDoc?.branch_key;
+    if (branch && this.state.saveState !== 'saving' && this.state.updateBusy === 'idle') {
+      const restored = await this.persist('architecture_restore', { branch_key: branch, version });
+      if (restored.document && this.state.savedDoc?.branch_key === branch) await this.checkUpdates();
+    }
   };
 }
 
 export function useArchitectureDocument(projectId: string, refreshKey: string, invoke: ArchitectureInvoke, opened = true) {
-  const store = useMemo(() => new ArchitectureEditorStore(projectId, invoke), [projectId, invoke]);
+  const drafts = useMemo(() => new Map<string, ArchitectureDocument>(), []);
+  const store = useMemo(() => new ArchitectureEditorStore(projectId, invoke, drafts), [projectId, invoke, drafts]);
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   useEffect(() => { void store.load(); }, [store, refreshKey]);
+  useEffect(() => {
+    window.addEventListener('focus', store.load);
+    return () => window.removeEventListener('focus', store.load);
+  }, [store]);
   useEffect(() => {
     if (opened) void store.checkOnOpen();
   }, [store, opened, state.savedDoc, state.editMode, state.updateBusy, state.saveState]);

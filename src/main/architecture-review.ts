@@ -3,6 +3,7 @@ import {
   type ArchitectureDocument, type ArchitectureModule, type ArchitectureRelation, type CodeBinding, type ReviewItem,
 } from '../architecture-workspace';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type { AnalysisResult, Explanation, Project, Run, Snapshot, SourceEvidence } from '../shared';
 import { fields, proposalSignature, reviewedFlow, validateProposalFields, verifyProposalEvidence,
   type FlowPatch, type SemanticProposal } from './architecture-semantic';
@@ -16,14 +17,15 @@ function updatedExplanation(store:Store, doc:ArchitectureDocument, item:ReviewIt
   const prior=store.get<Explanation>('explanation',patch.explanation_id);
   const project=store.get<Project>('project',doc.project_id);
   if(prior.result.binding.project_id!==doc.project_id || prior.result.binding.feature_id!==item.target_id ||
-    prior.scenario_id===project.overview_scenario_id || !store.latestFeatureExplanations(project,doc.branch_key).some(e=>e.result_id===prior.result_id))
+    prior.scenario_id===project.overview_scenario_id || !store.latestFeatureExplanations(project,doc.branch_key).some(e=>e.result_id===prior.result_id) ||
+    reviewTargetChanged(doc,item,prior))
     throw Error('该功能走读已变化或不属于本工程，请重新检查更新');
   const result_id=id('result'), created_at=now(), runId=item.analysis_run_id ?? item.id;
   const result:AnalysisResult={...reviewedFlow(prior,patch,item.evidence,snapshot),result_id,
     binding:{...prior.result.binding,run_id:runId,source_snapshot_id:snapshot.source_snapshot_id},
     ...(item.analysis_run_id && {provider:{provider_id:'codex',connection_id:'local-codex',adapter_version:'architecture-incremental-1'}})};
   // Keep the original result for historical reading links and annotations.
-  const updated:Explanation={...prior,result_id,result,created_at,architecture_branch:doc.branch_key,
+  const updated:Explanation={...prior,result_id,result,created_at,branch_key:doc.branch_key,
     source_status:project.snapshot_id===snapshot.source_snapshot_id?'current':'needs_review'};
   if(item.analysis_run_id) {
     if(!/^architecture-[\da-f-]{36}$/.test(runId))throw Error('功能走读提案的分析运行 ID 不合法');
@@ -63,6 +65,46 @@ function targetOf(doc:ArchitectureDocument,item:ReviewItem) {
   return (item.target_kind==='module'?doc.modules:doc.relations).find(obj=>obj.id===item.target_id);
 }
 
+export function reviewTargetChanged(doc:ArchitectureDocument, item:ReviewItem, explanation?:Explanation): boolean {
+  const operation=item.operation ?? item.category;
+  if(operation==='uncertain' || operation==='rename_uncertain' && !item.proposed)return false;
+  const patch=fields(item.proposed ?? {});
+  const before=fields(item.before ?? {});
+  if(item.target_kind==='feature') {
+    return !explanation || before.explanation_id!==explanation.result_id ||
+      Object.keys(patch).some(key=>key!=='explanation_id' && !isDeepStrictEqual(before[key],fields(explanation.result)[key]));
+  }
+  const target=targetOf(doc,item);
+  if(operation.endsWith('_add'))return !!target;
+  // Legacy conflicts without an operation may describe a previously excluded addition.
+  if(!target)return operation!=='exclusion_conflict' || !('excluded_at' in before);
+  if(before.id!==undefined && before.id!==target.id)return true;
+  const current=fields(target);
+  if(operation.endsWith('_remove')) {
+    const {incident_relations,child_ids,...original}=before;
+    if(operation==='module_remove') {
+      const edges=(incident_relations ?? []) as ArchitectureRelation[];
+      const children=(child_ids ?? []) as string[];
+      if(doc.relations.some(rel=>(rel.from===target.id || rel.to===target.id) &&
+          !edges.some(old=>old.id===rel.id && isDeepStrictEqual(old,rel))) ||
+        doc.modules.some(mod=>mod.parent_id===target.id && !children.includes(mod.id)))return true;
+    }
+    return [...new Set([...Object.keys(current),...Object.keys(original)])].some(key=>
+      key!=='analysis_status' && key!=='analysis_error' && !isDeepStrictEqual(original[key],current[key]));
+  }
+  if(Object.keys(patch).some(key=>!['bind_paths','evidence','code_links'].includes(key) &&
+      !isDeepStrictEqual(before[key],current[key])))return true;
+  if(patch.bind_paths && !isDeepStrictEqual(before.code_links,current.code_links))return true;
+  // Merges replace only the named IDs. Independent evidence and links can still be accepted.
+  const oldEvidence=before.evidence as SourceEvidence[] | undefined;
+  const anchors=operation==='rename_uncertain' ? (patch.evidence ?? []) as SourceEvidence[] : item.evidence;
+  if(anchors.some(ev=>!isDeepStrictEqual(oldEvidence?.find(old=>old.evidence_id===ev.evidence_id),
+      target.evidence.find(entry=>entry.evidence_id===ev.evidence_id))))return true;
+  const oldLinks=before.code_links as CodeBinding[] | undefined;
+  return 'code_links' in target && ((patch.code_links ?? []) as CodeBinding[]).some(link=>
+    !isDeepStrictEqual(oldLinks?.find(old=>old.id===link.id),target.code_links.find(entry=>entry.id===link.id)));
+}
+
 function applyArchitectureChange(doc:ArchitectureDocument, item:ReviewItem, operation:ReviewItem['category']) {
   const target=targetOf(doc,item), updated_at=now(), patch=fields(item.proposed ?? {});
   if(operation==='uncertain')return;
@@ -71,7 +113,8 @@ function applyArchitectureChange(doc:ArchitectureDocument, item:ReviewItem, oper
     const mod:ArchitectureModule={...patch as Pick<ArchitectureModule,'name'|'kind'|'summary'|'layer'|'parent_id'>,
       id:item.target_id!,origin:'code_analysis',implementation_status:'implemented',evidence:item.evidence,updated_at,
       code_links:item.evidence.map(ev=>({id:ev.evidence_id,kind:ev.symbol_id?'symbol':'file',path:ev.path,
-        symbol_id:ev.symbol_id,start_line:ev.line_start,end_line:ev.line_end,file_sha256:ev.content_sha256,origin:'code_analysis'}))};
+        symbol_id:ev.symbol_id,start_line:ev.line_start,end_line:ev.line_end,file_sha256:ev.content_sha256,
+        source_snapshot_id:ev.source_snapshot_id,origin:'code_analysis'}))};
     if(mod.parent_id===null)delete mod.parent_id;
     doc.modules.push(mod);
   } else if(operation==='relation_add') {
@@ -93,7 +136,8 @@ function applyArchitectureChange(doc:ArchitectureDocument, item:ReviewItem, oper
         for(const file of bind_paths as string[]){
           const ev=item.evidence.find(anchor=>anchor.path===file)!;
           if(!target.code_links.some(link=>link.path===file))target.code_links.push({kind:'file',id:id('binding'),
-            origin:'code_analysis',path:file,start_line:ev.line_start,end_line:ev.line_end,file_sha256:ev.content_sha256});
+            origin:'code_analysis',path:file,start_line:ev.line_start,end_line:ev.line_end,file_sha256:ev.content_sha256,
+            source_snapshot_id:ev.source_snapshot_id});
         }
       }
       const evidence=new Map(target.evidence.map(ev=>[ev.evidence_id,ev]));
@@ -109,6 +153,13 @@ export function resolveArchitectureReviewDecision(store:Store,current:Architectu
   const item=doc.review_items.find(entry=>entry.id===opts.reviewId);
   if(!item || item.branch && item.branch!==doc.branch_key)throw Error('当前分支没有此架构审查项');
   if(item.status!=='pending' && item.status!=='deferred')throw Error('该审查项已有最终决定');
+  if(opts.decision==='accept') {
+    const readBaseline=doc.last_update?.read_baseline ?? doc.baseline;
+    if(readBaseline && item.code_baseline_fingerprint!==readBaseline.fingerprint)
+      throw Error('复核冲突：读取快照已变化，请重新检查并更新后再接受建议');
+    if(item.target_kind!=='feature' && reviewTargetChanged(doc,item))
+      throw Error('复核冲突：目标内容已变化，请重新检查并更新后再接受建议');
+  }
   const target=targetOf(doc,item);
   let operation=item.operation ?? item.category;
   // Older saved conflicts only carry their target kind and the proposed fields.

@@ -53,7 +53,7 @@ export async function svgToPngBase64(svg: string, width: number, height: number,
 }
 
 type ExportSource =
-  | { mode: 'architecture'; key: VersionKey; options: ArchitectureOptions }
+  | { mode: 'architecture'; document: ArchitectureDocument; options: ArchitectureOptions }
   | { mode: 'feature'; options: FeatureOptions };
 
 export async function exportSavedDiagram(invoke: ArcApi['invoke'], source: ExportSource, format: FileFormat, resolution: Resolution) {
@@ -61,7 +61,7 @@ export async function exportSavedDiagram(invoke: ArcApi['invoke'], source: Expor
   let diagram: ReturnType<typeof renderArchitectureSvg>;
   let name: string;
   if (source.mode === 'architecture') {
-    const doc = await readExportVersion(invoke, source.key);
+    const doc = source.document;
     diagram = renderArchitectureSvg({ ...source.options, doc, exportedAt });
     const root = doc.modules.find(m => m.id === source.options.selectedModuleId);
     name = [doc.title, root?.name, 'v' + doc.version].filter(Boolean).join('-');
@@ -72,7 +72,7 @@ export async function exportSavedDiagram(invoke: ArcApi['invoke'], source: Expor
   const payload = format === 'svg' ? { content_utf8: diagram.svg }
     : { content_base64: (await svgToPngBase64(diagram.svg, diagram.width, diagram.height, resolution)).base64 };
   return invoke<{ canceled: boolean; file_path: string | null; bytes: number }>('export_diagram_file', {
-    project_id: source.mode === 'architecture' ? source.key.project_id : source.options.explanation.result.binding.project_id,
+    project_id: source.mode === 'architecture' ? source.document.project_id : source.options.explanation.result.binding.project_id,
     format, suggested_name: name + '.' + format, ...payload,
   });
 }

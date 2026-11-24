@@ -157,7 +157,7 @@ export function CanvasPane({
   taskOverlay,
 }: CanvasPaneProps) {
   const [archZoomable, setArchZoomable] = useState(true);
-  const [exportOpen, setExportOpen] = useState(false);
+  const [exportResultId, setExportResultId] = useState('');
   const canExportFeature = useMemo(() => reading.entrance === 'walk' && !!explanation && availableFeatureViews(explanation).length > 0,
     [explanation, reading.entrance]);
   const result = architectureResult ?? analysisResult;
@@ -175,7 +175,7 @@ export function CanvasPane({
       search={search}
       modules={() => switchView('modules', { stage: '' })}
       inspect={inspectComponent}
-      openFile={file => chooseFile(file, result.binding.source_snapshot_id || project?.snapshot_id)}
+      openFile={chooseFile}
       taskOverlay={taskOverlay}
       onZoomableChange={setArchZoomable}
     />
@@ -242,13 +242,13 @@ export function CanvasPane({
 
   return (
     <main className={overviewSections ? 'canvas overview-canvas' : 'canvas'}>
-      {exportOpen && explanation && <DiagramExportDialog mode="feature" explanation={explanation}
+      {explanation && exportResultId === explanation.result_id && <DiagramExportDialog mode="feature" explanation={explanation}
         projectName={project?.name ?? projectId} featureName={featureName ?? scenario?.title ?? ''} scenarioTitle={scenario?.title ?? ''}
         snapshot={data.snapshots.find(s => s.source_snapshot_id === explanation.result.binding.source_snapshot_id)}
         initialPath={reading.view === 'functions' ? reading.function_path : reading.reading_path}
         initialView={reading.view === 'functions' ? (reading.function_mode === 'time' ? 'call_chain' : 'call_map')
           : reading.view === 'collaboration' ? 'collaboration' : reading.view === 'flow' ? 'graph' : 'business_flow'}
-        close={() => setExportOpen(false)}/>}
+        close={() => setExportResultId('')}/>}
       {freshness?.kind === 'affected' && (
         <div className="freshness-banner affected" role="status">
           <span>外部代码已变更（{freshness.files.slice(0, 3).join('、')}{freshness.files.length > 3 && ` 等 ${freshness.files.length} 个文件`}）· 当前展示为旧快照，非最新代码</span>
@@ -272,7 +272,7 @@ export function CanvasPane({
               </span>
             )}
             {filters}
-            {canExportFeature && (isCatalogDetail || !(featureReading && readingGuide)) && <button onClick={() => setExportOpen(true)}>导出图表</button>}
+            {canExportFeature && (isCatalogDetail || !(featureReading && readingGuide)) && <button onClick={() => setExportResultId(explanation!.result_id)}>导出图表</button>}
           </div>
         </div>
       )}
@@ -319,7 +319,7 @@ export function CanvasPane({
         ) : featureReading && result && readingGuide ? (
           <ZoomSurface reflow zoom={reading.zoom} change={zoom => patch({ zoom })}>
             <FeatureReading
-              onExport={canExportFeature ? () => setExportOpen(true) : undefined}
+              onExport={canExportFeature ? () => setExportResultId(explanation!.result_id) : undefined}
               zoom={reading.zoom}
               result={result}
               guide={readingGuide}

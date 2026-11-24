@@ -99,6 +99,7 @@ test('legacy seed selects stable architecture IDs, preserves evidence, hierarchy
   assert.equal(child.summary,'child summary');
   assert.equal(child.code_links[0].path,'src/run.ts');
   assert.equal(child.code_links[0].symbol_id,'dispatch');
+  assert.equal(child.code_links[0].source_snapshot_id,child.evidence[0].source_snapshot_id);
   assert.deepEqual(child.evidence,explanation.result.evidence);
   assert.deepEqual(doc.relations[0].transfers,explanation.result.edges[0].transfers);
   const projected = architectureDocumentToAnalysisResult(doc,explanation.result);
@@ -206,8 +207,16 @@ test('delete strategies preserve unrelated layout, reparent only direct children
   const a=rel.evidence[0],b={...a,line_start:2,line_end:4};
   assert.equal(computeEvidenceFingerprint([a,b]),computeEvidenceFingerprint([b,a]));
   assert.notEqual(computeEvidenceFingerprint([a]),computeEvidenceFingerprint([b]));
-  doc.relations.push({...rel,id:'manual',label:'manual link',origin:'manual',status:'manual'});
+  doc.relations.push({...rel,id:'manual',label:'manual link',origin:'manual',status:'manual',evidence:[]});
   assert.deepEqual(applyRelationDelete(doc,'manual').exclusions,[]);
+  for (const origin of ['manual_override','manual'] as const) {
+    group.origin=rel.origin=origin;
+    const removed=applyModuleDelete(doc,group.id,'reparent_children',computeEvidenceFingerprint).doc;
+    assert.equal(removed.exclusions.find(e=>e.signature===signature)?.evidence_fingerprint,computeEvidenceFingerprint(group.evidence,signature));
+    assert.equal(removed.exclusions.find(e=>e.signature===relSig)?.evidence_fingerprint,computeEvidenceFingerprint(rel.evidence,relSig));
+    assert.equal(applyRelationDelete(doc,rel.id,computeEvidenceFingerprint).exclusions[0]?.evidence_fingerprint,
+      computeEvidenceFingerprint(rel.evidence,relSig));
+  }
 });
 
 test('version zero supports manual creation, optimistic saves, exact reads and restore',async t=>{
@@ -239,6 +248,9 @@ test('version zero supports manual creation, optimistic saves, exact reads and r
   const ipc=await architectureIpc(service,'architecture_restore',{project_id:projectId,branch_key:'main',version:1});
   assert.ok('document' in ipc && ipc.document);
   assert.equal(ipc.document.version,4);
+  assert.equal(ipc.document.update_status,'changes_pending');
+  assert.equal(ipc.document.pending_changes_summary,undefined);
+  assert.notEqual(ipc.document.last_confirmed_version,ipc.document.version);
   assert.deepEqual(ipc.document.modules,first.modules);
   await assert.rejects(architectureIpc(service,'architecture_get',{project_id:projectId,version:-1}));
   await assert.rejects(architectureIpc(service,'architecture_save',{project_id:projectId,document:{...first,id:'foreign'}}));
@@ -414,4 +426,51 @@ test('GC keeps current and historical baseline and update-run snapshots and coll
     assert.deepEqual((await fs.readdir(snapshots)).sort(),ids.slice(0,4).sort());
     assert.deepEqual(store.all('snapshot').map(row=>row.source_snapshot_id).sort(),ids.slice(0,4).sort());
   } finally {store.close();await fs.rm(dir,{recursive:true,force:true});}
+});
+
+test('offline reading and engineering context select the stored architecture for the frozen snapshot',async t=>{
+  const dir=await directory(),service=new ArcService(dir,process.cwd()),store=service.store;
+  t.after(async()=>{await service.shutdown();store.close();await fs.rm(dir,{recursive:true,force:true});});
+  const p='p',snapshot='source-old',root=path.join(dir,'unmounted');
+  const explanation=legacy(p,snapshot);
+  explanation.branch_key='main';
+  store.put('project',p,{project_id:p,name:'Offline',snapshot_id:snapshot,root_path:root});
+  store.put('snapshot',snapshot,{project_id:p,source_snapshot_id:snapshot,files:[{path:'src/run.ts'}],fingerprint:'old'});
+  store.put('explanation',explanation.result_id,explanation);
+  store.put('scenario','scenario',{project_id:p,scenario_id:'scenario',feature_id:'feature',question_revision_id:'rev'});
+  store.put('feature','feature',{project_id:p,feature_id:'feature',name:'Dispatch'});
+  store.put('revision','rev',{question:'How does dispatch work?'});
+  store.put('engineering_workspace','ws',{workspace_id:'ws',project_id:p,status:'bound',root_path:root});
+  store.put('engineering_context_state',p,{version:1});
+  store.put('engineering_state','ws',{snapshot_id:snapshot,fingerprint:'old',branch:'main',head:'commit',dirty:[]});
+  const original=store.saveArchitectureDoc({...seed(),baseline:{snapshot_id:snapshot,fingerprint:'old',
+    file_hashes:{},dirty:false,workspace_fingerprint:'old',captured_at:at}},0);
+  service.store.saveArchitectureDoc({...original,title:'later main',baseline:{...original.baseline!,snapshot_id:'later'}},1);
+  service.store.saveArchitectureDoc({...original,id:architectureDocId(p,'other'),branch_key:'other',title:'other branch'},0);
+  assert.equal(service.store.findArchitectureDocForSnapshot(p,snapshot,'main')?.id,original.id);
+  assert.equal(service.store.findArchitectureDocForSnapshot('another-project',snapshot),undefined);
+  const reading=await service.askReading({project_id:p,scenario_id:'scenario',result_id:explanation.result_id,
+    target:{kind:'file',id:'src/run.ts'},question:'Which revision is visible?',mode:'mcp',submission_key:'frozen-history'});
+  const entry=await service.engineering.context({project_id:p,entry_id:'no-such-entry'});
+  const bridge=new ArcMcpBridge(service,process.cwd());
+  const request={project_id:p,workspace_path:root,result_id:explanation.result_id};
+  try {
+    await assert.rejects(bridge.call('arc_engineering_context',request),/授权/);
+    await bridge.enable(p);
+    await assert.rejects(bridge.call('arc_engineering_context',{...request,workspace_path:root+'-other'}),/尚未绑定/);
+    await assert.rejects(bridge.call('arc_engineering_context',{...request,project_id:'another'}),/归属不一致/);
+    await assert.rejects(bridge.call('arc_begin_development',request),{code:'ENOENT'});
+    const context=await bridge.call('arc_engineering_context',request);
+    for(const doc of [reading.context.architecture_document,entry.architecture_document,context.architecture_document]){
+      assert.equal(doc?.id,original.id);
+      assert.equal(doc?.version,original.version);
+    }
+    assert.ok(context.live_state_error);
+    assert.equal(context.analysis?.status,'needs_review');
+  } finally {await bridge.close();}
+  await assert.rejects(service.engineering.context({project_id:p,refresh:true}));
+  // A manual branch document can predate code analysis and therefore has no snapshot ID.
+  store.saveArchitectureDoc({...original,id:architectureDocId(p,'plan'),branch_key:'plan',baseline:undefined},0);
+  store.put('engineering_state','ws',{snapshot_id:'unmatched',branch:'plan',dirty:[]});
+  assert.equal((await service.engineering.context({project_id:p,cached:true})).architecture_document?.branch_key,'plan');
 });

@@ -19,7 +19,6 @@ for (const name of ['undici:request:create', 'http.client.request.created']) {
   channel(name).subscribe(() => { if (exportActivity.getStore()) transportCalls.push(name); });
 }
 let destination;
-let gate;
 app.on('export-test-path', name => { destination = name; });
 dialog.showSaveDialog = async (...args) => {
   const options = args.at(-1);
@@ -30,25 +29,12 @@ dialog.showSaveDialog = async (...args) => {
   return { canceled: false, filePath };
 };
 app.on('export-test-records', read => read({ operations, choices, transportCalls, downloads: app.getPath('downloads') }));
-app.on('export-test-hold', version => {
-  gate = { version, arrived: Promise.withResolvers(), resume: Promise.withResolvers() };
-});
-app.on('export-test-arrived', read => read(gate.arrived.promise));
-app.on('export-test-resume', () => gate.resume.resolve());
 
 const register = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, handler) => register(channel, async (event, operation, args) => {
   if (channel === 'arc:invoke') operations.push({ operation, version: args?.version });
   const exporting = operation === 'export_diagram_file' || (operation === 'architecture_get' && args?.version !== undefined);
-  const reply = await exportActivity.run(exporting, () => handler(event, operation, args));
-  // Hold a real, completed versioned SQLite read while a second writer commits.
-  if (gate && operation === 'architecture_get' && args?.version === gate.version && !gate.waiting) {
-    gate.waiting = true;
-    gate.arrived.resolve();
-    await gate.resume.promise;
-    gate = undefined;
-  }
-  return reply;
+  return exportActivity.run(exporting, () => handler(event, operation, args));
 });
 app.setAppPath(process.cwd());
 require(path.resolve('dist/main.cjs'));

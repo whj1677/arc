@@ -34,6 +34,7 @@ const fieldLabels: Record<string, string> = {
   files: '文件', actor: '执行方', text: '内容', outcome: '结果', detail: '详情', path: '路径', description: '说明',
   trigger: '触发条件', input: '输入', output: '输出', boundary: '边界', reason: '原因', origin: '来源', status: '状态',
   implementation_status: '实现状态', updated_at: '更新时间', note: '备注', id: '标识', explanation_id: '走读版本',
+  incident_relations: '关联关系', child_ids: '直接子模块',
 };
 
 function ReviewValue({ value, field }: { value: unknown; field?: string }): React.ReactNode {
@@ -54,11 +55,12 @@ function ReviewValue({ value, field }: { value: unknown; field?: string }): Reac
   return String(value);
 }
 
-function ReviewCard({ item, editor, branch, openEvidence, onReviewResolved }: ArchitectureReviewActions & {
-  item: ReviewItem; editor: ArchitectureEditor; branch: string;
+function ReviewCard({ item, editor, branch, readFingerprint, openEvidence, onReviewResolved }: ArchitectureReviewActions & {
+  item: ReviewItem; editor: ArchitectureEditor; branch: string; readFingerprint?: string;
 }) {
   const [note, setNote] = useState(item.decision_note ?? '');
   const actionable = item.status === 'pending' || item.status === 'deferred';
+  const stale = readFingerprint !== undefined && readFingerprint !== item.code_baseline_fingerprint;
   const disabled = editor.updateBusy !== 'idle' || editor.saveState === 'saving' || editor.dirty;
   const operation = item.operation ?? item.category;
   const removal = operation === 'module_remove' ? '移除该模块' : operation === 'relation_remove' ? '移除该关系' : undefined;
@@ -92,7 +94,8 @@ function ReviewCard({ item, editor, branch, openEvidence, onReviewResolved }: Ar
     {actionable ? <fieldset className="architecture-review-actions" disabled={disabled}
       title={editor.dirty ? '请先保存或取消草稿，再处理复核建议。' : undefined}>
       <label>复核备注<input aria-label="复核备注" value={note} onChange={e => setNote(e.target.value)}/></label>
-      <button type="button" onClick={() => void decide('accept')}>接受</button>
+      {stale && <p>读取快照已变化，请重新检查并更新后再接受建议。</p>}
+      <button type="button" disabled={stale} onClick={() => void decide('accept')}>接受</button>
       <button type="button" onClick={() => void decide('reject')}>拒绝</button>
       {item.status === 'pending' && <button type="button" onClick={() => void decide('defer')}>暂缓</button>}
     </fieldset> : item.decision_note && <p>复核备注 · {item.decision_note}</p>}
@@ -176,7 +179,8 @@ export function ArchitectureUpdatePanel({ doc, editor, openEvidence, onReviewRes
           onClick={() => setFilter(key)}>{filters[key]} ({groups[key].length})</button>)}
       </div>
       {groups[filter].length ? groups[filter].map(item => <ReviewCard key={item.id} item={item} editor={editor}
-        branch={doc.branch_key} openEvidence={openEvidence} onReviewResolved={onReviewResolved}/>) : <p>暂无{filters[filter]}建议</p>}
+        branch={doc.branch_key} readFingerprint={baseline?.fingerprint}
+        openEvidence={openEvidence} onReviewResolved={onReviewResolved}/>) : <p>暂无{filters[filter]}建议</p>}
     </section>
   </section>;
 }

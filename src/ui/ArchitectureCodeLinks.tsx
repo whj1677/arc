@@ -11,7 +11,7 @@ export function CodeLinkEditor({ links, onChange }: { links: CodeBinding[]; onCh
         ...(e.target.value === 'directory' && { start_line: undefined, end_line: undefined, file_sha256: undefined }) })}>
         <option value="file">文件</option><option value="directory">目录</option><option value="symbol">符号</option>
       </select></label>
-      <label>路径<input aria-label="路径" value={link.path} required onChange={e => change(link.id, { path: e.target.value, file_sha256: undefined, symbol_id: undefined })}/></label>
+      <label>路径<input aria-label="路径" value={link.path} required onChange={e => change(link.id, { path: e.target.value, file_sha256: undefined, source_snapshot_id: undefined, symbol_id: undefined })}/></label>
       {link.kind === 'symbol' && <label>符号名<input aria-label="符号名" value={link.symbol_name ?? ''} onChange={e => change(link.id, { symbol_name: e.target.value || undefined, symbol_id: undefined })}/></label>}
       {link.kind !== 'directory' && <>
         <label>起始行<input aria-label="起始行" type="number" min={1} value={link.start_line ?? ''} onChange={e => change(link.id, { start_line: e.target.value ? Number(e.target.value) : undefined })}/></label>

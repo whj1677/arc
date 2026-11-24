@@ -44,7 +44,7 @@ import { makePrompt, probeProviders, redact, runCodex, runCodexPromptRefinement,
 import { buildRefinementContext, goalRefinementSchema, parseGoalRefinement, refinementPrompt } from './prompt-refiner';
 import { normalizeTransport, schema, validateResult } from './validation';
 import { discoveredFeature } from '../discovered-feature';
-import { catalogFeatureClues, promptContext, readingTarget, savedPromptArchitecture } from './prompt-context';
+import { catalogFeatureClues, promptContext, readingTarget } from './prompt-context';
 import { proposeScenarios, scenarioTitleKey } from './scenario-breakdown';
 import { readingAnswerSchema, validateReadingAnswer } from './reading-question';
 import { isCatalogOverview, overviewDiscoveryQuestion, previousCatalogQuestion, shallowOverviewQuestion } from './architecture-analysis';
@@ -831,7 +831,7 @@ export class ArcService {
     if (run.reading_context) return run.reading_context;
     const snapshot = this.store.get<Snapshot>('snapshot', run.binding.source_snapshot_id);
     const { annotations, previous, catalogFeature } = this.analysisHistory(run);
-    const architecture = await savedPromptArchitecture(this.store, run.binding.project_id);
+    const architecture = this.store.findArchitectureDocForSnapshot(run.binding.project_id, snapshot.source_snapshot_id);
     return promptContext(snapshot, annotations, previous, catalogFeature, architecture);
   }
 
@@ -1175,7 +1175,7 @@ export class ArcService {
       freshRun.feature_graph_format = 'feature-graph-1';
       this.store.put('run', runId, freshRun);
     }
-    const architecture = initial.reading_context ? undefined : await savedPromptArchitecture(this.store, initial.binding.project_id);
+    const architecture = initial.reading_context ? undefined : this.store.findArchitectureDocForSnapshot(initial.binding.project_id, snapshot.source_snapshot_id);
     let prompt = await makePrompt(initial, snapshot, this.directory, annotations, previous, featureDetail, catalogFeature, architecture);
     const retry = provider === 'codex' && initial.overview_format ? this.overviews.retrySource(initial) : undefined;
     let savedCandidate: string | undefined;

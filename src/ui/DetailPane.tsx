@@ -343,8 +343,7 @@ export function DetailPane({
             ) : businessReading && result ? (
               <StepDetail result={result} selected={reading.selected} select={select} />
             ) : systemReading && result ? (
-              <SystemDetail editor={editor} snapshot={data.snapshots.find(s => s.source_snapshot_id ===
-                (editor?.doc?.baseline?.snapshot_id ?? project?.snapshot_id))} result={result} selected={reading.selected} select={select} inspect={inspectComponent}
+              <SystemDetail editor={editor} snapshots={data.snapshots} result={result} selected={reading.selected} select={select} inspect={inspectComponent}
                 openEvidence={evidence} openFeature={openFeature} />
             ) : (
               <>

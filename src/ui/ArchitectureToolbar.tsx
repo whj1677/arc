@@ -84,6 +84,7 @@ export function ArchitectureToolbar({ editor, doc, width, select, openExport, op
   const remaining = saved.review_items.filter(i => i.status === 'pending' || i.status === 'deferred').length;
   const toggleUpdates = () => setPanel(panel === 'updates' ? null : 'updates');
   const warnings = <>
+    {editor.branchNotice && <p role="status" className="architecture-update-warning">{editor.branchNotice}</p>}
     {stale && <p className="architecture-update-warning" role="alert">{saved.last_update!.stale_reason ?? '分析期间工作区已变化，请重新检查更新。'}</p>}
     {unreliable && <p className="architecture-update-warning" role="alert">{saved.pending_changes_summary!.detection_error ?? '无法可靠检测工作区变化。'}</p>}
   </>;

@@ -195,7 +195,7 @@ export class ArcMcpBridge {
     const environment_brief=formatEnvironmentBrief(await engineering.projectEnvironment(task.project_id));
     const boundaries=effectiveTaskBoundaries(task);
     if(task.workflow==='analysis'){
-      const context=await engineering.context({project_id:task.project_id,task_id:task.task_id,view:'execution'});
+      const context=await engineering.context({project_id:task.project_id,task_id:task.task_id,view:'execution',requireLiveState:true});
       return {phase:'analysis',request,allowed_files:[],task,context,boundaries,environment_brief,instructions:requirementAnalysisInstructions+' '+behaviorPlanningInstructions};
     }
     return {phase:'execution',allowed_files:task.scope,environment_brief,
@@ -357,14 +357,15 @@ export class ArcMcpBridge {
       return this.service.engineering.saveEntry({...args,project_id:workspace.project_id,workspace_path:workspace.root_path},'agent',()=>{this.authorizeDevelopment(workspace.project_id);return !this.closed;});
     }
     if(name==='arc_engineering_context'||name==='arc_begin_development'||name==='arc_workspace_impact'){
-      const workspace=await this.service.engineering.resolve({project_id:args.project_id,workspace_path:string(args.workspace_path,4000)});this.authorizeDevelopment(workspace.project_id);
+      const workspace=await this.service.engineering.resolve({project_id:args.project_id,workspace_path:string(args.workspace_path,4000)},
+        name==='arc_engineering_context'&&!args.refresh);this.authorizeDevelopment(workspace.project_id);
       if(name==='arc_workspace_impact'){
         if(args.files===undefined)return summarizeRadar(await this.service.liveRadar(workspace.project_id,{mode:'worktree'}));
         if(!Array.isArray(args.files)||args.files.some((file:unknown)=>typeof file!=='string'))throw Error('files 必须是相对路径字符串数组');
         return this.service.liveImpact(workspace.project_id,args.files);
       }
       if(args.refresh)await this.service.refresh(workspace.project_id);
-      const context=await this.service.engineering.context({project_id:workspace.project_id,workspace_path:workspace.root_path,task_id:args.task_id,view:args.view??'execution',refresh:args.refresh,query:args.query,entry_id:args.entry_id,result_id:args.result_id,category:args.category,offset:args.offset,limit:args.limit});
+      const context=await this.service.engineering.context({project_id:workspace.project_id,workspace_path:workspace.root_path,task_id:args.task_id,view:args.view??'execution',requireLiveState:name==='arc_begin_development',refresh:args.refresh,query:args.query,entry_id:args.entry_id,result_id:args.result_id,category:args.category,offset:args.offset,limit:args.limit});
       if(name==='arc_engineering_context')return context;
       const provider=client?.configured_provider||'codex';if(provider!=='codex')throw Error('当前 ARC 仅支持 Codex MCP 宿主');
       const beginKey=`${workspace.workspace_id}:${string(args.submission_key,200)}`;
