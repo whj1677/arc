@@ -18,6 +18,7 @@ test('default incremental Codex adapter scopes files, applies model settings, va
   t.after(async()=>{store.close();await fs.rm(temp,{recursive:true,force:true});});
   await fs.mkdir(root);
   await fs.writeFile(path.join(root,'a.c'),'int f(void) { return 1; }\n');
+  await fs.writeFile(path.join(root,'neighbor.c'),'int neighbor(void) { return 2; }\n');
   await fs.writeFile(path.join(root,'unrelated.c'),'/* unrelated implementation */\n');
   const snapshot=await capture(root,'project',store.directory,'');
   const ev:SourceEvidence={evidence_id:'ev',source_snapshot_id:snapshot.source_snapshot_id,role:'definition',note:'returns one',
@@ -31,14 +32,14 @@ test('default incremental Codex adapter scopes files, applies model settings, va
   store.put('provider','codex',profile);
   store.put('settings','codex_preferences',preferences);
   let calls=0;
-  const input:SemanticInput={unit:{kind:'module',id:'m',paths:['a.c']},snapshot,doc,onModelCall:()=>calls++};
+  const input:SemanticInput={unit:{kind:'module',id:'m',paths:['a.c','neighbor.c']},snapshot,doc,onModelCall:()=>calls++};
   const wire={category:'module_update',target_kind:'module',target_id:'m',title:'Return constant',
     proposed:{name:null,kind:null,summary:'Return constant',layer:null,parent_id:null,bind_paths:null},evidence:[{...ev,symbol_id:null}]};
   let response:unknown={proposals:[wire]};
   const analyzer=createCodexSemanticAnalyzer(store,'runtime',async opts=>{
     assert.deepEqual(opts.profile,profile);
     assert.deepEqual(opts.preferences,preferences);
-    assert.deepEqual(opts.sourcePaths,['a.c']);
+    assert.deepEqual(opts.sourcePaths,input.unit.paths);
     assert.equal(opts.run.binding.source_snapshot_id,snapshot.source_snapshot_id);
     assert.equal(path.relative(store.directory,opts.outputDirectory!).split(path.sep)[0],'runs');
     assert.equal(opts.run.output_path,path.join(opts.outputDirectory!,'result.json'));
@@ -48,7 +49,15 @@ test('default incremental Codex adapter scopes files, applies model settings, va
       assert.match(opts.prompt,/Old reading/);
       assert.match(JSON.stringify(opts.outputSchema),/dataflow_change/);
       assert.doesNotMatch(JSON.stringify(opts.outputSchema),/module_update/);
-    } else assert.match(JSON.stringify(opts.outputSchema),/module_update/);
+    } else {
+      assert.match(JSON.stringify(opts.outputSchema),/module_update/);
+      if(input.unit.kind==='module'){
+        assert.ok(opts.prompt.includes('当 unit 为 module 时：模块提案（module_update/module_remove/hierarchy_change）的 target_id 必须是当前模块 id（module_add 仅限 parent_id 等于当前模块 id），不要修改其他邻居模块；reference_files 仅供核查跨模块调用与接口，关系提案必须以当前模块 id 为 from 或 to。'));
+        const {context}=JSON.parse(opts.prompt.split('\n').at(-1)!);
+        assert.deepEqual(context.owned_files,['a.c']);
+        assert.deepEqual(context.reference_files,['neighbor.c']);
+      }
+    }
     opts.started({} as ActiveProcess);
     return {code:0,raw:JSON.stringify(response),stderr:''};
   });
