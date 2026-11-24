@@ -4,7 +4,7 @@ import path from 'node:path';
 import {test} from 'node:test';
 import type {ArchitectureDocument} from '../src/architecture-workspace';
 import type {Explanation, SourceEvidence} from '../src/shared';
-import {createCodexSemanticAnalyzer, makeReviewItem, validateSemanticProposals, type SemanticInput} from '../src/main/architecture-semantic';
+import {createCodexSemanticAnalyzer, makeReviewItem, validateSemanticProposals, type SemanticInput, type SemanticProposal} from '../src/main/architecture-semantic';
 import {resolveArchitectureReviewDecision} from '../src/main/architecture-review';
 import type {ActiveProcess} from '../src/main/providers';
 import {capture} from '../src/main/snapshot';
@@ -78,6 +78,20 @@ test('default incremental Codex adapter scopes files, applies model settings, va
   assert.deepEqual(accepted.modules[0].code_links.map(link=>link.path),['a.c']);
   assert.equal(accepted.modules[0].summary,'old summary');
   assert.equal(makeReviewItem(ownership,accepted,accepted,snapshot),undefined);
+  input.unit={kind:'unmapped',id:outside.path,paths:[outside.path]};
+  const addition={category:'module_add',target_kind:'module',target_id:'new-module',title:'New module',
+    proposed:{name:'New module',kind:'stage',layer:'core',summary:'Independent module',bind_paths:[outside.path]},
+    evidence:[{...ev,evidence_id:'new-evidence',path:outside.path,content_sha256:outside.content_sha256}]} satisfies SemanticProposal;
+  assert.throws(()=>validateSemanticProposals([{
+    ...addition,proposed:{...addition.proposed,bind_paths:[outside.path,'a.c']},
+  }],input),/文件归属变更必须引用每个待绑定文件/);
+  validateSemanticProposals([addition],input);
+  const addItem=makeReviewItem(addition,accepted,accepted,snapshot)!;
+  const pendingAdd=store.saveArchitectureDoc({...accepted,review_items:[addItem]},accepted.version);
+  const acceptedAdd=resolveArchitectureReviewDecision(store,pendingAdd,{reviewId:addItem.id,decision:'accept'},store.saveArchitectureDoc.bind(store));
+  const added=acceptedAdd.modules.find(module=>module.id==='new-module')!;
+  assert.deepEqual(added.code_links.map(link=>link.path),[outside.path]);
+  assert.equal(Object.hasOwn(added,'bind_paths'),false);
   const prior:Explanation={result_id:'walk',scenario_id:'scene',created_at:now(),source_status:'current',
     result:{schema_version:'1.0',fictional:false,result_id:'walk',binding:{project_id:'project',feature_id:'f',scenario_id:'scene',
       run_id:'old-run',question_revision_id:'rev',source_snapshot_id:snapshot.source_snapshot_id},

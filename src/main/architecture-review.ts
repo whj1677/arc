@@ -110,7 +110,9 @@ function applyArchitectureChange(doc:ArchitectureDocument, item:ReviewItem, oper
   if(operation==='uncertain')return;
   if(operation==='module_add') {
     if(target)throw Error('待新增模块的 ID 已存在，请重新检查');
-    const mod:ArchitectureModule={...patch as Pick<ArchitectureModule,'name'|'kind'|'summary'|'layer'|'parent_id'>,
+    // Every bind_paths entry is already represented by the evidence links below.
+    const {bind_paths: _bindPaths,...changes}=patch;
+    const mod:ArchitectureModule={...changes as Pick<ArchitectureModule,'name'|'kind'|'summary'|'layer'|'parent_id'>,
       id:item.target_id!,origin:'code_analysis',implementation_status:'implemented',evidence:item.evidence,updated_at,
       code_links:item.evidence.map(ev=>({id:ev.evidence_id,kind:ev.symbol_id?'symbol':'file',path:ev.path,
         symbol_id:ev.symbol_id,start_line:ev.line_start,end_line:ev.line_end,file_sha256:ev.content_sha256,
