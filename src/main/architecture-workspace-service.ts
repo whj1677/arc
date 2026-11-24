@@ -49,6 +49,9 @@ export class ArchitectureWorkspaceService {
     const branchKey = gitState?.branchKey ?? normalizeBranchKey(opts.branchKey);
     const docId = architectureDocId(projectId, branchKey);
     if (opts.version !== undefined) {
+      // Check-only updates persist freshness on the head without creating a history row.
+      const head = this.store.getArchitectureDocById(docId);
+      if (head?.version === opts.version) return head;
       const version = this.store.getArchitectureDocVersion(docId, opts.version);
       if (!version) throw Error(`Architecture document version ${opts.version} not found for ${docId}`);
       return version;

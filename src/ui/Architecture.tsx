@@ -10,8 +10,10 @@ import { edgeSelection } from './reading-target';
 
 import type { ArchitectureEditor } from './useArchitectureDocument';
 import { ArchitectureToolbar } from './ArchitectureToolbar';
+import { DiagramExportDialog } from './DiagramExportDialog';
 
 interface Props {
+  projectName?: string;
   editor?: ArchitectureEditor;
   result: AnalysisResult;
   selected: string;
@@ -68,9 +70,10 @@ function RoleIcon({ kind }: { kind: Node['kind'] }) {
   </svg>;
 }
 
-export function Architecture({ result, editor, selected, select, inspect, modules, openFile, openEvidence, onReviewResolved, zoom, search, taskOverlay, onZoomableChange }: Props) {
+export function Architecture({ result, editor, projectName, selected, select, inspect, modules, openFile, openEvidence, onReviewResolved, zoom, search, taskOverlay, onZoomableChange }: Props) {
   const root = useRef<HTMLElement>(null);
   const [width, setWidth] = useState(820);
+  const [exportOpen, setExportOpen] = useState(false);
   const [view, setView] = useState<'layers' | 'relations' | 'code'>('layers');
   useEffect(() => { onZoomableChange?.(view === 'layers'); }, [view, onZoomableChange]);
   const [hover, setHover] = useState('');
@@ -142,7 +145,9 @@ export function Architecture({ result, editor, selected, select, inspect, module
     )}
     <header className="architecture-map-heading">
       {editor && doc && <ArchitectureToolbar key={doc.id} editor={editor} doc={doc} width={width} select={select}
-        openEvidence={openEvidence} onReviewResolved={onReviewResolved}/>}
+        openEvidence={openEvidence} onReviewResolved={onReviewResolved} openExport={() => setExportOpen(true)}/>}
+      {exportOpen && editor?.savedDoc && <DiagramExportDialog mode="architecture" editor={editor}
+        projectName={projectName ?? editor.savedDoc.project_id} selected={selected} search={search} columns={columns} close={() => setExportOpen(false)}/>}
       <div className="architecture-view-switch" role="group" aria-label="架构视图">
         <button aria-pressed={view === 'layers'} onClick={() => chooseView('layers')}>分层架构图</button>
         <button aria-pressed={view === 'relations'} onClick={() => chooseView('relations')}>协作关系表 ({result.architecture?.edge_ids.length ?? 0})</button>

@@ -6,8 +6,8 @@ import {BusinessDiagram,CollaborationDiagram,FilesDiagram} from './ReadingDiagra
 import {claimNames} from './Graph';
 import {SourceEditorActions} from './SourceEditorActions';
 
-type Props={result:AnalysisResult;guide:ReadingGuide;view:string;pathId:string;selected:string;focus:string;search:string;zoom:number;onPath:(id:string)=>void;onSelect:(key:string)=>void;onNavigate:(view:string,focus?:string)=>void;onStep:(id:string)=>void};
-export function FeatureReading({result,guide:g,view,pathId,selected,focus,search,zoom,onPath,onSelect,onNavigate,onStep}:Props){
+type Props={result:AnalysisResult;guide:ReadingGuide;view:string;pathId:string;selected:string;focus:string;search:string;zoom:number;onPath:(id:string)=>void;onSelect:(key:string)=>void;onNavigate:(view:string,focus?:string)=>void;onStep:(id:string)=>void;onExport?:()=>void};
+export function FeatureReading({result,guide:g,view,pathId,selected,focus,search,zoom,onPath,onSelect,onNavigate,onStep,onExport}:Props){
   const path=g.paths.find(p=>p.id===pathId)||g.paths[0];
   if(!path)return <p className="fr-empty">这份分析尚未提供可阅读的路径。</p>;
   const ordered=!!result.reading_guide||timelineModel(result).ordered,query=search.trim().toLowerCase();
@@ -17,7 +17,7 @@ export function FeatureReading({result,guide:g,view,pathId,selected,focus,search
   return <section className="feature-reading" aria-label={view==='timeline'?'业务流程':view==='collaboration'?'协作关系':'相关文件'}>
     <div className="fr-path-bar"><span>业务入口</span>{g.paths.length>1
       ? <nav className="architecture-view-switch" aria-label="选择业务入口">{g.paths.map(p=><button key={p.id} aria-pressed={path.id===p.id} onClick={()=>onPath(p.id)} title={p.entry}>{p.label}</button>)}</nav>
-      : <strong>{path.label}</strong>}</div>
+      : <strong>{path.label}</strong>}{onExport && <button onClick={onExport}>导出图表</button>}</div>
     {(focus.startsWith('step:')||hasCollaborationRoles(result))&&!!guideItemTitle(g,focus)&&<div className="fr-context"><span>接着阅读：{guideItemTitle(g,focus)}</span><button onClick={()=>focus.startsWith('step:')?onStep(focus.slice(5)):onNavigate('collaboration',focus)}>返回{focus.startsWith('step:')?'这个步骤':'这项协作'} ↗</button></div>}
     <div className="fr-heading"><h2>{view==='timeline'?'处理过程':view==='collaboration'?'参与方与交接':'文件分工'}</h2><span>{view==='timeline'?(ordered?'按执行顺序':'先后关系未确认'):view==='collaboration'?'箭头表示交接方向':'本功能引用的源码'}</span></div>
     <p className="fr-entry-caption">{path.entry}</p>

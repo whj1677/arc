@@ -58,8 +58,9 @@ function AddItem({ kind, doc, editor, finish, cancel }: {
   </form>;
 }
 
-export function ArchitectureToolbar({ editor, doc, width, select, openEvidence, onReviewResolved }: ArchitectureReviewActions & {
+export function ArchitectureToolbar({ editor, doc, width, select, openExport, openEvidence, onReviewResolved }: ArchitectureReviewActions & {
   editor: ArchitectureEditor; doc: ArchitectureDocument; width: number; select: (id: string) => void;
+  openExport: () => void;
 }) {
   const [panel, setPanel] = useState<'module' | 'relation' | 'hidden' | 'updates' | null>(null);
   const [version, setVersion] = useState({ head: doc.version, selected: doc.version });
@@ -98,6 +99,7 @@ export function ArchitectureToolbar({ editor, doc, width, select, openEvidence, 
   return <div className="architecture-maintenance">
     <fieldset className="architecture-maintenance-tools" disabled={saving} aria-label="架构维护">
       <span className="tag" title="当前分支">{doc.branch_key}</span>
+      <button disabled={!editor.savedDoc?.version && !editor.dirty} onClick={openExport}>导出</button>
       {editor.editMode ? <>
         <button disabled={editor.maintenanceBusy} onClick={() => setPanel('module')}>新增模块</button>
         <button disabled={editor.maintenanceBusy || !doc.modules.length} onClick={() => setPanel('relation')}>新增关系</button>

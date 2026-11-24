@@ -1739,6 +1739,7 @@ function App() {
       readingGuide={readingGuide}
       featurePurpose={featurePurpose}
       explanation={explanation}
+      featureName={currentFeature?.name}
       result={result}
       overviewRun={overviewRun}
       discovery={discovery}

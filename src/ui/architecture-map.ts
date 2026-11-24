@@ -37,9 +37,7 @@ export function moveArchitectureModule(doc: ArchitectureDocument, id: string, po
     manual_positions: manual_positions.includes(id) ? manual_positions : [...manual_positions, id] } };
 }
 
-export function architectureMap(input: ArchitectureView | ArchitectureDocument, search = '', maxColumns = 6,
-  positions: ArchitectureLayout['positions'] = 'modules' in input ? input.layout.positions : {}) {
-  const result = 'modules' in input ? architectureDocumentToAnalysisResult(input) : input;
+export function architectureMapScope(result: ArchitectureView, search = '') {
   const byId = new Map(result.nodes.map(node => [node.node_id, node]));
   const byEdge = new Map(result.edges.map(edge => [edge.edge_id, edge]));
   const all = (result.architecture?.node_ids ?? []).map(id => byId.get(id)).filter(node => !!node);
@@ -58,13 +56,21 @@ export function architectureMap(input: ArchitectureView | ArchitectureDocument, 
     }
   }
 
-  const { rootOf, incoming, outgoing, layers: defaultLayers } = architectureTopology(all, relations);
   if (query) for (const id of matches) {
     const parent = byId.get(id)!.parent_node_id;
     if (parent && allIds.has(parent)) matches.add(parent);
   }
   const nodes = all.filter(node => matches.has(node.node_id));
   const edges = relations.filter(edge => matches.has(edge.source_node_id) && matches.has(edge.target_node_id));
+  return { all, relations, nodes, edges };
+}
+
+export function architectureMap(input: ArchitectureView | ArchitectureDocument, search = '', maxColumns = 6,
+  positions: ArchitectureLayout['positions'] = 'modules' in input ? input.layout.positions : {},
+  measureHeight?: (id: string, width: number) => number) {
+  const result = 'modules' in input ? architectureDocumentToAnalysisResult(input) : input;
+  const { all, relations, nodes, edges } = architectureMapScope(result, search);
+  const { rootOf, incoming, outgoing, layers: defaultLayers } = architectureTopology(all, relations);
   const degrees = new Map<string, number>();
   for (const edge of relations) {
     for (const id of new Set([edge.source_node_id, edge.target_node_id])) degrees.set(id, (degrees.get(id) ?? 0) + 1);
@@ -134,7 +140,8 @@ export function architectureMap(input: ArchitectureView | ArchitectureDocument, 
   const layers: (Rect & { id: Tier; title: string; roots: string[] })[] = [];
   function place(node: Node, x: number, y: number, depth: number): number {
     const indent = Math.min(depth, 4) * 8;
-    const box = { x: x + indent, y, width: cardWidth - indent * 2, height: cardHeight };
+    const width = cardWidth - indent * 2;
+    const box = { x: x + indent, y, width, height: measureHeight?.(node.node_id, width) ?? cardHeight };
     boxes.set(node.node_id, box);
     let bottom = y + box.height;
     const nested = children.get(node.node_id) ?? [];
@@ -171,11 +178,16 @@ export function architectureMap(input: ArchitectureView | ArchitectureDocument, 
 
   let minX = 0, minY = 0, right = layoutWidth;
   const placed = new Map<string, Rect>();
+  const manual = measureHeight && 'modules' in input ? new Set(input.layout.manual_positions) : undefined;
   for (const [id, box] of boxes) {
-    if (Object.hasOwn(positions, id)) placed.set(id, Object.assign(box, positions[id]));
+    if (Object.hasOwn(positions, id)) {
+      Object.assign(box, positions[id]);
+      if (!manual || manual.has(id)) placed.set(id, box);
+    }
   }
-  if (placed.size) {
-    // Keep every saved card anchored. Only move unpositioned cards out of occupied slots.
+  if (placed.size || (manual && Object.keys(positions).length)) {
+    // The interactive map anchors every saved position. Expanded export cards keep
+    // dragged coordinates and move automatically positioned neighbors only on collision.
     for (const [id, box] of boxes) {
       if (!placed.has(id)) {
         while ([...placed.values()].some(other => overlaps(box, other, 4))) box.x += pitch;
@@ -300,7 +312,7 @@ export function architectureMap(input: ArchitectureView | ArchitectureDocument, 
       const rect = { x: labelPos.x - labelWidth / 2, y: labelPos.y - 10, width: labelWidth, height: 20 };
       for (const id of new Set([edge.source_node_id, edge.target_node_id])) append(captions, id, rect);
     }
-    return { edge, path, labelPos, labelWidth, labelAnchor, singleEdgeLabel };
+    return { edge, path, curves, labelPos, labelWidth, labelAnchor, singleEdgeLabel };
   });
   return { nodes, edges, degrees, hubs, boxes, boundaries, layers, links, width, height: height - minY, minX, minY, layoutWidth };
 }

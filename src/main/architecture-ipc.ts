@@ -1,6 +1,8 @@
 import type { ModuleReferencePaths } from '../architecture-workspace';
 import type { ArcService } from './service';
 
+export const diagramExportOperation = 'export_diagram_file';
+
 export const architectureOperations = [
   'architecture_get', 'architecture_save', 'architecture_versions', 'architecture_restore',
   'architecture_delete_impact', 'architecture_branches',
@@ -46,6 +48,12 @@ export async function architectureIpc(service: ArcService, operation: Operation,
       return service.resolveArchitectureReview(project, { branchKey: branch, reviewId: identifier(args.review_id, 'review_id'), decision, note });
     }
     case 'architecture_get': {
+      // A pinned export reads SQLite even if the original checkout is offline.
+      if (args.document_only === true) {
+        return { document: await service.getArchitectureDocument(project, {
+          branchKey: identifier(branch, 'branch_key'), version: version(args.version, 1),
+        }) };
+      }
       const active_branch = await service.getActiveArchitectureBranch(project);
       const document = await service.getArchitectureDocument(project, {
         branchKey: branch ?? active_branch, version: args.version === undefined ? undefined : version(args.version, 1),

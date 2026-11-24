@@ -161,15 +161,19 @@ export class ArchitectureEditorStore {
       const { document, versions } = await this.invoke<Saved>(operation, { project_id: this.projectId, ...args });
       this.patch({ savedDoc: document, draftDoc: null, dirty: false, versions, saveState: 'saved',
         branches: [...new Set([...this.state.branches, document.branch_key])] });
+      return { document };
     } catch (error) {
-      this.patch({ saveState: 'error', saveError: String(error instanceof Error ? error.message : error) });
+      const message = error instanceof Error ? error.message : String(error);
+      this.patch({ saveState: 'error', saveError: message });
+      return { error: message };
     } finally {
       if (this.refreshPending) { this.refreshPending = false; await this.load(); }
     }
   }
   saveDraft = async () => {
     const { draftDoc, savedDoc, saveState } = this.state;
-    if (!draftDoc || !savedDoc || saveState === 'saving' || this.state.updateBusy !== 'idle') return;
+    if (!draftDoc || !savedDoc || saveState === 'saving' || this.state.updateBusy !== 'idle')
+      return { error: '当前草稿无法保存，请等待架构操作完成。' };
     const errors = validateArchitectureDocument(draftDoc);
     if (!errors.length) {
       for (const module of draftDoc.modules) {
@@ -182,9 +186,13 @@ export class ArchitectureEditorStore {
     }
     if (draftDoc.version !== savedDoc.version)
       errors.push('架构版本已变化，请取消草稿并基于最新版本重新编辑。');
-    if (errors.length) { this.patch({ saveState: 'error', saveError: errors.join('\n') }); return; }
+    if (errors.length) {
+      const error = errors.join('\n');
+      this.patch({ saveState: 'error', saveError: error });
+      return { error };
+    }
     const document = withCheckMetadata(draftDoc, savedDoc);
-    await this.persist('architecture_save', { document: savePayload(document), expected_version: savedDoc.version });
+    return this.persist('architecture_save', { document: savePayload(document), expected_version: savedDoc.version });
   };
   restoreVersion = async (version: number) => {
     if (this.state.savedDoc && this.state.saveState !== 'saving' && this.state.updateBusy === 'idle')

@@ -22,6 +22,8 @@ import type { TaskArchitectureOverlay } from './DevelopmentHud';
 import { ZoomSurface } from './ZoomSurface';
 import { Timeline } from './Timeline';
 import { FeatureReading } from './FeatureReading';
+import { DiagramExportDialog } from './DiagramExportDialog';
+import { availableFeatureViews } from '../export/feature-svg';
 import { Composition } from './Composition';
 import { FileMap } from './FileMap';
 import { analyzedSourcePaths } from './file-map';
@@ -59,6 +61,7 @@ export interface CanvasPaneProps {
   featureReading: boolean;
   readingGuide: any;
   featurePurpose?: string;
+  featureName?: string;
   explanation?: Explanation;
   result?: AnalysisResult;
   overviewRun?: Run;
@@ -120,6 +123,7 @@ export function CanvasPane({
   featureReading,
   readingGuide,
   featurePurpose,
+  featureName,
   explanation,
   result: analysisResult,
   overviewRun,
@@ -153,11 +157,15 @@ export function CanvasPane({
   taskOverlay,
 }: CanvasPaneProps) {
   const [archZoomable, setArchZoomable] = useState(true);
+  const [exportOpen, setExportOpen] = useState(false);
+  const canExportFeature = useMemo(() => reading.entrance === 'walk' && !!explanation && availableFeatureViews(explanation).length > 0,
+    [explanation, reading.entrance]);
   const result = architectureResult ?? analysisResult;
   const architectureCanvas = result && ['system', 'map'].includes(reading.view) && (
     <Architecture
       key={editor?.doc?.id ?? result.result_id}
       editor={editor}
+      projectName={project?.name}
       openEvidence={evidence}
       onReviewResolved={onReviewResolved}
       result={result}
@@ -234,6 +242,13 @@ export function CanvasPane({
 
   return (
     <main className={overviewSections ? 'canvas overview-canvas' : 'canvas'}>
+      {exportOpen && explanation && <DiagramExportDialog mode="feature" explanation={explanation}
+        projectName={project?.name ?? projectId} featureName={featureName ?? scenario?.title ?? ''} scenarioTitle={scenario?.title ?? ''}
+        snapshot={data.snapshots.find(s => s.source_snapshot_id === explanation.result.binding.source_snapshot_id)}
+        initialPath={reading.view === 'functions' ? reading.function_path : reading.reading_path}
+        initialView={reading.view === 'functions' ? (reading.function_mode === 'time' ? 'call_chain' : 'call_map')
+          : reading.view === 'collaboration' ? 'collaboration' : reading.view === 'flow' ? 'graph' : 'business_flow'}
+        close={() => setExportOpen(false)}/>}
       {freshness?.kind === 'affected' && (
         <div className="freshness-banner affected" role="status">
           <span>外部代码已变更（{freshness.files.slice(0, 3).join('、')}{freshness.files.length > 3 && ` 等 ${freshness.files.length} 个文件`}）· 当前展示为旧快照，非最新代码</span>
@@ -257,6 +272,7 @@ export function CanvasPane({
               </span>
             )}
             {filters}
+            {canExportFeature && (isCatalogDetail || !(featureReading && readingGuide)) && <button onClick={() => setExportOpen(true)}>导出图表</button>}
           </div>
         </div>
       )}
@@ -303,6 +319,7 @@ export function CanvasPane({
         ) : featureReading && result && readingGuide ? (
           <ZoomSurface reflow zoom={reading.zoom} change={zoom => patch({ zoom })}>
             <FeatureReading
+              onExport={canExportFeature ? () => setExportOpen(true) : undefined}
               zoom={reading.zoom}
               result={result}
               guide={readingGuide}

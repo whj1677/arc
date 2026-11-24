@@ -99,3 +99,9 @@ dialog input[type="radio"][name="delete-strategy"] { width: auto; }
 .architecture-review-actions { margin: 8px 0 0; padding: 0; min-width: 0; border: 0; }
 .architecture-review-actions label { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .architecture-review-actions input { min-width: 0; max-width: 100%; }
+.diagram-export-dialog .diagram-export-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.diagram-export-options { display: flex; gap: 12px; flex-wrap: wrap; }
+.diagram-export-options label { flex: 1 1 auto; }
+.diagram-export-dialog .row label { display: flex; align-items: center; gap: 6px; }
+.diagram-export-dialog input[type=checkbox] { width: auto; }
+.diagram-export-dialog .scope-box p { margin: 0; }
